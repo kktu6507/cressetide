@@ -1,0 +1,10 @@
+{
+  "_comment": "Template only. Claude Code loads .mcp.json, NOT this file. To enable a server: copy its entry into .mcp.json's mcpServers, then UNCOMMENT the matching mcp__<name> line in the relevant agent's tools list. The server NAME (the JSON key) sets the tool prefix mcp__<name>__*, so it MUST match what you uncomment. Add only what you actually use.",
+  "_anatomy": "Each entry is { command, args }. 'command' = the executable that launches the server process: 'npx' for npm-published servers, 'uvx'/'pipx' for Python ones, 'docker', or an absolute path to a binary. 'args' = what gets passed to it: '-y' is the npx auto-install flag, and the '@scope/pkg@x.y.z' token is the package name @ a PINNED version.",
+  "_whereToGetValues": "You do NOT invent these values — copy the config snippet from the MCP server's own README/repo (start at github.com/modelcontextprotocol/servers, or the tool's own repo), then pin the version from its npm / PyPI page (replace @latest with @x.y.z so an upstream change can't silently break you). Python servers ship OUTSIDE npm: use 'uvx'/'pipx', NOT 'npx -y <name>' (that fetches an unrelated npm package of the same name).",
+  "_secrets": "Tokens / API keys go in an 'env' block, NEVER in args, e.g. \"github\": { \"command\": \"npx\", \"args\": [\"-y\", \"@modelcontextprotocol/server-github@2025.4.8\"], \"env\": { \"GITHUB_PERSONAL_ACCESS_TOKEN\": \"...\" } }. Because .mcp.json is committed, do NOT hardcode a real secret in it — keep the populated file out of version control, or inject the value from your shell environment.",
+  "mcpServers": {
+    "github":     { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github@2025.4.8"] },
+    "playwright": { "command": "npx", "args": ["-y", "@playwright/mcp@0.0.76"] }
+  }
+}

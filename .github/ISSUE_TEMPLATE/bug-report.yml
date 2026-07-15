@@ -1,0 +1,70 @@
+name: Bug report
+description: A ctide hook, agent, skill, or workflow behaved incorrectly.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a defect. **Sanitize** private code, secrets, and customer data before posting.
+
+        For a *security vulnerability*, do NOT use this form — follow the private process in [`SECURITY.md`](../../security/policy).
+        For "nothing happens" / setup problems, run `/ctide:doctor` first — it catches the common causes (Node missing, plugin not enabled).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did ctide do, and what did you expect instead?
+      placeholder: |
+        - Expected: ...
+        - Actual: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The task/command you gave, and the smallest steps that reproduce it.
+      placeholder: |
+        1. /ctide:vigil ...
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: /ctide:doctor output
+      description: Paste the health report from `/ctide:doctor` (redact paths if needed). This is the single most useful diagnostic.
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: ctide version
+      description: From the marketplace, or the `version` in the installed plugin.json.
+      placeholder: "e.g. 0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Host + OS + Node version.
+      placeholder: "e.g. Claude Code on Windows 11 with the installed Node.js version"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: With CTIDE_HOOK_DEBUG=1 set, the tmpdir ctide-hook.log lines; or any error output. Sanitize first.
+      render: shell
+    validations:
+      required: false

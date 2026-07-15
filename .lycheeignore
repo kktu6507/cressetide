@@ -1,0 +1,18 @@
+# lychee (link-check.yml) exclusion patterns — one regex per line.
+# Placeholder / documentation-only hosts that are never meant to resolve:
+^https?://localhost
+^https?://127\.0\.0\.1
+# Private / link-local / cloud-metadata ranges: a fork PR's markdown must not be able to
+# aim the CI link fetcher at internal endpoints (blind-SSRF hardening).
+^https?://169\.254\.
+^https?://10\.
+^https?://192\.168\.
+^https?://172\.(1[6-9]|2[0-9]|3[01])\.
+^https?://metadata\.
+^https?://(?:[a-z0-9-]+\.)?example\.(?:com|org|net|invalid)
+# Email links are not checked (no SMTP probing from CI).
+^mailto:
+# GitHub "new issue with template" deep-links redirect to login for unauthenticated
+# clients, which link checkers intermittently score as failures; the literal presence of
+# these links is already CI-enforced by validate-structure §8 (requiredReadmeLinks).
+^https://github\.com/.+/issues/new

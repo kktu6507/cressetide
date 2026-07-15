@@ -1,0 +1,30 @@
+# Workflow runtime output — failure memory belongs in the consuming project,
+# never committed into this plugin's own source tree.
+/ai/
+**/ai/FAILURE_MEMORY.md
+
+# ctide's consuming-project runtime root (memory/design/map/incidents/output).
+# For this tool repo it is dogfood-run residue — never commit it (validate-structure enforces this line).
+/.ctide/
+
+# One-off verification scaffolding / scratch / process files
+_*.js
+_*.mjs
+_*.cjs
+*.tmp
+*.log
+*.bak
+*~
+
+# Node
+node_modules/
+
+# Local, machine-private Claude Code settings (per-developer permission allowlists, etc.).
+# Never commit — and don't rely on each contributor's *global* git excludes to ignore it;
+# keeping the rule here means the protection travels with the clone.
+.claude/settings.local.json
+
+# Cressetide release-strengthening outputs (pre-existing exception).
+*.tar.gz
+*.tar.gz.sha256
+_release/

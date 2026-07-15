@@ -1,0 +1,4 @@
+# The hooks are the only code that auto-executes in every consumer's session,
+# and the workflow controls CI — require owner review on changes to them.
+/cressetide/hooks/        @kktu6507
+/.github/             @kktu6507

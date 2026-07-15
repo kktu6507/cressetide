@@ -1,0 +1,73 @@
+# Ops Profile (peacetime map) + Map preparation
+
+Loaded in **Map preparation** (`/ctide:map` or an explicit "prepare for incidents" request) and consulted at the start of every wartime run. The profile is the peacetime map that makes wartime start at 30 seconds instead of 30 minutes: where the logs are, how to roll back, who may approve what. It lives at `.ctide/map/SYSTEM_MAP.md` and is committed to git.
+
+## Profile fields
+
+Write the profile with this template. Every access, rollback, flag, and backup entry carries a trust marker: `verified: <date>` (a human actually ran it on that date), `dry-run-verified: <date>` (the agent executed the command's non-mutating preview — `--dry-run` / `--check` / `terraform plan` and the like — and it completed clean with the expected plan, output recorded: stronger than self-report, weaker than a live run), or `UNVERIFIED`. An unverified rollback command is explicitly worse than none — it invites a confident wrong move mid-incident; recommend drilling it in staging and recording the date. A full restore-drill or game-day is the human-scheduled ceiling here — the agent can earn `dry-run-verified` on its own, but proving a real restore or failover is not something it self-certifies.
+
+~~~markdown
+# SYSTEM_MAP — <system name>
+
+## System overview
+- Entry points: <public URLs / APIs / scheduled jobs>
+- Components: <service → role, one line each>
+
+## Access inventory
+| What | Where / how to read it | Runnable by | Trust |
+|------|------------------------|-------------|-------|
+| App logs | <path / command / dashboard URL + how to filter> | agent-runnable | verified: <date> |
+| Error tracking | <tool + project + how to query> | human-only | UNVERIFIED |
+| Deploy control | <command / pipeline URL> | agent-runnable | dry-run-verified: <date> |
+| DB read-only access | <connection recipe; where read-only credentials come from> | human-only | UNVERIFIED |
+
+## Rollback
+- Exact steps: <commands, in order>  (verified: <date> | dry-run-verified: <date> | UNVERIFIED)
+- Schema migrations in recent deploys: <yes/no — which deploys, which migrations>
+- New-format data: <where data written by the new version lands that old code cannot read>
+
+## Feature flags & kill switches
+- <flag> — <what it disables> — <how to flip it>  (verified: <date> | dry-run-verified: <date> | UNVERIFIED)
+
+## Backups
+- Exists: <yes/no> — Where: <location> — Last restore drill: <date | never>
+
+## Breach readiness
+- Secure evidence store: <where to copy logs/evidence during a suspected intrusion — outside the compromised system, so a wipe or the attacker cannot destroy it>
+- Out-of-band comms: <channel to coordinate on if the normal one may be attacker-monitored — e.g. a phone bridge, a separate account; for coordination only, not for transmitting secrets or evidence — prefer a pre-arranged, access-controlled channel over an ad-hoc personal account>
+- Legal/privacy owner: <name/role to notify for breach/data-exposure incidents>
+- Notification threshold: <what triggers a legally-required disclosure — decided by the named owner, never by the agent>
+
+## Observability inventory
+- <logs / metrics / alerts that exist, and the query for each>
+- <if none exist, record it: "RED FLAG: no logs/metrics — incidents will be diagnosed blind">
+
+## Run in isolation (repro tier 2)
+- <how to run the system locally or in staging, including config and seed data>
+
+## External dependencies
+- <dependency> — <health-check URL / status page>
+
+## Approvals map
+- Rollback: <who may approve>
+- Maintenance mode / stop-writes: <who may approve>
+- Data repair: <who may approve>
+~~~
+
+## Map behavior
+
+1. **Scan the repo** for derivable facts: deploy configs and CI files (how it ships), migration directories (schema-change history), docker/k8s manifests, package scripts (how it runs and how it might run in isolation), health-check endpoints in code. This scan is read-only bulk discovery with no time pressure — when a subagent capability is available, delegate it to a single read-only exploration subagent (a generic `Explore` / `general-purpose` scout, mirroring vigil's plan-grounding Stage A) run in parallel with step 4's human decision cards; otherwise scan inline. It needs no dedicated agent definition.
+2. **Read recent-change intel** from Run-Card scratch under `.ctide/output/` when present — recent dev-flow runs show what changed lately and where risk concentrated.
+   - One-time legacy migration: if legacy `.ctide/legacy-output/` Run-Card scratch exists and `.ctide/output/` is absent, move the whole tree to `.ctide/output/` (tracked files → create the destination directory, then `git mv` — `git mv` does not create it; untracked → copy, verify the copy is readable, then delete the original), keep the directory self-gitignored, disclose the migration in one line, and never touch the legacy path again. When both trees exist, use `.ctide/output/`, move or overwrite nothing, and disclose once that the legacy copy remains for manual cleanup/merge. Apply the same pattern to any other legacy file this skill must read (`ai/FAILURE_MEMORY.md` → `.ctide/memory/FAILURE_MEMORY.md`, root `design.md` → `.ctide/design/design.md`).
+3. **Draft or refresh the profile** from what was derived. A refresh updates stale entries but keeps existing `verified:` dates intact unless the underlying fact changed.
+4. **Ask only what cannot be derived**, one decision card at a time: backup location and restore-drill status, the approvals map, human-only credentials and dashboards, whether the rollback path has ever actually been exercised, and — for breach readiness (NIST Preparation) — where intrusion evidence should be copied, which out-of-band channel to use if the normal one is compromised, and who the named legal/privacy owner is for breach/data-exposure notification decisions.
+5. **Write the file** to `.ctide/map/SYSTEM_MAP.md`.
+6. **Report gaps honestly.** A missing backup, an unverified rollback, or zero observability is a named red flag in the report ("no backups found — a restore is impossible today"), never silence. Map's value is the uncomfortable list, not a reassuring one.
+
+## Staleness
+
+On each wartime use:
+
+- Compare the profile's last git commit date against recent deploy activity. If deploys happened after the profile was last touched, treat its deploy, rollback, and migration entries as suspect.
+- A stale, `dry-run-verified`, or `UNVERIFIED` entry is flagged on the decision card that relies on it ("rollback steps are UNVERIFIED — no drill has ever run"; "rollback is dry-run-verified only — the preview parsed, but it has never actually run"), never silently trusted and never silently dropped.
+- When staleness contributed to the incident, propose refreshing the profile as a postmortem follow-up (`../../salvage/references/reentry-and-closure.md`).

@@ -1,0 +1,64 @@
+name: Verified ctide run
+description: Record a real or benchmarked ctide run with verifiable outcome data.
+title: "[Verified run]: "
+labels: ["evidence", "verified-run"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a ctide run.
+
+        **Sanitize** private code, secrets, customer data, and proprietary business rules before posting.
+
+        This form is for evidence with a **verifiable outcome**. "It felt useful" is welcome as an *adoption* signal, but it is not measured evidence — keep the honest negatives (**Missed** / **False alarms** / **Outcome**) in, they are the whole point.
+
+  - type: dropdown
+    id: run_type
+    attributes:
+      label: Run type
+      options:
+        - Live task
+        - Historical blind bug-catch
+        - False positive report
+        - Missed defect report
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: final_verdict
+    attributes:
+      label: Final ctide verdict
+      options:
+        - READY
+        - FIX REQUIRED
+        - NOT READY
+        - No formal verdict
+    validations:
+      required: true
+
+  - type: textarea
+    id: run
+    attributes:
+      label: The run
+      description: |
+        Easiest path: paste the "Live run" block ctide prints at the end of a real run — it already
+        carries the date, reviewers, verification, verdict, and evidence link. Otherwise fill the skeleton.
+        Keep the Missed / False alarms / Outcome lines — honest negatives are what make this evidence.
+      value: |
+        <!-- Paste ctide's end-of-run "### Live run" block here, or fill the lines below. -->
+
+        - Date: <YYYY-MM-DD>
+        - Repository / stack: <public link, or a sanitized stack for private repos>
+        - Language / framework: <e.g. TypeScript / React / Node>
+        - Task: <what you asked ctide to do>
+        - Intent given: <the requirement / contract handed in — how specific was it?>
+        - Reviewers run: <e.g. spec, test, code, security, arbiter — or "none">
+        - Verification: <commands / browser checks / tests you actually ran>
+        - Caught: <real findings ctide raised that you acted on>
+        - Missed: <defects found later, after the verdict — or "none known">
+        - False alarms: <findings that were NOT real defects — or "none">
+        - Outcome after follow-up: <did the verdict hold? merged / reverted / fixed again?>
+        - Evidence / links: <PR, commit, sanitized log, or test output — what turns a claim into evidence>
+    validations:
+      required: true

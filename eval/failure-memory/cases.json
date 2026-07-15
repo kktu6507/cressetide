@@ -1,0 +1,41 @@
+{
+  "comment": "Deterministic retrieval oracle cases for failure-retrieve.mjs over seed.md. For each case the task signature (query) must surface `expectTop` as the #1 ranked entry; `mustNotMatch` titles must not appear in the returned top results (precision). `expectTop`/`mustNotMatch` are substrings of the entry's `###` title. The retired entry (2026-05-30, superseded) must never surface regardless of query.",
+  "cases": [
+    {
+      "name": "python mutable default",
+      "query": "python helper def items=[] mutable default argument shared",
+      "expectTop": "mutable default argument",
+      "mustNotMatch": ["jsdom not installed", "hardcoded `/` paths"]
+    },
+    {
+      "name": "node ci test dependency",
+      "query": "npm test jsdom devDependencies node ci clean install",
+      "expectTop": "jsdom not installed in CI",
+      "mustNotMatch": ["mutable default argument", "Go nil-map"]
+    },
+    {
+      "name": "cross-platform path separator",
+      "query": "build path separator windows dist cross-platform path.join",
+      "expectTop": "hardcoded `/` paths",
+      "mustNotMatch": ["jsdom not installed", "mutable default argument"]
+    },
+    {
+      "name": "go nil map panic",
+      "query": "go nil map write panic make initialize",
+      "expectTop": "Go nil-map write panicked",
+      "mustNotMatch": ["mutable default argument", "jsdom not installed"]
+    },
+    {
+      "name": "retired async lesson never surfaces",
+      "query": "javascript forEach async await race writes sequence",
+      "expectTop": null,
+      "mustNotMatch": ["forEach"]
+    },
+    {
+      "name": "unrelated signature surfaces nothing",
+      "query": "kubernetes ingress tls certificate renewal",
+      "expectTop": null,
+      "mustNotMatch": ["mutable default argument", "jsdom not installed", "hardcoded `/` paths", "Go nil-map", "forEach"]
+    }
+  ]
+}

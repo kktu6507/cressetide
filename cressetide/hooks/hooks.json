@@ -1,0 +1,45 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell",
+        "hooks": [
+          { "type": "command", "command": "node -e \"try{var r=process.env.CLAUDE_PLUGIN_ROOT||process.env.COPILOT_PLUGIN_ROOT||process.env.PLUGIN_ROOT;if(r)require(r+'/hooks/plan-gate.js')}catch(e){process.exit(0)}\"" }
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          { "type": "command", "command": "node -e \"try{var r=process.env.CLAUDE_PLUGIN_ROOT||process.env.COPILOT_PLUGIN_ROOT||process.env.PLUGIN_ROOT;if(r)require(r+'/hooks/destructive-guard.js')}catch(e){process.exit(0)}\"" }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          { "type": "command", "command": "node -e \"try{var r=process.env.CLAUDE_PLUGIN_ROOT||process.env.COPILOT_PLUGIN_ROOT||process.env.PLUGIN_ROOT;if(r)require(r+'/hooks/contract-guard.js')}catch(e){process.exit(0)}\"" }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          { "type": "command", "command": "node -e \"try{var r=process.env.CLAUDE_PLUGIN_ROOT||process.env.COPILOT_PLUGIN_ROOT||process.env.PLUGIN_ROOT;if(r)require(r+'/hooks/load-failure-memory.js')}catch(e){process.exit(0)}\"" }
+        ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          { "type": "command", "command": "node -e \"try{var r=process.env.CLAUDE_PLUGIN_ROOT||process.env.COPILOT_PLUGIN_ROOT||process.env.PLUGIN_ROOT;if(r)require(r+'/hooks/compact-fidelity.js')}catch(e){process.exit(0)}\"" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node -e \"try{var r=process.env.CLAUDE_PLUGIN_ROOT||process.env.COPILOT_PLUGIN_ROOT||process.env.PLUGIN_ROOT;if(r)require(r+'/hooks/orchestration-check.js')}catch(e){process.exit(0)}\"" }
+        ]
+      }
+    ]
+  }
+}

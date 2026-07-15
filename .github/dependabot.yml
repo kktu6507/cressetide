@@ -1,0 +1,12 @@
+# The shipped plugin and its tests have ZERO runtime/dev dependencies (package.json has no
+# dependencies block; tests run on `node --test`). The only external version surface is the
+# pinned GitHub Actions SHAs in .github/workflows/. Scan that ecosystem only.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    labels: ["dependencies", "ci"]

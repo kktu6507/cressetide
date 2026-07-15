@@ -1,0 +1,16 @@
+# zizmor configuration — https://docs.zizmor.sh/configuration/
+#
+# One reviewed exception lives here rather than as an inline `# zizmor: ignore` comment: the finding
+# is inside a `run:` block (a shell line, not a YAML comment), and zizmor only parses inline ignores
+# from real YAML comments. The other reviewed exception (artipacked on the release checkout) IS an
+# inline comment in validate.yml, since that finding sits on an actual YAML line.
+rules:
+  adhoc-packages:
+    ignore:
+      # validate.yml — `npm install -g @anthropic-ai/claude-code` is a best-effort, Linux-only,
+      # continue-on-error install of Anthropic's OFFICIAL CLI, purely to run the non-gating
+      # `claude plugin validate`. Pinning to a lockfile would defeat "validate against the CURRENT
+      # CLI"; the step runs in the validate job (persist-credentials: false, no release access), so
+      # the blast radius is bounded. Accepted, not a fix. FILE-LEVEL ignore (not a `:line` pin):
+      # a line pin silently un-suppresses whenever any edit above it shifts the line number.
+      - validate.yml

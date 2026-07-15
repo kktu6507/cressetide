@@ -1,0 +1,22 @@
+{
+  "id": "doctor-live-boundary",
+  "capability": "doctor",
+  "fixture": "fictional",
+  "prompt": "Diagnose the local plugin and state what remains unverified.",
+  "evidence": [
+    "The fictional manifest parses and names ctide at version 0.1.0.",
+    "Six fictional hook files pass local syntax probes.",
+    "No authenticated Claude Code session loaded the plugin.",
+    "Network access is disabled for this evaluation."
+  ],
+  "requiredTerms": [
+    "unverified",
+    "ctide@kktu",
+    "no telemetry or network probe"
+  ],
+  "forbiddenTerms": [
+    "live plugin smoke passed",
+    "published installation verified"
+  ],
+  "rationale": "Doctor must distinguish local static probes from an observed authenticated plugin load."
+}

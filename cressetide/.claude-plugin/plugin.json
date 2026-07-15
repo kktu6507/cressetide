@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "ctide",
+  "displayName": "Cressetide",
+  "description": "Cressetide — evidence-gated engineering loops for AI-made changes: plan-approved Vigil, risk-proportional verification and review, incident Salvage, repository-grounded Map, production re-entry, and failure memory.",
+  "version": "0.1.0",
+  "keywords": [
+    "ai-engineering",
+    "plan-gate",
+    "verification",
+    "release-readiness",
+    "incident-response",
+    "repository-map",
+    "multi-agent",
+    "failure-memory",
+    "code-review"
+  ],
+  "author": { "name": "kktu" },
+  "homepage": "https://github.com/kktu6507/cressetide",
+  "repository": "https://github.com/kktu6507/cressetide",
+  "license": "MIT",
+  "agents": [
+    "./agents/navigator.agent.md",
+    "./agents/implementer.agent.md",
+    "./agents/intent-reviewer.agent.md",
+    "./agents/test-reviewer.agent.md",
+    "./agents/code-reviewer.agent.md",
+    "./agents/security-reviewer.agent.md",
+    "./agents/architecture-reviewer.agent.md",
+    "./agents/operability-reviewer.agent.md",
+    "./agents/ui-ux-reviewer.agent.md",
+    "./agents/arbiter.agent.md",
+    "./agents/cartographer.agent.md"
+  ]
+}
+

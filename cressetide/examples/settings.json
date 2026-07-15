@@ -1,0 +1,8 @@
+{
+  "ctide": {
+    "planGate": true,
+    "contractGuard": true,
+    "destructiveGuard": true,
+    "preserveOnCompact": true
+  }
+}

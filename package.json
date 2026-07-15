@@ -1,0 +1,17 @@
+{
+  "name": "ctide",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Cressetide — evidence-gated engineering loops for AI-made changes.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "validate": "node .github/scripts/validate-structure.mjs",
+    "eval": "node eval/run-eval.mjs",
+    "release:archive": "node .github/scripts/publish-release.mjs --archive",
+    "release:publish": "node .github/scripts/publish-release.mjs --publish"
+  }
+}

@@ -1,0 +1,4 @@
+# Normalize text files to LF: git stores them as LF and checks them out as LF on
+# every platform (overriding core.autocrlf), so the Node hooks and shell-invoked
+# scripts stay LF on Windows, macOS, and Linux. text=auto leaves binaries alone.
+* text=auto eol=lf

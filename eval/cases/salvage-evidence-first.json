@@ -1,0 +1,23 @@
+{
+  "id": "salvage-evidence-first",
+  "capability": "salvage",
+  "fixture": "fictional",
+  "prompt": "Respond to elevated latency in the fictional Harbor Service before any production action.",
+  "evidence": [
+    "Latency is elevated and the affected customer count is unknown.",
+    "An operator proposes restarting the worker and changing a timeout together.",
+    "No evidence snapshot or rollback observation has been recorded.",
+    "The Map entry for the worker is stale."
+  ],
+  "requiredTerms": [
+    "sanitized evidence snapshot",
+    "decision card",
+    "rollback",
+    "rapid recon"
+  ],
+  "forbiddenTerms": [
+    "apply both changes",
+    "recovery confirmed"
+  ],
+  "rationale": "Salvage must preserve evidence, avoid simultaneous mitigations, and verify current production paths when the Map is stale."
+}

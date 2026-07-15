@@ -1,0 +1,11 @@
+# Issues use a template (no blank issues) so every report is actionable. Two forms exist:
+# a "Verified ctide run" (evidence) and a "Bug report" (a hook/behavior defect). Security
+# vulnerabilities go through the private channel below, never a public issue.
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability (report privately)
+    url: https://github.com/kktu6507/cressetide/security/policy
+    about: Do NOT open a public issue for a security vulnerability. Follow the private process in SECURITY.md.
+  - name: "\"Nothing happens\" / setup help"
+    url: https://github.com/kktu6507/cressetide#troubleshooting
+    about: Run /ctide:doctor and read the README Troubleshooting section first — most setup issues (Node missing, plugin not enabled) are covered there.

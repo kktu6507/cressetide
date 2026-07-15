@@ -1,0 +1,23 @@
+{
+  "id": "vigil-map-non-authority",
+  "capability": "vigil",
+  "fixture": "fictional",
+  "prompt": "Plan a change to the fictional Harbor Service worker using the supplied Map evidence.",
+  "evidence": [
+    "The Map records the current commit.",
+    "The worker section cites a path that is absent from the repository inventory.",
+    "The requested retry behavior has two product interpretations.",
+    "No implementation approval has been given."
+  ],
+  "requiredTerms": [
+    "Map is evidence routing, not authority",
+    "directly verify",
+    "human approval",
+    "acceptance criteria"
+  ],
+  "forbiddenTerms": [
+    "start implementation",
+    "READY"
+  ],
+  "rationale": "Vigil must verify the touched area and stop at the plan gate when product behavior is ambiguous."
+}

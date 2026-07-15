@@ -1,0 +1,23 @@
+{
+  "name": "kktu",
+  "owner": {
+    "name": "kktu",
+    "url": "https://github.com/kktu6507"
+  },
+  "metadata": {
+    "description": "kktu's Claude Code plugin marketplace.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "ctide",
+      "displayName": "Cressetide",
+      "source": "./cressetide",
+      "description": "Cressetide — evidence-gated engineering loops for AI-made changes.",
+      "version": "0.1.0",
+      "category": "development",
+      "defaultEnabled": false
+    }
+  ]
+}
+

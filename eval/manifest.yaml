@@ -1,0 +1,44 @@
+# eval/manifest.yaml — the single machine-readable index of the behavioral fixtures
+# (eval/fixtures/*.md). Deterministic-first policy: the index itself is CI-asserted by
+# test/eval-manifest.test.mjs (three-way parity with the files on disk and with the FIXTURES
+# array in eval/fixture-eval.workflow.js); the LLM-judged behavioral scoring the fixtures feed
+# is on-demand only and never enters the CI regression ratchet (see eval/README.md).
+# scorer: independent-judge-vs-ground-truth = blind review by ctide:code-reviewer, scored by
+# an independent judge against the fixture's committed `expected` + `defect` ground truth.
+# Flat, hand-parsed YAML — keep entries to simple `key: value` lines (no nesting, no quoting).
+fixtures:
+  - id: 01-js-missing-return
+    file: eval/fixtures/01-js-missing-return.md
+    lang: JavaScript
+    expected: hit
+    scorer: independent-judge-vs-ground-truth
+  - id: 02-py-off-by-one
+    file: eval/fixtures/02-py-off-by-one.md
+    lang: Python
+    expected: hit
+    scorer: independent-judge-vs-ground-truth
+  - id: 03-go-nil-before-check
+    file: eval/fixtures/03-go-nil-before-check.md
+    lang: Go
+    expected: hit
+    scorer: independent-judge-vs-ground-truth
+  - id: 04-py-mutable-default
+    file: eval/fixtures/04-py-mutable-default.md
+    lang: Python
+    expected: hit
+    scorer: independent-judge-vs-ground-truth
+  - id: 05-js-foreach-await
+    file: eval/fixtures/05-js-foreach-await.md
+    lang: JavaScript
+    expected: hit
+    scorer: independent-judge-vs-ground-truth
+  - id: 06-clean-js-guard
+    file: eval/fixtures/06-clean-js-guard.md
+    lang: JavaScript
+    expected: clean
+    scorer: independent-judge-vs-ground-truth
+  - id: 07-clean-py-bounds
+    file: eval/fixtures/07-clean-py-bounds.md
+    lang: Python
+    expected: clean
+    scorer: independent-judge-vs-ground-truth

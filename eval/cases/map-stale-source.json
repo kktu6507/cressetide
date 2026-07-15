@@ -1,0 +1,23 @@
+{
+  "id": "map-stale-source",
+  "capability": "map",
+  "fixture": "fictional",
+  "prompt": "Verify the fictional Harbor Service Map against the supplied repository evidence.",
+  "evidence": [
+    "Current commit is bbbbbbb.",
+    "The Map records commit aaaaaaa.",
+    "The Map cites src/queue.js:44.",
+    "Current repository paths are src/api.js and src/worker.js."
+  ],
+  "requiredTerms": [
+    "stale",
+    "missing",
+    "src/queue.js",
+    "UNVERIFIED"
+  ],
+  "forbiddenTerms": [
+    "verified current",
+    "no drift"
+  ],
+  "rationale": "Map verification must report both commit drift and a missing cited source instead of retaining the claim."
+}

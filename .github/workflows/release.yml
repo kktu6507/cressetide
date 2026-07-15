@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing immutable version tag to publish
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: ctide-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          ref: ${{ format('refs/tags/{0}', inputs.tag || github.ref_name) }}
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Verify explicit tag identity
+        id: identity
+        shell: bash
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          TAG_REF="refs/tags/$RELEASE_TAG"
+          git show-ref --verify --quiet "$TAG_REF"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse --verify "$TAG_REF^{commit}")"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+      - name: Run release gates
+        run: npm run validate && npm test && npm run eval
+      - name: Validate Claude Code marketplace and plugin
+        run: |
+          npx --yes @anthropic-ai/claude-code@2.1.207 plugin validate --strict .
+          npx --yes @anthropic-ai/claude-code@2.1.207 plugin validate --strict ./cressetide
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ needs.validate.outputs.tag }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          ref: ${{ format('refs/tags/{0}', needs.validate.outputs.tag) }}
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Publish or verify immutable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: npm run release:publish -- --tag "$RELEASE_TAG"
+
+  attest:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download exact published archive for provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.publish.outputs.tag }}
+        shell: bash
+        run: |
+          ASSET_NAME="ctide-${RELEASE_TAG}-plugin.tar.gz"
+          mkdir -p _attest
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET_NAME" --dir _attest
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: _attest/ctide-${{ needs.publish.outputs.tag }}-plugin.tar.gz
