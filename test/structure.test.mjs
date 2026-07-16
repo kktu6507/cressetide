@@ -15,8 +15,9 @@ test("marketplace, plugin, and package versions agree", () => {
   const plugin = JSON.parse(fs.readFileSync(path.join(root, "cressetide", ".claude-plugin", "plugin.json"), "utf8"));
   const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
   assert.equal(market.name, "kktu");
-  assert.equal(market.plugins[0].source, "./cressetide");
-  assert.deepEqual([market.plugins[0].version, plugin.version], [pkg.version, pkg.version]);
+  const ctideEntry = market.plugins.find((p) => p.name === "ctide");
+  assert.equal(ctideEntry.source, "./cressetide");
+  assert.deepEqual([ctideEntry.version, plugin.version], [pkg.version, pkg.version]);
 });
 
 test("public skill and agent inventories are exact", () => {

@@ -17,6 +17,18 @@
       "version": "0.1.1",
       "category": "development",
       "defaultEnabled": false
+    },
+    {
+      "name": "udflow",
+      "displayName": "Universal Dev Flow",
+      "source": {
+        "source": "git-subdir",
+        "url": "kktu6507/universal-dev-flow-plugin",
+        "path": "udflow"
+      },
+      "description": "Universal Dev Flow — risk-proportional multi-agent engineering workflow.",
+      "category": "development",
+      "defaultEnabled": false
     }
   ]
 }
