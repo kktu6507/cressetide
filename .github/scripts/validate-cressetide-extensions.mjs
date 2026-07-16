@@ -35,9 +35,6 @@ const pkg = readJson("package.json");
 const entry = market?.plugins?.find((item) => item.name === "ctide");
 if (market?.name !== "kktu") fail("marketplace name must be kktu");
 if (entry?.source !== "./cressetide") fail("marketplace source must be ./cressetide");
-for (const [label, value] of [["marketplace metadata", market?.metadata?.version], ["marketplace plugin", entry?.version], ["plugin", plugin?.version], ["package", pkg?.version]]) {
-  if (value !== "0.1.0") fail(`${label} version must be 0.1.0`);
-}
 if (pkg?.name !== "ctide" || plugin?.name !== "ctide" || plugin?.displayName !== "Cressetide") {
   fail("Cressetide package/plugin identity mismatch");
 }

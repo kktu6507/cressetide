@@ -10,6 +10,7 @@ const expectedHooks = [
   "load-failure-memory.js", "compact-fidelity.js", "orchestration-check.js",
 ];
 const expectedSkills = ["doctor", "map", "salvage", "vigil"];
+const SEMVER = /^\d+\.\d+\.\d+(?:[-+].+)?$/;
 const expectedAgents = [
   "navigator", "implementer", "intent-reviewer", "test-reviewer", "code-reviewer",
   "security-reviewer", "architecture-reviewer", "operability-reviewer",
@@ -140,8 +141,8 @@ export function diagnose(pluginRoot = resolvePluginRoot()) {
   let manifestIdentityValid = false;
   try {
     manifest = safeJson(path.join(pluginRoot, ".claude-plugin", "plugin.json"));
-    manifestIdentityValid = manifest.name === "ctide" && manifest.version === "0.1.0";
-    checks.push(result("manifest", manifestIdentityValid ? "pass" : "fail", manifestIdentityValid ? "ctide@0.1.0" : "expected ctide@0.1.0"));
+    manifestIdentityValid = manifest.name === "ctide" && SEMVER.test(manifest.version);
+    checks.push(result("manifest", manifestIdentityValid ? "pass" : "fail", manifestIdentityValid ? `ctide@${manifest.version}` : `expected ctide@<semver>, got ${manifest.name}@${manifest.version}`));
   } catch (error) { checks.push(result("manifest", "fail", `manifest check failed (${safeErrorCode(error)})`)); }
 
   const nodeMajor = Number.parseInt(process.versions.node.split(".")[0], 10);

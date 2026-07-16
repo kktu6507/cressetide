@@ -91,7 +91,7 @@ test("release archive is deterministic, checksummed, and contains only the plugi
   const two = fs.readFileSync(second.assetPath);
   assert.deepEqual(one, two);
   assert.equal(first.checksum, second.checksum);
-  assert.equal(first.assetName, "ctide-v0.1.0-plugin.tar.gz");
+  assert.match(first.assetName, /^ctide-v\d+\.\d+\.\d+-plugin\.tar\.gz$/);
   assert.equal(fs.readFileSync(first.checksumPath, "utf8"), `${first.checksum}  ${first.assetName}\n`);
   const names = tarNames(one);
   assert.ok(names.length > 20);
@@ -196,7 +196,7 @@ test("published asset inventory rejects extra and duplicate assets", () => {
     { name: built.assetName },
     { name: built.assetName },
     { name: built.checksumName },
-  ], built), /duplicate=.*ctide-v0\.1\.0-plugin\.tar\.gz/);
+  ], built), new RegExp(`duplicate=.*${built.assetName.replace(/[.]/g, "\\.")}`));
 });
 
 test("release inventory query requests gh assets JSON exactly", () => {
@@ -259,7 +259,7 @@ test("checksum-only published inventory is rejected without clobber repair", () 
     download: () => { throw new Error("download must not run for an invalid inventory"); },
     runner: (command, args) => commands.push([command, ...args]),
     repairEnabled: true,
-  }), /missing=.*ctide-v0\.1\.0-plugin\.tar\.gz/);
+  }), new RegExp(`missing=.*${built.assetName.replace(/[.]/g, "\\.")}`));
   assert.deepEqual(commands, []);
 });
 
