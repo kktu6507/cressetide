@@ -116,14 +116,11 @@ function readTaggedJson(repositoryRoot, tag, relative, label) {
   }
 }
 
-function releaseIdentity(tag, packageJson, marketplace, plugin) {
+function releaseIdentity(tag, packageJson, plugin) {
   if (!versionTagPattern.test(tag)) throw new Error(`Release tag ${tag} must match vX.Y.Z`);
   const version = tag.slice(1);
-  const marketplaceEntry = marketplace?.plugins?.find(item => item.name === "ctide");
   const versions = [
     ["root package", packageJson?.version],
-    ["root marketplace metadata", marketplace?.metadata?.version],
-    ["root marketplace plugin", marketplaceEntry?.version],
     ["nested plugin", plugin?.version],
   ];
   const mismatches = versions.filter(([, value]) => value !== version);
@@ -131,8 +128,8 @@ function releaseIdentity(tag, packageJson, marketplace, plugin) {
     const observed = versions.map(([label, value]) => `${label}=${value ?? "missing"}`).join(", ");
     throw new Error(`Release tag ${tag} version parity failed: expected ${version}; ${observed}`);
   }
-  if (packageJson?.name !== "ctide" || marketplaceEntry?.source !== "./cressetide" || plugin?.name !== "ctide") {
-    throw new Error(`Release tag ${tag} product identity mismatch across root package, root marketplace, and nested plugin`);
+  if (packageJson?.name !== "ctide" || plugin?.name !== "ctide") {
+    throw new Error(`Release tag ${tag} product identity mismatch across root package and nested plugin`);
   }
   const assetName = `ctide-${tag}-plugin.tar.gz`;
   return { version, tag, assetName, checksumName: `${assetName}.sha256` };
@@ -142,7 +139,6 @@ function workingReleaseIdentity(repositoryRoot) {
   return releaseIdentity(
     `v${readJsonFile(path.join(repositoryRoot, "package.json"), "root package.json").version}`,
     readJsonFile(path.join(repositoryRoot, "package.json"), "root package.json"),
-    readJsonFile(path.join(repositoryRoot, ".claude-plugin", "marketplace.json"), "root marketplace.json"),
     readJsonFile(path.join(repositoryRoot, defaultPluginPrefix, ".claude-plugin", "plugin.json"), "nested plugin.json"),
   );
 }
@@ -152,7 +148,6 @@ export function releaseIdentityFromTag(repositoryRoot, tag) {
   return releaseIdentity(
     tag,
     readTaggedJson(repositoryRoot, tag, "package.json", "root package.json"),
-    readTaggedJson(repositoryRoot, tag, ".claude-plugin/marketplace.json", "root marketplace.json"),
     readTaggedJson(repositoryRoot, tag, "cressetide/.claude-plugin/plugin.json", "nested plugin.json"),
   );
 }
@@ -272,7 +267,7 @@ export function validateTaggedReleaseState(repositoryRoot, identity) {
   const tagged = git(repositoryRoot, ["rev-parse", "--verify", `${tagReference(identity.tag)}^{commit}`]);
   const dirty = git(repositoryRoot, [
     "status", "--porcelain=v1", "--untracked-files=no", "--",
-    "package.json", ".claude-plugin/marketplace.json", defaultPluginPrefix,
+    "package.json", defaultPluginPrefix,
   ]);
   return validateReleaseIdentity({ tag: identity.tag, requiredTag: `v${identity.version}`, head, tagged, dirty });
 }

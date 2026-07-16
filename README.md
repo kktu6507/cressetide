@@ -80,7 +80,7 @@ Prerequisites: **Claude Code** + `node` on `PATH`. The hooks are Node scripts; w
 
 ```text
 # in your project directory, inside Claude Code:
-/plugin marketplace add kktu6507/cressetide
+/plugin marketplace add kktu6507/plugins
 /plugin install ctide@kktu
 # ctide ships DISABLED - enable it: /plugin -> Installed -> toggle ctide on
 #   or: claude plugin enable ctide@kktu

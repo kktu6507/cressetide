@@ -34,14 +34,9 @@ function taggedReleaseFixture(versions = {}, options = {}) {
   git("init", "--initial-branch=main");
   git("config", "user.email", "release@example.invalid");
   git("config", "user.name", "Release Test");
-  fs.mkdirSync(path.join(repository, ".claude-plugin"), { recursive: true });
   fs.mkdirSync(path.join(repository, "cressetide", ".claude-plugin"), { recursive: true });
   fs.writeFileSync(path.join(repository, "package.json"), JSON.stringify({
     name: "ctide", version: versions.packageVersion || "0.1.0",
-  }), "utf8");
-  fs.writeFileSync(path.join(repository, ".claude-plugin", "marketplace.json"), JSON.stringify({
-    metadata: { version: versions.marketplaceMetadataVersion || "0.1.0" },
-    plugins: [{ name: "ctide", source: "./cressetide", version: versions.marketplacePluginVersion || "0.1.0" }],
   }), "utf8");
   fs.writeFileSync(path.join(repository, "cressetide", ".claude-plugin", "plugin.json"), JSON.stringify({
     name: "ctide", version: versions.pluginVersion || "0.1.0",
@@ -622,7 +617,6 @@ test("release workflow is explicit-tag only and includes provenance", () => {
   assert.equal((workflow.match(/format\('refs\/tags\/\{0\}'/g) || []).length, 2);
   assert.match(workflow, /git show-ref --verify --quiet "\$TAG_REF"/);
   assert.doesNotMatch(workflow, /branches:\s*\[main\]/);
-  assert.match(workflow, /plugin validate --strict \./);
   assert.match(workflow, /plugin validate --strict \.\/cressetide/);
   assert.match(workflow, /^  validate:\r?$/m);
   assert.match(workflow, /^  publish:\r?$/m);
@@ -635,8 +629,7 @@ test("release workflow is explicit-tag only and includes provenance", () => {
   assert.match(workflow, /subject-path:\s*_attest\/ctide-\$\{\{ needs\.publish\.outputs\.tag \}\}-plugin\.tar\.gz/);
 });
 
-test("validation workflow checks both marketplace and nested plugin", () => {
+test("validation workflow checks the nested plugin", () => {
   const workflow = fs.readFileSync(path.join(root, ".github", "workflows", "validate.yml"), "utf8");
-  assert.match(workflow, /plugin validate --strict \.$/m);
   assert.match(workflow, /plugin validate --strict \.\/cressetide$/m);
 });

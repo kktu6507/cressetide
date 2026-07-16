@@ -7,14 +7,13 @@ tag, asset, attestation, or publication has occurred.
 
 - The release identity is read from the explicit tag's Git blobs, never from
   mutable working-tree manifests. The version is identical in the tagged
-  `package.json`, the tagged marketplace metadata and `ctide` entry in
-  `.claude-plugin/marketplace.json`, and the tagged
-  `cressetide/.claude-plugin/plugin.json`.
+  `package.json` and the tagged `cressetide/.claude-plugin/plugin.json`.
 - The tag is `vX.Y.Z`.
 - The archive is `ctide-vX.Y.Z-plugin.tar.gz`.
 - The checksum is `ctide-vX.Y.Z-plugin.tar.gz.sha256`.
-- The archive contains the nested `cressetide/` plugin payload required by the
-  marketplace entry.
+- The archive contains the nested `cressetide/` plugin payload. The
+  `ctide` marketplace entry that references this repository lives in the
+  separate `kktu6507/plugins` marketplace, not in this repository.
 - Archives are deterministic: fixed ordering, normalized timestamps, and
   normalized modes produce identical bytes for identical source input.
 - A release must contain exactly the archive and checksum above. Missing,
@@ -38,9 +37,9 @@ tag, asset, attestation, or publication has occurred.
    git status --short
    ```
 
-2. Confirm the exact immutable `vX.Y.Z` tag. Verify that its root package,
-   marketplace metadata and plugin entry, and nested plugin manifest have exact
-   version parity. The tagged commit must be checked out at `HEAD`.
+2. Confirm the exact immutable `vX.Y.Z` tag. Verify that its root package and
+   nested plugin manifest have exact version parity. The tagged commit must be
+   checked out at `HEAD`.
 3. Run the complete local check set:
 
    ```bash
@@ -51,10 +50,9 @@ tag, asset, attestation, or publication has occurred.
 
 4. Review security-sensitive changes to hooks, release tooling, workflows,
    manifests, path containment, and secret handling.
-5. Require tracked release inputs (`package.json`,
-   `.claude-plugin/marketplace.json`, and `cressetide/`) to match the explicit
-   tag before producing release evidence. Archive bytes are still read directly
-   from that tag's Git blob objects.
+5. Require tracked release inputs (`package.json` and `cressetide/`) to match
+   the explicit tag before producing release evidence. Archive bytes are still
+   read directly from that tag's Git blob objects.
 
 ## Build and compare archives
 
@@ -74,8 +72,8 @@ ctide-v0.1.0-plugin.tar.gz.sha256
 Build twice from the same source in separate empty output directories and
 compare both archive SHA-256 digests. Inspect the archive boundary before
 signing or uploading it. Do not include `.git/`, `.ctide/`, tests, evaluation
-output, local logs, credentials, or repository-root marketplace files in the
-plugin archive unless the publisher contract explicitly requires them.
+output, local logs, or credentials in the plugin archive unless the publisher
+contract explicitly requires them.
 
 ## Tag and publish
 
@@ -114,10 +112,10 @@ gh attestation verify ctide-v0.1.0-plugin.tar.gz \
   --repo kktu6507/cressetide
 ```
 
-Also verify that the published marketplace ref contains
-`.claude-plugin/marketplace.json` and the complete `cressetide/` plugin, then
-exercise marketplace discovery and `/ctide:doctor` in an isolated Claude Code
-environment. Local validation cannot substitute for this published-ref check.
+Also verify that the tagged ref contains the complete `cressetide/` plugin,
+then exercise marketplace discovery via the `kktu6507/plugins` marketplace and
+`/ctide:doctor` in an isolated Claude Code environment. Local validation
+cannot substitute for this published-ref check.
 
 ## Failure handling
 

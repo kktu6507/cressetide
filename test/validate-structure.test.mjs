@@ -127,7 +127,7 @@ test("validate-structure: a version mismatch across manifests FAILS", () => {
   try {
     const pj = path.join(tree, "cressetide", ".claude-plugin", "plugin.json");
     const obj = JSON.parse(fs.readFileSync(pj, "utf8"));
-    obj.version = "9.9.9"; // disagree with marketplace.json / package.json / CHANGELOG
+    obj.version = "9.9.9"; // disagree with package.json / CHANGELOG
     fs.writeFileSync(pj, JSON.stringify(obj, null, 2), "utf8");
     const { code, out } = runValidator(tree);
     assert.notStrictEqual(code, 0, "a version that disagrees across manifests must fail the build");

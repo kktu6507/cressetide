@@ -10,14 +10,10 @@ test("structure validator passes the complete repository", () => {
   assert.match(result.stdout, /validation passed/);
 });
 
-test("marketplace, plugin, and package versions agree", () => {
-  const market = JSON.parse(fs.readFileSync(path.join(root, ".claude-plugin", "marketplace.json"), "utf8"));
+test("plugin and package versions agree", () => {
   const plugin = JSON.parse(fs.readFileSync(path.join(root, "cressetide", ".claude-plugin", "plugin.json"), "utf8"));
   const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-  assert.equal(market.name, "kktu");
-  const ctideEntry = market.plugins.find((p) => p.name === "ctide");
-  assert.equal(ctideEntry.source, "./cressetide");
-  assert.deepEqual([ctideEntry.version, plugin.version], [pkg.version, pkg.version]);
+  assert.equal(plugin.version, pkg.version);
 });
 
 test("public skill and agent inventories are exact", () => {

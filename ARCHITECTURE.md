@@ -1,15 +1,15 @@
 # Cressetide architecture
 
-Cressetide is a repository-root Claude Code marketplace containing the nested
-`ctide` plugin. The architecture keeps public commands, orchestration roles,
-advisory hooks, and repository-local evidence separate so each contract can be
-validated independently.
+Cressetide is the repository for the nested `ctide` plugin. The plugin is
+listed in the separate `kktu6507/plugins` marketplace repository, not here.
+The architecture keeps public commands, orchestration roles, advisory hooks,
+and repository-local evidence separate so each contract can be validated
+independently.
 
 ## Repository boundary
 
 ```text
 .
-├── .claude-plugin/marketplace.json
 ├── cressetide/
 │   ├── .claude-plugin/plugin.json
 │   ├── agents/
@@ -21,10 +21,11 @@ validated independently.
 └── test/
 ```
 
-The root marketplace exposes `ctide@kktu` from `./cressetide`. The plugin
-manifest owns the eleven agent registrations. Skill discovery supplies the
-four public commands. Hook discovery is declared inside the plugin root and
-must resolve every script through `${CLAUDE_PLUGIN_ROOT}`.
+The `kktu6507/plugins` marketplace exposes `ctide@kktu` from this
+repository's `cressetide/` directory. The plugin manifest owns the eleven
+agent registrations. Skill discovery supplies the four public commands. Hook
+discovery is declared inside the plugin root and must resolve every script
+through `${CLAUDE_PLUGIN_ROOT}`.
 
 ## Capability loops
 

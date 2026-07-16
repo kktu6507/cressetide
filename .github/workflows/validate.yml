@@ -34,9 +34,6 @@ jobs:
         run: npm test
       - name: Run evaluation cases
         run: npm run eval
-      - name: Validate Claude Code marketplace
-        if: runner.os == 'Linux'
-        run: npx --yes @anthropic-ai/claude-code@2.1.207 plugin validate --strict .
       - name: Validate Claude Code plugin
         if: runner.os == 'Linux'
         run: npx --yes @anthropic-ai/claude-code@2.1.207 plugin validate --strict ./cressetide

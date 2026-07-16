@@ -80,7 +80,7 @@ ctide 做三件事：
 
 ```text
 # 在你的專案目錄、Claude Code 內：
-/plugin marketplace add kktu6507/cressetide
+/plugin marketplace add kktu6507/plugins
 /plugin install ctide@kktu
 # ctide 出貨時預設停用 - 請在 /plugin 裡把 ctide 切為啟用
 #   或：claude plugin enable ctide@kktu

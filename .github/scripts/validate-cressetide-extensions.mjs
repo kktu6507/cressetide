@@ -29,12 +29,8 @@ function walk(directory, result = []) {
 
 function relative(file) { return slash(path.relative(root, file)); }
 
-const market = readJson(".claude-plugin/marketplace.json");
 const plugin = readJson("cressetide/.claude-plugin/plugin.json");
 const pkg = readJson("package.json");
-const entry = market?.plugins?.find((item) => item.name === "ctide");
-if (market?.name !== "kktu") fail("marketplace name must be kktu");
-if (entry?.source !== "./cressetide") fail("marketplace source must be ./cressetide");
 if (pkg?.name !== "ctide" || plugin?.name !== "ctide" || plugin?.displayName !== "Cressetide") {
   fail("Cressetide package/plugin identity mismatch");
 }

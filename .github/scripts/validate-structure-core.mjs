@@ -19,8 +19,8 @@ function readJSON(rel) {
   }
 }
 
-// The plugin itself lives in ./cressetide (only that subdir ships); the marketplace
-// manifest stays at the repo root.
+// The plugin itself lives in ./cressetide (only that subdir ships). The marketplace
+// manifest that lists it lives in the separate kktu6507/plugins repo, not here.
 const PLUGIN = "cressetide";
 
 // 1. plugin.json
@@ -31,34 +31,8 @@ if (plugin) {
   }
 }
 
-// 2. marketplace.json
-const market = readJSON(".claude-plugin/marketplace.json");
-let marketPluginVersion = null;
-if (market) {
-  if (!market.name) fail(`marketplace.json missing "name"`);
-  if (!Array.isArray(market.plugins) || market.plugins.length === 0) {
-    fail(`marketplace.json must list at least one plugin`);
-  } else {
-    const entry = market.plugins.find((p) => p.name === (plugin && plugin.name));
-    if (!entry) fail(`marketplace.json has no plugin entry matching plugin.json name "${plugin && plugin.name}"`);
-    else if (entry.version == null) fail(`marketplace entry "${entry.name}" missing "version"`);
-    else marketPluginVersion = entry.version;
-  }
-}
-
-// 3. version agreement between plugin.json and marketplace entry
-if (plugin && marketPluginVersion && plugin.version !== marketPluginVersion) {
-  fail(`version mismatch: plugin.json ${plugin.version} vs marketplace ${marketPluginVersion}`);
-}
-
-// 3b. metadata.version present + semver, and agrees with the plugin version
+// 2. plugin.json version is valid semver
 const SEMVER = /^\d+\.\d+\.\d+(?:[-+].+)?$/;
-if (market) {
-  const mv = market.metadata && market.metadata.version;
-  if (mv == null) fail(`marketplace.json missing "metadata.version"`);
-  else if (!SEMVER.test(mv)) fail(`marketplace.json metadata.version "${mv}" is not semver`);
-  else if (plugin && plugin.version !== mv) fail(`version mismatch: plugin.json ${plugin.version} vs metadata.version ${mv}`);
-}
 if (plugin && plugin.version && !SEMVER.test(plugin.version)) fail(`plugin.json version "${plugin.version}" is not semver`);
 
 // 3c. CHANGELOG has an entry for the current plugin version

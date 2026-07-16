@@ -234,7 +234,7 @@ export function diagnose(pluginRoot = resolvePluginRoot()) {
         ? "unverified"
         : "pass",
     checks,
-    guidance: ["claude plugin marketplace add kktu6507/cressetide", "claude plugin install ctide@kktu", "Restart Claude Code after enablement changes"],
+    guidance: ["claude plugin marketplace add kktu6507/plugins", "claude plugin install ctide@kktu", "Restart Claude Code after enablement changes"],
   };
 }
 

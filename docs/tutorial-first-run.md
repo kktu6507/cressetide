@@ -18,7 +18,7 @@ That is all — no API keys, no services, no configuration.
 Inside Claude Code, in your project directory, run:
 
 ```text
-/plugin marketplace add kktu6507/cressetide
+/plugin marketplace add kktu6507/plugins
 /plugin install ctide@kktu
 # ctide ships DISABLED - enable it: /plugin -> Installed -> toggle ctide on
 #   or: claude plugin enable ctide@kktu
