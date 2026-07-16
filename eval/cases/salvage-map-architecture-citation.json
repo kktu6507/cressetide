@@ -1,0 +1,23 @@
+{
+  "id": "salvage-map-architecture-citation",
+  "capability": "salvage",
+  "fixture": "fictional",
+  "prompt": "Triage and diagnose a fictional Harbor Service outage using the supplied Map evidence.",
+  "evidence": [
+    "The Map's Architecture boundaries table lists the worker component and its entry point.",
+    "The Map's Execution flows section traces the failing job from entry point to observable result.",
+    "The Map's Data flows table marks the worker's queue as crossing an untrusted trust boundary.",
+    "The Map's Risk and uncertainty section already records the worker as a high-risk, production-only module."
+  ],
+  "requiredTerms": [
+    "Architecture boundaries",
+    "Execution flows",
+    "Data flows",
+    "Risk and uncertainty"
+  ],
+  "forbiddenTerms": [
+    "apply both changes",
+    "recovery confirmed"
+  ],
+  "rationale": "Salvage's blast-radius, intrusion, and diagnose steps must ground in the Map's canonical sections instead of guessing at architecture and risk from scratch."
+}

@@ -33,7 +33,7 @@ The deterministic helper creates a heuristic inventory baseline, not a verified 
 
 ## Required coverage
 
-Record repository structure and languages; package/workspace boundaries; configuration, tests, and commands; modules, responsibilities, entry points, and interfaces; important request, event, job, CLI, and user flows; stores, schemas, migrations, transactions, caches, serialized formats, ownership, and trust boundaries; external integrations; build, run, deploy, health, logs, metrics, traces, rollback, feature flags, kill switches, backup and restore; high-risk modules, destructive paths, production assumptions, missing observability, and unknowns.
+Record what the system is/does in one short, plain-language description, pointing into architecture boundaries and external integrations for the supporting detail rather than restating it; repository structure and languages; package/workspace boundaries; configuration, tests, and commands; modules, responsibilities, entry points, and interfaces; important request, event, job, CLI, and user flows; stores, schemas, migrations, transactions, caches, serialized formats, ownership, and trust boundaries; external integrations; build, run, deploy, health, logs, metrics, traces, rollback, feature flags, kill switches, backup and restore; high-risk modules, destructive paths, production assumptions, missing observability, and unknowns.
 
 Do not generate an exhaustive call graph. Use lean caller/callee scans only for critical symbols.
 
@@ -56,4 +56,4 @@ Code-side claims require current file evidence. Mark uncertain statements `UNVER
 
 ## 上游 operational readiness 吸收
 
-`references/operational-readiness.md` 保留上游操作就緒契約的全部欄位與檢查語意。Map 建立或更新 `.ctide/map/SYSTEM_MAP.md` 時必須涵蓋該契約要求；操作準備只由 Map 負責，不建立第二個 preparation skill 或指令。
+`references/operational-readiness.md` 保留上游操作就緒契約的全部欄位與檢查語意。System overview 現為 Map 本身的 canonical section 之一，由 `map.mjs` 直接產生於 SYSTEM_MAP.md 最前面，不再只屬於 Ops Profile。其餘 9 個 Ops Profile 欄位（Access inventory、Rollback、Feature flags & kill switches、Backups、Breach readiness、Observability inventory、Run in isolation、External dependencies、Approvals map）由 `map create`/`map refresh` 產生預設骨架，並由 `map verify` 個別檢查缺漏欄位、仍停留在 heuristic placeholder、或信任標記格式錯誤——不再只是文件上的約定，而是實際產生與檢查的行為。Map 建立或更新 `.ctide/map/SYSTEM_MAP.md` 時必須涵蓋該契約要求；操作準備只由 Map 負責，不建立第二個 preparation skill 或指令。

@@ -9,6 +9,20 @@ Verified at commit: <SHA or UNBORN>
 Working tree fingerprint: sha256:<64 lowercase hex characters>
 Last updated: <ISO-8601 date>
 
+## System overview
+
+Verified at commit: <SHA or UNBORN>
+Last updated: <ISO-8601 date>
+Confidence: unverified
+Source fingerprint: sha256:<64 lowercase hex characters>
+
+Sources:
+- <path/to/package-or-manifest-file:line>
+
+- What the system is/does: `UNVERIFIED`
+- See Architecture boundaries for components and entry points.
+- See External integrations for external dependencies.
+
 ## Repository structure
 
 Verified at commit: <SHA or UNBORN>
@@ -115,6 +129,46 @@ Sources:
 - Production-only assumptions: `UNVERIFIED`
 - Missing observability: `UNVERIFIED`
 - Missing rollback validation: `UNVERIFIED`
+
+## Access inventory
+| What | Where / how to read it | Runnable by | Trust |
+| --- | --- | --- | --- |
+| App logs | <path / command / dashboard URL + how to filter> | agent-runnable | verified: <date> |
+| Error tracking | <tool + project + how to query> | human-only | `UNVERIFIED` |
+| Deploy control | <command / pipeline URL> | agent-runnable | dry-run-verified: <date> |
+| DB read-only access | <connection recipe; where read-only credentials come from> | human-only | `UNVERIFIED` |
+
+## Rollback
+- Exact steps: <commands, in order> (verified: <date> | dry-run-verified: <date> | `UNVERIFIED`)
+- Schema migrations in recent deploys: <yes/no — which deploys, which migrations>
+- New-format data: <where data written by the new version lands that old code cannot read>
+
+## Feature flags & kill switches
+- <flag> — <what it disables> — <how to flip it> (verified: <date> | dry-run-verified: <date> | `UNVERIFIED`)
+
+## Backups
+- Exists: <yes/no> — Where: <location> — Last restore drill: <date | never>
+
+## Breach readiness
+- Secure evidence store: <where to copy logs/evidence during a suspected intrusion, outside the compromised system>
+- Out-of-band comms: <channel to coordinate on if the normal one may be attacker-monitored>
+- Legal/privacy owner: <name/role to notify for breach/data-exposure incidents>
+- Notification threshold: <what triggers a legally-required disclosure>
+
+## Observability inventory
+- <logs / metrics / alerts that exist, and the query for each>
+- <if none exist, record it: "RED FLAG: no logs/metrics — incidents will be diagnosed blind">
+
+## Run in isolation
+- <how to run the system locally or in staging, including config and seed data>
+
+## External dependencies
+- <dependency> — <health-check URL / status page>
+
+## Approvals map
+- Rollback: <who may approve>
+- Maintenance mode / stop-writes: <who may approve>
+- Data repair: <who may approve>
 
 ## Refresh notes
 

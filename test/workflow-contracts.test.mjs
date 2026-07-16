@@ -180,6 +180,16 @@ test("Map operational readiness links to the actual Salvage closure contract", (
   assert.ok(fs.existsSync(path.resolve(path.dirname(file), relative)));
 });
 
+test("Map operational readiness template no longer duplicates System overview as its own Ops Profile heading", () => {
+  const file = path.join(root, "cressetide", "skills", "map", "references", "operational-readiness.md");
+  const text = fs.readFileSync(file, "utf8");
+  assert.doesNotMatch(text, /^## System overview$/m, "the old Ops-Profile-only System overview heading must be removed");
+  assert.doesNotMatch(text, /- Entry points: <public URLs \/ APIs \/ scheduled jobs>/, "the old System overview bullets must be removed");
+  assert.doesNotMatch(text, /- Components: <service .* role, one line each>/, "the old System overview bullets must be removed");
+  assert.match(text, /System overview/, "a pointer to the canonical System overview section must remain");
+  assert.match(text, /SYSTEM_MAP\.md/i);
+});
+
 test("Salvage wartime and public READMEs resolve preparation to Map instead of the retired ops owner", () => {
   const wartimeFile = path.join(root, "cressetide", "skills", "salvage", "references", "wartime.md");
   const wartime = fs.readFileSync(wartimeFile, "utf8");
@@ -193,6 +203,22 @@ test("Salvage wartime and public READMEs resolve preparation to Map instead of t
     assert.doesNotMatch(readme, /^  ops\//m, name);
     assert.match(readme, /cressetide\/skills\/map\/references\/operational-readiness\.md/, name);
   }
+});
+
+test("Salvage wartime cites the Map's canonical sections for blast radius, intrusion, and diagnose triage", () => {
+  const wartimeFile = path.join(root, "cressetide", "skills", "salvage", "references", "wartime.md");
+  const wartime = fs.readFileSync(wartimeFile, "utf8");
+
+  const blastRadius = (wartime.match(/\*\*Blast radius\.\*\*.*/) || [])[0] || "";
+  assert.match(blastRadius, /Architecture boundaries/, "Blast radius must cite Architecture boundaries");
+  assert.match(blastRadius, /Execution flows/, "Blast radius must cite Execution flows");
+
+  const securityBranch = (wartime.match(/\*\*The security branch\.\*\*.*/) || [])[0] || "";
+  assert.match(securityBranch, /Data flows/, "the intrusion question must cite Data flows");
+  assert.match(securityBranch, /Trust boundary/, "the intrusion question must cite the Trust boundary column");
+
+  const diagnoseOpening = (wartime.match(/Root-cause work happens AFTER the system is stable.*/) || [])[0] || "";
+  assert.match(diagnoseOpening, /Risk and uncertainty/, "the Stage 4 diagnose opening must cite Risk and uncertainty");
 });
 
 test("runtime contract distinguishes credential-safe summaries from opt-in raw hook debug", () => {

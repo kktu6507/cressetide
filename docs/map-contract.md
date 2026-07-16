@@ -18,6 +18,13 @@ Split Map documents for large monorepositories are not implemented in version
 
 ## Required coverage
 
+### System overview
+
+- a short, plain-language description of what the system is/does;
+- pointers into Architecture boundaries for components and entry points, and
+  into External integrations for external dependencies — not a restatement of
+  either section's content.
+
 ### Repository structure
 
 - top-level directories, languages, and frameworks;
@@ -123,6 +130,10 @@ It removes or replaces references to deleted paths, recomputes confidence,
 source fingerprints, and the working-tree fingerprint, surfaces conflicts with
 marked human-verified operational notes, and updates the recorded commit and
 date. It does not silently preserve a generated claim whose source is gone.
+This includes the Ops Profile skeleton: refresh regenerates it to the
+heuristic baseline exactly like the canonical sections above, so any prior
+enrichment there must be reapplied after every refresh — the same documented
+contract, not a silent surprise.
 
 ### Verify
 
@@ -134,7 +145,17 @@ date. It does not silently preserve a generated claim whose source is gone.
 - required section coverage;
 - confidence labels and `UNVERIFIED` markers;
 - heuristic placeholders that still require or must confirm evidence;
-- conflicting or stale claims.
+- conflicting or stale claims;
+- Ops Profile field presence, heuristic-placeholder staleness, and trust-marker
+  validity for the 9 fields operational-readiness.md still owns (Access
+  inventory, Rollback, Feature flags & kill switches, Backups, Breach
+  readiness, Observability inventory, Run in isolation, External
+  dependencies, Approvals map). Trust-marker validity is read from each
+  entry's own `<!-- CTIDE:TRUST:<tier>[:<date>] -->` machine tag — an
+  invisible HTML comment appended after the human-readable
+  `verified: <date>` / `dry-run-verified: <date>` / `UNVERIFIED` text, never
+  from the surrounding prose itself, so reformatting that prose never affects
+  the check.
 
 The result identifies each stale, missing, conflicting, or unverified section
 and the evidence needed to resolve it.

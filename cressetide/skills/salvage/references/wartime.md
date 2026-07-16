@@ -10,9 +10,9 @@ The user likely cannot answer "is data corrupting?" — do not interrogate them.
    - SEV1 — active data loss, full outage, or suspected security breach.
    - SEV2 — a major function down, but a workaround exists.
    - SEV3 — degraded: slow, partial, or cosmetic-but-live.
-2. **Blast radius.** Which users, functions, and systems are affected — and is it growing?
+2. **Blast radius.** Which users, functions, and systems are affected — and is it growing? Trace it against the Map's `Architecture boundaries` (component → responsibility) and `Execution flows` (`entry point → boundary → side effect → observable result`) to find what sits downstream of the failing component.
 3. **Is data actively being corrupted?** Check writes, not just reads: do recent records look sane, do logs show failed or partial writes? If plausibly yes, the mitigation options MUST include stop-writes / maintenance mode, presented as an owner-level decision card: deliberate downtime versus ongoing corruption. That tradeoff belongs to the owner, never to the agent.
-4. **The security branch.** Ask one explicit question: "could this be an intrusion?" (unexpected admin activity, unknown outbound traffic, defaced content, impossible logins). If plausibly yes, switch posture:
+4. **The security branch.** Ask one explicit question: "could this be an intrusion?" (unexpected admin activity, unknown outbound traffic, defaced content, impossible logins) — cross-check against the Map's `Data flows` table's `Trust boundary` column for where trusted and untrusted data mix. If plausibly yes, switch posture:
    - preserve forensic evidence — do not wipe or restart what you would normally recycle;
    - avoid tipping off the attacker — no loud configuration changes on the compromised surface;
    - rotate exposed credentials — leaked API keys committed to git are common in AI-written repos; check history, not just the current tree;
@@ -50,7 +50,7 @@ The instinct to "have the AI write a quick fix and push straight to production" 
 
 ## Stage 4 — Diagnose (fault domain first, after stable)
 
-Root-cause work happens AFTER the system is stable (mitigated), not before. Classify the fault domain first; each domain gets a different playbook line:
+Root-cause work happens AFTER the system is stable (mitigated), not before. Before classifying, consult the Map's `Risk and uncertainty` section for already-recorded high-risk modules, destructive paths, and production-only assumptions — narrow hypotheses against known risk before guessing cold. Then classify the fault domain first; each domain gets a different playbook line:
 
 - **Code** — a defect in the application: proceed to reproduction (`references/reproduction-and-repair.md`).
 - **Config / environment** — wrong value, missing env var, botched secret rotation: remediate directly — still via a decision card, per the anti-panic minimum set; the fixed-check is the currently failing health check turning green.
