@@ -3,7 +3,7 @@
   "name": "ctide",
   "displayName": "Cressetide",
   "description": "Cressetide — evidence-gated engineering loops for AI-made changes: plan-approved Vigil, risk-proportional verification and review, incident Salvage, repository-grounded Map, production re-entry, and failure memory.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "keywords": [
     "ai-engineering",
     "plan-gate",
