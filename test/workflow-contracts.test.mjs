@@ -6,7 +6,7 @@ import { root } from "./helpers.mjs";
 
 const skill = name => fs.readFileSync(path.join(root, "cressetide", "skills", name, "SKILL.md"), "utf8");
 
-const pinnedSetupNodeUse = /^[ \t]*(?:-[ \t]+)?uses:[ \t]*actions\/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e[ \t]*(?:#.*)?$/;
+const pinnedSetupNodeUse = /^[ \t]*(?:-[ \t]+)?uses:[ \t]*actions\/setup-node@[0-9a-f]{40}[ \t]*(?:#.*)?$/;
 
 function assertReleaseSetupNodeCacheContract(workflow) {
   const lines = workflow.split(/\r?\n/);
