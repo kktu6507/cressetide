@@ -986,3 +986,202 @@ test("Map distinguishes an unborn repository from unreadable Git state", () => {
   const target = writeMap(unborn);
   assert.match(fs.readFileSync(target, "utf8"), /Verified at commit: UNBORN/);
 });
+
+test("Map candidate entry points include shebang scripts and package.json bin paths beyond the filename convention, deduped and filtered to tracked files", () => {
+  // Bespoke fixture (not the shared repository() fixture, which has no bin field and no shebang
+  // anywhere in its files): bin as a STRING pointing at a file that ALSO carries a shebang (a
+  // dedup check -- two signals on one file must still surface exactly one candidate), plus a
+  // shebang-only file whose name matches none of main/index/app/program/server, plus an ordinary
+  // file matching neither signal (negative control).
+  const stringBinRoot = temporary("ctide-map-entrypoints-string-bin-");
+  git(stringBinRoot, "init", "--initial-branch=main");
+  git(stringBinRoot, "config", "user.email", "map@example.invalid");
+  git(stringBinRoot, "config", "user.name", "Map Test");
+  write(path.join(stringBinRoot, "package.json"), JSON.stringify({ name: "string-bin-fixture", bin: "scripts/cli.mjs" }));
+  write(path.join(stringBinRoot, "scripts", "cli.mjs"), "#!/usr/bin/env node\nconsole.log('cli');\n");
+  write(path.join(stringBinRoot, "scripts", "launcher.mjs"), "#!/usr/bin/env node\nconsole.log('launcher');\n");
+  write(path.join(stringBinRoot, "src", "util.js"), "export function util() { return 1; }\n");
+  git(stringBinRoot, "add", ".");
+  git(stringBinRoot, "commit", "-m", "fixture");
+  const stringBinTarget = writeMap(stringBinRoot);
+  const stringBinText = fs.readFileSync(stringBinTarget, "utf8");
+  const stringBinCandidateLine = stringBinText.match(/^- Candidate entry points:\s*(.+)$/m)?.[1] || "";
+  const stringBinCandidates = stringBinCandidateLine.split(", ").map(value => value.trim());
+  assert.ok(stringBinCandidates.includes("scripts/cli.mjs"), `expected the string-bin + shebang file to be a candidate entry point: ${stringBinCandidateLine}`);
+  assert.ok(stringBinCandidates.includes("scripts/launcher.mjs"), `expected the shebang-only, non-filename-matching file to be a candidate entry point: ${stringBinCandidateLine}`);
+  assert.equal(stringBinCandidates.filter(value => value === "scripts/cli.mjs").length, 1, `a file matching both the shebang and bin signals must appear exactly once: ${stringBinCandidateLine}`);
+  assert.ok(!stringBinCandidates.includes("src/util.js"), `an ordinary file matching no signal must not be a candidate entry point: ${stringBinCandidateLine}`);
+
+  // Second bespoke fixture: bin as a multi-entry OBJECT, one entry pointing at a tracked file
+  // (included -- proves Object.values() considers every entry, not just the first), the other
+  // pointing at a path with no corresponding tracked file (must be excluded -- the entries subseteq
+  // files invariant every other candidate list in this file already depends on).
+  const objectBinRoot = temporary("ctide-map-entrypoints-object-bin-");
+  git(objectBinRoot, "init", "--initial-branch=main");
+  git(objectBinRoot, "config", "user.email", "map@example.invalid");
+  git(objectBinRoot, "config", "user.name", "Map Test");
+  write(path.join(objectBinRoot, "package.json"), JSON.stringify({
+    name: "object-bin-fixture",
+    bin: { "tool-a": "bin/tool-a.mjs", "tool-b": "bin/does-not-exist.mjs" },
+  }));
+  write(path.join(objectBinRoot, "bin", "tool-a.mjs"), "console.log('tool-a');\n");
+  git(objectBinRoot, "add", ".");
+  git(objectBinRoot, "commit", "-m", "fixture");
+  const objectBinTarget = writeMap(objectBinRoot);
+  const objectBinText = fs.readFileSync(objectBinTarget, "utf8");
+  const objectBinCandidateLine = objectBinText.match(/^- Candidate entry points:\s*(.+)$/m)?.[1] || "";
+  const objectBinCandidates = objectBinCandidateLine.split(", ").map(value => value.trim());
+  assert.ok(objectBinCandidates.includes("bin/tool-a.mjs"), `expected an object-shaped bin entry pointing at a tracked file to be a candidate entry point: ${objectBinCandidateLine}`);
+  assert.ok(!objectBinCandidates.includes("bin/does-not-exist.mjs"), `a bin path with no corresponding tracked file must never be a candidate entry point: ${objectBinCandidateLine}`);
+});
+
+test("Map candidate entry points surface a file reachable only via string bin, rendered in sorted order across signal groups", () => {
+  // Isolates normalizePackageBin's STRING branch: the fixture above's only string-bin case
+  // (scripts/cli.mjs) also carries a shebang, so a broken string branch would still pass via the
+  // shebang signal alone. "a-cli.mjs" here carries no shebang and its name matches none of
+  // main/index/app/program/server, so its only path into the candidate list is the bin string
+  // itself. Pairing it with a filename-convention match ("server.js") -- whose signal group is
+  // concatenated FIRST in map.mjs's union (filename matches, then shebang matches, then bin
+  // matches, before the trailing .sort()) -- also proves sort actually runs: without it,
+  // "server.js" would render before "a-cli.mjs" despite alphabetically following it.
+  const root = temporary("ctide-map-entrypoints-string-bin-only-");
+  git(root, "init", "--initial-branch=main");
+  git(root, "config", "user.email", "map@example.invalid");
+  git(root, "config", "user.name", "Map Test");
+  write(path.join(root, "package.json"), JSON.stringify({ name: "string-bin-only-fixture", bin: "a-cli.mjs" }));
+  write(path.join(root, "a-cli.mjs"), "export function run() { return 'a-cli'; }\n");
+  write(path.join(root, "server.js"), "export function run() { return 'server'; }\n");
+  git(root, "add", ".");
+  git(root, "commit", "-m", "fixture");
+  const target = writeMap(root);
+  const text = fs.readFileSync(target, "utf8");
+  const candidateLine = text.match(/^- Candidate entry points:\s*(.+)$/m)?.[1] || "";
+  const candidates = candidateLine.split(", ").map(value => value.trim());
+  assert.ok(candidates.includes("a-cli.mjs"), `expected the string-bin-only, no-shebang, non-filename-matching file to be a candidate entry point: ${candidateLine}`);
+  assert.ok(candidates.includes("server.js"), `expected the filename-convention match to be a candidate entry point: ${candidateLine}`);
+  assert.ok(
+    candidateLine.indexOf("a-cli.mjs") < candidateLine.indexOf("server.js"),
+    `expected candidates in sorted order ("a-cli.mjs" before "server.js"), not raw signal-group concatenation order: ${candidateLine}`,
+  );
+});
+
+test("Map candidate entry points dedup a file that matches the filename convention, carries a shebang, and is listed in bin all at once", () => {
+  // AC3 promises a file matching more than one signal at once still appears exactly once, framed
+  // as covering all 3 signals. The fixture above's shebang+bin case (scripts/cli.mjs) only covers
+  // 2 of the 3 -- "cli" does not match main/index/app/program/server -- so this closes the
+  // remaining gap with a single file that matches the filename convention, carries a shebang, AND
+  // is the bin target simultaneously.
+  const root = temporary("ctide-map-entrypoints-triple-signal-");
+  git(root, "init", "--initial-branch=main");
+  git(root, "config", "user.email", "map@example.invalid");
+  git(root, "config", "user.name", "Map Test");
+  write(path.join(root, "package.json"), JSON.stringify({ name: "triple-signal-fixture", bin: "index.mjs" }));
+  write(path.join(root, "index.mjs"), "#!/usr/bin/env node\nconsole.log('index');\n");
+  git(root, "add", ".");
+  git(root, "commit", "-m", "fixture");
+  const target = writeMap(root);
+  const text = fs.readFileSync(target, "utf8");
+  const candidateLine = text.match(/^- Candidate entry points:\s*(.+)$/m)?.[1] || "";
+  const candidates = candidateLine.split(", ").map(value => value.trim());
+  assert.ok(candidates.includes("index.mjs"), `expected the triple-signal file to be a candidate entry point: ${candidateLine}`);
+  assert.equal(candidates.filter(value => value === "index.mjs").length, 1, `a file matching all 3 signals at once must appear exactly once: ${candidateLine}`);
+});
+
+test("Map candidate entry points normalize a backslash-separated, dot-slash-prefixed bin path before matching tracked files", () => {
+  // normalizePackageBin strips a leading "./" and converts "\\" to "/", but no existing bin value
+  // in this suite contains either -- a plain forward-slash path could satisfy every prior
+  // assertion whether or not normalization actually ran. "tools/util-cli.mjs" carries no shebang
+  // and its name matches no filename convention, so its only path into the candidate list is a bin
+  // value that must survive both normalization steps to match the tracked file.
+  const root = temporary("ctide-map-entrypoints-path-normalization-");
+  git(root, "init", "--initial-branch=main");
+  git(root, "config", "user.email", "map@example.invalid");
+  git(root, "config", "user.name", "Map Test");
+  write(path.join(root, "package.json"), JSON.stringify({ name: "path-normalization-fixture", bin: ".\\tools\\util-cli.mjs" }));
+  write(path.join(root, "tools", "util-cli.mjs"), "export function run() { return 'util-cli'; }\n");
+  git(root, "add", ".");
+  git(root, "commit", "-m", "fixture");
+  const target = writeMap(root);
+  const text = fs.readFileSync(target, "utf8");
+  const candidateLine = text.match(/^- Candidate entry points:\s*(.+)$/m)?.[1] || "";
+  const candidates = candidateLine.split(", ").map(value => value.trim());
+  assert.ok(candidates.includes("tools/util-cli.mjs"), `expected the backslash-separated, dot-slash-prefixed bin path to normalize and match the tracked file: ${candidateLine}`);
+});
+
+test("Map candidate entry points ignore a malformed array-shaped package.json bin field without crashing or contributing false candidates", () => {
+  // normalizePackageBin's else branch handles every bin shape besides a plain string or a
+  // non-array object. An array is the trickiest case because typeof [] === "object", so only the
+  // explicit !Array.isArray(bin) guard keeps it out of the Object.values() branch -- which would
+  // otherwise treat the array's OWN elements as candidate paths. "a.mjs" and "b.mjs" are real
+  // tracked files matching the array's own values, so a regression that drops that guard would
+  // surface them as false candidates instead of silently contributing nothing. An uncaught
+  // exception from a malformed bin field would fail this test the same way any unexpected throw
+  // fails any other test in this file -- there is no separate "does not crash" assertion needed.
+  const root = temporary("ctide-map-entrypoints-malformed-bin-");
+  git(root, "init", "--initial-branch=main");
+  git(root, "config", "user.email", "map@example.invalid");
+  git(root, "config", "user.name", "Map Test");
+  write(path.join(root, "package.json"), JSON.stringify({ name: "malformed-bin-fixture", bin: ["a.mjs", "b.mjs"] }));
+  write(path.join(root, "a.mjs"), "export function run() { return 'a'; }\n");
+  write(path.join(root, "b.mjs"), "export function run() { return 'b'; }\n");
+  write(path.join(root, "main.js"), "export function run() { return 'main'; }\n");
+  git(root, "add", ".");
+  git(root, "commit", "-m", "fixture");
+  const target = writeMap(root);
+  const text = fs.readFileSync(target, "utf8");
+  const candidateLine = text.match(/^- Candidate entry points:\s*(.+)$/m)?.[1] || "";
+  const candidates = candidateLine.split(", ").map(value => value.trim());
+  assert.ok(candidates.includes("main.js"), `expected the filename-convention match to remain a candidate despite the malformed bin field: ${candidateLine}`);
+  assert.ok(!candidates.includes("a.mjs"), `an array-shaped bin field must contribute no candidates: ${candidateLine}`);
+  assert.ok(!candidates.includes("b.mjs"), `an array-shaped bin field must contribute no candidates: ${candidateLine}`);
+});
+
+test("Map create does not crash on 0-byte and 1-byte files during hasShebang's boundary read, and excludes both from candidate entry points", () => {
+  // hasShebang reads a fixed 2-byte prefix into a fixed-size buffer; a file shorter than 2 bytes
+  // returns fewer bytes than requested rather than throwing. Neither file below carries a shebang,
+  // matches the filename convention, or is listed in bin, so neither may become a candidate, and
+  // writeMap must complete without raising -- an uncaught exception here would fail this test the
+  // same way any unexpected throw fails any other test in this file.
+  const root = temporary("ctide-map-entrypoints-shebang-boundary-");
+  git(root, "init", "--initial-branch=main");
+  git(root, "config", "user.email", "map@example.invalid");
+  git(root, "config", "user.name", "Map Test");
+  write(path.join(root, "package.json"), JSON.stringify({ name: "shebang-boundary-fixture" }));
+  write(path.join(root, "empty-file.mjs"), "");
+  write(path.join(root, "hash-only.mjs"), "#");
+  git(root, "add", ".");
+  git(root, "commit", "-m", "fixture");
+  const target = writeMap(root);
+  const text = fs.readFileSync(target, "utf8");
+  const candidateLine = text.match(/^- Candidate entry points:\s*(.+)$/m)?.[1] || "";
+  const candidates = candidateLine.split(", ").map(value => value.trim());
+  assert.ok(!candidates.includes("empty-file.mjs"), `a 0-byte file must not be a candidate entry point: ${candidateLine}`);
+  assert.ok(!candidates.includes("hash-only.mjs"), `a 1-byte "#" file must not be a candidate entry point: ${candidateLine}`);
+});
+
+test("Map candidate entry points ignore a null package.json bin field without crashing or contributing false candidates", () => {
+  // normalizePackageBin's guard is `bin && typeof bin === "object" && !Array.isArray(bin)` -- two
+  // INDEPENDENT checks, not one. The array-shaped fixture above proves !Array.isArray(bin) keeps an
+  // array out of the Object.values() branch, but it provides zero coverage of the leading `bin &&`
+  // truthy check: typeof null === "object" and !Array.isArray(null) are BOTH true, so only `bin &&`
+  // excludes null. Without it, normalizePackageBin(null) reaches Object.values(null), which throws
+  // "Cannot convert undefined or null to object" -- an uncaught exception here would fail this test
+  // the same way any unexpected throw fails any other test in this file, so there is no separate
+  // "does not crash" assertion needed. "main.js" is a real tracked file matching the filename
+  // convention and is the ONLY candidate expected, so a null bin field contributing anything at all
+  // would also fail the exact-count assertion below.
+  const root = temporary("ctide-map-entrypoints-null-bin-");
+  git(root, "init", "--initial-branch=main");
+  git(root, "config", "user.email", "map@example.invalid");
+  git(root, "config", "user.name", "Map Test");
+  write(path.join(root, "package.json"), JSON.stringify({ name: "null-bin-fixture", bin: null }));
+  write(path.join(root, "main.js"), "export function run() { return 'main'; }\n");
+  git(root, "add", ".");
+  git(root, "commit", "-m", "fixture");
+  const target = writeMap(root);
+  const text = fs.readFileSync(target, "utf8");
+  const candidateLine = text.match(/^- Candidate entry points:\s*(.+)$/m)?.[1] || "";
+  const candidates = candidateLine.split(", ").map(value => value.trim());
+  assert.ok(candidates.includes("main.js"), `expected the filename-convention match to remain a candidate despite the null bin field: ${candidateLine}`);
+  assert.equal(candidates.length, 1, `a null bin field must contribute no candidates beyond the control file: ${candidateLine}`);
+});

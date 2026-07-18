@@ -235,6 +235,31 @@ function workingTreeFingerprint(root, files = walk(root).sort()) {
   return fingerprint(parts);
 }
 
+// True when `relative`'s first 2 bytes are the shebang marker "#!" -- a filename-independent
+// entry-point signal (e.g. a CLI script with no main/index/app/program/server name). The path goes
+// through the same assertContainedPath containment check as every other per-file read in this file
+// (see workingTreeFingerprint above); a containment violation is a security-relevant condition and
+// propagates uncaught (fail-closed). The read itself is a bounded 2-byte prefix (open fd, fixed
+// offset, try/finally close -- mirroring failure-retrieve.mjs's readCapped) rather than a full-file
+// read; any I/O failure at that stage (the file vanished or changed between walk() and this call, a
+// permission race, a 0-1 byte file) is an ordinary I/O race, not a security condition, so it fails
+// open to false rather than aborting Map generation.
+function hasShebang(root, relative) {
+  const absolute = assertContainedPath(root, path.resolve(root, relative), "Entry-point candidate");
+  try {
+    const fd = fs.openSync(absolute, "r");
+    try {
+      const buffer = Buffer.alloc(2);
+      const bytesRead = fs.readSync(fd, buffer, 0, 2, 0);
+      return bytesRead === 2 && buffer[0] === 0x23 && buffer[1] === 0x21;
+    } finally {
+      try { fs.closeSync(fd); } catch { /* close failure does not change the result */ }
+    }
+  } catch {
+    return false;
+  }
+}
+
 function sourceEvidence(root, citation) {
   const match = citation.match(/^(.+):([1-9]\d*)(?:-([1-9]\d*))?$/);
   if (!match) throw new Error("invalid source citation: " + citation);
@@ -290,15 +315,32 @@ function metadata(root, commit, source, confidence) {
   ].join("\n");
 }
 
+// Normalizes package.json's "bin" field to a flat string[] of candidate paths, tolerating every
+// shape npm allows plus anything malformed -- matching this file's existing defensive `|| {}` style
+// for scripts/dependencies, so a malformed bin field can never throw Map generation. npm's own "bin"
+// is either a single string (the package's one executable) or an object mapping command names to
+// paths; anything else (array, number, null, missing) normalizes to []. Each surviving string entry
+// is path-normalized (backslash to forward slash, a single leading "./" stripped) so it is directly
+// comparable against `files`, which walk() already normalizes to forward slashes.
+function normalizePackageBin(bin) {
+  const raw = typeof bin === "string" ? [bin]
+    : bin && typeof bin === "object" && !Array.isArray(bin) ? Object.values(bin)
+      : [];
+  return raw
+    .filter(entry => typeof entry === "string")
+    .map(entry => entry.replaceAll("\\", "/").replace(/^\.\//, ""));
+}
+
 function packageFacts(root) {
   const file = path.join(root, "package.json");
-  if (!fs.existsSync(file)) return { scripts: [], dependencies: [], description: "" };
+  if (!fs.existsSync(file)) return { scripts: [], dependencies: [], description: "", bin: [] };
   try {
     const value = JSON.parse(fs.readFileSync(file, "utf8"));
     return {
       scripts: Object.keys(value.scripts || {}).sort(),
       dependencies: [...new Set([...Object.keys(value.dependencies || {}), ...Object.keys(value.devDependencies || {})])].sort(),
       description: typeof value.description === "string" ? value.description.replace(/\s+/g, " ").trim() : "",
+      bin: normalizePackageBin(value.bin),
     };
   } catch (error) {
     throw new Error(`Cannot parse package.json for Map evidence: ${error.message}`);
@@ -340,7 +382,19 @@ function buildMap(root, preservedManualNotes = defaultManualNotes()) {
   const packageSource = firstSource(root, ["package.json", "pyproject.toml", "Cargo.toml", "go.mod"]);
   const configSource = firstSource(root, ["package.json", "pyproject.toml", "Cargo.toml", "go.mod", "Dockerfile", "docker-compose.yml"]);
   const tests = files.filter(file => /(^|\/)(test|tests|spec)(\/|\.|$)/i.test(file));
-  const entries = files.filter(file => /(^|\/)(main|index|app|program|server)\.[^.]+$/i.test(file));
+  // Entry-point candidates union 3 independent signals: the filename convention below, a shebang
+  // line (any filename -- catches a CLI script like scripts/publish-release.mjs that a
+  // main|index|app|program|server name would miss), and package.json's normalized bin field. A bin
+  // path is intersected against `files` -- the same walked set every other candidate list here is
+  // drawn from, and the set every Sources citation must resolve against -- rather than trusted
+  // unconditionally, so a stale or unreachable bin entry can never surface as an entry-point
+  // candidate.
+  const filesSet = new Set(files);
+  const entries = [...new Set([
+    ...files.filter(file => /(^|\/)(main|index|app|program|server)\.[^.]+$/i.test(file)),
+    ...files.filter(file => hasShebang(root, file)),
+    ...pkg.bin.filter(candidate => filesSet.has(candidate)),
+  ])].sort();
   const dataFiles = files.filter(file => /(schema|migration|database|store|cache)/i.test(file));
   const integrationFiles = files.filter(file => /(client|integration|adapter|connector|api)/i.test(file));
   const operationFiles = files.filter(file => /(^|\/)(Dockerfile|docker-compose[^/]*|\.github\/workflows|deploy|infra|helm|k8s)/i.test(file));

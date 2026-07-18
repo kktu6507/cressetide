@@ -5,6 +5,7 @@ All notable changes to Cressetide will be documented in this file.
 ## [Unreleased]
 
 - 新增共用的 `normalizeGzipOsByte` helper（`publish-release-core.mjs`，由 `publish-release.mjs` re-export），在寫入磁碟或計算 checksum 前將 gzip 輸出的 RFC 1952 OS 欄位（offset 9）正規化為 `0xFF`：修正 Node `zlib.gzipSync()` 依建置平台設定不同 OS byte（本機 Windows 為 `0x0a`、CI 的 ubuntu-latest 為 `0x03`），導致同一 source input 在不同平台建置出不同 SHA-256 release archive 的 determinism 缺陷；`createDeterministicPluginArchive` 與 `createArchive` 兩個既有呼叫點皆已套用，`test/release-doctor.test.mjs`、`test/release-publisher.test.mjs` 既有的 determinism 測試同步新增 offset 9 斷言。
+- Map 的進入點候選（`map.mjs` 的 `entries`，餵給 Architecture boundaries 與 Execution flows 的 Candidate entry points）新增檔名慣例（`main`／`index`／`app`／`program`／`server`）以外的兩個訊號：檔案開頭 2 bytes 為 shebang（透過既有的 `assertContainedPath` 做 bounded prefix read，containment violation fail-closed、一般 I/O 錯誤 fail-open），以及 package.json 正規化後的 `bin` 欄位且必須存在於已走訪的 `files` 集合中才算數（避免不存在的路徑被引用為證據）；三個訊號 union 後去重排序。`packageFacts()` 新增 `bin: string[]` 欄位（字串、物件、其餘型別分別正規化為單一元素陣列、`Object.values(...)`、`[]`，並正規化路徑分隔符與開頭 `./`），`scripts`／`dependencies`／`description` 既有行為不變。新增技術文件 `cressetide/skills/map/references/evidence-discovery.md`，`navigator.agent.md`、`cartographer.agent.md` 的 Cressetide Map 擴充章節同步指向它。
 
 ## [0.3.0] - 2026-07-18
 

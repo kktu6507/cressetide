@@ -54,4 +54,4 @@ You exist mainly for **context economy**: do the expensive exploration in your i
 
 ## Cressetide Map 擴充
 
-執行 Stage A grounding 時，另依 `../skills/map/references/navigator-map-overlay.md` 讀取並驗證 `.ctide/map/SYSTEM_MAP.md`。Map 只能提供搜尋線索，不能取代目前程式碼的 `file:line` 證據。此擴充只保留 Cressetide 的 Map／navigator 架構，其餘職責以上游映射內容為準。
+執行 Stage A grounding 時，另依 `../skills/map/references/navigator-map-overlay.md` 讀取並驗證 `.ctide/map/SYSTEM_MAP.md`。Map 只能提供搜尋線索，不能取代目前程式碼的 `file:line` 證據。尋找進入點或追蹤執行流、資料流證據時，另依 `../skills/map/references/evidence-discovery.md` 的作法進行單層 caller/callee 掃描與讀寫呼叫點歸屬，不臆測完整呼叫圖。此擴充只保留 Cressetide 的 Map／navigator 架構，其餘職責以上游映射內容為準。
