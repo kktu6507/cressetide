@@ -4,9 +4,12 @@ All notable changes to Cressetide will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-18
+
 - 最終報告新增獨立、條件式的 `Live-verification gap` 欄位（`references/final-report.md`，compact 與 `--report full` 皆有）：當 UI 或可觀察執行行為的驗收條件因 Detect→Use→Else-Disclose 找不到 live-verification 能力（瀏覽器或 `app-launch.md` 涵蓋的非 UI live process）時，明確具名揭露，不再淹沒在泛用的 External capabilities 欄位裡；`arbiter.agent.md` 同步新增對應規則，涵蓋 UI 與非 UI 兩種情境。
 - `arbiter` 的修復迴圈卡住判斷（連續 2 次同類 blocker → Stuck Summary）新增 drift 判斷：沿用既有的 `contract-check.mjs` scope-diff 與 bidirectional traceability 證據，揭露這次修復是否仍在收斂到原始 acceptance criteria、或已經漂移——純揭露性質，既有的連續 2 次觸發門檻不變；`verification-gate.md`、`SKILL.md`、`vigil-map-overlay.md` 同步更新以保持一致。
 - 新增 `references/test-layer-boundaries.md`：定義 unit/integration/E2E 三層的責任邊界、mocking boundary 與判斷法則，並涵蓋 Python、TypeScript/JavaScript 兩種生態系的具體慣例；由 `SKILL.md` 的 Reference Loading 清單與 `test-reviewer.agent.md` 引用。
+- 修正 `doctor/SKILL.md`、`docs/command-reference.md`、`docs/compatibility.md`、`map/SKILL.md`、`map/references/system-map-contract.md`、`docs/map-contract.md`、`docs/runtime-contract.md` 共 7 處殘留自 0.1.0、在 0.2.0 bump 時未同步更新的版號字串；目前沒有 CI guard 涵蓋此類散文版號一致性。
 
 ## [0.2.0] - 2026-07-16
 
