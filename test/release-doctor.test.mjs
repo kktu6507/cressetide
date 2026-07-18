@@ -85,6 +85,7 @@ test("release archive is deterministic, checksummed, and contains only the plugi
   const one = fs.readFileSync(first.assetPath);
   const two = fs.readFileSync(second.assetPath);
   assert.deepEqual(one, two);
+  assert.equal(one[9], 0xff, "gzip OS byte (RFC 1952 offset 9) must not depend on the build platform");
   assert.equal(first.checksum, second.checksum);
   assert.match(first.assetName, /^ctide-v\d+\.\d+\.\d+-plugin\.tar\.gz$/);
   assert.equal(fs.readFileSync(first.checksumPath, "utf8"), `${first.checksum}  ${first.assetName}\n`);

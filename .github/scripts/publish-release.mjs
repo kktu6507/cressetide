@@ -6,12 +6,14 @@ import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
+import { normalizeGzipOsByte } from "./publish-release-core.mjs";
 
 // Preserve the complete release API alongside Cressetide's stricter immutable-tag publisher.
 export {
   createDeterministicPluginArchive,
   defaultBytesRunner,
   defaultRunner,
+  normalizeGzipOsByte,
   runRelease,
 } from "./publish-release-core.mjs";
 
@@ -197,7 +199,7 @@ export function createArchive(outputDirectory = path.join(root, "_release"), opt
     if (padding) chunks.push(Buffer.alloc(padding, 0));
   }
   chunks.push(Buffer.alloc(1024, 0));
-  const archive = gzipSync(Buffer.concat(chunks), { level: 9, mtime: 0 });
+  const archive = normalizeGzipOsByte(gzipSync(Buffer.concat(chunks), { level: 9, mtime: 0 }));
   fs.mkdirSync(outputDirectory, { recursive: true });
   const assetPath = path.join(outputDirectory, identity.assetName);
   const checksumPath = path.join(outputDirectory, identity.checksumName);

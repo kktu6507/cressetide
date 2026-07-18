@@ -215,6 +215,26 @@ function directoryEntriesFor(files, rootDir) {
   return [...dirs].sort((a, b) => Buffer.compare(Buffer.from(a, "utf8"), Buffer.from(b, "utf8")));
 }
 
+// RFC 1952 gzip header: byte offset 9 is the OS field. Node's zlib.gzipSync() sets it to a
+// platform-dependent value (observed: 0x0a on Windows, 0x03 on Linux) with no documented option
+// to override it, so identical source input produces byte-different archives across build
+// platforms. Patch it post-hoc to the RFC's "unknown" sentinel (0xFF) so the published bytes stop
+// depending on which OS built them. The OS byte is always at offset 9 per RFC 1952 (optional
+// fields such as FNAME/FCOMMENT/FEXTRA/FHCRC append after it, never before); the FLG === 0 check
+// below is not about locating the byte, it restricts patching to gzipSync()'s own canonical
+// plain-header output shape and refuses anything else, so an unrecognized input is never
+// silently mis-patched.
+export function normalizeGzipOsByte(buffer) {
+  const hasPlainHeader = buffer.length >= 10 && buffer[0] === 0x1f && buffer[1] === 0x8b && buffer[3] === 0x00;
+  if (!hasPlainHeader) {
+    const observed = [...buffer.subarray(0, Math.min(10, buffer.length))]
+      .map((byte) => byte.toString(16).padStart(2, "0")).join(" ");
+    throw new Error(`Unsupported gzip header shape for deterministic OS-byte normalization: ${observed || "<empty>"}`);
+  }
+  buffer[9] = 0xff;
+  return buffer;
+}
+
 export function createDeterministicPluginArchive({ tag, cwd, assetPath, bytesRunner = defaultBytesRunner }) {
   const tree = bytesRunner("git", ["ls-tree", "-r", "-z", `${tag}:cressetide`], { cwd });
   const files = parseLsTree(tree);
@@ -235,7 +255,7 @@ export function createDeterministicPluginArchive({ tag, cwd, assetPath, bytesRun
   }
   chunks.push(Buffer.alloc(1024, 0));
   const tar = Buffer.concat(chunks);
-  fs.writeFileSync(assetPath, zlib.gzipSync(tar, { level: 9, mtime: 0 }));
+  fs.writeFileSync(assetPath, normalizeGzipOsByte(zlib.gzipSync(tar, { level: 9, mtime: 0 })));
 }
 
 function ensureTagAtHead(runner, cwd, tag, hasGpg, log) {

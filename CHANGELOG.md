@@ -4,6 +4,8 @@ All notable changes to Cressetide will be documented in this file.
 
 ## [Unreleased]
 
+- 新增共用的 `normalizeGzipOsByte` helper（`publish-release-core.mjs`，由 `publish-release.mjs` re-export），在寫入磁碟或計算 checksum 前將 gzip 輸出的 RFC 1952 OS 欄位（offset 9）正規化為 `0xFF`：修正 Node `zlib.gzipSync()` 依建置平台設定不同 OS byte（本機 Windows 為 `0x0a`、CI 的 ubuntu-latest 為 `0x03`），導致同一 source input 在不同平台建置出不同 SHA-256 release archive 的 determinism 缺陷；`createDeterministicPluginArchive` 與 `createArchive` 兩個既有呼叫點皆已套用，`test/release-doctor.test.mjs`、`test/release-publisher.test.mjs` 既有的 determinism 測試同步新增 offset 9 斷言。
+
 ## [0.3.0] - 2026-07-18
 
 - 最終報告新增獨立、條件式的 `Live-verification gap` 欄位（`references/final-report.md`，compact 與 `--report full` 皆有）：當 UI 或可觀察執行行為的驗收條件因 Detect→Use→Else-Disclose 找不到 live-verification 能力（瀏覽器或 `app-launch.md` 涵蓋的非 UI live process）時，明確具名揭露，不再淹沒在泛用的 External capabilities 欄位裡；`arbiter.agent.md` 同步新增對應規則，涵蓋 UI 與非 UI 兩種情境。

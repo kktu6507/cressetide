@@ -12,6 +12,7 @@ import {
   createDeterministicPluginArchive,
   defaultBytesRunner,
   defaultRunner,
+  normalizeGzipOsByte,
   runRelease,
 } from "../.github/scripts/publish-release.mjs";
 import { fakeArchiveWriter, makeReleaseRoot, makeReleaseRunner, parseTar, root, sha256File } from "./support.mjs";
@@ -37,7 +38,31 @@ test("release publisher: deterministic archive bytes are stable for the same tag
     assert.strictEqual(sha256File(a), sha256File(b), "same tag tree must produce identical gzip bytes");
     assert.deepStrictEqual(zlib.gunzipSync(fs.readFileSync(a)), zlib.gunzipSync(fs.readFileSync(b)),
       "same tag tree must produce identical decompressed tar bytes");
+    assert.strictEqual(fs.readFileSync(a)[9], 0xff, "gzip OS byte (RFC 1952 offset 9) must not depend on the build platform");
   } finally { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+test("release publisher: normalizeGzipOsByte patches a plain gzip header's OS byte in place", () => {
+  const real = zlib.gzipSync(Buffer.from("ctide"), { level: 9, mtime: 0 });
+  const patched = normalizeGzipOsByte(real);
+  assert.strictEqual(patched, real, "must patch the given buffer in place, not return a detached copy");
+  assert.strictEqual(patched[9], 0xff, "must set RFC 1952 offset 9 to the unknown-OS sentinel");
+  assert.deepStrictEqual(zlib.gunzipSync(patched), Buffer.from("ctide"), "patching the OS byte must not disturb the compressed payload");
+});
+
+test("release publisher: normalizeGzipOsByte refuses to patch a non-plain gzip header instead of silently skipping it", () => {
+  assert.throws(() => normalizeGzipOsByte(Buffer.alloc(0)), /Unsupported gzip header shape/, "empty buffer must be rejected, not treated as a no-op");
+  assert.throws(() => normalizeGzipOsByte(Buffer.from([0x1f, 0x8b, 0x08])), /Unsupported gzip header shape/, "a header shorter than 10 bytes must be rejected");
+  assert.throws(
+    () => normalizeGzipOsByte(Buffer.from([0x1f, 0x8b, 0x08, 0x08, 0, 0, 0, 0, 0, 0])),
+    /Unsupported gzip header shape/,
+    "a set FLG byte (e.g. FNAME) is outside gzipSync()'s own canonical output shape and must be rejected, not silently mis-patched",
+  );
+  assert.throws(
+    () => normalizeGzipOsByte(Buffer.from([0x00, 0x00, 0x08, 0x00, 0, 0, 0, 0, 0, 0])),
+    /Unsupported gzip header shape/,
+    "a wrong gzip magic must be rejected",
+  );
 });
 
 test("release publisher: deterministic archive contains expected paths, modes, and bytes", () => {
