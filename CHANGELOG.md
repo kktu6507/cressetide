@@ -4,6 +4,10 @@ All notable changes to Cressetide will be documented in this file.
 
 ## [Unreleased]
 
+- 最終報告新增獨立、條件式的 `Live-verification gap` 欄位（`references/final-report.md`，compact 與 `--report full` 皆有）：當 UI 或可觀察執行行為的驗收條件因 Detect→Use→Else-Disclose 找不到 live-verification 能力（瀏覽器或 `app-launch.md` 涵蓋的非 UI live process）時，明確具名揭露，不再淹沒在泛用的 External capabilities 欄位裡；`arbiter.agent.md` 同步新增對應規則，涵蓋 UI 與非 UI 兩種情境。
+- `arbiter` 的修復迴圈卡住判斷（連續 2 次同類 blocker → Stuck Summary）新增 drift 判斷：沿用既有的 `contract-check.mjs` scope-diff 與 bidirectional traceability 證據，揭露這次修復是否仍在收斂到原始 acceptance criteria、或已經漂移——純揭露性質，既有的連續 2 次觸發門檻不變；`verification-gate.md`、`SKILL.md`、`vigil-map-overlay.md` 同步更新以保持一致。
+- 新增 `references/test-layer-boundaries.md`：定義 unit/integration/E2E 三層的責任邊界、mocking boundary 與判斷法則，並涵蓋 Python、TypeScript/JavaScript 兩種生態系的具體慣例；由 `SKILL.md` 的 Reference Loading 清單與 `test-reviewer.agent.md` 引用。
+
 ## [0.2.0] - 2026-07-16
 
 - Salvage 的 wartime 流程新增對 Map canonical section 的引用：Stage 1 的 Blast radius 引用 `Architecture boundaries` 與 `Execution flows`，入侵研判問題引用 `Data flows` 的 Trust boundary 欄，Stage 4 diagnose 開場先查閱 `Risk and uncertainty` 已記錄的高風險模組、破壞性路徑與 production-only 假設，再進行故障分類。
