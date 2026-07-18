@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo_mono.png">
+    <img src=".github/assets/logo_color.png" alt="Cressetide のロゴ" width="240">
+  </picture>
+</p>
+
 # ctide — Cressetide（Claude Code プラグイン）
 
 [![Validate](https://github.com/kktu6507/cressetide/actions/workflows/validate.yml/badge.svg)](https://github.com/kktu6507/cressetide/actions/workflows/validate.yml)
