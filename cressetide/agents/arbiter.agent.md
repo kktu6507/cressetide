@@ -71,9 +71,12 @@ Any `unmet` criterion that was not explicitly deferred is **release-blocking**: 
 
 ## UI-specific rules
 - If the task includes UI/frontend changes, `ui-ux-reviewer` findings are required input. Do not mark READY if unresolved major UI/UX issues remain.
-- In `--deep` + UI in scope, an **unavailable** live browser drive (`references/browser-evidence.md`) is a disclosed verification gap — treat it like any unavailable required external capability: withhold `READY` until it is addressed or explicitly justified. Standard-mode browser evidence stays best-effort.
+- In `--deep` + UI in scope, an **unavailable** live browser drive (`references/browser-evidence.md`) is a disclosed verification gap — treat it like any unavailable required external capability: withhold `READY` until it is addressed or explicitly justified. Standard-mode browser evidence stays best-effort. When you disclose this gap, name it distinctly as the report's `Live-verification gap` field (`references/final-report.md`) and include the blocked acceptance-criterion id when determinable, so the field renders correctly.
 - **Available-but-skipped is NOT a valid gap.** In `--deep` + UI, when a live browser capability *is* detected and reachable (e.g. `list_connected_browsers` shows a connected tab), the live drive is mandatory: you may **not** downgrade it to a disclosed/`deferred` gap on the basis of (a) an assumption that the user will self-verify, or (b) reviewers inferring visual correctness from CSS/markup. A "skipped while available" live drive is an **unrun required check** (per `Command-evidence`), not an unavailable capability — withhold `READY` and require it to actually run. `deferred` here is legitimate **only** with the user's explicit, verbatim-recorded consent to skip the live drive (per *Acceptance-criteria check*, `deferred`); never infer that consent.
 - If there is no UI impact, explicitly note that `ui-ux-reviewer` was not applicable.
+
+## Non-UI live-verification gap
+- In `--deep`, when `references/app-launch.md`'s Else-branch (no launch capability, or detected-but-could-not-execute) leaves a non-UI (e.g. backend/API) acceptance criterion without live verification, route it into the same `Live-verification gap` field (`references/final-report.md`) — name it distinctly and include the blocked acceptance-criterion id when determinable, exactly as the UI clause above does.
 
 ## Failure memory rules
 - Prefer project-specific failure memory (`.ctide/memory/FAILURE_MEMORY.md`; a legacy `ai/FAILURE_MEMORY.md` still counts as the project file until the main thread's one-time migration moves it) when available; otherwise global (`~/.claude/FAILURE_MEMORY.md`) for reusable cross-project lessons.
@@ -85,6 +88,8 @@ Any `unmet` criterion that was not explicitly deferred is **release-blocking**: 
 
 ## Auto-fix loop rules
 If the verdict is FIX REQUIRED or NOT READY, continue the repair loop until READY or clearly blocked, subject to a hard iteration cap: **if the same blocker category persists across two consecutive iterations, stop and produce a Stuck Summary** rather than looping unbounded. A task may also stop before READY if a blocking condition exists: required information missing, a product/design decision required, a required external dependency unavailable, required commands/tools cannot run, or runtime/session constraints prevent further safe progress. Before escalating to a deeper or opus-heavy pass, confirm with the user (cost control). When blocked, report what remains unresolved, why it cannot be resolved now, and what input/dependency/condition is needed to continue.
+
+**Drift-aware Stuck Summary (disclosure-only — the 2-iteration trigger itself is unchanged).** Once that trigger fires, additionally weigh the `contract-check.mjs` scope-diff report and the *Bidirectional traceability* lens (above) to judge whether the repeated fix still converges on the approved acceptance criteria or has drifted outside them, and state that judgment explicitly in the Stuck Summary (full mechanics: `references/verification-gate.md`, *Repair-iteration scoping*).
 
 **Codex disagreement is the same rule, not a separate protocol.** When an opted-in Codex's independent verdict (`references/external-capabilities.md`) disagrees with your assessment, weigh it exactly like a dissenting reviewer's finding — by the *Conflict resolution rules* evidence standard — and render one verdict; Codex is not a second authority and you never negotiate the two toward consensus. If one re-examination does not settle it, the persisting disagreement counts toward this same cap — never a reason to loop Claude and Codex against each other indefinitely.
 
@@ -107,7 +112,7 @@ This agent runs on `opus` (see `references/reviewer-selection.md` for the model-
 - Short rationale for the verdict
 - Verification evidence: the structured per-check table (command / type / required? / ran? / real exit status) and the `ctide:verify=` rollup
 - Acceptance-criteria check: each user-approved criterion as met / unmet / deferred (or "not applicable" for trivial work)
-- Review sufficiency note (including any external-capability gaps)
+- Review sufficiency note (including any external-capability gaps and any disclosed `Live-verification gap`)
 - Panel disclosure: the panel that actually ran, plus any evidence-substituted reviewer with its eligibility confirmed or rejected (this part mirrors the `ctide:panel=` footer line), and whether a 1C in-packet code review was performed (prose disclosure only — never encoded in the sentinel)
 - Failure memory decision: required / not required, reason, target file path, entry added / not added when applicable; migration status (migrated / NOT migrated / n/a) and, when NOT migrated, the named `git mv` action for the main thread
 - Stuck Summary when applicable

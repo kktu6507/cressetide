@@ -61,3 +61,4 @@ Driving a **real, authenticated** browser is a sensitive capability — treat it
 - Reviewers stay read-only and isolated; only the main thread drives the browser.
 - Vision cost stays in `--deep` / `--report full`; the compact path is text-only.
 - Language: per `SKILL.md` *Language And Text Integrity* — user-facing text follows the user's language; technical contracts verbatim.
+- A disclosed live-drive gap renders in the final report as the `Live-verification gap` field (`references/final-report.md`) — see there for the exact wording and placement.

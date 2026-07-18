@@ -24,7 +24,7 @@ Model invocation is appropriate when a request needs implementation plus verific
 6. **Verify.** Run applicable build, test, lint, typecheck, integration, browser, text-integrity, and deterministic checks. Exercise implied boundary inputs. Prefer one meaningful fail-first then pass test per behavior-changing criterion; disclose criteria where that evidence class is impractical.
 7. **Review.** Prepare a bounded Review Packet containing intent, criteria, scope, assumptions, diff, verification, risks, exclusions, and reviewer-specific focus. Always select `intent-reviewer` and `test-reviewer`; add only applicable discipline reviewers.
 8. **Arbitrate.** After reviewers report, `arbiter` checks every criterion, command evidence, panel sufficiency, findings, and residual risk, then issues `READY`, `FIX REQUIRED`, or `NOT READY`.
-9. **Repair.** For a non-ready verdict, fix confirmed findings, rerun affected checks and reviewers, then rerun `arbiter`. Run the full required suite once more before `READY`. Stop with a clear stuck summary if the same blocker category survives two repair iterations.
+9. **Repair.** For a non-ready verdict, fix confirmed findings, rerun affected checks and reviewers, then rerun `arbiter`. Run the full required suite once more before `READY`. Stop with a clear stuck summary if the same blocker category survives two repair iterations; when it does, the summary also discloses whether the repeated fix is converging on or drifting from the approved criteria (`references/verification-gate.md`).
 10. **Carry learning.** Propose concise failure-memory updates for execution abnormalities with reusable prevention value. A single coordinating writer updates `.ctide/memory/FAILURE_MEMORY.md`.
 
 ## Operating references

@@ -40,6 +40,13 @@ On a **repair iteration** (the auto-fix loop, `SKILL.md` step 8), re-run only th
 
 This is *filter noise, not signal* applied across iterations: it changes which checks re-run mid-loop, never the final full-suite guarantee.
 
+**Drift-aware Stuck Summary (disclosure-only).** The 2-consecutive-iteration Stuck-Summary trigger (`agents/arbiter.agent.md`, *Auto-fix loop rules*) is unchanged; this only enriches what the Stuck Summary explains once that trigger has already fired — never a new gate, timer, or threshold. When it fires, the `arbiter` additionally weighs two signals it already has:
+
+- **`contract-check.mjs`'s scope-diff report** (`references/task-contract.md`; the same report the `arbiter` already reads at *Deterministic contract-check*) — a growing `outOfScope` / `forbiddenHits` list across iterations means the repeated fix is touching more territory than the approved contract licensed, a structural drift signal.
+- **The bidirectional-traceability lens** (`agents/arbiter.agent.md`, *Acceptance-criteria check*) — whether each iteration's changed files still map to an approved criterion, and whether the still-failing check(s) still trace back to the originally blocked criterion rather than one the fix introduced along the way.
+
+The `arbiter` states in the Stuck Summary whether the pattern reads as **converging** (same criterion, narrowing scope) or **drifted** (scope creep past `allowedPaths`/`mustNotChange`, or the fix chasing a symptom outside the approved criteria). Disclosure only: neither reading blocks, extends, or shortens the loop by itself — the 2-iteration cap alone still stops it. A drifted reading is a signal the next step should be a scoped re-plan, surfaced as part of "what is needed next," never an automatic action.
+
 ## Regression ratchet (baseline-passing ∩ now-failing)
 
 A fix can turn a previously-green test red. On `--deep` or high-risk runs the orchestrator captures the pre-change test output before implementation (e.g. `.ctide/output/baseline-before.txt`) and the post-change output at verify (`.ctide/output/baseline-after.txt`), then runs `scripts/regression-delta.mjs <before> <after>` — a dependency-free **pure differ** that reads each runner's own native output (node --test / jest / pytest / go test) and computes `baseline_passing ∩ now_failing`, the set of tests that passed on the pre-change baseline but fail now. The `arbiter` treats any non-empty intersection as a blocking regression, **naming the newly-failing tests** and classifying each green→red as an intended change or a genuine regression (`agents/arbiter.agent.md`, *Regression ratchet*). This pairs with the final full-suite re-run above: the full set runs, and the ratchet checks that nothing that used to pass now fails.

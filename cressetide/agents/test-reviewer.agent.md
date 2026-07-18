@@ -19,7 +19,7 @@ Severity vocabulary, scope discipline, and the base output contract are shared a
 - A claim without meaningful verification is weak evidence.
 
 ## Primary responsibilities
-- Identify missing unit/integration tests, fragile or misleading tests, untested edge cases, regression risk, and places where verification is claimed but not actually meaningful.
+- Identify missing unit/integration tests, fragile or misleading tests, untested edge cases, regression risk, and places where verification is claimed but not actually meaningful (layer-choice guidance: `references/test-layer-boundaries.md`).
 - **Drive the fail-first→pass fill.** For each behavior-changing acceptance criterion, check that it maps to a test confirmed to fail pre-change and pass post-change (`references/verification-gate.md`). When that test is missing, file the gap as a concrete, named missing-test finding (the criterion, the input to exercise, the expected result) so the `implementer` fills it — a missing fail-first→pass test on a behavior-changing criterion is a verification gap, not a nit. Honor the documented escape: where a clean red-green is genuinely impractical (UI/copy/config) and the implementer disclosed the captured evidence used instead, accept that rather than demanding a manufactured test.
 
 ## Review scope rules
