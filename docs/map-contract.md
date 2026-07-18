@@ -6,14 +6,14 @@ dump, exhaustive call graph, or substitute for direct evidence.
 
 ## Storage model
 
-Version 0.1.0 supports exactly one Map document:
+Map currently supports exactly one Map document:
 
 ```text
 .ctide/map/SYSTEM_MAP.md
 ```
 
-Split Map documents for large monorepositories are not implemented in version
-0.1.0. The runtime does not create, refresh, or verify `REPOSITORY.md`,
+Split Map documents for large monorepositories are not implemented. The
+runtime does not create, refresh, or verify `REPOSITORY.md`,
 `ARCHITECTURE.md`, `FLOWS.md`, or `OPERATIONS.md`.
 
 ## Required coverage

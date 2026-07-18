@@ -27,7 +27,7 @@ Read `references/system-map-contract.md` before writing or reviewing a Map. The 
 
 Use `cartographer` for read-only discovery when available. The coordinating thread owns the approved Map write.
 
-Version 0.1.0 supports exactly one `.ctide/map/SYSTEM_MAP.md`; split large-repository files are not implemented, created, refreshed, or verified. Human-verified operational knowledge is writable only inside the `CTIDE:MANUAL-NOTES:START` / `CTIDE:MANUAL-NOTES:END` boundary. Refresh preserves that block verbatim. Cartographer must compare it with current evidence, report conflicts, and never overwrite it.
+Map currently supports exactly one `.ctide/map/SYSTEM_MAP.md`; split large-repository files are not implemented, created, refreshed, or verified. Human-verified operational knowledge is writable only inside the `CTIDE:MANUAL-NOTES:START` / `CTIDE:MANUAL-NOTES:END` boundary. Refresh preserves that block verbatim. Cartographer must compare it with current evidence, report conflicts, and never overwrite it.
 
 The deterministic helper creates a heuristic inventory baseline, not a verified finished Map. Any generated statement that says evidence is required or that Cartographer must confirm a claim must use `Confidence: unverified` and an explicit `UNVERIFIED` marker. `map verify` rejects that baseline until Cartographer replaces every placeholder with concrete, cited repository facts.
 

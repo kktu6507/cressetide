@@ -84,7 +84,7 @@ user; it must not weaken the hook that reported the risk.
     evidence/
 ```
 
-Version 0.1.0 supports only `.ctide/map/SYSTEM_MAP.md`. Split Map documents
+Map currently supports only `.ctide/map/SYSTEM_MAP.md`. Split Map documents
 such as `REPOSITORY.md`, `ARCHITECTURE.md`, `FLOWS.md`, and `OPERATIONS.md` are
 not implemented.
 
