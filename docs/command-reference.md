@@ -76,7 +76,7 @@ Neither Vigil nor Salvage treats Map content as authority.
 
 Doctor is manual-only and read-only. It reports pass, fail, or unverified for:
 
-1. plugin identity `ctide` and version `0.1.0`;
+1. plugin identity `ctide` and a valid semantic version;
 2. Node.js 20 or newer;
 3. exact six-hook manifest wiring through `${CLAUDE_PLUGIN_ROOT}`;
 4. hook syntax and harmless bounded fail-open probes;

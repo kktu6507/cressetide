@@ -19,7 +19,7 @@ Use `--json` when machine-readable evidence is needed. The helper is read-only a
 
 Perform read-only local probes and report pass, fail, or unverified for each item:
 
-1. Resolve the plugin root from `${CLAUDE_PLUGIN_ROOT}` and confirm `.claude-plugin/plugin.json` names `ctide` at version `0.1.0`.
+1. Resolve the plugin root from `${CLAUDE_PLUGIN_ROOT}` and confirm `.claude-plugin/plugin.json` names `ctide` at a valid semantic version.
 2. Report the Node executable and version; Node 20 or newer is required.
 3. Parse `hooks/hooks.json` and confirm exactly the six documented hook files are wired through `${CLAUDE_PLUGIN_ROOT}`.
 4. Syntax-check each hook and invoke it with a harmless, bounded event. A probe must exit zero even for malformed input, demonstrating the fail-open invariant.

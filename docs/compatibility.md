@@ -6,8 +6,8 @@ Cressetide targets Claude Code first. Hook schemas, plan mode, subagent isolatio
 
 | Cressetide version | Runtime | Automated coverage | Live conformance status |
 |---|---|---|---|
-| `0.1.0` | Claude Code | Plugin structure, hooks, agents, skills, Doctor, release tooling, validators, tests, and deterministic evals | A clean-profile smoke must be recorded for the newly created repository before claiming live compatibility. |
-| `0.1.0` | GitHub Copilot CLI | No Cressetide-specific runtime claim is encoded by the local suite. | Unverified until a fresh Cressetide run is recorded. |
+| current release | Claude Code | Plugin structure, hooks, agents, skills, Doctor, release tooling, validators, tests, and deterministic evals | A clean-profile smoke must be recorded for the newly created repository before claiming live compatibility. |
+| current release | GitHub Copilot CLI | No Cressetide-specific runtime claim is encoded by the local suite. | Unverified until a fresh Cressetide run is recorded. |
 | current branch | CI / local Node.js | `npm run validate`, `npm test`, and `npm run eval` | Automated regression coverage only; it does not replace a real plugin install. |
 
 ## Runtime-specific behavior
