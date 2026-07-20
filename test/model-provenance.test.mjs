@@ -145,7 +145,7 @@ test("check-model-provenance: for EVERY flag in KNOWN_FLAGS, a value slot occupi
             `${F} swallowed by ${G}: --model must fall back to 'no --model given', never treat '${G}' as a real model id`);
           assert.match(r.stdout, /no --model given/i);
         } else {
-          // F is --cwd or --file: both resolve to the same seeded, MATCHing baseline either way (--file's
+          // F is --cwd or --file: both resolve to the same seeded, matching baseline either way (--file's
           // own real value is an absolute path; --cwd's fallback + --file's own default composition
           // resolves to the identical seeded file).
           assert.match(r.stdout, /status: MATCH/,
