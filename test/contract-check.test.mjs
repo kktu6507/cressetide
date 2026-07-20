@@ -118,6 +118,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveContractPath, KNOWN_FLAGS } from "../cressetide/skills/vigil/scripts/contract-check.mjs";
+import { hardenGitSigning } from "./helpers.mjs";
 
 const SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..",
   "cressetide", "skills", "vigil", "scripts", "contract-check.mjs");
@@ -196,6 +197,7 @@ function repoForSwallowTest() {
   git(dir, "init", "-q", "--initial-branch=main");
   git(dir, "config", "user.email", "cc@example.invalid");
   git(dir, "config", "user.name", "Contract Check Swallow Test");
+  hardenGitSigning(dir);
   fs.writeFileSync(path.join(dir, "tracked.ts"), "original\n", "utf8");
   git(dir, "add", ".");
   git(dir, "commit", "-q", "-m", "initial");

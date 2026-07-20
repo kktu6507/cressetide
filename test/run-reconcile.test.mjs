@@ -14,6 +14,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runRecords, closedHeadSet, parseCommitLog, overlapFiles, classifyRun, KNOWN_FLAGS } from "../cressetide/skills/vigil/scripts/run-reconcile.mjs";
 import { ensureLedgerDir, runsLedgerPath, readRunsLedger, buildRunRecord } from "../cressetide/skills/vigil/scripts/run-ledger.mjs";
+import { hardenGitSigning } from "./helpers.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = path.join(root, "cressetide", "skills", "vigil", "scripts", "run-reconcile.mjs");
@@ -44,6 +45,7 @@ function bareRepository() {
   git(dir, "init", "-q", "--initial-branch=main");
   git(dir, "config", "user.email", "rr@example.invalid");
   git(dir, "config", "user.name", "Run Reconcile Test");
+  hardenGitSigning(dir);
   fs.writeFileSync(path.join(dir, "a.txt"), "a\n", "utf8");
   git(dir, "add", ".");
   git(dir, "commit", "-q", "-m", "initial");
@@ -58,6 +60,7 @@ function sha256Repository() {
   git(dir, "init", "-q", "--object-format=sha256", "--initial-branch=main");
   git(dir, "config", "user.email", "rr@example.invalid");
   git(dir, "config", "user.name", "Run Reconcile Test");
+  hardenGitSigning(dir);
   fs.writeFileSync(path.join(dir, "a.txt"), "a\n", "utf8");
   git(dir, "add", ".");
   git(dir, "commit", "-q", "-m", "initial");
@@ -75,6 +78,7 @@ function buildScanFixture() {
   git(dir, "init", "-q", "--initial-branch=main");
   git(dir, "config", "user.email", "rr@example.invalid");
   git(dir, "config", "user.name", "Run Reconcile Test");
+  hardenGitSigning(dir);
   for (const f of ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"]) fs.writeFileSync(path.join(dir, f), f + "\n", "utf8");
   git(dir, "add", ".");
   commitAt(dir, "2025-01-01T00:00:00Z", "initial baseline");

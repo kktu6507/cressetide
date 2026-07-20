@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
-import { temporary, write } from "./helpers.mjs";
+import { temporary, write, hardenGitSigning } from "./helpers.mjs";
 import { verifyMap, writeMap } from "../cressetide/skills/map/scripts/map.mjs";
 
 function git(root, ...args) {
@@ -15,6 +15,7 @@ function repository() {
   git(root, "init", "--initial-branch=main");
   git(root, "config", "user.email", "map@example.invalid");
   git(root, "config", "user.name", "Map Test");
+  hardenGitSigning(root);
   write(path.join(root, "package.json"), JSON.stringify({ name: "neutral-map-fixture", scripts: { test: "node --test", start: "node src/index.js" }, dependencies: { "fixture-client": "1.0.0" } }));
   write(path.join(root, "src", "index.js"), "export function start() { return 'ok'; }\n");
   write(path.join(root, "src", "api-client.js"), "export const endpoint = 'https://example.invalid';\n");
@@ -958,6 +959,7 @@ test("Map verify reports sections whose repository facts remain unverified", () 
   git(root, "init", "--initial-branch=main");
   git(root, "config", "user.email", "map@example.invalid");
   git(root, "config", "user.name", "Map Test");
+  hardenGitSigning(root);
   write(path.join(root, "README.md"), "# Empty fixture\n");
   git(root, "add", ".");
   git(root, "commit", "-m", "incomplete fixture");
@@ -997,6 +999,7 @@ test("Map candidate entry points include shebang scripts and package.json bin pa
   git(stringBinRoot, "init", "--initial-branch=main");
   git(stringBinRoot, "config", "user.email", "map@example.invalid");
   git(stringBinRoot, "config", "user.name", "Map Test");
+  hardenGitSigning(stringBinRoot);
   write(path.join(stringBinRoot, "package.json"), JSON.stringify({ name: "string-bin-fixture", bin: "scripts/cli.mjs" }));
   write(path.join(stringBinRoot, "scripts", "cli.mjs"), "#!/usr/bin/env node\nconsole.log('cli');\n");
   write(path.join(stringBinRoot, "scripts", "launcher.mjs"), "#!/usr/bin/env node\nconsole.log('launcher');\n");
@@ -1020,6 +1023,7 @@ test("Map candidate entry points include shebang scripts and package.json bin pa
   git(objectBinRoot, "init", "--initial-branch=main");
   git(objectBinRoot, "config", "user.email", "map@example.invalid");
   git(objectBinRoot, "config", "user.name", "Map Test");
+  hardenGitSigning(objectBinRoot);
   write(path.join(objectBinRoot, "package.json"), JSON.stringify({
     name: "object-bin-fixture",
     bin: { "tool-a": "bin/tool-a.mjs", "tool-b": "bin/does-not-exist.mjs" },
@@ -1048,6 +1052,7 @@ test("Map candidate entry points surface a file reachable only via string bin, r
   git(root, "init", "--initial-branch=main");
   git(root, "config", "user.email", "map@example.invalid");
   git(root, "config", "user.name", "Map Test");
+  hardenGitSigning(root);
   write(path.join(root, "package.json"), JSON.stringify({ name: "string-bin-only-fixture", bin: "a-cli.mjs" }));
   write(path.join(root, "a-cli.mjs"), "export function run() { return 'a-cli'; }\n");
   write(path.join(root, "server.js"), "export function run() { return 'server'; }\n");
@@ -1075,6 +1080,7 @@ test("Map candidate entry points dedup a file that matches the filename conventi
   git(root, "init", "--initial-branch=main");
   git(root, "config", "user.email", "map@example.invalid");
   git(root, "config", "user.name", "Map Test");
+  hardenGitSigning(root);
   write(path.join(root, "package.json"), JSON.stringify({ name: "triple-signal-fixture", bin: "index.mjs" }));
   write(path.join(root, "index.mjs"), "#!/usr/bin/env node\nconsole.log('index');\n");
   git(root, "add", ".");
@@ -1097,6 +1103,7 @@ test("Map candidate entry points normalize a backslash-separated, dot-slash-pref
   git(root, "init", "--initial-branch=main");
   git(root, "config", "user.email", "map@example.invalid");
   git(root, "config", "user.name", "Map Test");
+  hardenGitSigning(root);
   write(path.join(root, "package.json"), JSON.stringify({ name: "path-normalization-fixture", bin: ".\\tools\\util-cli.mjs" }));
   write(path.join(root, "tools", "util-cli.mjs"), "export function run() { return 'util-cli'; }\n");
   git(root, "add", ".");
@@ -1121,6 +1128,7 @@ test("Map candidate entry points ignore a malformed array-shaped package.json bi
   git(root, "init", "--initial-branch=main");
   git(root, "config", "user.email", "map@example.invalid");
   git(root, "config", "user.name", "Map Test");
+  hardenGitSigning(root);
   write(path.join(root, "package.json"), JSON.stringify({ name: "malformed-bin-fixture", bin: ["a.mjs", "b.mjs"] }));
   write(path.join(root, "a.mjs"), "export function run() { return 'a'; }\n");
   write(path.join(root, "b.mjs"), "export function run() { return 'b'; }\n");
@@ -1146,6 +1154,7 @@ test("Map create does not crash on 0-byte and 1-byte files during hasShebang's b
   git(root, "init", "--initial-branch=main");
   git(root, "config", "user.email", "map@example.invalid");
   git(root, "config", "user.name", "Map Test");
+  hardenGitSigning(root);
   write(path.join(root, "package.json"), JSON.stringify({ name: "shebang-boundary-fixture" }));
   write(path.join(root, "empty-file.mjs"), "");
   write(path.join(root, "hash-only.mjs"), "#");
@@ -1174,6 +1183,7 @@ test("Map candidate entry points ignore a null package.json bin field without cr
   git(root, "init", "--initial-branch=main");
   git(root, "config", "user.email", "map@example.invalid");
   git(root, "config", "user.name", "Map Test");
+  hardenGitSigning(root);
   write(path.join(root, "package.json"), JSON.stringify({ name: "null-bin-fixture", bin: null }));
   write(path.join(root, "main.js"), "export function run() { return 'main'; }\n");
   git(root, "add", ".");

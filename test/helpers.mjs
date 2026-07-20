@@ -36,3 +36,12 @@ export function write(file, content) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, content, "utf8");
 }
+
+export function hardenGitSigning(cwd) {
+  for (const args of [["config", "commit.gpgsign", "false"], ["config", "tag.gpgSign", "false"]]) {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    if (result.error || result.status !== 0) {
+      throw new Error(`hardenGitSigning: git ${args.join(" ")} failed in ${cwd}: ${result.error || result.stderr}`);
+    }
+  }
+}

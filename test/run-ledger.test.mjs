@@ -18,6 +18,7 @@ import {
   ledgerDir, runsLedgerPath, ensureLedgerDir, readRunsLedger, filesTouched,
   buildRunRecord, buildCloseEvent, appendRun, appendClose, KNOWN_FLAGS,
 } from "../cressetide/skills/vigil/scripts/run-ledger.mjs";
+import { hardenGitSigning } from "./helpers.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = path.join(root, "cressetide", "skills", "vigil", "scripts", "run-ledger.mjs");
@@ -34,6 +35,7 @@ function repository() {
   git(dir, "init", "-q", "--initial-branch=main");
   git(dir, "config", "user.email", "rl@example.invalid");
   git(dir, "config", "user.name", "Run Ledger Test");
+  hardenGitSigning(dir);
   fs.writeFileSync(path.join(dir, "a.txt"), "a\n", "utf8");
   fs.writeFileSync(path.join(dir, "b.txt"), "b\n", "utf8");
   git(dir, "add", ".");

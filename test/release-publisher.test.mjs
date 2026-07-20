@@ -16,12 +16,14 @@ import {
   runRelease,
 } from "../.github/scripts/publish-release.mjs";
 import { fakeArchiveWriter, makeReleaseRoot, makeReleaseRunner, parseTar, root, sha256File } from "./support.mjs";
+import { hardenGitSigning } from "./helpers.mjs";
 function makeCommittedArchiveRoot() {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-root-"));
   fs.cpSync(path.join(root, "cressetide"), path.join(repo, "cressetide"), { recursive: true });
   cp.execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
   cp.execFileSync("git", ["config", "user.name", "Test"], { cwd: repo });
   cp.execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd: repo });
+  hardenGitSigning(repo);
   cp.execFileSync("git", ["add", "cressetide"], { cwd: repo });
   cp.execFileSync("git", ["commit", "-m", "fixture"], { cwd: repo, stdio: "ignore" });
   return repo;
