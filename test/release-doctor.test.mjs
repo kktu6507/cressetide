@@ -34,6 +34,8 @@ function taggedReleaseFixture(versions = {}, options = {}) {
   git("init", "--initial-branch=main");
   git("config", "user.email", "release@example.invalid");
   git("config", "user.name", "Release Test");
+  git("config", "commit.gpgsign", "false");
+  git("config", "tag.gpgSign", "false");
   fs.mkdirSync(path.join(repository, "cressetide", ".claude-plugin"), { recursive: true });
   fs.writeFileSync(path.join(repository, "package.json"), JSON.stringify({
     name: "ctide", version: versions.packageVersion || "0.1.0",
@@ -113,6 +115,8 @@ test("tag-bound archive reads immutable Git blobs even when index flags hide wor
   git("init", "--initial-branch=main");
   git("config", "user.email", "release@example.invalid");
   git("config", "user.name", "Release Test");
+  git("config", "commit.gpgsign", "false");
+  git("config", "tag.gpgSign", "false");
   const file = path.join(repository, "cressetide", "file.txt");
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, "tagged bytes\n", "utf8");
