@@ -4,6 +4,9 @@ All notable changes to Cressetide will be documented in this file.
 
 ## [Unreleased]
 
+- 三語 README（`README.md`／`README.zh-TW.md`／`README.ja.md`）整體重構為 16 節的 skill 導向版面：簡介（intro 流程圖的學習迴圈行補上 ledger 半邊）→ What's inside（新增元件架構圖＋列點地圖）→ 30 秒理解（併入原「何時使用」與「非目標」）→ 快速開始 → 各 skill 專節（vigil 吸收原「運作方式」「11 個 subagent」與「好任務」摘要；salvage 六段粗體詳解壓為三個列點；map 與 doctor 首次獲得專節）→ 新增「學習迴圈」專節（run ledger 記錄、reconciliation 處置、`FAILURE_MEMORY`／`EXPERIENCE` 分工，連結 `run-ledger.md` 與 `experience-memory.md`）→ Hooks 與安全模型 → 參考資料區（設定參考、相容性、信任與發佈、成本、範例與證據、文件、授權）。壓縮遵循零損失原則——被縮短的內容皆有既有文件作為完整出處（`docs/task-writing-guide.md`、salvage references 等）；每檔 397 → 341 行。
+- 新增 `.github/assets/flow_overview.svg`：手工撰寫的元件流程向量圖，三語 README 共用（純 `<text>` 元素、無 foreignObject、背景透明且文字皆壓在色塊上，GitHub 深淺色主題皆可讀）。以形狀＋顏色編碼節點類型並附圖例——skill 矩形、subagent 面板六角形、committed 記憶檔案文件形、本地 run ledger 圓柱、人／外部訊號膠囊、產出膠囊——並以虛線 skill boundary 容器正確呈現 risk-selected panel 與 arbiter 屬於 vigil run 的內部元件（修正先前沿用 ARCHITECTURE.md 平行節點畫法造成的誤讀）；取代原先依賴 GitHub mermaid 渲染的方案。`test/structure.test.mjs` 的三語 token 與 `##` 標題數 parity 檢查、`.github/scripts/validate-structure.mjs` 的 README parity 檢查皆通過。
+
 ## [0.4.0] - 2026-07-20
 
 - 新增 `cressetide/skills/vigil/scripts/run-ledger.mjs`：在 `.ctide/ledger/` 建立 append-only 的 `runs.jsonl` 事件紀錄檔（首次寫入時同步建立巢狀 `.ctide/ledger/.gitignore`，沿用 `.ctide/output/.gitignore` 既有的 `*` 加 `!.gitignore` 寫法），做為 committed semantic state（`map/`、`memory/`、`design/`、`incidents/`）與 untracked per-run scratch（`output/`）之外的第三種狀態類別——untracked-but-persistent 的 episodic state，跨執行留存、從不覆寫或截斷。`buildRunRecord` 產生的每筆 `run` 紀錄中，`head`（`git rev-parse HEAD`）與 `files`（`git diff --name-only`）一律由 script 自行推導、沒有對應 CLI flag 可覆寫，`verdict`／`verify`／`panel` 則逐字複製既有的 machine sentinel（`ctide:delivery=`／`ctide:verify=`／`ctide:panel=`）——皆為 git／契約推導的事實，絕不由 agent 自行輸入；所有寫入路徑 fail-open，CLI 一律 exit 0，`readRunsLedger` 的容錯解析與 `failure-consolidate.mjs` 既有的 ledger 容錯讀取一致，供 `run-reconcile.mjs`／`run-consolidate.mjs` 共用。新增 `test/run-ledger.test.mjs`。
