@@ -1,0 +1,22 @@
+{
+  "id": "map-index-lead-not-evidence",
+  "capability": "map",
+  "fixture": "fictional",
+  "prompt": "Enrich the fictional Harbor Service Map using the supplied structural-index output.",
+  "evidence": [
+    "A structural index reports that ship() calls dock().",
+    "The index was built three commits ago.",
+    "The current source of ship() is readable.",
+    "No source file has been opened yet."
+  ],
+  "requiredTerms": [
+    "candidate",
+    "cite",
+    "stale"
+  ],
+  "forbiddenTerms": [
+    "the index is sufficient evidence",
+    "no need to open the file"
+  ],
+  "rationale": "Index output is a lead; a Map claim lands only after the real file is opened and cited, and index staleness is surfaced."
+}

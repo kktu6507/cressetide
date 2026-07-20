@@ -1,9 +1,18 @@
 # Evidence discovery
 
 Techniques for finding and citing the evidence Cartographer's enrichment needs, beyond what the
-deterministic baseline already inventories. This is not a license for an exhaustive call graph or a
-persisted graph artifact of any kind. The only durable output stays cited prose inside
-SYSTEM_MAP.md, exactly as docs/map-contract.md and SKILL.md already require.
+deterministic baseline already inventories. Two invariants bound this work, exactly as
+docs/map-contract.md and SKILL.md already require. First: Map's only durable output is cited prose
+inside SYSTEM_MAP.md — Cartographer neither hand-builds an exhaustive call graph nor persists any
+graph artifact of its own, and no index file ever becomes part of the Map. Second: no claim lands
+in SYSTEM_MAP.md without opening the cited file, regardless of what surfaced the lead.
+
+A structural index that already exists in the environment (an LSP server, a code-review-graph
+database, or similar) may be queried as a lead source under Detect → Use → Else-Disclose
+(../../vigil/references/external-capabilities.md, "Structural code indexes"). Index output is a
+candidate, never evidence: confirm it in the real file, cite path:line, and treat a stale index as
+suspect until its own freshness check passes. Without an index, the lean techniques below are the
+baseline and are sufficient on their own.
 
 Entry points are not only a main/index/app/program/server filename, a package.json bin path, or a
 script's own shebang line — the deterministic baseline already finds and dedupes those signals.

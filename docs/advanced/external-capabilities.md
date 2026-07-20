@@ -32,6 +32,10 @@ Suggested read-only mapping:
 | `operability-reviewer` | observability MCP (Sentry / Datadog / Grafana) | production signals — read-only, minimal scope |
 | `intent-reviewer` | issue / PM tracker MCP (Jira / Linear / GitHub Issues) | requirement context |
 
+## Structural code indexes (optional lead source)
+
+If a structural index already exists for the repo — an LSP server or a code-review-graph database — cartographer (Map enrichment) and navigator (plan grounding) may query it for candidate entry points, callers, flows, and hotspots. Leads only: every claim still gets verified in the real file and cited path:line before it lands, the index never becomes part of the Map, and a missing index is not a gap (lean grep is the baseline). Prefer querying the CLI on demand over enabling such a tool's MCP server, and do not run its agent-integration installer.
+
 ## Codex (optional cross-model second opinion / rescue)
 
 Codex is an optional cross-model (OpenAI GPT-family) "second opinion / rescue" capability. It is **off by default**, is never required, and is never a hard dependency.

@@ -71,6 +71,16 @@ Note: `ui-ux-pro-max` may run a Python helper (`scripts/search.py`) locally. If 
 
 If a more specialized external subagent is installed (e.g. a dedicated `playwright-ui` evidence agent or a `migration-runner`), prefer delegating the matching step to it; otherwise the internal reviewer/implementer handles it locally. Same Detect → Use → Else-Disclose protocol. Do not hard-depend on any external subagent — ctide must run standalone.
 
+## Structural code indexes (optional lead source for cartographer / navigator)
+
+A pre-built structural index of the repository — an LSP server, a code-review-graph database (`.code-review-graph/graph.db` + its CLI), or similar — may serve as a lead source during Map enrichment (cartographer) and Stage A grounding (navigator). Same protocol:
+
+1. **Detect**: the index's data exists for this repository and its CLI actually executes.
+2. **Use**: query it read-only for candidates (entry points, callers/callees, flows, communities, hotspots). Check the index's own freshness first (e.g. `code-review-graph status` warns when the graph was built on another branch or commit); a stale index is disclosed and its leads downgraded. Prefer the CLI over mounting the MCP server — dozens of tool descriptions cost context every turn, and cartographer/navigator already hold Bash.
+3. **Else**: fall back to the lean greps of `../../map/references/evidence-discovery.md`. Absence is not a coverage gap — grep-level discovery is the contractual baseline, an index only accelerates it. A detected-but-failing index is disclosed per *Absent vs. present-but-failing* above.
+
+Index output is a candidate, never evidence: no claim lands in SYSTEM_MAP.md or in Grounding Findings without file-level verification and a path:line citation. The index file is never part of the Map and never enters git through ctide; `map verify` gives it no special treatment — an in-tree index directory (e.g. `.code-review-graph/`) is hashed into the Map's working-tree fingerprint like any other untracked file, so keep it outside the scanned tree or expect `map verify` to report working-tree drift when the index changes. Do not run such a tool's own agent-integration installer (instructions injected into CLAUDE.md telling agents to always prefer graph tools would fight ctide's evidence discipline) — install the CLI, query on demand.
+
 ## Codex (optional second-opinion / rescue)
 
 Codex is an optional cross-model (OpenAI GPT-family) "second opinion / rescue" capability. It is **off by default**, is NOT required, and must never be a hard dependency. Follow Detect → Use → Else-Disclose, gated by an explicit per-task opt-in:

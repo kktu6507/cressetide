@@ -35,7 +35,7 @@ The deterministic helper creates a heuristic inventory baseline, not a verified 
 
 Record what the system is/does in one short, plain-language description, pointing into architecture boundaries and external integrations for the supporting detail rather than restating it; repository structure and languages; package/workspace boundaries; configuration, tests, and commands; modules, responsibilities, entry points, and interfaces; important request, event, job, CLI, and user flows; stores, schemas, migrations, transactions, caches, serialized formats, ownership, and trust boundaries; external integrations; build, run, deploy, health, logs, metrics, traces, rollback, feature flags, kill switches, backup and restore; high-risk modules, destructive paths, production assumptions, missing observability, and unknowns.
 
-Do not generate an exhaustive call graph. Use lean caller/callee scans only for critical symbols.
+Do not hand-build an exhaustive call graph. Use lean caller/callee scans only for critical symbols. An existing structural index may be queried as a lead source (`references/evidence-discovery.md`); its output never lands without file-level citation.
 
 ## Provenance schema
 

@@ -2,7 +2,11 @@
 
 The Cressetide Map is a high-density, repository-grounded index for system
 orientation, change planning, and incident response. It is not a directory
-dump, exhaustive call graph, or substitute for direct evidence.
+dump, exhaustive call graph, or substitute for direct evidence. During
+enrichment, an existing structural index (LSP, code-review-graph, or
+similar) may supply leads (see `advanced/external-capabilities.md`); a lead
+becomes a Map claim only after file-level verification and citation, and the
+index itself is never part of the Map.
 
 ## Storage model
 
