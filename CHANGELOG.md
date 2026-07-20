@@ -4,6 +4,7 @@ All notable changes to Cressetide will be documented in this file.
 
 ## [Unreleased]
 
+- 三語 README 全文「說人話」改稿（37 處確認後套用）：長段落全面拆段增加呼吸感（每檔 341 → 357 行，多出的全是段落切分）；全形破折號「——」由 40+ 處降到 4 處，列點導入一律改冒號；清除翻譯腔用詞（紮根、持久化、刷新、正在運行、靜默、出貨、揭露、浮出、送達、承載等）；中文詞間半形斜線統一為全形「／」。英日版以 zh-TW 為源頭重新導出相同的段落結構與標點密度，並修正日文版兩處殘留的中文詞「紮根させ」。`contract-guard.js` 的 hook 表格欄改為白話描述（機制術語「以有效、依優先序解析後的值」改為其實際後果「連新建一個 settings 檔來翻也算」），事實零損失。六個 CI token、16 節標題 parity、所有連結／數字／指令字面值不變；`npm run validate` 與 `test/structure.test.mjs` 通過。
 - 三語 README（`README.md`／`README.zh-TW.md`／`README.ja.md`）整體重構為 16 節的 skill 導向版面：簡介（intro 流程圖的學習迴圈行補上 ledger 半邊）→ What's inside（新增元件架構圖＋列點地圖）→ 30 秒理解（併入原「何時使用」與「非目標」）→ 快速開始 → 各 skill 專節（vigil 吸收原「運作方式」「11 個 subagent」與「好任務」摘要；salvage 六段粗體詳解壓為三個列點；map 與 doctor 首次獲得專節）→ 新增「學習迴圈」專節（run ledger 記錄、reconciliation 處置、`FAILURE_MEMORY`／`EXPERIENCE` 分工，連結 `run-ledger.md` 與 `experience-memory.md`）→ Hooks 與安全模型 → 參考資料區（設定參考、相容性、信任與發佈、成本、範例與證據、文件、授權）。壓縮遵循零損失原則——被縮短的內容皆有既有文件作為完整出處（`docs/task-writing-guide.md`、salvage references 等）；每檔 397 → 341 行。
 - 新增 `.github/assets/flow_overview.svg`：手工撰寫的元件流程向量圖，三語 README 共用（純 `<text>` 元素、無 foreignObject、背景透明且文字皆壓在色塊上，GitHub 深淺色主題皆可讀）。以形狀＋顏色編碼節點類型並附圖例——skill 矩形、subagent 面板六角形、committed 記憶檔案文件形、本地 run ledger 圓柱、人／外部訊號膠囊、產出膠囊——並以虛線 skill boundary 容器正確呈現 risk-selected panel 與 arbiter 屬於 vigil run 的內部元件（修正先前沿用 ARCHITECTURE.md 平行節點畫法造成的誤讀）；取代原先依賴 GitHub mermaid 渲染的方案。`test/structure.test.mjs` 的三語 token 與 `##` 標題數 parity 檢查、`.github/scripts/validate-structure.mjs` 的 README parity 檢查皆通過。
 
