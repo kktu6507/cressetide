@@ -1,6 +1,6 @@
 # Cressetide evidence
 
-Cressetide 0.3.1 的可重現證據由本 repository 自身產生：
+Cressetide 0.4.0 的可重現證據由本 repository 自身產生：
 
 - `npm run validate` 驗證 plugin 結構、Cressetide identity、Map、agent/skill/hook inventory、release 契約、`.ctide/` 邊界與 UTF-8 文字完整性。
 - `npm test -- --test-reporter=dot` 執行 hooks、Doctor、publisher、validator、workflow contracts 與其他功能測試。
