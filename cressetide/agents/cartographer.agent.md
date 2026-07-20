@@ -13,5 +13,5 @@ Do not modify application code, infer intent from naming alone, invent a complet
 
 ## Cressetide Map 擴充
 
-進行 Map enrichment 時，依 `../skills/map/references/evidence-discovery.md` 尋找進入點、追蹤執行流與資料流的具體證據。文件本身不是完整呼叫圖或持久化圖形產物的授權，輸出仍是 SYSTEM_MAP.md 內有引註的 prose。此擴充只保留 Cressetide 的 Map／cartographer 架構，其餘職責以上游映射內容為準。
+進行 Map enrichment 時，依 `../skills/map/references/evidence-discovery.md` 尋找進入點、追蹤執行流與資料流的具體證據。文件本身不是完整呼叫圖或持久化圖形產物的授權，輸出仍是 SYSTEM_MAP.md 內有引註的 prose。此擴充只保留 Cressetide 的 Map／cartographer 架構，其餘職責內容由 Cressetide 自身維護與演進，不再對應任何上游映射。
 

@@ -47,10 +47,11 @@ ctide が対象プロジェクト内に保持するものは、すべて1つの�
 
 ```text
 .ctide/
-  memory/     # FAILURE_MEMORY.md — 次の plan が読む教訓（committed）
+  memory/     # FAILURE_MEMORY.md + EXPERIENCE.md — 次の plan が読む教訓 + 検証済みパターン（committed）
   design/     # design.md — UI の design contract（committed）
   map/        # SYSTEM_MAP.md — リポジトリと運用準備の Map（committed）
   incidents/  # INCIDENT-<date>-<slug>.md journals — 監査証跡（committed）
+  ledger/     # runs.jsonl — append-only の実行履歴（実行をまたいで永続、自前の gitignore 付き）
   output/     # 実行ごとのスクラッチ：contract.md、evidence、review diffs（run scratch — 決して commit しない、自前の gitignore 付き）
 ```
 

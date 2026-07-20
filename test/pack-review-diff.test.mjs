@@ -8,7 +8,7 @@ import cp from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  parseDiff, classifyLang, rankAndPack, formatPacked,
+  parseDiff, classifyLang, rankAndPack, formatPacked, KNOWN_FLAGS,
 } from "../cressetide/skills/vigil/scripts/pack-review-diff.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -252,4 +252,42 @@ test("FIX4: a spaced filename's trailing tab is stripped from the ---/+++ path (
   assert.ok(out.includes("### my file.js (JavaScript,"),
     "the path must drop git's trailing tab and classify by the real .js extension");
   assert.ok(!/my file\.js\t/.test(out), "no stray trailing tab may survive in the rendered path");
+});
+
+// --- e2e: pack-review-diff whole-class flag-swallow guard (get() itself now guards EVERY flag in this
+// file's own KNOWN_FLAGS -- the same shared-mechanism fix run-reconcile.mjs / run-ledger.mjs apply over
+// their own flag sets. Only 2 flags here, so the loop is just the 2 possible (F, G) orderings) ---
+
+test("pack-review-diff: for EVERY flag in KNOWN_FLAGS, a value slot occupied by the OTHER known flag's own name is treated as omitted, never as a literal value -- --regen falls back to the default regenerate pointer (never the bogus '--max-lines'-shaped literal) while --max-lines' own legitimate value (4) still forces the real trim; --max-lines swallowed by --regen falls back to 0 (unlimited) so NOTHING is trimmed at all, regardless of --regen's value", () => {
+  const values = { "--max-lines": "4", "--regen": "MY-REGEN-POINTER-should-never-appear-as---max-lines" };
+  const input = TINY_JS + BIG_JS; // proven (G1-c, above) to trim tiny.js at maxLines=4, keeping big.js in full
+  // Only 2 flags in this file -> order is simply [G, F] (no "everyone else" middle section).
+  for (const F of KNOWN_FLAGS) {
+    for (const G of KNOWN_FLAGS) {
+      if (G === F) continue;
+      const order = [G, F];
+      const argv = [];
+      for (const flagName of order) {
+        if (flagName === F) argv.push(F, G); // F's own value slot swallowed by G's literal name
+        else argv.push(flagName, values[flagName]);
+      }
+      const r = cp.spawnSync("node", [SCRIPT, ...argv], { input, encoding: "utf8" });
+      assert.strictEqual(r.status, 0, `${F} swallowed by ${G} must still exit 0 (fail-open): ${r.stderr}`);
+      if (F === "--regen") {
+        // --max-lines keeps its own real value (4, unaffected) -> a real trim still occurs; --regen's
+        // swallowed slot must fall back to the DEFAULT pointer, never the literal '--max-lines' text.
+        assert.ok(r.stdout.includes("1 more file(s) trimmed"), `${F} swallowed by ${G}: the real --max-lines=4 must still force a trim`);
+        assert.ok(r.stdout.includes("  - tiny.js"), `${F} swallowed by ${G}: the trimmed file must still be named`);
+        assert.ok(r.stdout.includes("git diff <base> -- <paths>"),
+          `${F} swallowed by ${G}: --regen must fall back to the DEFAULT pointer, not the literal '${G}'`);
+        assert.ok(!r.stdout.includes("regenerate the full same-scoped diff: --max-lines"),
+          `${F} swallowed by ${G}: the trailer must never show the swallowed flag name as the regenerate pointer`);
+      } else {
+        // F === "--max-lines": falls back to 0 (unlimited) -> no trim at all, regardless of --regen's value.
+        assert.ok(!r.stdout.includes("trimmed"), `${F} swallowed by ${G}: falling back to unlimited must trim nothing`);
+        assert.ok(r.stdout.includes("BIG_ADD_1") && r.stdout.includes("TINY_ADD"),
+          `${F} swallowed by ${G}: every file's content must survive when the swallow falls back to unlimited`);
+      }
+    }
+  }
 });

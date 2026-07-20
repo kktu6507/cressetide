@@ -112,9 +112,9 @@ security boundary. An agent must not weaken a hook to bypass a denial.
 ## State and evidence
 
 `.ctide/` is the sole project state root. It separates the system Map, failure
-memory, design context, incident journals, and task output. Runtime artifacts
-are ignored by Git by default because they may contain repository-specific or
-operational evidence.
+memory, design context, incident journals, run ledger, and task output. Runtime
+artifacts are ignored by Git by default because they may contain
+repository-specific or operational evidence.
 
 Evidence moves through bounded Review Packets rather than full conversation
 transcripts. A packet states intent, numbered criteria, in/out of scope,

@@ -14,6 +14,8 @@ Run this step only when the task is high-risk, **reusing the existing risk defin
 
 Default to **skipping** it for low/medium-risk work (a checkbox, a copy edit, a rename). A false trigger does not just cost tokens — it makes the user wait before approval — so bias toward not running it, consistent with the usability-over-strictness principle. This reuses the same risk taxonomy the orchestrator applies when selecting reviewers (the `references/reviewer-selection.md` Risk Matrix), evaluated here at plan time — not a second, separate standard.
 
+Skipping this step also means low/medium-risk work does not get this Stage A version of the reconciliation scan (`references/run-ledger.md`) — it instead gets a lighter, main-thread-only scan wired directly in `SKILL.md`'s lifecycle step 2 (per the approved plan's scan-scope decision); see there for that path.
+
 ## Stage A — Grounding (bring the code's reality)
 
 Follow `Detect → Use → Else-Disclose` (see `references/external-capabilities.md`).
@@ -28,8 +30,9 @@ Follow `Detect → Use → Else-Disclose` (see `references/external-capabilities
   - the **callers/callees of the touched symbols** — a lean `Grep`-level coupling scan (not a full call-graph) — so the plan does not miss coupled code that must change too (a top omission source);
   - the unknowns the scout could **not** confirm (state them honestly; do not guess);
   - for UI / design-system / interaction scope, whether a `design.md` design contract exists and applies (`references/design-spec.md`) — and, when one is needed but absent, a recommendation to establish one (the scout detects and recommends; it does not author it).
+  - the disposition of any still-open ledger runs whose observation window overlaps this task's touched files (`references/run-ledger.md`) — run `run-reconcile.mjs scan` and dispose each flagged candidate with a reason (escaped / survived / superseded / building-upon); ambiguous overlap is reported as `needs human review`, never silently resolved to clean.
 - **Anti-hallucination**: a claim about the code is usable only with concrete `file:line` evidence; mark anything unverified as unverified and do not fold it into the contract (the same evidence discipline as `references/reviewer-common.md`).
-- **Else** (no grounding subagent capability — neither `navigator` nor `Explore`): the main thread does a best-effort local grounding (read the key files, locate call sites) and **discloses** that grounding ran without an independent subagent, with the resulting lower coverage and remaining uncertainty. Never hard-depend on the subagent; never error on its absence.
+- **Else** (no grounding subagent capability — neither `navigator` nor `Explore`): the main thread does a best-effort local grounding (read the key files, locate call sites, and still run `run-reconcile.mjs scan` itself per `references/run-ledger.md`) and **discloses** that grounding ran without an independent subagent, with the resulting lower coverage and remaining uncertainty. Never hard-depend on the subagent; never error on its absence.
 
 ## Stage B — Intent Sharpening + Edge Enumeration (main thread)
 
@@ -59,6 +62,7 @@ Produce:
 | Open product decisions | `AskUserQuestion` at the plan gate | the user decides the product behavior |
 | Assumption register | the contract body's Assumptions section + the optional machine-block `assumptions` array (`references/task-contract.md`) and the Review Packet's *Assumptions* field (`references/review-packet.md`) | non-product-impacting defaulted interpretations are visible at the plan gate and become first-class review targets instead of hardening silently into the contract |
 | Gaps vs intent | the plan itself, before `ExitPlanMode` | omissions are closed before any code is written |
+| Reconciliation dispositions | `SKILL.md`'s Implementation step 3 ("Execute reconciliation dispositions"), post-approval | closes out prior runs' observation windows using this run's evidence — `navigator` only disposes with reasons; it never writes `close`/`expire` itself (read-only invariant preserved) |
 | All of the above | presented at `ExitPlanMode` | the user approves seeing the real call sites, the precise contract, the implied edges, and the open decisions |
 
 ## Invariants

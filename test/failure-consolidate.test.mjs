@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildLedgerLines, retrieve, defaultLedgerPath, ledgerKey } from "../cressetide/skills/vigil/scripts/failure-retrieve.mjs";
-import { readLedger, consolidationReport, formatReport } from "../cressetide/skills/vigil/scripts/failure-consolidate.mjs";
+import { readLedger, consolidationReport, formatReport, KNOWN_FLAGS } from "../cressetide/skills/vigil/scripts/failure-consolidate.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const RETRIEVE = path.join(root, "cressetide", "skills", "vigil", "scripts", "failure-retrieve.mjs");
@@ -182,5 +182,49 @@ test("a bare retrieve (no --log) writes NO ledger (pure read by default)", () =>
     assert.ok(!fs.existsSync(defaultLedgerPath(memFile)), "no ledger without --log");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- e2e: failure-consolidate whole-class flag-swallow guard (get() itself now guards EVERY flag in this
+// file's own KNOWN_FLAGS -- the same shared-mechanism fix run-reconcile.mjs / run-ledger.mjs apply over
+// their own flag sets) ---
+
+test("failure-consolidate: for EVERY flag in KNOWN_FLAGS, a value slot occupied by any OTHER known flag's own name is treated as omitted, never as a literal value -- --file falls back to resolveMemoryFile(--cwd) (finds the seeded memory file's retired entry, not a bogus nonexistent '<flag-name>'-shaped file), and --cwd/--ledger/--stale's swallow never breaks the retired-entry report either", () => {
+  const RETIRED_TITLE_RE = /retired go lesson/;
+  const values = { "--ledger": "irrelevant-nonexistent-ledger.jsonl", "--stale": "60" };
+  for (const F of KNOWN_FLAGS) {
+    for (const G of KNOWN_FLAGS) {
+      if (G === F) continue;
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-fc-swallow-"));
+      try {
+        fs.mkdirSync(path.join(dir, ".ctide", "memory"), { recursive: true });
+        const memFile = path.join(dir, ".ctide", "memory", "FAILURE_MEMORY.md");
+        fs.writeFileSync(memFile, MEM, "utf8"); // MEM's 3rd entry is retired ("retired go lesson")
+        values["--file"] = memFile;
+
+        // Order: G's own legitimate occurrence FIRST, then every other flag, then F LAST with its value
+        // slot occupied by the literal token G (mirrors run-reconcile.test.mjs's / run-ledger.test.mjs's
+        // identical loop-test ordering discipline -- keeps every flag's `indexOf` lookup unambiguous).
+        const order = [G, ...KNOWN_FLAGS.filter((x) => x !== F && x !== G), F];
+        const argv = [];
+        for (const flagName of order) {
+          if (flagName === F) argv.push(F, G); // F's own value slot swallowed by G's literal name
+          else if (flagName === "--cwd") argv.push("--cwd", dir);
+          else argv.push(flagName, values[flagName]);
+        }
+        // Hermetic: strip CLAUDE_PROJECT_DIR so --cwd's fallback resolves to the spawned process's own cwd
+        // (this temp dir), never a developer's ambient project dir.
+        const env = { ...process.env };
+        delete env.CLAUDE_PROJECT_DIR;
+        const r = cp.spawnSync("node", [CONSOLIDATE, ...argv], { cwd: dir, encoding: "utf8", env });
+        assert.strictEqual(r.status, 0, `${F} swallowed by ${G} must still exit 0 (fail-open): ${r.stderr}`);
+        assert.match(r.stdout, /retired — delete on next write:/,
+          `${F} swallowed by ${G}: the memory file must still resolve (never a bogus '${G}'-shaped path/value)`);
+        assert.match(r.stdout, RETIRED_TITLE_RE,
+          `${F} swallowed by ${G}: the seeded retired entry must still be named`);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
   }
 });

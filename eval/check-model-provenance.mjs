@@ -69,9 +69,26 @@ export function formatReport(result, sourceFile) {
   return lines.join("\n");
 }
 
+// Every flag token this file's `get()` closure is ever queried with (main()'s own --cwd/--file/--model
+// reads below -- the complete recognized-flag set of this CLI's parser). Exported so the test suite can
+// drive the SAME list `get()` guards against (no hardcoded duplicate list to drift out of sync). `get()`
+// itself (below) checks this list before ever returning `args[i + 1]` as a flag's value: when that next
+// token is itself one of these names, the value is treated as omitted -- `get()` returns the flag's own
+// default rather than swallowing the neighboring flag's name. Mirrors run-reconcile.mjs's / run-ledger.mjs's
+// identical KNOWN_FLAGS guard, each over its own file's complete flag set.
+export const KNOWN_FLAGS = ["--cwd", "--file", "--model"];
+
 function main(argv) {
   const args = argv.slice(2);
-  const get = (flag, def) => { const i = args.indexOf(flag); return (i >= 0 && args[i + 1]) ? args[i + 1] : def; };
+  // The one shared flag-value lookup EVERY flag in this file goes through. Guards the swallow at its single
+  // root: if the token immediately following `flag` is itself one of KNOWN_FLAGS (this file's own complete
+  // recognized-flag set, above), the value is treated as omitted -- `def` is returned instead of the
+  // neighboring flag's own name. Fixes every flag uniformly, not per-call-site.
+  const get = (flag, def) => {
+    const i = args.indexOf(flag);
+    const v = i >= 0 ? args[i + 1] : undefined;
+    return v && !KNOWN_FLAGS.includes(v) ? v : def;
+  };
   const cwd = get("--cwd", process.cwd());
   const file = get("--file", path.join(cwd, "eval", "baseline.md"));
   const currentModel = get("--model", "");

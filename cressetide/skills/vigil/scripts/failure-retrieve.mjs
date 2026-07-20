@@ -216,9 +216,30 @@ function appendLedger(file, lines) {
   try { fs.appendFileSync(file, lines.join("\n") + "\n"); } catch (e) {}
 }
 
+// Every flag token this file's `get()` closure is ever queried with, PLUS the boolean `--log` flag (read
+// via `args.includes`, not `get()` -- it carries no value of its own, but is still a recognized flag NAME
+// that must never be swallowed as some OTHER flag's value, e.g. `--file <path> --log --query <text>`
+// silently reading file="--log") -- this file's own complete recognized-flag set. Exported so the test
+// suite can drive the SAME list `get()` guards against (no hardcoded duplicate list to drift out of sync).
+// `get()` itself (below) checks this list before ever returning `args[i + 1]` as a flag's value: when that
+// next token is itself one of these names, the value is treated as omitted -- `get()` returns the flag's
+// own default rather than swallowing the neighboring flag's name. Mirrors run-reconcile.mjs's /
+// run-ledger.mjs's identical KNOWN_FLAGS guard, each over its own file's complete flag set. The separate
+// positional-argument scan below (the --query fallback when --query is absent) is a DIFFERENT mechanism,
+// unguarded here and out of this task's scope.
+export const KNOWN_FLAGS = ["--cwd", "--query", "--top", "--file", "--log-file", "--session", "--log"];
+
 function main(argv) {
   const args = argv.slice(2);
-  const get = (flag, def) => { const i = args.indexOf(flag); return (i >= 0 && args[i + 1]) ? args[i + 1] : def; };
+  // The one shared flag-value lookup EVERY flag in this file goes through. Guards the swallow at its single
+  // root: if the token immediately following `flag` is itself one of KNOWN_FLAGS (this file's own complete
+  // recognized-flag set, above), the value is treated as omitted -- `def` is returned instead of the
+  // neighboring flag's own name. Fixes every flag uniformly, not per-call-site.
+  const get = (flag, def) => {
+    const i = args.indexOf(flag);
+    const v = i >= 0 ? args[i + 1] : undefined;
+    return v && !KNOWN_FLAGS.includes(v) ? v : def;
+  };
   const cwd = get("--cwd", process.env.CLAUDE_PROJECT_DIR || process.cwd());
   // Query: explicit --query, else every non-flag positional argument joined (so a bare
   // `failure-retrieve.mjs src/auth/login.ts node jsdom` works).

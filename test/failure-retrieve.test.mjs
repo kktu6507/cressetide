@@ -5,15 +5,17 @@
 // actually surfaces the right lesson, runnable in CI (`npm test`) with no model. See eval/failure-memory/README.md.
 import { test } from "node:test";
 import assert from "node:assert";
+import cp from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  tokenize, parseEntries, scoreEntry, retrieve, formatRetrieval, buildLedgerLines, ledgerKey,
+  tokenize, parseEntries, scoreEntry, retrieve, formatRetrieval, buildLedgerLines, ledgerKey, KNOWN_FLAGS,
 } from "../cressetide/skills/vigil/scripts/failure-retrieve.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const EVAL = path.join(root, "eval", "failure-memory");
+const SCRIPT = path.join(root, "cressetide", "skills", "vigil", "scripts", "failure-retrieve.mjs");
 
 // --- unit: tokenize ---
 
@@ -237,4 +239,69 @@ test("resolveMemoryFile: legacy-only -> ai/ fallback, and the usage ledger stays
   assert.strictEqual(defaultLedgerPath(chosen), path.join(dir, "ai", ".failure-memory-usage.jsonl"), "ledger sits next to the legacy file while it is the selected one");
   const newDir = mkMemTree({ newMem: "# FM" });
   assert.strictEqual(defaultLedgerPath(resolveMemoryFile(newDir)), path.join(newDir, ".ctide", "memory", ".failure-memory-usage.jsonl"), "after migration the ledger follows the selected file into the new layout");
+});
+
+// --- e2e: failure-retrieve whole-class flag-swallow guard (get() itself now guards EVERY flag in this
+// file's own KNOWN_FLAGS -- the same shared-mechanism fix run-reconcile.mjs / run-ledger.mjs apply over
+// their own flag sets. `--log` is a boolean flag read via `args.includes`, not `get()` -- it has no value
+// position of its own to attack, so it is excluded from the OUTER (attacked) loop below, but it stays a
+// full member of KNOWN_FLAGS and appears in the INNER (swallower) loop) ---
+
+// A deliberately distinctive, single-token, dictionary-free marker (never a substring of any OTHER value
+// used in this test's own invocation -- the temp-dir prefix, --session's value, --log-file's name, etc.)
+// so a coincidental token overlap can never produce a false "match" via the SEPARATE, out-of-scope
+// positional-argument fallback scan below (that scan has its own pre-existing misalignment quirk with a
+// bare boolean flag like --log -- it can pick up an unrelated leftover token, such as --cwd's own path
+// value, as a stray "positional" -- harmless here specifically BECAUSE this marker cannot collide with it).
+const CANARY_MEM = `# FM
+
+### 2026-07-01 — qzxcanary8471 lesson
+- **Prevention rule**: r.
+- **Tags**: qzxcanary8471.
+`;
+
+test("failure-retrieve: for EVERY value-bearing flag in KNOWN_FLAGS, a value slot occupied by any OTHER known flag's own name (including the boolean --log) is treated as omitted, never as a literal value -- --file falls back to resolveMemoryFile(--cwd) (finds the seeded canary lesson, not a bogus nonexistent '<flag-name>'-shaped file); --query falls back to empty/unrelated content (never the literal '<flag-name>' token itself as real search text), so the canary is correctly NOT surfaced", () => {
+  const VALUE_FLAGS = KNOWN_FLAGS.filter((f) => f !== "--log");
+  const BOOL_FLAGS = ["--log"];
+  const values = { "--query": "qzxcanary8471", "--top": "5", "--session": "logtoken1" };
+  for (const F of VALUE_FLAGS) {
+    for (const G of KNOWN_FLAGS) {
+      if (G === F) continue;
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-frtest-"));
+      try {
+        fs.mkdirSync(path.join(dir, ".ctide", "memory"), { recursive: true });
+        const memFile = path.join(dir, ".ctide", "memory", "FAILURE_MEMORY.md");
+        fs.writeFileSync(memFile, CANARY_MEM, "utf8");
+        values["--file"] = memFile;
+        values["--log-file"] = path.join(dir, "usage-ledger.jsonl");
+
+        // Order: G's own legitimate occurrence FIRST, then every other flag, then F LAST with its value
+        // slot occupied by the literal token G (mirrors run-reconcile.test.mjs's / run-ledger.test.mjs's
+        // identical loop-test ordering discipline -- keeps every flag's `indexOf` lookup unambiguous).
+        const order = [G, ...KNOWN_FLAGS.filter((x) => x !== F && x !== G), F];
+        const argv = [];
+        for (const flagName of order) {
+          if (flagName === F) argv.push(F, G); // F's own value slot swallowed by G's literal name
+          else if (flagName === "--cwd") argv.push("--cwd", dir);
+          else if (BOOL_FLAGS.includes(flagName)) argv.push(flagName); // bare boolean, no value slot
+          else argv.push(flagName, values[flagName]);
+        }
+        // Hermetic: strip CLAUDE_PROJECT_DIR so --cwd's fallback resolves to the spawned process's own cwd
+        // (this temp dir), never a developer's ambient project dir.
+        const env = { ...process.env };
+        delete env.CLAUDE_PROJECT_DIR;
+        const r = cp.spawnSync("node", [SCRIPT, ...argv], { cwd: dir, encoding: "utf8", env });
+        assert.strictEqual(r.status, 0, `${F} swallowed by ${G} must still exit 0 (fail-open): ${r.stderr}`);
+        if (F === "--query") {
+          assert.match(r.stdout, /no matching failure-memory entries/i,
+            `${F} swallowed by ${G}: an omitted query must fall back to EMPTY (no match), never treat '${G}' as real search text`);
+        } else {
+          assert.match(r.stdout, /qzxcanary8471 lesson/,
+            `${F} swallowed by ${G}: the seeded canary lesson must still be found (never a bogus '${G}'-shaped path/value)`);
+        }
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  }
 });

@@ -117,7 +117,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveContractPath } from "../cressetide/skills/vigil/scripts/contract-check.mjs";
+import { resolveContractPath, KNOWN_FLAGS } from "../cressetide/skills/vigil/scripts/contract-check.mjs";
 
 const SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..",
   "cressetide", "skills", "vigil", "scripts", "contract-check.mjs");
@@ -169,4 +169,65 @@ test("contract-check CLI: an explicit --contract arg keeps precedence over the .
   const dir = mkContractTree({ newMd: contractWithUncoveredAc("AC-NEW"), legacyMd: contractWithUncoveredAc("AC-LEGACY") });
   const out = runCli(dir, ["--contract", path.join(".ctide", "legacy-output", "contract.md")]);
   assert.match(out, /AC missing verification mapping: AC-LEGACY/, "an explicit path must win over discovery");
+});
+
+// --- e2e: contract-check whole-class flag-swallow guard (get() itself now guards EVERY flag in this
+// file's own KNOWN_FLAGS -- the same shared-mechanism fix run-reconcile.mjs / run-ledger.mjs apply over
+// their own flag sets) ---
+
+function git(cwd, ...args) {
+  return cp.execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+}
+
+// A repo with one committed file plus a real UNCOMMITTED modification to it (so `git diff --name-only HEAD`
+// -- the correct --base fallback -- shows something non-trivial), and a contract at the DEFAULT
+// .ctide/output/contract.md discovery path (so a correctly-falling-back --contract finds it) whose
+// allowedPaths excludes that file (so a correctly-resolved --base reports it as out-of-scope).
+test("contract-check: a git failure (non-git cwd) stays fail-open with a clean caller stderr -- the child's raw stderr text must never leak through execFileSync's default-inherited stdio", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-cc-nongit-"));
+  const result = cp.spawnSync("node", [SCRIPT, "--base", "HEAD"], { cwd: dir, encoding: "utf8" });
+  assert.strictEqual(result.status, 0, "must still exit 0 (fail-open) outside a git repo");
+  assert.strictEqual(result.stderr, "", "caller's own stderr must be clean -- git's raw 'fatal: not a git repository' text must not leak through");
+  assert.match(result.stdout, /scope/, "must still print a report (changedPathsFromGit swallowed the git failure to [])");
+});
+
+function repoForSwallowTest() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-cc-swallow-"));
+  git(dir, "init", "-q", "--initial-branch=main");
+  git(dir, "config", "user.email", "cc@example.invalid");
+  git(dir, "config", "user.name", "Contract Check Swallow Test");
+  fs.writeFileSync(path.join(dir, "tracked.ts"), "original\n", "utf8");
+  git(dir, "add", ".");
+  git(dir, "commit", "-q", "-m", "initial");
+  fs.writeFileSync(path.join(dir, "tracked.ts"), "changed\n", "utf8"); // uncommitted -> shows in `git diff HEAD`
+  fs.mkdirSync(path.join(dir, ".ctide", "output"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, ".ctide", "output", "contract.md"),
+    "# C\n\n```json\n" + JSON.stringify({ allowedPaths: ["nonexistent/**"] }) + "\n```\n",
+    "utf8",
+  );
+  return dir;
+}
+
+test("contract-check: for EVERY flag in KNOWN_FLAGS, a value slot occupied by the OTHER known flag's own name is treated as omitted, never as a literal value -- --contract falls back to the .ctide default-discovery path (finds the seeded contract, not a bogus nonexistent '<flag-name>'-shaped file) and --base falls back to diffing against HEAD (reports the real uncommitted change as out-of-scope, rather than failing open on a bogus non-ref '<flag-name>'-shaped --base)", () => {
+  // Only 2 flags in this file -> order is simply [G, F] (no "everyone else" middle section).
+  for (const F of KNOWN_FLAGS) {
+    for (const G of KNOWN_FLAGS) {
+      if (G === F) continue;
+      const dir = repoForSwallowTest();
+      const contractPath = path.join(dir, ".ctide", "output", "contract.md");
+      // G's own legitimate occurrence: --contract -> the real seeded contract path; --base -> "HEAD" (an
+      // explicit ref equivalent to the default, so the expected report is identical either way).
+      const legitValueOf = (flagName) => (flagName === "--contract" ? contractPath : "HEAD");
+      const order = [G, F];
+      const argv = [];
+      for (const flagName of order) {
+        if (flagName === F) argv.push(F, G); // F's own value slot swallowed by G's literal name
+        else argv.push(flagName, legitValueOf(flagName));
+      }
+      const out = cp.execFileSync("node", [SCRIPT, ...argv], { cwd: dir, encoding: "utf8" });
+      assert.match(out, /out-of-scope changed files: tracked\.ts/,
+        `${F} swallowed by ${G} must still resolve to the real contract + diff against HEAD, not a bogus '${G}'-shaped path/ref`);
+    }
+  }
 });

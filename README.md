@@ -47,10 +47,11 @@ Everything ctide keeps in a consuming project lives under one root folder:
 
 ```text
 .ctide/
-  memory/     # FAILURE_MEMORY.md — lessons the next plan reads (committed)
+  memory/     # FAILURE_MEMORY.md + EXPERIENCE.md — lessons + validated patterns the next plan reads (committed)
   design/     # design.md — the UI design contract (committed)
   map/        # SYSTEM_MAP.md — repository and operational-readiness Map (committed)
   incidents/  # INCIDENT-<date>-<slug>.md journals — the audit trail (committed)
+  ledger/     # runs.jsonl — append-only run history (persists across runs, self-gitignored)
   output/     # per-run scratch: contract.md, evidence, review diffs (run scratch — never committed, self-gitignored)
 ```
 

@@ -47,10 +47,11 @@ ctide 放在 consuming project 裡的所有東西，都收在一個根目錄底�
 
 ```text
 .ctide/
-  memory/     # FAILURE_MEMORY.md — 下一次 plan 會讀的教訓（committed）
+  memory/     # FAILURE_MEMORY.md + EXPERIENCE.md — 下一次 plan 會讀的教訓與已驗證模式（committed）
   design/     # design.md — UI design contract（committed）
   map/        # SYSTEM_MAP.md — 儲存庫與操作就緒 Map（committed）
   incidents/  # INCIDENT-<date>-<slug>.md journals — 稽核軌跡（committed）
+  ledger/     # runs.jsonl — append-only 執行歷史（跨執行留存、自帶 gitignore）
   output/     # 每次執行的 scratch：contract.md、evidence、review diffs（run scratch — 永不 commit、自帶 gitignore）
 ```
 
