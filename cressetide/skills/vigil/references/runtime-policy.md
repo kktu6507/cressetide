@@ -30,14 +30,14 @@ Therefore:
 The provider's prompt cache discounts a stable prefix heavily — cache reads bill at roughly a tenth of fresh input — so order context to keep prefixes stable across the run. This is a **cost-free** discipline: it changes ordering and timing, never content or signal (like *filter noise, not signal*, it never trades away correctness).
 
 - Keep the stable shared preamble byte-stable. The verbatim "Shared reviewer contract" block is identical across every reviewer handoff *by design*; that byte-stability is what lets a provider reuse it, so do not reword it per-handoff.
-- Load delivery-only references late. `references/final-report.md` is loaded at delivery, never up front, so the report template does not pollute the earlier prefix; keep new, run-specific context appended at the end rather than reordering or rewriting what is already in the window.
-- Append, don't reorder. Reordering or rewriting earlier context invalidates the cached prefix for no gain; add new context after it instead.
+- Load delivery-only references late. `references/final-report.md` is loaded at delivery, never up front, so the report template does not pollute the earlier prefix.
+- Append, don't reorder. Reordering or rewriting earlier context invalidates the cached prefix for no gain; append new, run-specific context at the end instead.
 
-Honest scope: the Handoff Template's field order (`references/review-packet.md`) is kept as-is for readability — this principle governs load order and prefix stability across the run, not a packet-field reorder (which would be a behavior change, out of scope here).
+Honest scope: the Handoff Template's field order (`references/review-packet.md`) stays as-is for readability — this principle governs load order and prefix stability across the run, not a packet-field reorder (a behavior change, out of scope here).
 
 ## Shared-State Writes (single writer)
 
-The failure-memory file is shared mutable state, and reviewers run in parallel. To avoid lost-update / interleaved-write corruption, only **one** actor writes it: the main thread, after the verdict, from the `arbiter`'s decision. Reviewers and the implementer only *propose* candidate entries (using the existing template); the `arbiter` rules on them and proposes the exact final entry; none of them writes the file itself. The "reread global before writing" merge step is performed by that single writer.
+Only one actor writes the shared failure-memory file: the **main thread**, after the verdict, from the `arbiter`'s decision — reviewers, the implementer, and the `arbiter` itself only *propose* entries (full rule + lost-update rationale and the "reread global first" merge step: `references/verification-gate.md`, *Single writer*).
 
 ## Deep Mode Enforcement
 

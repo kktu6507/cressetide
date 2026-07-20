@@ -1,6 +1,6 @@
 # Browser Evidence (live UI verification via Claude in Chrome)
 
-Loaded only when a task has **browser-visible UI changes** and verification needs live evidence. This is the live-drive companion to `references/verification-gate.md`'s *Browser Evidence* section: that section lists *what to record*; this file defines *how to actually drive a real browser* and *when it is required*.
+Loaded only when a task has **browser-visible UI changes** and verification needs live evidence. The live-drive companion to `references/verification-gate.md`'s *Browser Evidence* section: that section lists *what to record*; this file defines *how to actually drive a real browser* and *when it is required*.
 
 ## When it applies (two levels)
 
@@ -39,7 +39,7 @@ Do **not** fan raw DOM dumps or full-page vision to every reviewer — the same 
 
 ## Storage (kept evidence, not scratch)
 
-Write screenshots to **`.ctide/output/evidence/`** in the *consuming* project, and **create `.ctide/output/evidence/.gitignore` (with the two lines `*` then `!.gitignore`, so the ignore file itself is committed and travels to clones/CI) as part of using it** so the screenshots are never committed. They are **kept *local* evidence**, not throwaway verification scaffolding (see the Artifact Hygiene carve-out in `references/verification-gate.md`) — but also not tracked artifacts. The same captured final-state screenshots are what `--report full` embeds (`references/final-report.md`, UI/UX evidence) — capture once, two uses. The embedded **relative links resolve only against the local working tree where capture happened**, so a report pasted into a PR / CI / fresh clone shows dangling links — treat them as local-only evidence pointers, and if the report must travel, attach the screenshots out-of-band.
+Write screenshots to **`.ctide/output/evidence/`** in the *consuming* project, and **create `.ctide/output/evidence/.gitignore` (the two lines `*` then `!.gitignore`, so the ignore file itself is committed and travels to clones/CI) as part of using it** so the screenshots are never committed. They are **kept *local* evidence**, not throwaway verification scaffolding (the Artifact Hygiene carve-out in `references/verification-gate.md`) — but also not tracked artifacts. The same captured final-state screenshots are what `--report full` embeds (`references/final-report.md`, UI/UX evidence) — capture once, two uses. The embedded **relative links resolve only against the local working tree where capture happened** — a report pasted into a PR / CI / fresh clone shows dangling links; treat them as local-only evidence pointers, and if the report must travel, attach the screenshots out-of-band.
 
 ## What to record
 
@@ -56,7 +56,7 @@ Driving a **real, authenticated** browser is a sensitive capability — treat it
 ## Invariants
 
 - Never a hard dependency: no browser capability → disclose and continue; never error.
-- **Available means mandatory in `--deep` + UI.** When a live browser capability is detected and reachable (a connected tab is present), the live drive is a required step you must actually run — it may be downgraded to a disclosed gap **only** when the capability is genuinely *unavailable* (Detect failed, or detected-but-could-not-execute with the recorded reason, per `references/external-capabilities.md`). You may **not** skip a runnable live drive by assuming the user will self-verify, or by letting reviewers infer visual correctness from CSS/markup — neither establishes the rendered result, and "the user will verify" is a `deferred` status that requires the user's explicit, verbatim-recorded consent (see `agents/arbiter.agent.md`), never an inferred one.
+- **Available means mandatory in `--deep` + UI.** When a live browser capability is detected and reachable (a connected tab is present), the live drive is a required step you must actually run — downgrade it to a disclosed gap **only** when the capability is genuinely *unavailable* (Detect failed, or detected-but-could-not-execute with the recorded reason, per `references/external-capabilities.md`). You may **not** skip a runnable live drive by assuming the user will self-verify, or by letting reviewers infer visual correctness from CSS/markup — neither establishes the rendered result, and "the user will verify" is a `deferred` status that requires the user's explicit, verbatim-recorded consent (see `agents/arbiter.agent.md`), never an inferred one.
 - This drives a real authenticated browser and stores screenshots — treat the session reads and the captured images as **sensitive** (see *Data sensitivity* above); never paste sensitive evidence into a public report.
 - Reviewers stay read-only and isolated; only the main thread drives the browser.
 - Vision cost stays in `--deep` / `--report full`; the compact path is text-only.

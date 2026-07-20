@@ -1,19 +1,19 @@
 # Task Contract (`.ctide/output/contract.md` — the per-run, persisted plan contract)
 
-The contract externalizes the constructs ctide already produces at the plan gate (sharpened
-intent, acceptance criteria, scope, implied edge checklist) into one re-runnable, diff-able
-artifact. It is the UI-less counterpart to `references/design-spec.md`: a durable statement the
-Review Packet derives from and the deterministic `scripts/contract-check.mjs` reads. It adds no new
-ceremony — the content is what the plan already contains; this just writes it down.
+Externalizes the constructs ctide already produces at the plan gate (sharpened intent, acceptance
+criteria, scope, implied edge checklist) into one re-runnable, diff-able artifact — the UI-less
+counterpart to `references/design-spec.md`: a durable statement the Review Packet derives from and
+the deterministic `scripts/contract-check.mjs` reads. No new ceremony — the content is what the
+plan already contains; this just writes it down.
 
 ## Where it lives (per-run scratch, gitignored — NOT committed)
 
 `.ctide/output/contract.md`, under the top-level `.ctide/output/.gitignore` (`*` then `!.gitignore`,
-`references/verification-gate.md`, Artifact Hygiene). The compatibility home is `.ctide/legacy-output/contract.md`
+`references/verification-gate.md`, Artifact Hygiene). Compatibility home: `.ctide/legacy-output/contract.md`
 — `contract-check.mjs` still discovers it and `hooks/contract-guard.js` still guards it until the run's
 first scratch write migrates the whole legacy tree (Artifact Hygiene, one-time migration); new writes
 always target the new path. Unlike `design.md` (a committed cross-task contract), this is one run's
-scratch — it must never be committed into the consuming repo.
+scratch — never committed into the consuming repo.
 
 ## Machine block (JSON — dependency-free, parsed by contract-check.mjs)
 

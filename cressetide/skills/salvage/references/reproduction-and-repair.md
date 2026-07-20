@@ -13,9 +13,7 @@ A fix without a pre-declared check ends in "it seems fine now" — which is how 
 
 ## Stage 5 — Reproduce (code and data domains)
 
-Keep trigger vs root cause distinct from the start, not only in the postmortem: the deploy that
-exposed the bug is not necessarily what actually caused it (`references/reentry-and-closure.md`, *Trigger vs root
-cause*). Diagnosing toward the trigger and stopping there fixes the symptom, not the disease.
+Keep trigger vs root cause distinct from the start, not only in the postmortem (`references/reentry-and-closure.md`, *Trigger vs root cause*): the deploy that exposed the bug is not necessarily what caused it; diagnosing toward the trigger and stopping there fixes the symptom, not the disease.
 
 Three fidelity tiers — prefer the cheapest one that captures the bug:
 
@@ -37,7 +35,7 @@ why. Narrow from the repro to the specific cause:
 falsifiable candidate causes, then verify the leading one (a targeted log, an instrumented run, a
 bisect step) BEFORE writing the fix — a fix aimed at the wrong cause reopens the incident.
 
-**Red evidence is mandatory.** Run the repro BEFORE the fix and record the failing output in the journal. A repro that was never seen red proves nothing — an always-green check is a known trap. This mirrors the dev flow's red→green discipline; the incident journal is where the red gets recorded.
+**Red evidence is mandatory.** Run the repro BEFORE the fix and record the failing output in the journal. A repro that was never seen red proves nothing — an always-green check is a known trap. This mirrors the dev flow's red→green discipline.
 
 ## Production-data safety gate
 
@@ -47,7 +45,7 @@ When the repro needs real data:
 - **One-way flow** — pull data out into an isolated scratch area; never experiment inside production.
 - **Sanitization gate** — mask PII and secrets BEFORE the data enters the AI context or any test fixture. Concretely: the extraction command writes straight to a file in the isolated scratch area via shell redirection (the query's raw output is never echoed into the conversation or tool output), masking runs as a small script over that file (schema/pattern-driven — prefer a maintained secret/PII pattern set over improvised regex; see the named tools in `references/reentry-and-closure.md`), and only the MASKED sample is read back into context — shown to the user for approval (decision card).
 - **Policy switch** — if the org forbids production data entirely, build synthetic data shaped like the real records instead.
-- **Ephemeral handling** — extracted data lives in an isolated temp location, is never committed, and is deleted at incident closure — or immediately when the incident is abandoned or goes inactive: deletion is owed at closure or abandonment, whichever comes first. Anything archived as a permanent regression test must be the sanitized or synthetic version.
+- **Ephemeral handling** — extracted data lives in an isolated temp location, is never committed, and is deleted at incident closure — or immediately when the incident is abandoned or goes inactive, whichever comes first. Anything archived as a permanent regression test must be the sanitized or synthetic version.
 
 ## Stage 6 — Fix (handoff to the dev flow)
 

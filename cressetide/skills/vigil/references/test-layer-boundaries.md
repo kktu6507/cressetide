@@ -3,8 +3,8 @@
 `references/verification-gate.md` requires a demonstrated red→green test per behavior-changing
 acceptance criterion; it does not say which layer that test lives at. Load this reference when
 choosing, or reviewing, the layer (unit / integration / E2E) for a given criterion — most single-
-criterion changes need exactly one obvious layer, so treat this as a judgment aid for the
-non-obvious cases, not a mandatory three-layer checklist for every change.
+criterion changes need exactly one obvious layer, so this is a judgment aid for the non-obvious
+cases, not a mandatory three-layer checklist for every change.
 
 ## The three layers
 
@@ -74,10 +74,10 @@ defect is not "more thorough," it is slower and flakier for no added signal:
 ## Interaction with the fail-first→pass requirement
 
 This reference governs **where** the per-criterion red→green test lives, never **whether** it
-exists. Choosing integration over unit for a given criterion does not relax
-`references/verification-gate.md`'s requirement — it only changes which layer's runner produces the
-red→green transition. A criterion with no red→green at any layer is still `unmet`
-(`agents/arbiter.agent.md`, *Acceptance-criteria check*), however reasonable the chosen layer was.
+exists. Choosing integration over unit does not relax `references/verification-gate.md`'s
+requirement — it only changes which layer's runner produces the red→green transition. A criterion
+with no red→green at any layer is still `unmet` (`agents/arbiter.agent.md`, *Acceptance-criteria
+check*), however reasonable the chosen layer was.
 
 ## Interaction with review
 

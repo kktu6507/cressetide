@@ -2,9 +2,9 @@
 
 Deep mode makes the review/repair core **deterministic** instead of model-followed prose: the selected reviewer panel, the arbiter barrier, and the repair loop are expressed as a Workflow so they actually run. It follows ctide's Detect → Use → Else-Disclose protocol and never becomes a hard dependency. A skill cannot enable ultracode (it is a harness mode); deep mode only detects the signal and adapts.
 
-Deep mode raises **depth, not breadth.** The reviewer *selection* is unchanged — still the smallest sufficient set from `reviewer-selection.md`. It never adds reviewers. Conversely, the *evidence-substitution fast lane* (`reviewer-selection.md`) never applies to deep-mode work — either tier, including work where Tier 1 auto-engages: deep signals exactly the risk class where substituting a reviewer is not allowed.
+Deep mode raises **depth, not breadth.** The reviewer *selection* is unchanged — still the smallest sufficient set from `reviewer-selection.md`. It never adds reviewers. Conversely, the *evidence-substitution fast lane* never applies to deep-mode work — either tier, including Tier-1 auto-engaged work (exclusion owned by `reviewer-selection.md`, *Evidence substitution*): deep signals exactly the risk class where substituting a reviewer is not allowed.
 
-The downward cost knob is separate: `--lite` (see `reviewer-selection.md`, *Lite path*) lowers **breadth** — it forces the smallest panel and skips the costlier deep-mode **Tier 2** for small, low-risk changes, the counterpart to `--deep` raising depth. Deep manages the depth ceiling; lite manages the breadth floor (with a safety floor that keeps a needed safety reviewer and discloses it). Both are opt-in and orchestrator-followed.
+The downward cost knob is separate: `--lite` (`reviewer-selection.md`, *Lite path* — smallest panel, skips the costlier deep-mode **Tier 2**, safety floor kept and disclosed) lowers **breadth**, the counterpart to `--deep` raising depth: deep manages the depth ceiling, lite the breadth floor. Both are opt-in and orchestrator-followed.
 
 ## Two tiers (enforcement is cheap; extra effort is not)
 
@@ -19,8 +19,7 @@ Signals (none a hard dependency):
 
 1. A session-level ultracode signal (e.g. a SessionStart `additionalContext` / system-reminder indicating ultracode is on).
 2. An explicit per-task opt-in: `/ctide:vigil` arguments beginning with `--deep`, `deep:`, or `ultra:` (this requests **Tier 2**).
-3. The concrete Workflow-tool-presence check (`references/external-capabilities.md`, Detect → Use →
-   Else-Disclose): a tool named `Workflow` is present in the current tool list.
+3. The concrete Workflow-tool-presence check (`references/external-capabilities.md`, Detect → Use → Else-Disclose): a tool named `Workflow` is present in the current tool list.
 
 How the signals map to the tiers:
 

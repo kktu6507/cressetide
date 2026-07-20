@@ -22,7 +22,7 @@ project. If a step can't run, say why and continue.
    (an old marketplace cache, another runtime's install such as `~/.copilot/…`) is not the copy this
    session runs, and diagnosing it produces a false health report — worse than no report. A live
    search can cause a stale copy to be reported as "DEGRADED". Note which variable supplied the
-   root; the report prints it.
+   root.
 
 2. **Node.** Run `node --version`. If `node` is **absent**, this is the single most common silent
    failure — **all six hooks no-op** (fail-open by design). Report it as the top finding.
@@ -57,4 +57,4 @@ plugin root **with which env var supplied it** (or `none — not diagnosable fro
 one-line verdict (**healthy** / **degraded** / **broken**) and, if degraded/broken,
 the most likely cause and fix. Tell the user they can paste this report into a
 [`Verified ctide run`](https://github.com/kktu6507/cressetide/issues/new?template=verified-run.yml)
-issue or a bug report — it is the only health signal ctide has, since it sends none on its own.
+issue or a bug report — it is the only health signal ctide has.

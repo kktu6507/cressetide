@@ -32,10 +32,10 @@ at the root.
 Unlike `.ctide/output/`, this tree is **never overwritten or truncated**. `docs/runtime-contract.md`
 names it the third state class: committed semantic state (`map/`, `memory/`, `design/`, `incidents/`
 — tracked by Git), untracked-but-persistent **episodic** state (`ledger/` — self-gitignored, survives
-across runs, never overwritten or truncated), and untracked per-run scratch (`output/` —
-self-gitignored, overwritten each run). `run-consolidate.mjs` reads only the newest ~4MB of an
-oversized ledger for performance (mirrors `failure-consolidate.mjs`'s own read-cap pattern) — that is
-a read-time optimization only; it never truncates or rewrites the file on disk.
+across runs), and untracked per-run scratch (`output/` — self-gitignored, overwritten each run).
+`run-consolidate.mjs` reads only the newest ~4MB of an oversized ledger (mirrors
+`failure-consolidate.mjs`'s own read-cap pattern) — that is a read-time optimization only; it never
+truncates or rewrites the file on disk.
 
 ## Record schemas (event facts only — never a computed rate/score)
 
@@ -68,7 +68,7 @@ a read-time optimization only; it never truncates or rewrites the file on disk.
   itself** (`git rev-parse HEAD`) and **`files` is always computed from `git diff --name-only`** —
   neither is ever accepted as a CLI flag (there is no `--head` or `--files` flag), precisely so an
   agent cannot type a plausible-looking value in their place. `base` is optional and defaults to
-  `null` when absent, never guessed.
+  `null` when absent.
 - `verdict` / `verify` / `panel` — copied verbatim from the run's own machine sentinel lines
   (`ctide:delivery=`, `ctide:verify=`, `ctide:panel=`, `references/final-report.md`), never
   paraphrased or re-derived.
@@ -77,7 +77,7 @@ a read-time optimization only; it never truncates or rewrites the file on disk.
   table.
 - `planned.paths` / `planned.risk` — the approved plan's stated scope and risk tier (e.g. the task
   contract's `allowedPaths` / `risk` fields, `references/task-contract.md`), not a fresh judgment
-  call invented at ledger-write time. `planned.risk` defaults to `null` when absent.
+  call invented at ledger-write time.
 - `drift.outOfScope` / `drift.mapCorrections` — the observed `contract-check.mjs` scope-diff count
   and any Map corrections discovered mid-run (capped to 300 characters); this is the data the
   final report's **Plan drift** bullet narrates (`references/final-report.md`).
@@ -96,19 +96,12 @@ else) — the script never guesses a value it was not given.
 ```
 
 - `ref` — the `head` SHA of the run record being disposed.
-- `as` — exactly one of `escaped` | `survived` | `superseded` | `building-upon`. `close` rejects any
-  other value and writes nothing.
+- `as` — exactly one of `escaped` | `survived` | `superseded` | `building-upon`.
 - `reason` — capped to 300 characters. The disposition reason always comes from the calling agent
   (or, for `expire`'s one auto-close path below, a fixed literal); `run-reconcile.mjs` never invents
-  *why* a run is being closed, only shapes and appends the event once told. `close` requires it
-  non-empty after trimming whitespace — an absent or blank `--reason` is rejected and writes nothing.
-
-No field in either schema is ever a computed rate, average, or percentage — both are raw event facts.
+  *why* a run is being closed, only shapes and appends the event once told.
 
 ## Reconciliation lifecycle
-
-`scan` → the agent disposes each flagged candidate with a reason → the main thread writes the
-disposition via `close` / `expire`.
 
 1. **`scan` (read-only, deterministic-raises).** For every ledger `run` record not yet matched by a
    `close` event, `scan` fetches `git log` since that run's own timestamp and checks file overlap
@@ -172,8 +165,8 @@ disposition via `close` / `expire`.
    detected overlap" }` with **no** agent or human input, because that bucket is by construction
    uncontested: nothing happened to the run's files that any later commit touched. The alternative —
    requiring a human to confirm every boring "nothing happened" window-close — would reintroduce the
-   unbounded-growing-open-window problem reconciliation exists to solve in the first place. This is the
-   one exception; it does not weaken `close`'s own requirement above.
+   unbounded-growing-open-window problem reconciliation exists to solve in the first place. It does
+   not weaken `close`'s own requirement above.
 
    - **`close`** is append-only and requires a valid `--ref`, one of the 4 literal `--as` values, and a
      non-empty (after trimming whitespace) `--reason`; an invalid, missing, or blank value for any of the
@@ -211,8 +204,7 @@ parsing), but the same rule: ambiguity must surface, never vanish.
 ```
 
 Defaults: `windowDays` 14, `threshold` 3 (the plan-gate-decided tripwire: **14 days / ≥3 escaped
-closures**). No score, rate, or percentage is ever stored anywhere by this script — it only computes
-counts on demand, purely for display.
+closures**).
 
 ## The post-verdict boundary
 
@@ -241,13 +233,13 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/vigil/scripts/run-consolidate.mjs [--cwd <dir>
 ```
 
 `run-ledger.mjs append` derives `head` (`git rev-parse HEAD`) and `files` (`git diff --name-only`)
-itself — never pass these as flags; there is no `--head` or `--files` flag to pass them through.
+itself — there is no `--head` or `--files` flag to pass them through.
 
 `--now <epoch-ms>` (all three scripts, every subcommand) overrides the wall clock the script would
 otherwise read via `Date.now()`. It is a determinism seam for the test suite — every test in
 `test/run-ledger.test.mjs` / `test/run-reconcile.test.mjs` / `test/run-consolidate.test.mjs` pins it so
 window/threshold comparisons never depend on real elapsed time — not for production orchestrator
-invocations, which should omit it and let the script read the real clock.
+invocations, which should omit it.
 
 ## Invariants
 

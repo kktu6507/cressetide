@@ -12,7 +12,7 @@ Run this step only when the task is high-risk, **reusing the existing risk defin
 - the task is **correctness-critical** (parsing, numeric/encoding/overflow handling, concurrency, security/trust boundaries, data integrity, or any non-obvious-edge path); or
 - the selection already triggers a correctness- or safety-relevant conditional reviewer (`security-reviewer` / `architecture-reviewer` / `operability-reviewer`) — that is itself a high-risk signal.
 
-Default to **skipping** it for low/medium-risk work (a checkbox, a copy edit, a rename). A false trigger does not just cost tokens — it makes the user wait before approval — so bias toward not running it, consistent with the usability-over-strictness principle. This reuses the same risk taxonomy the orchestrator applies when selecting reviewers (the `references/reviewer-selection.md` Risk Matrix), evaluated here at plan time — not a second, separate standard.
+Default to **skipping** it for low/medium-risk work (a checkbox, a copy edit, a rename). A false trigger does not just cost tokens — it makes the user wait before approval — so bias toward not running it, consistent with the usability-over-strictness principle. The taxonomy is the same one the orchestrator applies when selecting reviewers, evaluated here at plan time — not a second, separate standard.
 
 Skipping this step also means low/medium-risk work does not get this Stage A version of the reconciliation scan (`references/run-ledger.md`) — it instead gets a lighter, main-thread-only scan wired directly in `SKILL.md`'s lifecycle step 2 (per the approved plan's scan-scope decision); see there for that path.
 

@@ -31,7 +31,6 @@ Severity vocabulary, scope discipline, and the base output contract are shared a
 6. Alignment with repository conventions and the project language/framework's official best practices
 
 ## Scope rules
-- Focus on changed code and directly affected nearby code.
 - Do not treat untouched legacy code as in scope unless the current change depends on it, worsens it, or exposes a material issue on the touched path.
 - Do not turn local quality review into architectural redesign; that is `architecture-reviewer`'s domain.
 - Treat broad rewrite ideas as optional unless a blocker genuinely requires them.
@@ -47,7 +46,7 @@ When the change touches error handling, `catch`/`except`/`recover`/`rescue` bloc
 - **Production fallback-to-mock / fake** — on error, silently returning stub/mock/default/empty data in a production path, so a failure looks like a success with empty results.
 - **Silent retry exhaustion** — a retry loop that gives up after N attempts and continues as if it succeeded, with no error surfaced or propagated.
 - **Log-and-continue where it shouldn't** — logging the error then proceeding as though it didn't happen, on a path where the caller needed the failure to propagate (distinguish a *deliberate, documented* best-effort path — that is fine — from one that drops a fault the caller depends on).
-Anchor each finding to the concrete fault it hides and the path that needed it surfaced; a genuinely intentional, documented best-effort swallow is acceptable — say so rather than flagging it. (This sharpens the existing "do not swallow errors silently" rule into an explicit lens; it is gated on error-handling/catch changes, not run on every task.)
+Anchor each finding to the concrete fault it hides and the path that needed it surfaced; a genuinely intentional, documented best-effort swallow is acceptable — say so rather than flagging it. (This sharpens the existing "do not swallow errors silently" rule into an explicit lens, gated on the trigger above — not run on every task.)
 
 ## Boundary with other reviewers
 `intent-reviewer` owns requirement fidelity and contracts; `test-reviewer` owns verification depth and coverage; `security-reviewer` owns trust boundaries and unsafe input handling; `architecture-reviewer` owns boundaries, layering, dependency direction, and structural placement; `operability-reviewer` owns observability, deploy/rollback, and resilience; `ui-ux-reviewer` owns usability and frontend experience. You own local implementation quality, simplicity, framework usage quality, and efficiency on changed paths.

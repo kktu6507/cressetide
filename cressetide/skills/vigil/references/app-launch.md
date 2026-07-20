@@ -1,11 +1,11 @@
 # App Launch (bringing the target runtime up for verification)
 
-Loaded only in **`--deep` (Tier-2)** when verification needs a **live process** that is not already running — a web app for browser evidence, or a backend/API server for integration/API checks. It is the launch companion to `references/browser-evidence.md` (which assumes the app is already reachable) and `references/verification-gate.md`. Standard mode is unchanged: it never launches anything; an unreachable app stays a documented gap.
+Loaded only in **`--deep` (Tier-2)** when verification needs a **live process** that is not already running — a web app for browser evidence, or a backend/API server for integration/API checks. The launch companion to `references/browser-evidence.md` (which assumes the app is already reachable) and `references/verification-gate.md`. Standard mode is unchanged: it never launches anything; an unreachable app stays a documented gap.
 
 ## When it applies
 
 - **Standard mode (never launches).** ctide attaches to whatever is already running. If the app is down, that is a documented verification gap (unchanged from before) — ctide does not bring it up.
-- **Tier-2 `--deep`, app not already running, and a live process is genuinely needed (UI *or* backend/API).** ctide brings the app up itself, verifies, then tears down what it started. Because `--deep` is already the explicit opt-in, this needs **no second prompt** — but ctide **discloses** that it launched the app and how. Never a hard dependency: if it cannot launch, that becomes a disclosed gap the `arbiter` weighs, never an error.
+- **Tier-2 `--deep`, app not already running, and a live process genuinely needed (UI *or* backend/API).** ctide brings the app up itself, verifies, then tears down what it started. `--deep` is already the explicit opt-in, so this needs **no second prompt** — but ctide **discloses** that it launched the app and how. Never a hard dependency: if it cannot launch, that becomes a disclosed gap the `arbiter` weighs, never an error.
 
 ## Detect → Use → Else-Disclose
 
@@ -26,7 +26,7 @@ Follow the protocol in `references/external-capabilities.md`.
 
 ctide owns the lifecycle of **only** the process it launched: stop it once verification completes. Leave an already-running (attached) app alone.
 
-- Reap cleanly so nothing is left holding the output pipe — a survivor (dev server, file watcher, build server, MSBuild / `VBCSCompiler` node-reuse worker) keeps a backgrounded task stuck "running" long after it actually finished (same lesson as `references/verification-gate.md`, *Command Evidence*; for .NET use `/p:UseSharedCompilation=false /nr:false` or `MSBUILDDISABLENODEREUSE=1`).
+- Reap cleanly so nothing is left holding the output pipe — a survivor (dev server, file watcher, build server, MSBuild / `VBCSCompiler` node-reuse worker) keeps a backgrounded task stuck "running" long after it finished; same lesson and .NET no-reuse flags as `references/verification-gate.md`, *Command Evidence*.
 - If `/run` started the app, stop it via the same path. If a teardown cannot be confirmed, **disclose the leftover process and how to stop it** rather than leaving it silently running.
 
 ## Who launches it (orchestrator only)
