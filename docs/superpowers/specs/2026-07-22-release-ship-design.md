@@ -108,14 +108,25 @@ count stays at 11.
   needed — every invocation recomputes current status). Supports `--json` for machine-readable output,
   mirroring `run-consolidate.mjs`.
 - **Check units inside `ship.mjs`**, each independently testable:
-  - Release-marker resolver — latest tag matching a semver-like pattern, ordered by version/ancestry, not
-    lexicographic string sort.
+  - Release-marker resolver — latest tag matching `vX.Y.Z` (optionally without the `v` prefix), the same
+    tag shape `RELEASING.md` already defines for this repository's own releases; ordered by
+    version/ancestry, not lexicographic string sort.
   - Pending-changes reader — filters `runs.jsonl` to `verdict: READY` `run` records after the marker.
-  - Version-consistency checker — reuses/extends `map.mjs`'s existing manifest-fact reading
-    (`packageFacts()`-style) rather than writing new parsing; compares declared versions across whichever
-    manifest files the project actually has.
+  - Version-consistency checker — **candidate reuse, not confirmed:** `map.mjs` has an existing
+    `packageFacts()`-style manifest reader (`CHANGELOG.md` 0.3.1), but that entry documents it reading
+    `bin` / `scripts` / `dependencies` / `description` — it does not confirm `version` is among the fields
+    read today. Implementation planning must open `map.mjs` and verify whether `packageFacts()` reads
+    `version`, extend it if not, and only then decide whether `ship.mjs` calls it directly or needs its
+    own reader. Do not assume the reuse without that check. Once resolved: compares declared versions
+    across whichever manifest files the project actually has.
   - Changelog-touched checker — git-diff-based: did `CHANGELOG.md` change since the marker.
-  - Tag-readiness checker — does a tag for the target version already exist, is the tree clean.
+  - Tag-readiness checker — "target version" means whatever version is currently declared in the
+    project's manifest(s) *after* the version-consistency check — `ship` checks readiness for that
+    already-declared number, it never picks or bumps one itself. Reports whether a tag for that version
+    already exists and whether the tree is clean. **Depends on version-consistency passing first:** if
+    manifests disagree, there is no single target version to check tag-readiness against — this check
+    reports `unverified` ("blocked by version-consistency failure") rather than guessing which manifest to
+    trust.
   - Migration-compatibility reader — parses `SYSTEM_MAP.md`'s Rollback section and its existing
     `<!-- CTIDE:TRUST:tier[:date] -->` markers; reuses Map's confidence vocabulary rather than inventing
     a new one.
@@ -186,7 +197,8 @@ Per-check unit tests (`test/ship.test.mjs`, matching the granularity of `test/ru
   (`unverified`) — all four covered.
 - Changelog check: touched / not touched / no `CHANGELOG.md` in the repo at all (`not-applicable`).
 - Tag readiness: clean and ready / target version already tagged (catches a real duplicate-tag mistake,
-  not just a hypothetical one) / dirty tree.
+  not just a hypothetical one) / dirty tree / upstream version-consistency failure correctly produces
+  `unverified` here instead of guessing a target version.
 - Migration compatibility: relevant fresh Rollback content / Map absent / Map stale / Rollback content
   itself marked `UNVERIFIED` — each maps to the disclosure behavior defined in *Error handling*.
 
