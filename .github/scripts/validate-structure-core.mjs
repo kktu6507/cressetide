@@ -78,30 +78,59 @@ function walk(dir, fn) {
 walk(`${PLUGIN}/agents`, (rel) => { if (rel.endsWith(".md")) checkFrontmatter(rel); });
 walk(`${PLUGIN}/skills`, (rel) => { if (path.basename(rel) === "SKILL.md") checkFrontmatter(rel); });
 
-// 5b. every reference / agent / hook that SKILL.md or hooks.json points to must exist
-// (catches a renamed/deleted reference or agent that prose alone would not surface).
-const skillRel = `${PLUGIN}/skills/vigil/SKILL.md`;
-if (fs.existsSync(path.join(root, skillRel))) {
-  const skill = fs.readFileSync(path.join(root, skillRel), "utf8");
-  for (const m of new Set([...skill.matchAll(/references\/([a-z0-9-]+\.md)/gi)].map((x) => x[1]))) {
-    if (!fs.existsSync(path.join(root, `${PLUGIN}/skills/${m === "vigil-map-overlay.md" ? "map" : "vigil"}/references/${m}`)))
-      fail(`SKILL.md links a missing reference: references/${m}`);
-  }
-  const roster = (skill.match(/subagents \(([^)]+)\)/) || [])[1] || "";
-  // The manifest-coverage check below only bites when `plugin.agents` is an array. Guard the
-  // prerequisite explicitly: if SKILL.md declares a roster but the manifest has no agents[] array,
-  // Claude Code would fall back to the default scan (losing the explicit `.agent.md` wiring Copilot
-  // needs) and the coverage check would silently no-op — so fail loudly instead.
-  if (roster && !(plugin && Array.isArray(plugin.agents)))
-    fail(`SKILL.md declares a subagents roster but plugin.json has no agents[] array (explicit wiring missing)`);
-  for (const m of roster.matchAll(/`([a-z0-9-]+)`/gi)) {
-    const name = m[1];
-    if (!fs.existsSync(path.join(root, `${PLUGIN}/agents/${name}.agent.md`)))
-      fail(`SKILL.md names agent "${name}" but ${PLUGIN}/agents/${name}.agent.md is missing`);
-    // Manifest coverage: Claude Code now loads agents via the plugin.json `agents` array, so an
-    // agent that exists on disk but is not wired in the manifest would silently fail to load.
-    if (plugin && Array.isArray(plugin.agents) && !plugin.agents.some((p) => p.endsWith(`/${name}.agent.md`)))
-      fail(`SKILL.md names agent "${name}" but plugin.json agents[] does not wire agents/${name}.agent.md`);
+// 5b. every reference that a skill's own SKILL.md points to must exist somewhere in the plugin
+// (catches a renamed/deleted reference that prose alone would not surface), and vigil/SKILL.md's own
+// agent roster must exist on disk and be wired into plugin.json.
+//
+// Check (1) — reference existence — is GENERALIZED to all five skills, the reverse direction of garden
+// 9a's "true reachability over directory ownership" model: resolve a `references/X.md` mention to the
+// mentioning skill's own `references/` directory FIRST; only if not found there, search every OTHER
+// skill's `references/` directory. Fail only when X.md exists in NO skill's `references/` directory.
+// This replaces the single hardcoded exception this check used to carry (vigil -> map's
+// vigil-map-overlay.md): a repo-wide grep during planning proved that exception-list approach incomplete
+// — salvage/SKILL.md also legitimately mentions map/references/operational-readiness.md and
+// vigil/references/external-capabilities.md. Verified directly (not merely reasoned): an own-directory-
+// only generalization false-flags all three of these real, working references the moment this check
+// starts running per-skill; search-based resolution needs no growing exception list for a future
+// cross-skill reference.
+//
+// Check (2) — the agent roster — is UNCHANGED in logic and stays scoped to vigil/SKILL.md specifically
+// (grepping the whole plugin confirms `subagents (` appears only there). It now runs inside the per-skill
+// loop, gated to `skillName === "vigil"`, reusing that iteration's already-read file content (not a
+// second file read).
+{
+  const skillsDirAbs = path.join(root, `${PLUGIN}/skills`);
+  if (fs.existsSync(skillsDirAbs)) {
+    const skillNames = fs.readdirSync(skillsDirAbs, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+    const refExistsIn = (skillName, file) => fs.existsSync(path.join(root, `${PLUGIN}/skills/${skillName}/references/${file}`));
+    for (const skillName of skillNames) {
+      const skillRel = `${PLUGIN}/skills/${skillName}/SKILL.md`;
+      if (!fs.existsSync(path.join(root, skillRel))) continue;
+      const skill = fs.readFileSync(path.join(root, skillRel), "utf8");
+      for (const m of new Set([...skill.matchAll(/references\/([a-z0-9-]+\.md)/gi)].map((x) => x[1]))) {
+        if (!refExistsIn(skillName, m) && !skillNames.some((other) => other !== skillName && refExistsIn(other, m)))
+          fail(`${skillRel} links a missing reference: references/${m}`);
+      }
+
+      if (skillName === "vigil") {
+        const roster = (skill.match(/subagents \(([^)]+)\)/) || [])[1] || "";
+        // The manifest-coverage check below only bites when `plugin.agents` is an array. Guard the
+        // prerequisite explicitly: if SKILL.md declares a roster but the manifest has no agents[] array,
+        // Claude Code would fall back to the default scan (losing the explicit `.agent.md` wiring Copilot
+        // needs) and the coverage check would silently no-op — so fail loudly instead.
+        if (roster && !(plugin && Array.isArray(plugin.agents)))
+          fail(`SKILL.md declares a subagents roster but plugin.json has no agents[] array (explicit wiring missing)`);
+        for (const m of roster.matchAll(/`([a-z0-9-]+)`/gi)) {
+          const name = m[1];
+          if (!fs.existsSync(path.join(root, `${PLUGIN}/agents/${name}.agent.md`)))
+            fail(`SKILL.md names agent "${name}" but ${PLUGIN}/agents/${name}.agent.md is missing`);
+          // Manifest coverage: Claude Code now loads agents via the plugin.json `agents` array, so an
+          // agent that exists on disk but is not wired in the manifest would silently fail to load.
+          if (plugin && Array.isArray(plugin.agents) && !plugin.agents.some((p) => p.endsWith(`/${name}.agent.md`)))
+            fail(`SKILL.md names agent "${name}" but plugin.json agents[] does not wire agents/${name}.agent.md`);
+        }
+      }
+    }
   }
 }
 // 5d. the compact (default) final-report rendering must keep the machine contract — the sentinel
@@ -571,18 +600,41 @@ if (fs.existsSync(enReadme)) {
 // 9d is that promised guard. The packet-block half of the copy-sync mandate (d3) lives in §5k's
 // RIGOR_ANCHORS above (same two files, same mechanism — extended rather than duplicated).
 
-// 9a. Reference reachability: every shipped references/*.md must be named in SKILL.md (the Reference
-// Loading list) — an orphan reference is dead weight the workflow can never load.
+// 9a. Reference reachability: every shipped skills/*/references/*.md must be reachable from the
+// plugin's load surface — an orphan reference is dead weight the workflow can never load. GLOBAL
+// reachability, not per-skill-directory ownership: a skill's own SKILL.md is not the only legitimate
+// loader. Verified directly against this repo (not merely reasoned about) — two real, working files
+// break a naive per-skill-ownership model: `map/references/vigil-map-overlay.md` is loaded only by
+// `vigil/SKILL.md`, and `map/references/navigator-map-overlay.md` is loaded only by
+// `agents/navigator.agent.md` — neither is named in `map/SKILL.md` itself. So a reference file is
+// flagged only when its filename is mentioned in NEITHER any `skills/*/SKILL.md` NOR any
+// `agents/*.agent.md` across the plugin.
 {
-  const refDirRel = `${PLUGIN}/skills/vigil/references`;
-  const refDirAbs = path.join(root, refDirRel);
-  const skillAbs = path.join(root, skillRel);
-  if (fs.existsSync(refDirAbs) && fs.existsSync(skillAbs)) {
-    const skillText = fs.readFileSync(skillAbs, "utf8");
-    for (const name of fs.readdirSync(refDirAbs)) {
-      if (!name.endsWith(".md")) continue;
-      if (!skillText.includes(name))
-        fail(`garden 9a: ${refDirRel}/${name} is not mentioned by filename in SKILL.md — an orphan reference the workflow can never load; add it to SKILL.md's Reference Loading list or delete the file`);
+  const skillsDirAbs = path.join(root, `${PLUGIN}/skills`);
+  const agentsDirAbs = path.join(root, `${PLUGIN}/agents`);
+  if (fs.existsSync(skillsDirAbs)) {
+    const skillDirs = fs.readdirSync(skillsDirAbs, { withFileTypes: true }).filter((e) => e.isDirectory());
+    // Union of every plausible loader: all SKILL.md files across the plugin, plus every agent doc —
+    // not just the reference's own skill directory.
+    let reachableText = skillDirs
+      .map((e) => path.join(skillsDirAbs, e.name, "SKILL.md"))
+      .filter((p) => fs.existsSync(p))
+      .map((p) => fs.readFileSync(p, "utf8"))
+      .join("\n");
+    if (fs.existsSync(agentsDirAbs)) {
+      reachableText += "\n" + fs.readdirSync(agentsDirAbs)
+        .filter((name) => name.endsWith(".agent.md"))
+        .map((name) => fs.readFileSync(path.join(agentsDirAbs, name), "utf8"))
+        .join("\n");
+    }
+    for (const e of skillDirs) {
+      const refDirAbs = path.join(skillsDirAbs, e.name, "references");
+      if (!fs.existsSync(refDirAbs)) continue;
+      for (const name of fs.readdirSync(refDirAbs)) {
+        if (!name.endsWith(".md")) continue;
+        if (!reachableText.includes(name))
+          fail(`garden 9a: ${PLUGIN}/skills/${e.name}/references/${name} is not mentioned by filename in any skills/*/SKILL.md or agents/*.agent.md — an orphan reference the workflow can never load; add it to a SKILL.md's Reference Loading list (or an agent doc that loads it) or delete the file`);
+      }
     }
   }
 }
@@ -727,7 +779,7 @@ if (plugin && Array.isArray(plugin.agents)) {
 // design: only the `node <path>` invocation form is flagged, so prose
 // mentions of script paths never false-trip.
 {
-  const badInvocation = /node\s+(?:\.\/)?skills\/vigil\/scripts\//;
+  const badInvocation = /node\s+(?:\.\/)?skills\/(?:doctor|map|salvage|ship|vigil)\/scripts\//;
   walk(PLUGIN, (rel) => {
     if (!rel.endsWith(".md")) return;
     const lines = fs.readFileSync(path.join(root, rel), "utf8").split(/\r?\n/);

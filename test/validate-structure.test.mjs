@@ -181,6 +181,39 @@ test("validate-structure: a missing SKILL-linked reference FAILS", () => {
   } finally { fs.rmSync(tree, { recursive: true, force: true }); }
 });
 
+test("validate-structure: §5b FAILS on a dangling reference planted in a non-vigil skill's SKILL.md (widened coverage)", () => {
+  const tree = copyRepoTree();
+  try {
+    // §5b's reference-existence check was vigil-only before this generalization; a dangling
+    // `references/X.md` mention planted in doctor/SKILL.md — a name that exists nowhere in the plugin —
+    // must now be caught too, proving the widened per-skill-with-fallback-search model actually reaches
+    // doctor/, not just vigil/.
+    const doctorSkill = path.join(tree, "cressetide", "skills", "doctor", "SKILL.md");
+    fs.appendFileSync(doctorSkill, "\nSee also `references/zz-doctor-dangling.md` (does not exist anywhere in the plugin).\n", "utf8");
+    const { code, out } = runValidator(tree);
+    assert.notStrictEqual(code, 0, "a dangling reference in a non-vigil skill's SKILL.md must fail the build");
+    assert.match(out, /doctor\/SKILL\.md links a missing reference: references\/zz-doctor-dangling\.md/, "the failure must name the offending SKILL.md and the missing reference");
+  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+});
+
+test("validate-structure: §5b does NOT flag the three known cross-skill references as missing (real repo tree)", () => {
+  // The false-positive risk verified directly during planning: vigil/SKILL.md mentions
+  // map/references/vigil-map-overlay.md (the prior hardcoded exception), and salvage/SKILL.md mentions
+  // map/references/operational-readiness.md and vigil/references/external-capabilities.md — none of the
+  // three live in the mentioning skill's own references/ directory. A naive "resolve to the mentioning
+  // skill's own directory only" generalization would newly false-fail CI on all three the moment §5b
+  // starts running per-skill; this is the test that would have caught that false-positive risk (mirrors
+  // why the analogous garden 9a cross-skill test mattered).
+  const tree = copyRepoTree();
+  try {
+    const { code, out } = runValidator(tree);
+    assert.strictEqual(code, 0, `the generalized §5b must not false-flag real cross-skill references: ${out}`);
+    assert.doesNotMatch(out, /links a missing reference: references\/vigil-map-overlay\.md/, "vigil -> map/vigil-map-overlay.md must not be flagged");
+    assert.doesNotMatch(out, /links a missing reference: references\/operational-readiness\.md/, "salvage -> map/operational-readiness.md must not be flagged");
+    assert.doesNotMatch(out, /links a missing reference: references\/external-capabilities\.md/, "salvage -> vigil/external-capabilities.md must not be flagged");
+  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+});
+
 test("validate-structure: dropping a sentinel from the compact final-report template FAILS (5d guard)", () => {
   const tree = copyRepoTree();
   try {
@@ -554,15 +587,43 @@ test("validate-structure: a second event entry can no longer cover another hook'
 
 // --- Section 9 "garden" guards: one injected-defect negative test per check (a–e) ---
 
-test("validate-structure: garden 9a FAILS on an orphan reference file not mentioned in SKILL.md", () => {
+test("validate-structure: garden 9a FAILS on an orphan reference file not mentioned in any SKILL.md or agent doc", () => {
   const tree = copyRepoTree();
   try {
-    // A reference file nothing links: SKILL.md's Reference Loading list never names it.
+    // A reference file nothing links: no SKILL.md's Reference Loading list and no agent doc names it.
     fs.writeFileSync(path.join(tree, "cressetide", "skills", "vigil", "references", "zz-orphan.md"),
       "# Orphan reference\n\nDead weight the workflow can never load.\n", "utf8");
     const { code, out } = runValidator(tree);
     assert.notStrictEqual(code, 0, "an orphan reference must fail the build");
-    assert.match(out, /garden 9a: .*zz-orphan\.md is not mentioned by filename in SKILL\.md/, "the failure must name the orphan reference");
+    assert.match(out, /garden 9a: .*zz-orphan\.md is not mentioned by filename in any skills\/\*\/SKILL\.md or agents\/\*\.agent\.md/, "the failure must name the orphan reference");
+  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+});
+
+test("validate-structure: garden 9a does NOT flag vigil-map-overlay.md or navigator-map-overlay.md as orphans (global reachability, real repo tree)", () => {
+  // The false-positive risk verified directly during planning: both files are legitimate, reachable
+  // references, but neither is mentioned in map/SKILL.md itself — vigil-map-overlay.md is loaded only
+  // by vigil/SKILL.md, navigator-map-overlay.md only by agents/navigator.agent.md. A naive
+  // per-skill-directory 9a would false-fail CI on this real, unmodified tree; this test is the guard
+  // against that regression (the test that would have caught the risk this planning pass found).
+  const tree = copyRepoTree();
+  try {
+    const { code, out } = runValidator(tree);
+    assert.strictEqual(code, 0, `the widened garden 9a must not false-flag legitimate cross-skill/agent-referenced files: ${out}`);
+    assert.doesNotMatch(out, /garden 9a: .*vigil-map-overlay\.md/, "vigil-map-overlay.md is reachable via vigil/SKILL.md, not map/SKILL.md — must not be flagged");
+    assert.doesNotMatch(out, /garden 9a: .*navigator-map-overlay\.md/, "navigator-map-overlay.md is reachable via agents/navigator.agent.md, not map/SKILL.md — must not be flagged");
+  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+});
+
+test("validate-structure: garden 9a FAILS on a genuine orphan in a non-vigil skill (proves coverage now extends beyond vigil/)", () => {
+  const tree = copyRepoTree();
+  try {
+    // doctor/ was never scanned by the old vigil-only 9a; a nothing-links orphan planted here must now
+    // fail too, proving the widened scan actually reaches doctor/map/salvage/ship, not just vigil/.
+    fs.writeFileSync(path.join(tree, "cressetide", "skills", "doctor", "references", "zz-doctor-orphan.md"),
+      "# Orphan reference\n\nDead weight the workflow can never load.\n", "utf8");
+    const { code, out } = runValidator(tree);
+    assert.notStrictEqual(code, 0, "an orphan reference in a non-vigil skill must fail the build");
+    assert.match(out, /garden 9a: .*zz-doctor-orphan\.md is not mentioned by filename in any skills\/\*\/SKILL\.md or agents\/\*\.agent\.md/, "the failure must name the orphan reference and prove doctor/ is now covered");
   } finally { fs.rmSync(tree, { recursive: true, force: true }); }
 });
 
@@ -651,6 +712,18 @@ test("validate-structure: garden 9e FAILS on a bare plugin-script invocation mis
     const { code, out } = runValidator(tree);
     assert.notStrictEqual(code, 0, "a bare plugin-script invocation in a shipped .md must fail the build");
     assert.match(out, /garden 9e: .*verification-gate\.md:\d+ invokes a plugin script without the plugin root/, "the failure must name the file:line and the fix");
+  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+});
+
+test("validate-structure: garden 9e FAILS on a bare plugin-script invocation in a non-vigil skill's reference doc", () => {
+  const tree = copyRepoTree();
+  try {
+    // Prove the widened §9e coverage: the defect lands in doctor's own reference doc, not vigil's.
+    const dc = path.join(tree, "cressetide", "skills", "doctor", "references", "diagnostic-contract.md");
+    fs.appendFileSync(dc, "\nSee also: node skills/doctor/scripts/doctor.mjs --json\n", "utf8");
+    const { code, out } = runValidator(tree);
+    assert.notStrictEqual(code, 0, "a bare plugin-script invocation in a non-vigil reference doc must fail the build");
+    assert.match(out, /garden 9e: .*diagnostic-contract\.md:\d+ invokes a plugin script without the plugin root/, "the failure must name the file:line and the fix, proving doctor/ is now covered");
   } finally { fs.rmSync(tree, { recursive: true, force: true }); }
 });
 
