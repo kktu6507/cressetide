@@ -40,7 +40,7 @@ Learning loop  run verdict -> ledger record -> the next planning reconciles: esc
 </p>
 
 - **Two flows**: dev ([`vigil`](#the-dev-flow-vigil)) and incident ([`salvage`](#the-incident-flow-salvage)). An incident's formal fix is handed back to the dev flow as a `--lite` run with the incident reproduction as its primary acceptance criterion.
-- **Four skills**: `vigil` and `salvage` engage on their own (anything beyond a small edit / incident-sounding language); [`map`](#the-ops-map-map) and [`doctor`](#health-check-doctor) start manually (`/ctide:map`, `/ctide:doctor`).
+- **Five skills**: `vigil` and `salvage` engage on their own (anything beyond a small edit / incident-sounding language); [`map`](#the-ops-map-map), [`doctor`](#health-check-doctor), and [`ship`](#release-readiness-check-ship) start manually (`/ctide:map`, `/ctide:doctor`, `/ctide:ship`).
 - **[11 subagents](#the-dev-flow-vigil)**: a navigator, an implementer, seven risk-selected reviewers, a cartographer, and the arbiter that decides readiness.
 - **[6 hooks](#hooks-and-safety-model)**: local-only, dependency-free Node guardrails, covering the plan gate, destructive-command guard, contract guard, failure-memory injection, compaction reminder, and delivery-claim check.
 - **[A learning loop](#the-learning-loop)**: every run ends with a ledger record; the next run starts by checking whether past verdicts actually held.
@@ -193,6 +193,14 @@ Map owns the operational-preparation contract: [`operational-readiness.md`](cres
 ## Health check (doctor)
 
 `/ctide:doctor` runs a local, read-only self-check of the hooks and environment (plugin identity, Node availability, whether the hooks are wired up), and transmits nothing (no telemetry). Run it when the gate never blocks, hooks seem silent, or Node may be missing.
+
+## Release-readiness check (ship)
+
+`/ctide:ship` is manual-only and read-only: it never runs your build, test, or deploy pipeline, and it never writes anything (no git tag, no version bump, no changelog entry). It reads what already exists — every `READY` run in the ledger since your last release tag, `package.json`, `CHANGELOG.md`'s git history, git tags, and `SYSTEM_MAP.md`'s Rollback section — and reports a decision card: the pending batch, then four checks (version consistency, whether `CHANGELOG.md` changed, tag readiness, and migration compatibility from the Map), each `pass` / `fail` / `not-applicable` / `unverified` with cited evidence.
+
+A fifth check, checksum verification, only runs when you pass `--artifact` and `--checksum` explicitly; ship never guesses which file in your repo is a build artifact. Version consistency reads `package.json` only.
+
+Ship is a pre-flight checklist you read before using whatever you already use to actually publish — not a replacement for your release pipeline.
 
 ## The learning loop
 

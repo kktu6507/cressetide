@@ -50,8 +50,8 @@ Cressetide already has two mechanisms that live inside (or adjacent to) this clo
 benchmark effort should **distinguish itself from and cite these accurately, not duplicate or replace
 either one**:
 
-- **`eval/cases/*.json` + `eval/run-eval.mjs`.** A deterministic dataset/rubric validator for the four
-  public capabilities (`vigil`, `salvage`, `map`, `doctor`). Each case has bounded fictional evidence
+- **`eval/cases/*.json` + `eval/run-eval.mjs`.** A deterministic dataset/rubric validator for the five
+  public capabilities (`vigil`, `salvage`, `map`, `doctor`, `ship`). Each case has bounded fictional evidence
   plus literal `requiredTerms` / `forbiddenTerms`; `eval/run-eval.mjs --responses <dir>` checks that a
   candidate response contains the required terms and avoids the forbidden ones — **literal term
   matching, not semantic scoring** (`docs/evaluation.md`). This runs in CI via `npm run eval`. It

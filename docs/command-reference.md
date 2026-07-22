@@ -1,6 +1,6 @@
 # Command reference
 
-Cressetide exposes exactly four public Claude Code commands under the `ctide`
+Cressetide exposes exactly five public Claude Code commands under the `ctide`
 namespace.
 
 ## `/ctide:vigil <task>`
@@ -81,13 +81,33 @@ Doctor is manual-only and read-only. It reports pass, fail, or unverified for:
 3. exact six-hook manifest wiring through `${CLAUDE_PLUGIN_ROOT}`;
 4. hook syntax and harmless bounded fail-open probes;
 5. `[ctide ...]` debug prefixes and `ctide-hook.log` in an isolated directory;
-6. four public skill directories and eleven agent manifests;
+6. five public skill directories and eleven agent manifests;
 7. install, enable, and reload guidance for `ctide@kktu`;
 8. confirmation that no telemetry or network probe was performed.
 
 Doctor never changes user configuration. It must not claim a live plugin smoke
 unless an authenticated Claude Code session loaded and exercised the installed
 plugin.
+
+## `/ctide:ship`
+
+Ship is manual-only and read-only. It reports pass, fail, not-applicable, or
+unverified for each of:
+
+1. version consistency across every `package.json` in the repository;
+2. whether `CHANGELOG.md` changed since the last release tag;
+3. tag readiness for the currently declared version (an existing tag for it, or
+   a dirty working tree, both block readiness);
+4. migration compatibility, read from `SYSTEM_MAP.md`'s Rollback section's
+   `CTIDE:TRUST` sentinel, never the surrounding prose;
+5. checksum verification, only when `--artifact` and `--checksum` are both
+   supplied explicitly — Ship never scans a directory to guess a build
+   artifact.
+
+Ship reads every `READY` run in the ledger since the last release tag,
+presents that pending batch for the human to review, and never executes a
+build/test/deploy step, picks or bumps a version, drafts changelog content, or
+writes anything.
 
 ## Final vocabulary
 

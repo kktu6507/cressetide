@@ -40,7 +40,7 @@ Incident flow  アラート -> Triage -> 証拠保全 -> まず止血（可逆�
 </p>
 
 - **2つのフロー**：dev（[`vigil`](#開発フローvigil)）と incident（[`salvage`](#インシデントフローsalvage)）。インシデントの正式な修正は、「インシデントの reproduction がグリーンになる」を主要な acceptance criterion として `--lite` run で dev flow に戻されます。
-- **4つの skill**：`vigil` と `salvage` は自動で起動します（小さな修正を超える開発作業で／インシデントらしい言葉づかいで）；[`map`](#ops-マップmap) と [`doctor`](#ヘルスチェックdoctor) は手動で開始します（`/ctide:map`、`/ctide:doctor`）。
+- **5つの skill**：`vigil` と `salvage` は自動で起動します（小さな修正を超える開発作業で／インシデントらしい言葉づかいで）；[`map`](#ops-マップmap)、[`doctor`](#ヘルスチェックdoctor)、[`ship`](#release-readiness-チェックship) は手動で開始します（`/ctide:map`、`/ctide:doctor`、`/ctide:ship`）。
 - **[11個の subagent](#開発フローvigil)**：navigator、implementer、リスクに応じて選ばれる7人の reviewer、cartographer、そして readiness を判定する arbiter。
 - **[6つの hook](#hooks-と安全性モデル)**：local-only で依存関係ゼロの Node guardrails。plan gate、破壊的コマンドの guard、contract guard、failure-memory の注入、compaction リマインダー、delivery-claim チェックをカバーします。
 - **[学習ループ](#学習ループ)**：すべての run は ledger への記録で終わり、次の run は過去の verdict が実際に持ちこたえたかの確認から始まります。
@@ -193,6 +193,14 @@ Map は operational-preparation の契約を担います：[`operational-readine
 ## ヘルスチェック（doctor）
 
 `/ctide:doctor` は hooks と環境のローカルで読み取り専用のセルフチェック（plugin の同一性、Node の有無、hook がつながっているか）を行い、何も送信しません（telemetry なし）。gate が一度も block しない、hooks が無反応、あるいは Node が入っていない可能性があるときに実行してください。
+
+## Release-readiness チェック（ship）
+
+`/ctide:ship` は手動・読み取り専用です：build、test、deploy パイプラインを実行することは決してなく、何も書き込みません（git tag も、バージョン更新も、changelog へのエントリも一切なし）。既存のものを読むだけです——前回の release tag 以降 ledger にある `READY` の run すべて、`package.json`、`CHANGELOG.md` の git 履歴、git tags、そして `SYSTEM_MAP.md` の Rollback セクション——そして decision card を出力します：pending なバッチ、続いて4つのチェック（バージョンの整合性、`CHANGELOG.md` が変更されたか、tag の準備状況、Map から得られる migration compatibility）で、それぞれ `pass` / `fail` / `not-applicable` / `unverified` を引用証拠つきで報告します。
+
+5つ目のチェック——checksum 検証——は `--artifact` と `--checksum` を明示的に渡したときだけ実行されます；ship はリポジトリ内のどのファイルが build artifact かを推測することは決してありません。バージョンの整合性は `package.json` だけを読みます。
+
+Ship は実際に公開する前に読む pre-flight checklist であり、あなたの release パイプラインの代替ではありません。
 
 ## 学習ループ
 

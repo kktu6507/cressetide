@@ -40,7 +40,7 @@ Incident flow  警報 -> Triage -> 保全證據 -> 先止血（可回復的動�
 </p>
 
 - **兩條 flow**：dev（[`vigil`](#開發流程vigil)）與 incident（[`salvage`](#事故應變流程salvage)）。事故的正式修復會以 `--lite` run 交回 dev flow，並以「事故的 reproduction 轉綠」作為主要 acceptance criterion。
-- **四個 skill**：`vigil` 與 `salvage` 會自行啟用（不是小修小補就會自動接手／聽到像事故的描述就會出動）；[`map`](#ops-地圖map) 與 [`doctor`](#健康檢查doctor) 手動啟動（`/ctide:map`、`/ctide:doctor`）。
+- **五個 skill**：`vigil` 與 `salvage` 會自行啟用（不是小修小補就會自動接手／聽到像事故的描述就會出動）；[`map`](#ops-地圖map)、[`doctor`](#健康檢查doctor) 與 [`ship`](#release-readiness-檢查ship) 手動啟動（`/ctide:map`、`/ctide:doctor`、`/ctide:ship`）。
 - **[11 個 subagent](#開發流程vigil)**：一位 navigator、一位 implementer、七位依風險挑選的 reviewer、一位 cartographer，以及判定就緒的 arbiter。
 - **[6 個 hook](#hooks-與安全模型)**：local-only、零依賴的 Node guardrails，包含 plan gate、破壞性指令 guard、contract guard、failure-memory 注入、compaction 提醒、delivery-claim 檢查。
 - **[學習迴圈](#學習迴圈)**：每次 run 以一筆 ledger 記錄收尾；下一次 run 開頭先檢查過去的 verdict 是否站得住。
@@ -193,6 +193,14 @@ Map 承接 operational-preparation 契約：[`operational-readiness.md`](cresset
 ## 健康檢查（doctor）
 
 `/ctide:doctor` 做本機、唯讀的 hooks 與環境自檢（plugin 身分、Node 是否存在、hook 有沒有接上），且不傳送任何東西（無 telemetry）。gate 沒擋、hook 沒反應、或 Node 可能不存在時就跑它。
+
+## Release-readiness 檢查（ship）
+
+`/ctide:ship` 是手動、唯讀的：它從不執行你的 build、test 或 deploy pipeline，也從不寫入任何東西（不打 git tag、不改版號、不寫 changelog 條目）。它讀取既有的東西——上次 release tag 以來 ledger 裡每筆 `READY` 的 run、`package.json`、`CHANGELOG.md` 的 git 歷史、git tags，以及 `SYSTEM_MAP.md` 的 Rollback 章節——輸出一張 decision card：待處理批次，接著四項檢查（版號一致性、`CHANGELOG.md` 是否改過、tag 是否就緒，以及 Map 帶來的 migration compatibility），每項都是 `pass` / `fail` / `not-applicable` / `unverified`，並附引用證據。
+
+第五項檢查——checksum 驗證——只在你明確帶入 `--artifact` 與 `--checksum` 時才跑；ship 從不猜你 repo 裡哪個檔案是 build artifact。版號一致性只讀 `package.json`。
+
+Ship 是你真正發布前讀的 pre-flight checklist——不是你 release pipeline 的替代品。
 
 ## 學習迴圈
 

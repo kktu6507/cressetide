@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const evalRoot = path.dirname(fileURLToPath(import.meta.url));
 const casesRoot = path.join(evalRoot, 'cases');
-const capabilities = new Set(['vigil', 'salvage', 'map', 'doctor']);
+const capabilities = new Set(['vigil', 'salvage', 'map', 'doctor', 'ship']);
 const allowedKeys = new Set([
   'id',
   'capability',
@@ -71,7 +71,7 @@ function validateCase(candidate, filename) {
     throw new Error(`${filename} must match case id ${candidate.id}`);
   }
   if (!capabilities.has(candidate.capability)) {
-    throw new Error(`${filename}.capability must be vigil, salvage, map, or doctor`);
+    throw new Error(`${filename}.capability must be vigil, salvage, map, doctor, or ship`);
   }
   if (candidate.fixture !== 'fictional') {
     throw new Error(`${filename}.fixture must be fictional`);

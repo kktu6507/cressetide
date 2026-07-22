@@ -23,7 +23,7 @@ independently.
 
 The `kktu6507/plugins` marketplace exposes `ctide@kktu` from this
 repository's `cressetide/` directory. The plugin manifest owns the eleven
-agent registrations. Skill discovery supplies the four public commands. Hook
+agent registrations. Skill discovery supplies the five public commands. Hook
 discovery is declared inside the plugin root and must resolve every script
 through `${CLAUDE_PLUGIN_ROOT}`.
 
@@ -73,6 +73,15 @@ Doctor performs read-only local probes for manifest identity, Node 20 or newer,
 hook wiring, harmless fail-open behavior, debug output, skill inventory, and
 agent inventory. It does not change configuration or perform telemetry and
 network probes.
+
+### Ship
+
+Ship reads the run ledger, project manifests, `CHANGELOG.md` history, git
+tags, and the Map's Rollback section since the last release tag, and reports
+a read-only release-readiness decision card: version consistency, changelog
+touch, tag readiness, migration compatibility, and a conditional checksum
+check. It never executes a build, test, or deploy step, never picks or bumps
+a version, and never writes anything.
 
 ## Roles
 

@@ -9,7 +9,7 @@ const expectedHooks = [
   "plan-gate.js", "destructive-guard.js", "contract-guard.js",
   "load-failure-memory.js", "compact-fidelity.js", "orchestration-check.js",
 ];
-const expectedSkills = ["doctor", "map", "salvage", "vigil"];
+const expectedSkills = ["doctor", "map", "salvage", "ship", "vigil"];
 const SEMVER = /^\d+\.\d+\.\d+(?:[-+].+)?$/;
 const expectedAgents = [
   "navigator", "implementer", "intent-reviewer", "test-reviewer", "code-reviewer",

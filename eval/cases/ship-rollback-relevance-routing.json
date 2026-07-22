@@ -1,0 +1,23 @@
+{
+  "id": "ship-rollback-relevance-routing",
+  "capability": "ship",
+  "fixture": "fictional",
+  "prompt": "Assemble the release decision card for the fictional Lighthouse Billing service from the ship report below.",
+  "evidence": [
+    "The pending batch since the last release tag (v2.4.0) touched src/db/migrations/2026_add_discount_column.sql and src/billing/order.js.",
+    "The changelogTouched check reports fail: CHANGELOG.md was not changed since v2.4.0.",
+    "SYSTEM_MAP.md's Rollback section reads: 'The most recent deploy added a NOT NULL discount_pct column with no default to the orders table; code from before this deploy cannot read the new rows.'",
+    "The checksumVerify check reports fail: the recorded checksum in ctide-v2.5.0-plugin.tar.gz.sha256 does not match the actual SHA-256 of ctide-v2.5.0-plugin.tar.gz."
+  ],
+  "requiredTerms": [
+    "NOT NULL",
+    "vigil --lite",
+    "re-run"
+  ],
+  "forbiddenTerms": [
+    "rollback is safe",
+    "checksum verified",
+    "no rollback concern"
+  ],
+  "rationale": "Ship must read the Rollback section's actual prose (not just note the field is filled in) to judge relevance to the pending migration file, and must route each failure to its own remediation: the untouched changelog to /ctide:vigil --lite, the checksum mismatch to re-running the build -- never swapped or merged into one generic fix."
+}

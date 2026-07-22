@@ -24,7 +24,7 @@ Perform read-only local probes and report pass, fail, or unverified for each ite
 3. Parse `hooks/hooks.json` and confirm exactly the six documented hook files are wired through `${CLAUDE_PLUGIN_ROOT}`.
 4. Syntax-check each hook and invoke it with a harmless, bounded event. A probe must exit zero even for malformed input, demonstrating the fail-open invariant.
 5. With `CTIDE_HOOK_DEBUG=1` in an isolated temporary directory, confirm the `[ctide ...]` debug prefix and `ctide-hook.log` behavior without exposing environment values.
-6. Confirm the four public skill directories and eleven agent manifests exist.
+6. Confirm the five public skill directories and eleven agent manifests exist.
 7. Explain how to install, enable, and reload `ctide@kktu`; do not mutate user configuration automatically.
 8. State that no telemetry or network probe was performed.
 
