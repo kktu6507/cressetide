@@ -57,7 +57,7 @@ test("plan gate covers its documented shell-write tripwires", () => {
 });
 
 test("destructive guard covers documented Bash and PowerShell forms", () => {
-  for (const command of ["git push origin main --force", "rm -rf build", "find . -delete", "dd if=image of=/dev/sda", "Remove-Item cache -Recurse -Force", "Format-Volume -DriveLetter D"]) {
+  for (const command of ["git push origin main --force", "rm -rf build", "find . -delete", "dd if=image of=/dev/sda", "Remove-Item cache -Recurse -Force", "Format-Volume -DriveLetter D", "kubectl delete namespace prod"]) {
     const result = runHook("destructive-guard.js", { tool_name: command.startsWith("Remove") || command.startsWith("Format") ? "PowerShell" : "Bash", tool_input: { command } });
     assert.equal(result.output?.hookSpecificOutput?.permissionDecision, "ask", command);
   }

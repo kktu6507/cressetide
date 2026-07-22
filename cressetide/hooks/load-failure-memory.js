@@ -165,7 +165,10 @@ function buildDigest(content) {
   // — a TRAILING paren marker only (`\)\s*$`) — so it FAILS TOWARD SHOWING: a title that merely mentions
   // "(expired)" mid-sentence (e.g. "do not log (expired) creds") is NOT suppressed; worst case a retired
   // entry is still shown — exactly the prior behavior, never worse.
-  const isRetired = (t) => /\((?:expired|superseded\b[^)]*)\)\s*$/i.test(t);
+  // {0,200}-bounded (same ReDoS reason as destructive-guard.js/plan-gate.js's shell-separator
+  // bounds, scoped here to "(...)" content length instead of a shell-flag gap — this content comes
+  // from a FAILURE_MEMORY.md file, which a hostile repo could ship crafted to stall SessionStart).
+  const isRetired = (t) => /\((?:expired|superseded\b[^)]{0,200})\)\s*$/i.test(t);
 
   // Count real (non-placeholder, non-retired) entries across the WHOLE file, so the omitted
   // note reflects entries actually dropped (by MAX_ENTRIES or the char cap),

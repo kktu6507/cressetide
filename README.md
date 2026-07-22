@@ -211,7 +211,7 @@ Six dependency-free Node hooks run in every enabled session. They are local-only
 | Hook | Event | Purpose |
 |---|---|---|
 | `plan-gate.js` | `PreToolUse` | Denies edit tools and obvious Bash/PowerShell writes while in plan mode. |
-| `destructive-guard.js` | `PreToolUse` | Asks before narrow, unrecoverable destructive commands such as `rm -rf`, `git reset --hard`, `git push --force`, and PowerShell `Remove-Item -Recurse`. |
+| `destructive-guard.js` | `PreToolUse` | Asks before narrow, unrecoverable destructive commands such as `rm -rf`, `git reset --hard`, `git push --force`, PowerShell `Remove-Item -Recurse`, `terraform destroy`, `kubectl delete namespace`, `docker volume rm/prune`, and database-drop CLIs (`dropdb`, `mysqladmin`, `redis-cli flushall`). |
 | `contract-guard.js` | `PreToolUse` | Guards the contract against mid-run weakening: asks before an edit would delete or rewrite an acceptance criterion, drop a `mustNotChange` or scope entry, downgrade risk (contract in `.ctide/output/contract.md`, legacy `.ctide/legacy-output/` included), or wholesale-delete a `design.md` section; also asks before an edit to `.claude/settings*.json` would flip any ctide guard flag from on to off (creating a fresh settings file to do it counts too). |
 | `load-failure-memory.js` | `SessionStart` | Reads project `.ctide/memory/FAILURE_MEMORY.md` (legacy `ai/FAILURE_MEMORY.md` as read-only fallback), else global `~/.claude/FAILURE_MEMORY.md`, and injects a nonce-fenced, untrusted digest. |
 | `compact-fidelity.js` | `SessionStart` · `compact` | Re-injects a concise workflow-continuity reminder after compaction. |

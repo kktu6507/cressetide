@@ -309,6 +309,36 @@ test("load-failure-memory: retired entries do not inflate the omitted count", ()
   assert.ok(!ctx.includes("retired one") && !ctx.includes("retired two"), "neither retired entry is injected");
 });
 
+// --- load-failure-memory: isRetired ReDoS-bound timing regression (item 10 of the 2026-07-21
+// unbounded-[^;&|]*-sibling sweep; a different threat model from destructive-guard/plan-gate's shell
+// commands -- this content comes from a FAILURE_MEMORY.md file a hostile repo could ship crafted) ---
+
+test("load-failure-memory: isRetired still retires a realistic longer (superseded by ...) marker (ReDoS bound doesn't clip normal usage)", () => {
+  const longMarker = "old rule (superseded by the 2026-07-20 consolidated regex-bound sweep entry, see that entry for the full replacement rule)"; // ~100 chars after "superseded", comfortably within the 200 bound
+  const mem = `# FM\n\n### 2026-06-18 — ${longMarker}\n- **Tags**: t.\n\n### 2026-06-10 — still active\n- **Tags**: t.\n`;
+  const ctx = digestOf({ cwd: mkProject(mem) });
+  assert.ok(!ctx.includes("old rule"), "a realistic longer trailing (superseded ...) marker must still retire the entry");
+  assert.ok(ctx.includes("still active"), "the other active entry must still surface");
+});
+
+test("load-failure-memory: a pathological (superseded ...) title with no closing paren returns a digest quickly and stays NOT retired (linear, not quadratic ReDoS)", () => {
+  // Pre-fix, the unbounded [^)]* backtracked to end-of-string at every "(superseded" occurrence with no
+  // ")" anywhere to stop it -- O(n^2) across the repeats. The {0,200} bound makes it linear. Per the
+  // tight trailing-marker match, a title with no closing paren was never retired either way (fails
+  // toward showing), so only the timing changes, not the outcome.
+  const title = "(superseded ".repeat(20000); // ~240KB (under the 256KB MAX_READ cap), no ")" anywhere -> never a valid trailing marker
+  const mem = `# FM\n\n### 2026-01-01 — ${title}\n- **Tags**: t.\n`;
+  const t0 = Date.now();
+  const ctx = digestOf({ cwd: mkProject(mem) });
+  const elapsed = Date.now() - t0;
+  assert.ok(ctx.includes("superseded"), "with no closing paren the entry is never retired, so it must still be injected");
+  // 800ms, not the usual 3000ms: this input is MAX_READ-capped at 256KB, so growing it can't buy more
+  // margin the way the shell-command F1 tests do (those cap at 5MB). At this size the bounded pattern
+  // resolves in double-digit ms while the reverted (unbounded) pattern takes several seconds -- 800ms
+  // keeps a wide margin on both sides without risking flakiness on slower hardware.
+  assert.ok(elapsed < 800, `bounded pattern must return quickly (linear); took ${elapsed}ms`);
+});
+
 // --- load-failure-memory: .ctide 3-tier read priority ---
 // Read priority: .ctide/memory/FAILURE_MEMORY.md → legacy ai/FAILURE_MEMORY.md → global. The hook is
 // READ-ONLY (the one-time legacy→new migration is the workflow main thread's job); these pin the order.

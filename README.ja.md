@@ -211,7 +211,7 @@ plugin が有効な間は、依存関係ゼロの Node hooks が6つ、すべて
 | Hook スクリプト | 発火イベント | 用途 |
 |---|---|---|
 | `plan-gate.js` | `PreToolUse` | plan mode 中に edit tools と明らかな Bash/PowerShell write を拒否する。 |
-| `destructive-guard.js` | `PreToolUse` | `rm -rf`、`git reset --hard`、`git push --force`、PowerShell の `Remove-Item -Recurse` など、狭く絞った復元不能な destructive command の前に確認を挟む。 |
+| `destructive-guard.js` | `PreToolUse` | `rm -rf`、`git reset --hard`、`git push --force`、PowerShell の `Remove-Item -Recurse`、`terraform destroy`、`kubectl delete namespace`、`docker volume rm/prune`、データベース drop 系 CLI（`dropdb`、`mysqladmin`、`redis-cli flushall`）など、狭く絞った復元不能な destructive command の前に確認を挟む。 |
 | `contract-guard.js` | `PreToolUse` | 契約が途中で骨抜きにされるのを見張ります：編集が acceptance criterion を削除・書き換えする、`mustNotChange` や scope の項目を落とす、risk を下げる（契約は `.ctide/output/contract.md`、旧レイアウトの `.ctide/legacy-output/` も対象）、`design.md` の section をまるごと消す場合は、先に確認します；`.claude/settings*.json` への編集が ctide の guard flag を有効から無効へ切り替える場合も同様です（新しい settings ファイルを作って切り替えるケースも検知します）。 |
 | `load-failure-memory.js` | `SessionStart` | プロジェクトの `.ctide/memory/FAILURE_MEMORY.md`（旧レイアウトの `ai/FAILURE_MEMORY.md` は読み取り専用のフォールバック）、なければグローバルの `~/.claude/FAILURE_MEMORY.md` を読み込み、nonce で囲んだ untrusted な digest を注入する。 |
 | `compact-fidelity.js` | `SessionStart` · `compact` | context compaction の直後に、簡潔な workflow-continuity のリマインダーを再注入する。 |

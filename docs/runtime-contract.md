@@ -47,7 +47,7 @@ The plugin wires exactly six fail-open hooks:
 | Hook | Debug prefix | Responsibility |
 | --- | --- | --- |
 | `plan-gate.js` | `[ctide plan-gate]` | Preserve the read-only plan and approval boundary. |
-| `destructive-guard.js` | `[ctide destructive-guard]` | Review supported destructive filesystem or Git actions. |
+| `destructive-guard.js` | `[ctide destructive-guard]` | Review supported destructive filesystem, Git, or infra/data-store actions. |
 | `contract-guard.js` | `[ctide contract-guard]` | Check changed-path and acceptance-criteria scope evidence. |
 | `load-failure-memory.js` | `[ctide load-failure-memory]` | Route relevant repository-local prevention lessons. |
 | `compact-fidelity.js` | `[ctide compact-fidelity]` | Preserve bounded state needed to continue safely. |

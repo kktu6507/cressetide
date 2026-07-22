@@ -79,18 +79,23 @@ function bashLooksLikePlanWrite(command) {
     // tee writing to a file (skipping flags); /dev/null and NUL exempt.
     /(?:^|[\s;&|])tee\s+(?:-[A-Za-z]+\s+)*(?!\/dev\/null\b|NUL\b)(?:\.{0,2}[\\/]|[A-Za-z]:[\\/]|[A-Za-z0-9_.][A-Za-z0-9_.-]*)/i,
     // sed in place: bare -i, -i<suffix> (e.g. -i.bak), or --in-place, within the sed arg span.
-    /(?:^|[\s;&|])sed\b(?=[^;&|]*\s(?:-[A-Za-z]*i[\w.-]*|--in-place\b))/i,
+    // {0,200}-bounded, same ReDoS reason as destructive-guard.js's rm -rf patterns.
+    /(?:^|[\s;&|])sed\b(?=[^;&|]{0,200}\s(?:-[A-Za-z]*i[\w.-]*|--in-place\b))/i,
     // perl in place: -i / -i.bak / -pi / -ni etc. (the -i flag is always an in-place rewrite).
-    /(?:^|[\s;&|])perl\b(?=[^;&|]*\s-[A-Za-z]*i)/i,
+    // {0,200}-bounded, same ReDoS reason as destructive-guard.js's rm -rf patterns.
+    /(?:^|[\s;&|])perl\b(?=[^;&|]{0,200}\s-[A-Za-z]*i)/i,
     // truncate: always resizes (and creates) the named file.
     /(?:^|[\s;&|])truncate\s+\S/i,
     // dd writing to a file via of= (exempt of=/dev/null, of=NUL); without of= dd writes stdout.
     // Anchor class includes `(` (subshell start) — kept character-identical with destructive-guard.js's dd pattern.
-    /(?:^|[\s;&|(])dd\s(?=[^;&|]*\bof=)(?![^;&|]*\bof=(?:\/dev\/null\b|NUL\b))/i,
+    // {0,200}-bounded, same ReDoS reason as destructive-guard.js's rm -rf patterns — kept
+    // character-identical with destructive-guard.js's dd pattern, enforced by garden 9d.
+    /(?:^|[\s;&|(])dd\s(?=[^;&|]{0,200}\bof=)(?![^;&|]{0,200}\bof=(?:\/dev\/null\b|NUL\b))/i,
     // ln creating a link (symbolic or hard) — writes a new directory entry into the tree.
     /(?:^|[\s;&|])ln\s+(?:-[A-Za-z]+\s+)*\S/i,
-    // git apply that actually applies — exempt dry-run/report-only flags.
-    /(?:^|[\s;&|])git\s+apply\b(?![^;&|]*\s--(?:check|stat|numstat|summary)\b)/i
+    // git apply that actually applies — exempt dry-run/report-only flags. {0,200}-bounded,
+    // same ReDoS reason as destructive-guard.js's rm -rf patterns (negative-lookahead form).
+    /(?:^|[\s;&|])git\s+apply\b(?![^;&|]{0,200}\s--(?:check|stat|numstat|summary)\b)/i
   ];
   return obviousWritePatterns.some((re) => re.test(unquoted));
 }

@@ -9,6 +9,11 @@
 // fail-OPEN if the whole input can't be parsed (can't tell what the tool is -> allow), but once a command
 // MATCHES a destructive pattern, fail-CLOSED-to-ASK (any later error still resolves toward asking, never
 // a silent allow). Per-project opt-out via .claude/settings.json "ctide": { "destructiveGuard": false }.
+// The infra/data-store patterns additionally exclude SQL DDL delivered via a quoted -c/-e/--eval payload
+// (e.g. psql -c "DROP TABLE x", mysql -e "...", mongosh --eval "db.dropDatabase()") — this file's
+// quote-stripping already blinds every pattern to quoted content uniformly, so that is consistent, not a
+// new gap; and per-cloud-provider CLI delete verbs (aws/gcloud/az) are excluded as unbounded surface,
+// deliberately out of scope.
 // Cross-platform Node; never crashes a session.
 const os = require("os");
 const path = require("path");
@@ -45,8 +50,8 @@ function bashLooksDestructive(command) {
   const unquoted = cmd.replace(/'[^']*'|"[^"]*"/g, " ");
   const destructivePatterns = [
     // git history/worktree obliterators
-    /(?:^|[\s;&|(])git\s+reset\s+(?:[^;&|]*\s)?--hard\b/i,                                  // discards commits + working tree
-    /(?:^|[\s;&|(])git\s+push\s+(?:[^;&|]*\s)?(?:--force(?![\w-])|--force-with-lease=?|-f\b)/i, // rewrites remote history (--force(?![\w-]) so a non-flag like --force-fast doesn't false-ask, while --force-with-lease still matches its own branch)
+    /(?:^|[\s;&|(])git\s+reset\s+(?:[^;&|]{0,200}\s)?--hard\b/i,                            // discards commits + working tree ({0,200}-bounded, same ReDoS reason as the rm -rf patterns below)
+    /(?:^|[\s;&|(])git\s+push\s+(?:[^;&|]{0,200}\s)?(?:--force(?![\w-])|--force-with-lease=?|-f\b)/i, // rewrites remote history (--force(?![\w-]) so a non-flag like --force-fast doesn't false-ask, while --force-with-lease still matches its own branch; {0,200}-bounded, same ReDoS reason as the rm -rf patterns below)
     // filesystem obliterators
     /(?:^|[\s;&|(])rm\s+(?:-[A-Za-z]*\s+)*-[A-Za-z]*r[A-Za-z]*f|(?:^|[\s;&|(])rm\s+(?:-[A-Za-z]*\s+)*-[A-Za-z]*f[A-Za-z]*r/i, // rm -rf / -fr (combined flags)
     // rm with SEPARATED recursive + force flags in any order/spacing — `rm -r -f`, `rm -f -r`, `rm --recursive --force`,
@@ -64,16 +69,32 @@ function bashLooksDestructive(command) {
     // can fire); the extreme-tail miss (>200 chars between the two flags) is acceptable for this ask-only, fail-open guard.
     /(?:^|[\s;&|(])rm\s+(?:[^;&|]{0,200}\s)?(?:-[A-Za-z]*r[A-Za-z]*\b|--recursive\b)[^;&|]{0,200}\s(?:-[A-Za-z]*f[A-Za-z]*\b|--force\b)/i, // recursive flag THEN force flag ({0,200} bound caps ReDoS backtracking)
     /(?:^|[\s;&|(])rm\s+(?:[^;&|]{0,200}\s)?(?:-[A-Za-z]*f[A-Za-z]*\b|--force\b)[^;&|]{0,200}\s(?:-[A-Za-z]*r[A-Za-z]*\b|--recursive\b)/i, // force flag THEN recursive flag ({0,200} bound caps ReDoS backtracking)
-    /(?:^|[\s;&|(])find\s[^;&|]*\s-delete\b/i,                                              // bulk delete by find
-    /(?:^|[\s;&|(])dd\s(?=[^;&|]*\bof=)(?![^;&|]*\bof=(?:\/dev\/null\b|NUL\b))/i,            // dd of=<real device/file> (exempt /dev/null, NUL; reused verbatim from plan-gate — a malformed double-of= with /dev/null anywhere is exempted, but last-of= wins so it'd write /dev/null anyway)
+    /(?:^|[\s;&|(])find\s[^;&|]{0,200}\s-delete\b/i,                                       // bulk delete by find ({0,200}-bounded, same ReDoS reason as the rm -rf patterns above)
+    /(?:^|[\s;&|(])dd\s(?=[^;&|]{0,200}\bof=)(?![^;&|]{0,200}\bof=(?:\/dev\/null\b|NUL\b))/i, // dd of=<real device/file> (exempt /dev/null, NUL; reused verbatim from plan-gate — a malformed double-of= with /dev/null within 200 chars is exempted (beyond that, the {0,200} bound below no longer sees it and the real target wins), but last-of= wins so it'd write /dev/null anyway when the exemption does apply; {0,200}-bounded, same ReDoS reason as the rm -rf patterns above — kept character-identical with plan-gate.js's dd pattern, enforced by garden 9d)
     /(?:^|[\s;&|(])(?:mkfs(?:\.\w+)?|shred)\b/i,                                            // format / unrecoverable wipe
+    // infra / data-store obliterators — same `unquoted` string, same anchoring convention as
+    // every pattern above (no raw-vs-mask split: every pattern in this file, old and new, tests
+    // the same quote-stripped `unquoted` variable — see the header note on why that matters).
+    // Documented miss: `terraform apply -destroy` — a rarer alternate invocation of the same destructive
+    // action — is NOT matched; catching it would need asymmetric per-tool handling that breaks this clean
+    // 3-tool alternation, so it's accepted narrow like this file's other documented misses.
+    /(?:^|[\s;&|(])(?:terraform|pulumi|cdk)\s+destroy\b/i,                                    // IaC full teardown (terraform/pulumi/cdk share this exact shape).
+    // Requires the resource-type word DIRECTLY after `delete` (not an unordered lookahead) so `kubectl
+    // delete pod ns` (a pod literally named "ns") does not false-ask. Documented misses: flags between
+    // `delete` and the type word (e.g. `kubectl delete --grace-period=0 namespace x`); PV/PVC deletion is
+    // deliberately NOT covered (reclaim-policy-dependent — sometimes recoverable).
+    /(?:^|[\s;&|(])kubectl\s+delete\s+(?:namespaces?|ns)\b/i,                                 // kubectl namespace deletion. Covers `namespace`/`namespaces`/`ns` (kubectl accepts all three).
+    /(?:^|[\s;&|(])docker\s+volume\s+(?:rm|prune)\b/i,                                        // container volume data loss. `docker compose down -v` / `docker system prune --volumes` deliberately excluded: redundant with this primitive, and `-v` is an overloaded short flag elsewhere in the docker CLI (verbose/version/bind-mount) that would need its own disambiguation.
+    /(?:^|[\s;&|(])dropdb\b/i,                                                                // Postgres's dedicated drop-a-database binary — same bare-destructive-name shape as mkfs/shred above.
+    /(?:^|[\s;&|(])mysqladmin\b(?=[^;&|]{0,200}\sdrop\b)/i,                                   // MySQL admin CLI's drop subcommand. {0,200}-bounded lookahead for the same reason as the rm -rf patterns above: an unbounded lookahead at a separator-anchored, repeatable position is O(n²) regardless of shape; measured to preserve identical ASK/ALLOW behavior on every declared case.
+    /(?:^|[\s;&|(])redis-cli\b(?=[^;&|]{0,200}\s(?:flushall|flushdb)\b)/i,                    // Redis's whole-instance / whole-DB wipe verbs. Same {0,200} bound and reason as mysqladmin above (measured: preserved on every case incl. flushdb). Remove-Item below shares this shape, left untouched here by design (out of scope).
     // PowerShell-native forms (Windows / Copilot CLI): the model rewrites POSIX into cmdlets, so a
     // `rm -rf` request runs as `Remove-Item -Recurse -Force` and the POSIX patterns above never match.
     // Match the cmdlet/alias + a -Recurse-ish flag (PS allows prefix abbreviation, and -r* is unambiguous
     // for Remove-Item) — `-Recurse` is the recursive-delete signal; -Force only suppresses prompts.
     // `rm` is deliberately NOT in this alias set: the POSIX `rm -rf` pattern owns `rm` (where `rm -r`
     // alone is a documented allow), so adding it here would flip that.
-    /(?:^|[\s;&|(])(?:remove-item|ri)\b(?=[^;&|]*\s-r[a-z]*\b)/i,                           // Remove-Item -Recurse [-Force] (PS `rm -rf`)
+    /(?:^|[\s;&|(])(?:remove-item|ri)\b(?=[^;&|]{0,200}\s-r[a-z]*\b)/i,                     // Remove-Item -Recurse [-Force] (PS `rm -rf`; {0,200}-bounded, same ReDoS reason as the rm -rf patterns above)
     /(?:^|[\s;&|(])(?:format-volume|clear-disk)\b/i,                                       // format a volume / wipe a disk (no POSIX form on Windows)
   ];
   return destructivePatterns.some((re) => re.test(unquoted));
@@ -145,8 +166,12 @@ process.stdin.on("end", () => {
         permissionDecisionReason:
           "ctide safety-net: this " + tool + " command matches a high-confidence destructive pattern " +
           "(git reset --hard / git push --force / rm -rf / find -delete / dd of= / mkfs / shred; or the " +
-          "PowerShell forms Remove-Item -Recurse / Format-Volume / Clear-Disk). These are unrecoverable — " +
-          "confirm the target is intended before running. This is a best-effort net (only obvious forms are " +
+          "PowerShell forms Remove-Item -Recurse / Format-Volume / Clear-Disk; or the infra/data-store " +
+          "forms terraform, pulumi, or cdk destroy / kubectl delete namespace / docker volume rm or prune / " +
+          "dropdb / mysqladmin drop / redis-cli flushall or flushdb). These are unrecoverable — confirm " +
+          "the target is intended before running; some of these newly-covered commands (kubectl, IaC " +
+          "tooling, database-admin CLIs) can reach a remote or shared/production system, not just the " +
+          "local machine. This is a best-effort net (only obvious forms are " +
           "caught; interpreter one-liners, piped deletes, and cmd.exe forms slip), so do not rely on it " +
           "alone. Disable for this project with \"ctide\": { \"destructiveGuard\": false } in " +
           ".claude/settings.json or .claude/settings.local.json. If you are an AI agent: self-authoring that setting right now, in " +

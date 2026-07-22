@@ -226,6 +226,73 @@ test("Bash tripwire: the deny reason names the heuristic and the escape hatch", 
   assert.match(out, /best-effort|ExitPlanMode/, "bash deny reason should be actionable");
 });
 
+// --- plan-gate F1: ReDoS-bound timing regressions (sed -i / perl -i / git apply / dd of=) ---
+// Mirrors the destructive-guard "F1: ... rm -rf ..." pair below (this file, further down): each
+// newly {0,200}-bounded lookahead gets (a) a realistic-longer-form correctness case and
+// (b) a pathological timing case proving the bound keeps the guard linear, not quadratic.
+
+test("plan-gate F1: sed -i with realistic padding before -i still denies (bound doesn't clip normal usage)", () => {
+  const command = `sed ${"-e 's/x/y/' ".repeat(6)}-i app.ts`; // ~72 chars between "sed" and "-i", comfortably within the 200 bound
+  assert.strictEqual(gate({ tool_name: "Bash", permission_mode: "plan", tool_input: { command } }), "DENY");
+});
+
+test("plan-gate F1: a pathological sed input (no -i/--in-place anywhere) returns a decision quickly (linear, not quadratic ReDoS)", () => {
+  // Pre-fix, the unbounded [^;&|]* lookahead scanned to end-of-string at every `sed` anchor (no ;&|
+  // separator here to stop it early) -- O(n^2) across many anchors. The {0,200} bound makes it linear.
+  const command = "sed x ".repeat(60000); // ~360KB, no -i/--in-place anywhere
+  const t0 = Date.now();
+  const decision = gate({ tool_name: "Bash", permission_mode: "plan", tool_input: { command } });
+  const elapsed = Date.now() - t0;
+  assert.strictEqual(decision, "ALLOW", "sed with no -i/--in-place flag must not be blocked");
+  assert.ok(elapsed < 3000, `bounded pattern must return quickly (linear); took ${elapsed}ms`);
+});
+
+test("plan-gate F1: perl -i with realistic padding before -i still denies (bound doesn't clip normal usage)", () => {
+  const command = `perl ${"-w ".repeat(30)}-i.bak -pe 's/a/b/' app.ts`; // ~90 chars of padding before -i
+  assert.strictEqual(gate({ tool_name: "Bash", permission_mode: "plan", tool_input: { command } }), "DENY");
+});
+
+test("plan-gate F1: a pathological perl input (no -i anywhere) returns a decision quickly (linear, not quadratic ReDoS)", () => {
+  const command = "perl x ".repeat(50000); // ~350KB, no -i anywhere
+  const t0 = Date.now();
+  const decision = gate({ tool_name: "Bash", permission_mode: "plan", tool_input: { command } });
+  const elapsed = Date.now() - t0;
+  assert.strictEqual(decision, "ALLOW", "perl with no -i flag must not be blocked");
+  assert.ok(elapsed < 3000, `bounded pattern must return quickly (linear); took ${elapsed}ms`);
+});
+
+test("plan-gate F1: git apply with realistic padding still resolves correctly, both with and without --check (bound doesn't clip normal usage)", () => {
+  const exempt = `git apply ${"-v ".repeat(20)}--check fix.patch`; // ~60 chars before --check -> dry run, exempt
+  const real = `git apply ${"-v ".repeat(20)}fix.patch`;           // same padding, no exempt flag -> a real apply
+  assert.strictEqual(gate({ tool_name: "Bash", permission_mode: "plan", tool_input: { command: exempt } }), "ALLOW", "a padded --check must stay exempt");
+  assert.strictEqual(gate({ tool_name: "Bash", permission_mode: "plan", tool_input: { command: real } }), "DENY", "the same padding with no exempt flag must still deny");
+});
+
+test("plan-gate F1: a pathological git apply input (--check present at every occurrence) returns a decision quickly (linear, not quadratic ReDoS)", () => {
+  // The negative lookahead's pathological shape is the OPPOSITE of a positive lookahead's: it needs
+  // the exempt flag present at EVERY occurrence (so the match fails at every anchor and .test() can
+  // never short-circuit on an early success), forcing the old unbounded regex to backtrack across the
+  // full remaining string at each of many anchors before concluding overall ALLOW.
+  const command = "git apply --check ".repeat(30000); // ~570KB, --check present at every occurrence
+  const t0 = Date.now();
+  const decision = gate({ tool_name: "Bash", permission_mode: "plan", tool_input: { command } });
+  const elapsed = Date.now() - t0;
+  assert.strictEqual(decision, "ALLOW", "git apply --check repeated must stay exempt (dry run) throughout");
+  assert.ok(elapsed < 3000, `bounded pattern must return quickly (linear); took ${elapsed}ms`);
+});
+
+test("plan-gate F1: a pathological dd input (no of= anywhere) returns a decision quickly (linear, not quadratic ReDoS)", () => {
+  // dd of='s correctness coverage already exists above (the dd if=/dev/zero of=... cases in the two
+  // Bash-tripwire tables); this pins only the shared {0,200}-bounded timing fix (this regex is kept
+  // character-identical with destructive-guard.js's own dd pattern, enforced by garden 9d).
+  const command = "dd if=/dev/zero bs=1 ".repeat(18000); // ~396KB, no of= anywhere
+  const t0 = Date.now();
+  const decision = gate({ tool_name: "Bash", permission_mode: "plan", tool_input: { command } });
+  const elapsed = Date.now() - t0;
+  assert.strictEqual(decision, "ALLOW", "dd with no of= must not be blocked");
+  assert.ok(elapsed < 3000, `bounded pattern must return quickly (linear); took ${elapsed}ms`);
+});
+
 test("malformed stdin fails open (no deny, no crash)", () => {
   const out = cp.execFileSync("node", [GATE], { input: "not json {{{" }).toString();
   assert.strictEqual(out.trim(), "");
@@ -332,6 +399,20 @@ test("destructive-guard: ASKS on unrecoverable commands in ANY mode (incl. defau
     "(dd if=/dev/zero of=/dev/sda bs=1M)", // of=<real device> inside a subshell — `(` anchor
     "mkfs.ext4 /dev/sdb1",
     "shred -u secret.key",
+    "terraform destroy",
+    "pulumi destroy",
+    "cdk destroy -f",
+    "kubectl delete namespace prod",
+    "kubectl delete ns prod --force",
+    "docker volume rm mydata",
+    "docker volume prune -f",
+    "dropdb myapp_production",
+    "mysqladmin -u root -p drop myapp_production",
+    "redis-cli -h prod.cache.internal flushall",
+    "redis-cli -h prod.cache.internal flushdb",
+    "echo hi && terraform destroy",
+    "echo hi; dropdb myapp_production",
+    "(docker volume rm mydata)",
   ]) {
     assert.strictEqual(dguard({ tool_name: "Bash", permission_mode: "default", tool_input: { command } }), "ASK", `should ask: ${command}`);
   }
@@ -353,6 +434,14 @@ test("destructive-guard: ALLOWS benign / recoverable / quoted commands (narrow d
     "(dd if=disk.img of=/dev/null bs=1M)", // of=/dev/null exemption holds inside a subshell too
     "echo \"rm -rf /\"",               // quoted literal, not a real command
     "git log --oneline -20",
+    "terraform plan -destroy",         // dry-run preview, not the real teardown — must NOT ask
+    "terraform apply",                 // no -destroy flag
+    "kubectl get namespace prod",
+    "kubectl delete pod ns",           // "ns" here is a POD NAME, not the namespace resource type — must NOT ask
+    "docker volume ls",
+    "createdb myapp_dev",              // Postgres sibling command — creates, does not drop
+    "mysqladmin status",
+    "redis-cli ping",
   ]) {
     assert.strictEqual(dguard({ tool_name: "Bash", permission_mode: "default", tool_input: { command } }), "ALLOW", `should allow: ${command}`);
   }
@@ -412,6 +501,8 @@ test("destructive-guard: the ASK reason warns an AI agent against self-authoring
   assert.match(reason, /AI agent/i, "the ASK reason must address an AI agent reading it");
   assert.match(reason, /self-author/i, "the ASK reason must name self-authoring the opt-out as invalid");
   assert.match(reason, /standing human decision/i, "the ASK reason must frame the opt-out as a standing human decision, not a same-turn reaction");
+  assert.match(reason, /terraform|pulumi|cdk|kubectl|dropdb|mysqladmin|redis-cli/i, "the ASK reason must name the new infra/data-store pattern families");
+  assert.match(reason, /remote or shared|production system/i, "the ASK reason must warn that some new patterns can reach a remote or shared/production system");
 });
 
 test("destructive-guard: the ASK reason names settings.local.json alongside settings.json (higher-precedence, gitignored, diff-invisible)", () => {
@@ -504,6 +595,87 @@ test("destructive-guard F1: a pathological rm input returns a decision quickly (
   assert.ok(elapsed < 3000, `bounded pattern must return quickly (linear); took ${elapsed}ms`);
 });
 
+// --- destructive-guard F1: ReDoS-bound timing regressions (the 9-site sibling-reader-sweep sequel to
+// the rm -rf bound above; see the 2026-07-21 FAILURE_MEMORY entry) ---
+
+test("destructive-guard F1: git reset --hard with realistic padding before --hard still asks (bound doesn't clip normal usage)", () => {
+  const command = `git reset ${"-q ".repeat(30)}--hard`; // ~90 chars between "reset" and "--hard", comfortably within the 200 bound
+  assert.strictEqual(dguard({ tool_name: "Bash", permission_mode: "default", tool_input: { command } }), "ASK");
+});
+
+test("destructive-guard F1: a pathological git reset input (no --hard anywhere) returns a decision quickly (linear, not quadratic ReDoS)", () => {
+  const command = "git reset x\n".repeat(30000); // ~360KB, no --hard anywhere
+  const t0 = Date.now();
+  const decision = dguard({ tool_name: "Bash", permission_mode: "default", tool_input: { command } });
+  const elapsed = Date.now() - t0;
+  assert.strictEqual(decision, "ALLOW", "git reset with no --hard flag must not ask");
+  assert.ok(elapsed < 3000, `bounded pattern must return quickly (linear); took ${elapsed}ms`);
+});
+
+test("destructive-guard F1: git push --force with realistic padding before the force flag still asks (bound doesn't clip normal usage)", () => {
+  const command = `git push ${"-v ".repeat(30)}--force`; // ~90 chars of padding before --force
+  assert.strictEqual(dguard({ tool_name: "Bash", permission_mode: "default", tool_input: { command } }), "ASK");
+});
+
+test("destructive-guard F1: a pathological git push input (no --force/-f anywhere) returns a decision quickly (linear, not quadratic ReDoS)", () => {
+  const command = "git push origin\n".repeat(25000); // ~400KB, no force flag anywhere
+  const t0 = Date.now();
+  const decision = dguard({ tool_name: "Bash", permission_mode: "default", tool_input: { command } });
+  const elapsed = Date.now() - t0;
+  assert.strictEqual(decision, "ALLOW", "git push with no force flag must not ask");
+  assert.ok(elapsed < 3000, `bounded pattern must return quickly (linear); took ${elapsed}ms`);
+});
+
+test("destructive-guard F1: find -delete with realistic padding before -delete still asks (bound doesn't clip normal usage)", () => {
+  const command = `find . ${"-a ".repeat(30)}-delete`; // ~90 chars of padding before -delete
+  assert.strictEqual(dguard({ tool_name: "Bash", permission_mode: "default", tool_input: { command } }), "ASK");
+});
+
+test("destructive-guard F1: a pathological find input (no -delete anywhere) returns a decision quickly (linear, not quadratic ReDoS)", () => {
+  const command = "find x\n".repeat(50000); // ~350KB, no -delete anywhere
+  const t0 = Date.now();
+  const decision = dguard({ tool_name: "Bash", permission_mode: "default", tool_input: { command } });
+  const elapsed = Date.now() - t0;
+  assert.strictEqual(decision, "ALLOW", "find with no -delete must not ask");
+  assert.ok(elapsed < 3000, `bounded pattern must return quickly (linear); took ${elapsed}ms`);
+});
+
+test("destructive-guard F1: dd of= with a realistic longer invocation still asks (bound doesn't clip normal usage)", () => {
+  const command = "dd if=/dev/zero conv=notrunc,noerror,sync status=progress bs=4M count=100 of=/dev/sda"; // ~74 realistic chars before of=
+  assert.strictEqual(dguard({ tool_name: "Bash", permission_mode: "default", tool_input: { command } }), "ASK");
+});
+
+test("destructive-guard F1: a pathological dd input (no of= anywhere) returns a decision quickly (linear, not quadratic ReDoS)", () => {
+  const command = "dd if=/dev/zero bs=1 ".repeat(18000); // ~396KB, no of= anywhere
+  const t0 = Date.now();
+  const decision = dguard({ tool_name: "Bash", permission_mode: "default", tool_input: { command } });
+  const elapsed = Date.now() - t0;
+  assert.strictEqual(decision, "ALLOW", "dd with no of= must not ask");
+  assert.ok(elapsed < 3000, `bounded pattern must return quickly (linear); took ${elapsed}ms`);
+});
+
+test("destructive-guard F1 (retroactive): a pathological mysqladmin input (no drop anywhere) returns a decision quickly (linear, not quadratic ReDoS)", () => {
+  // The mysqladmin lookahead was already bounded to {0,200} earlier this session; this was the missing
+  // timing regression test for that fix (correctness coverage already exists in the ASKS/ALLOWS tables above).
+  const command = "mysqladmin x ".repeat(20000); // ~260KB, no drop anywhere
+  const t0 = Date.now();
+  const decision = dguard({ tool_name: "Bash", permission_mode: "default", tool_input: { command } });
+  const elapsed = Date.now() - t0;
+  assert.strictEqual(decision, "ALLOW", "mysqladmin with no drop verb must not ask");
+  assert.ok(elapsed < 3000, `bounded pattern must return quickly (linear); took ${elapsed}ms`);
+});
+
+test("destructive-guard F1 (retroactive): a pathological redis-cli input (no flushall/flushdb anywhere) returns a decision quickly (linear, not quadratic ReDoS)", () => {
+  // Same retroactive gap as mysqladmin above: the redis-cli lookahead was already bounded to {0,200}
+  // earlier this session but never got its own timing regression test.
+  const command = "redis-cli x ".repeat(20000); // ~240KB, no flushall/flushdb anywhere
+  const t0 = Date.now();
+  const decision = dguard({ tool_name: "Bash", permission_mode: "default", tool_input: { command } });
+  const elapsed = Date.now() - t0;
+  assert.strictEqual(decision, "ALLOW", "redis-cli with no flushall/flushdb must not ask");
+  assert.ok(elapsed < 3000, `bounded pattern must return quickly (linear); took ${elapsed}ms`);
+});
+
 test("destructive-guard: PowerShell-native destructive forms (Windows/Copilot) ASK", () => {
   // On Windows the model rewrites POSIX into cmdlets, so `rm -rf` runs as `Remove-Item -Recurse -Force`.
   for (const command of [
@@ -529,6 +701,20 @@ test("destructive-guard: non-recursive / non-destructive PowerShell stays ALLOW 
   ]) {
     assert.strictEqual(dguard({ tool_name: "Bash", permission_mode: "default", tool_input: { command } }), "ALLOW", `should allow: ${command}`);
   }
+});
+
+test("destructive-guard F1: Remove-Item with realistic padding before -Recurse still asks (bound doesn't clip normal usage)", () => {
+  const command = "Remove-Item -ErrorAction SilentlyContinue -Confirm:$false -Recurse 'C:\\Temp\\build'"; // realistic longer PS invocation, ~47 chars before -Recurse
+  assert.strictEqual(dguard({ tool_name: "PowerShell", permission_mode: "default", tool_input: { command } }), "ASK");
+});
+
+test("destructive-guard F1: a pathological Remove-Item input (no -Recurse-ish flag anywhere) returns a decision quickly (linear, not quadratic ReDoS)", () => {
+  const command = "Remove-Item foo ".repeat(25000); // ~400KB, no -r flag anywhere
+  const t0 = Date.now();
+  const decision = dguard({ tool_name: "PowerShell", permission_mode: "default", tool_input: { command } });
+  const elapsed = Date.now() - t0;
+  assert.strictEqual(decision, "ALLOW", "Remove-Item with no -Recurse-ish flag must not ask");
+  assert.ok(elapsed < 3000, `bounded pattern must return quickly (linear); took ${elapsed}ms`);
 });
 
 test("destructive-guard: git push --force-fast (a non-flag) does NOT false-ask, but --force / --force-with-lease still do", () => {

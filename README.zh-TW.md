@@ -211,7 +211,7 @@ run 與 run 之間，ctide 會把學到的東西接起來——輸的、贏的�
 | Hook 腳本 | 觸發事件 | 用途 |
 |---|---|---|
 | `plan-gate.js` | `PreToolUse` | 在 plan mode 中擋下 edit tools 與明顯 Bash/PowerShell writes。 |
-| `destructive-guard.js` | `PreToolUse` | 對 `rm -rf`、`git reset --hard`、`git push --force`、PowerShell `Remove-Item -Recurse` 等狹義不可復原 destructive commands 先詢問。 |
+| `destructive-guard.js` | `PreToolUse` | 對 `rm -rf`、`git reset --hard`、`git push --force`、PowerShell `Remove-Item -Recurse`、`terraform destroy`、`kubectl delete namespace`、`docker volume rm/prune`、資料庫 drop 類 CLI（`dropdb`、`mysqladmin`、`redis-cli flushall`）等狹義不可復原 destructive commands 先詢問。 |
 | `contract-guard.js` | `PreToolUse` | 守著合約不被中途弱化：編輯若會刪掉或改寫驗收條件、移除 `mustNotChange`／範圍清單項目、調降風險（合約在 `.ctide/output/contract.md`，含舊版 `.ctide/legacy-output/`），或整段刪除 `design.md` 章節，先問過你才放行；對 `.claude/settings*.json` 的編輯若會把任何 ctide guard 開關從開翻成關（連新建一個 settings 檔來翻也算），同樣先問。 |
 | `load-failure-memory.js` | `SessionStart` | 讀取專案 `.ctide/memory/FAILURE_MEMORY.md`（舊版 `ai/FAILURE_MEMORY.md` 作為唯讀 fallback），否則讀全域 `~/.claude/FAILURE_MEMORY.md`，並注入 nonce-fenced、untrusted digest。 |
 | `compact-fidelity.js` | `SessionStart` · `compact` | context compaction 後重新注入精簡 workflow-continuity reminder。 |
