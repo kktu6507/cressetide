@@ -39,6 +39,7 @@ function safeErrorCode(error) {
 // --- git shelling (mirrors map.mjs's git() helper: spawnSync, explicit piped stdio, a timeout — the
 // FAILURE_MEMORY 2026-07-19 fix for execFileSync/execSync's stderr-inheritance leak) ------------------
 
+// git() kept in sync with map.mjs (documented copy — see garden hash guard)
 function git(root, args) {
   return spawnSync("git", ["-C", root, ...args], {
     encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000,
@@ -297,9 +298,12 @@ export function tagReadinessCheck(root, versionConsistency) {
 // own relevance judgment, never pattern-matched here (FAILURE_MEMORY 2026-07-16: prose-heuristic
 // matching over free-form human-edited text never converged before this repo settled on
 // machine-sentinel-only parsing).
+// OPS_TRUST_TAG_ATTEMPT kept in sync with map.mjs (documented copy — see garden hash guard)
 const OPS_TRUST_TAG_ATTEMPT = /<!--\s*CTIDE:TRUST:[^>]*-->/g;
+// OPS_TRUST_TAG_WELLFORMED kept in sync with map.mjs (documented copy — see garden hash guard)
 const OPS_TRUST_TAG_WELLFORMED = /^<!--\s*CTIDE:TRUST:(verified|dry-run-verified|unverified)(?:\s*:\s*(\S+))?\s*-->$/;
 
+// isValidIsoDate() kept in sync with map.mjs (documented copy — see garden hash guard)
 function isValidIsoDate(value) {
   const match = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{3}))?Z)?$/.exec(value || "");
   if (!match) return false;
@@ -314,6 +318,7 @@ function isValidIsoDate(value) {
   ].every((part, index) => part === expected[index]);
 }
 
+// opsTrustTagIsWellFormed() kept in sync with map.mjs (documented copy — see garden hash guard)
 function opsTrustTagIsWellFormed(tag) {
   const match = OPS_TRUST_TAG_WELLFORMED.exec(tag);
   if (!match) return false;

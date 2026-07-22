@@ -701,6 +701,51 @@ test("validate-structure: garden 9d FAILS on drift in each guarded copy cluster 
   }
 });
 
+test("validate-structure: garden 9d FAILS on drift in the map.mjs/ship.mjs mirrored skill constructs", () => {
+  for (const [mutate, expected] of [
+    // git(): a single-token change inside the function body (well within the extracted
+    // `function git(` .. column-0 `}` range) breaks the documented byte-identical copy.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "ship", "scripts", "ship.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("timeout: 10000,", "timeout: 10001,"), "utf8");
+    }, /garden 9d: git drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
+    // OPS_TRUST_TAG_ATTEMPT: a single-character change inside the const's own regex-literal line.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "map", "scripts", "map.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("[^>]*-->/g", "[^>]+-->/g"), "utf8");
+    }, /garden 9d: OPS_TRUST_TAG_ATTEMPT drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
+    // OPS_TRUST_TAG_WELLFORMED: a single-character change inside the const's own regex-literal line.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "ship", "scripts", "ship.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("(\\S+)", "(\\S*)"), "utf8");
+    }, /garden 9d: OPS_TRUST_TAG_WELLFORMED drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
+    // opsTrustTagIsWellFormed(): a single-token change inside the function body.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "map", "scripts", "map.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace('tier === "unverified"', 'tier === "UNVERIFIED"'), "utf8");
+    }, /garden 9d: opsTrustTagIsWellFormed drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
+    // isValidIsoDate(): a single-token change inside the function body.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "ship", "scripts", "ship.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace('hourText || "00"', 'hourText || "01"'), "utf8");
+    }, /garden 9d: isValidIsoDate drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
+    // Extraction-failure path: renaming git()'s signature in ONE file makes it unlocatable there,
+    // exercising the "cannot extract" branch rather than the drift branch.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "map", "scripts", "map.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("function git(", "function gitHelper("), "utf8");
+    }, /garden 9d: cannot extract git from cressetide\/skills\/map\/scripts\/map\.mjs — the construct moved or lost its expected shape/],
+  ]) {
+    const tree = copyRepoTree();
+    try {
+      mutate(tree);
+      const { code, out } = runValidator(tree);
+      assert.notStrictEqual(code, 0, `a drifted/unextractable map.mjs↔ship.mjs mirrored construct must fail the build (${expected})`);
+      assert.match(out, expected, "the failure must name the drifted or unextractable construct");
+    } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  }
+});
+
 test("validate-structure: garden 9e FAILS on a bare plugin-script invocation missing ${CLAUDE_PLUGIN_ROOT}", () => {
   const tree = copyRepoTree();
   try {

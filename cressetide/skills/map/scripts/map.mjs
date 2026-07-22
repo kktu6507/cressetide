@@ -76,11 +76,13 @@ const HEURISTIC_PLACEHOLDER = /<!-- CTIDE:HEURISTIC-PLACEHOLDER -->/;
 // and each match is validated independently by opsTrustTagIsWellFormed, so a well-formed tag anywhere in
 // the block can never mask a separately malformed tag elsewhere (the old mechanism's dual-marker gap,
 // where a single whole-string well-formed match cleared an entire line/field, has no analogue here).
+// OPS_TRUST_TAG_ATTEMPT kept in sync with ship.mjs (documented copy — see garden hash guard)
 const OPS_TRUST_TAG_ATTEMPT = /<!--\s*CTIDE:TRUST:[^>]*-->/g;
 // The tier/date separator tolerates optional whitespace on both sides of its colon (mirroring the
 // tolerance already given around the outer "<!--"/"-->" delimiters), because the adjacent human-readable
 // prose on the same line conventionally writes "verified: <date>" WITH a space after the colon -- a
 // good-faith author formatting the tag the same way must not be flagged malformed for it.
+// OPS_TRUST_TAG_WELLFORMED kept in sync with ship.mjs (documented copy — see garden hash guard)
 const OPS_TRUST_TAG_WELLFORMED = /^<!--\s*CTIDE:TRUST:(verified|dry-run-verified|unverified)(?:\s*:\s*(\S+))?\s*-->$/;
 
 // A tag is well-formed only if its tier is exactly one of the 3 literal words -- an unrecognized tier
@@ -88,6 +90,7 @@ const OPS_TRUST_TAG_WELLFORMED = /^<!--\s*CTIDE:TRUST:(verified|dry-run-verified
 // for the 2 dated tiers, only if the trailing date passes the same isValidIsoDate check every other Map
 // provenance date is held to (reused, not reinvented). "unverified" carries no date, so its
 // well-formedness never depends on one.
+// opsTrustTagIsWellFormed() kept in sync with ship.mjs (documented copy — see garden hash guard)
 function opsTrustTagIsWellFormed(tag) {
   const match = OPS_TRUST_TAG_WELLFORMED.exec(tag);
   if (!match) return false;
@@ -144,6 +147,7 @@ const OPS_PROFILE_CORE_PLACEHOLDER_LINES = Object.fromEntries(
   ]),
 );
 
+// isValidIsoDate() kept in sync with ship.mjs (documented copy — see garden hash guard)
 function isValidIsoDate(value) {
   const match = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{3}))?Z)?$/.exec(value || "");
   if (!match) return false;
@@ -158,6 +162,7 @@ function isValidIsoDate(value) {
   ].every((part, index) => part === expected[index]);
 }
 
+// git() kept in sync with ship.mjs (documented copy — see garden hash guard)
 function git(root, args) {
   return spawnSync("git", ["-C", root, ...args], {
     encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000,

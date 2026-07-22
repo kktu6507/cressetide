@@ -676,8 +676,9 @@ if (plugin && Array.isArray(plugin.agents)) {
   }
 }
 
-// 9d. Copy-sync guards for the documented per-hook infra copies (deterministic string/regex
-// extraction only). Each check fails CLOSED when it cannot locate what it guards, so a refactor
+// 9d. Copy-sync guards for documented byte-identical infra copies (deterministic string/regex
+// extraction only): the per-hook copies in cressetide/hooks/, plus the map.mjs/ship.mjs skill-script
+// pair (d4, below). Each check fails CLOSED when it cannot locate what it guards, so a refactor
 // cannot silently disarm it — the message then says to re-point the guard.
 {
   const hookRel = (name) => `${PLUGIN}/hooks/${name}`;
@@ -770,6 +771,56 @@ if (plugin && Array.isArray(plugin.agents)) {
     if (!fs.existsSync(path.join(root, rel))) continue; // missing hooks are reported by §5c wiring
     if (!readHook(rel).includes(STDIN_MARKER))
       fail(`garden 9d: ${rel} lost the stdin-reader sync marker ("${STDIN_MARKER} …") — keep the stamp naming the sibling copies and the MAX_STDIN cap (or update this guard if the cluster was consciously dissolved)`);
+  }
+
+  // d4. Byte-identical construct copies shared between map.mjs and ship.mjs: git(), OPS_TRUST_TAG_ATTEMPT,
+  // OPS_TRUST_TAG_WELLFORMED, opsTrustTagIsWellFormed(), and isValidIsoDate() are deliberately mirrored
+  // (copied, not imported) across the two skill scripts, each stamped "kept in sync … (documented copy —
+  // see garden hash guard)" like the hooks above. This is a SEPARATE mechanism from FN_CLUSTERS: these
+  // two files do not live under hooks/, and 2 of the 5 constructs are single-line `const NAME = /regex/;`
+  // declarations rather than `function` blocks. Missing-file tolerance is COARSER than FN_CLUSTERS'
+  // per-file filter: FN_CLUSTERS still fail()s a present file whose function can't be extracted even
+  // when a sibling is missing, but this is a fixed 2-file pair (not an N-file cluster), so the whole
+  // check is a single pair-level AND-gate — if EITHER file is absent, the entire block silently no-ops,
+  // including skipping shape-verification of the file that IS still present. A fully-deleted map.mjs or
+  // ship.mjs is still caught elsewhere in the same CI job by test/map.test.mjs's / test/ship.test.mjs's
+  // static ES-module imports (a crash, non-zero exit), so this tolerance is narrower in blast radius
+  // than "silent" alone would suggest.
+  const mapRel = `${PLUGIN}/skills/map/scripts/map.mjs`;
+  const shipRel = `${PLUGIN}/skills/ship/scripts/ship.mjs`;
+  if (fs.existsSync(path.join(root, mapRel)) && fs.existsSync(path.join(root, shipRel))) {
+    const mapText = readHook(mapRel);
+    const shipText = readHook(shipRel);
+    const extractSkillFn = (text, name) => {
+      const lines = text.split("\n");
+      const start = lines.findIndex((l) => l.startsWith(`function ${name}(`));
+      if (start === -1) return null;
+      for (let i = start + 1; i < lines.length; i++) {
+        if (lines[i] === "}") return lines.slice(start, i + 1).join("\n");
+      }
+      return null;
+    };
+    const extractSkillConst = (text, name) => {
+      const line = text.split("\n").find((l) => l.startsWith(`const ${name} = `));
+      return line === undefined ? null : line;
+    };
+    const SKILL_CONSTRUCTS = [
+      ["fn", "git"],
+      ["const", "OPS_TRUST_TAG_ATTEMPT"],
+      ["const", "OPS_TRUST_TAG_WELLFORMED"],
+      ["fn", "opsTrustTagIsWellFormed"],
+      ["fn", "isValidIsoDate"],
+    ];
+    for (const [kind, name] of SKILL_CONSTRUCTS) {
+      const extract = kind === "fn" ? extractSkillFn : extractSkillConst;
+      const mapBody = extract(mapText, name);
+      const shipBody = extract(shipText, name);
+      if (mapBody === null) fail(`garden 9d: cannot extract ${name} from ${mapRel} — the construct moved or lost its expected shape; re-point the 9d copy guard`);
+      if (shipBody === null) fail(`garden 9d: cannot extract ${name} from ${shipRel} — the construct moved or lost its expected shape; re-point the 9d copy guard`);
+      if (mapBody !== null && shipBody !== null && mapBody !== shipBody) {
+        fail(`garden 9d: ${name} drifted between ${mapRel} and ${shipRel} — documented byte-identical copy; change both together`);
+      }
+    }
   }
 }
 
