@@ -51,6 +51,7 @@ function entryAgeDays(dateOrdinal, now) {
 //   - the entry is dated and itself older than staleDays (a 10-day-old entry cannot be unhit for 60 days).
 // An entry clearing all of that with zero distinct hit-days in the window is an expire candidate. Retired
 // (expired/superseded) entries are always delete candidates regardless of usage.
+// doctor.mjs's --project check also imports this (dynamically; see that file's own header comment).
 export function consolidationReport(entries, records, opts = {}) {
   const now = Number.isFinite(opts.now) ? opts.now : 0;
   const staleDays = Number.isFinite(opts.staleDays) && opts.staleDays > 0 ? opts.staleDays : DEFAULT_STALE_DAYS;

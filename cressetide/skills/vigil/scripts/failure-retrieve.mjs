@@ -170,6 +170,9 @@ function readCapped(file) {
 // the same 3-tier order hooks/load-failure-memory.js reads. Returns null when none is a readable
 // regular file. failure-consolidate.mjs imports this, so both helpers share one discovery order, and
 // defaultLedgerPath() below keeps the usage ledger a sibling of whichever file was selected.
+// doctor.mjs's --project check also imports this (dynamically; see that file's own header comment),
+// scoped to this function's project-local tiers only — it never accepts a resolution landing on the
+// third, global tier above.
 export function resolveMemoryFile(cwd) {
   const candidates = [
     path.join(cwd, ".ctide", "memory", "FAILURE_MEMORY.md"),
