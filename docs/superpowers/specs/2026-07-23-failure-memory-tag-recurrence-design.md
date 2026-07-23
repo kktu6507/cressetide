@@ -40,12 +40,14 @@ A new pure function in `failure-consolidate.mjs`, `tagRecurrenceCandidates(entri
 existing `consolidationReport()`. For every non-retired entry, parse its `Tags` field into a token
 set (split on the template's `/` delimiter, trimmed). For every pair of distinct entries, compute
 the tag-set intersection; a pair qualifies as a candidate only when the intersection has **at least
-2 tags** — a single shared tag is expected noise (two entries both tagged a common language/area
-like `node` share nothing meaningful), while the real motivating example shared 3 tags at once.
-Threshold count is **2 entries** (not 3, unlike `run-consolidate.mjs`'s escaped-closure threshold):
-the ≥2-tag-overlap filter already does the noise-reduction work escaped-closure's "wait for a 3rd
-occurrence" threshold exists to do — a second, independent filter on top would double-suppress a
-signal that's already fairly rare once tag-overlap ≥2 is required. **No time window** — unlike
+2 tags** (the overlap-size gate) — a single shared tag is expected noise (two entries both tagged a
+common language/area like `node` share nothing meaningful), while the real motivating example
+shared 3 tags at once. A qualifying pair is reported **immediately, the first time it qualifies** —
+there is no separate "wait for N such pairs" gate layered on top (unlike `run-consolidate.mjs`'s
+escaped-closure threshold, which waits for a **3rd** occurrence before alarming): the ≥2-tag
+overlap gate already does the noise-reduction work that threshold exists to do, so a second,
+independent occurrence-count gate would double-suppress a signal that's already fairly rare once
+tag-overlap ≥2 is required. **No time window** — unlike
 escaped-closures (which measures *recent* operational health and needs a window for that reason),
 tag recurrence is a structural/cumulative fact: two entries sharing a specific lesson-shape matters
 whether they were written 2 days or 8 months apart.
