@@ -50,13 +50,15 @@ project.
 
 **`incident-journals`.** Scans `.ctide/incidents/*.md`. No such directory → `unverified`. For each
 journal, reads the existing `Status: open | mitigated | closed` field (`salvage`'s own schema,
-`references/reentry-and-closure.md` — not a new convention) and, for anything not `closed`, computes
-age-in-days from the filename's `<YYYYMMDD>` and emits its own `incident:<slug>` check entry (one
-entry per item, mirroring the existing `hook:<name>` pattern), detail carrying status + age. Zero
-non-`closed` journals found → a single summary entry, `incident-journals: pass, 0 open`. A journal
-whose `Status:` line is missing or unparseable is reported as its own distinct "status unknown"
-finding — never silently treated as either open or closed, since guessing either way could hide a
-real problem or manufacture a false one.
+`references/reentry-and-closure.md` — not a new convention). One unified rule, not two separate code
+paths: a journal counts as "confirmed closed" only when its `Status:` line is present and reads
+exactly `closed`; everything else — `open`, `mitigated`, a missing `Status:` line, or one that
+doesn't parse — is **not** confirmed closed and gets its own `incident:<slug>` check entry (one
+entry per item, mirroring the existing `hook:<name>` pattern), with the detail naming which case it
+is (`status=open, opened Ndays ago` / `status=mitigated, opened Ndays ago` / `status unknown —
+Status: line missing or unparseable`). Guessing a missing/malformed line as closed could hide a real
+problem; guessing it as open could manufacture a false one — naming it "unknown" avoids both. Zero
+non-confirmed-closed journals found → a single summary entry, `incident-journals: pass, 0 open`.
 
 **Guidance extension (added after direct user feedback on the design).** `doctor`'s existing report
 ends with a `guidance` array of actionable next steps (currently install/enable instructions only).
@@ -106,8 +108,14 @@ journal), then appends the conditional guidance lines described above.
 ## Error handling
 
 - No `.ctide/` directory at all: both new checks report `unverified`, no crash.
-- Malformed/unreadable `FAILURE_MEMORY.md`: mirrors `failure-consolidate.mjs`'s own existing
-  fail-open behavior (empty entry set, no throw).
+- `FAILURE_MEMORY.md` exists but parses to zero entries (e.g. freshly created, or content that
+  doesn't match the `### ` entry format): reported as `pass`, detail states the zero-entry count
+  explicitly (e.g. "FAILURE_MEMORY.md found, 0 entries") rather than folding silently into a generic
+  "clean" message — distinct from `unverified`, which is reserved for "no file found at all," so a
+  reader can tell "nothing to report" apart from "found the file but couldn't make sense of its
+  content" at a glance. A genuine filesystem read error (permissions, I/O failure) mirrors
+  `failure-consolidate.mjs`'s own fail-open behavior for that case (reported, not thrown) but is not
+  silently folded into the same "0 entries" detail — name the read error specifically.
 - An incident journal with a missing or unparseable `Status:` line: reported as its own "status
   unknown" finding, never silently assumed open or closed.
 - `--project` passed with no `--cwd` and no `CLAUDE_PROJECT_DIR` set: falls back to
