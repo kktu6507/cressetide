@@ -684,6 +684,12 @@ test("validate-structure: garden 9d FAILS on drift in each guarded copy cluster 
       const p = path.join(tree, "cressetide", "skills", "vigil", "references", "review-packet.md");
       fs.writeFileSync(p, fs.readFileSync(p, "utf8").split("materially underspecified").join("XXX"), "utf8");
     }, /rigor-contract guard: .*review-packet\.md no longer contains the anchor "materially underspecified"/],
+    // d4 (§5k extension): the scratch/temp-copy anchor drops out of review-packet.md while
+    // reviewer-common.md still has it — a one-sided drift.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "vigil", "references", "review-packet.md");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").split("scratch/temp copy").join("XXX"), "utf8");
+    }, /rigor-contract guard: .*review-packet\.md no longer contains the anchor "scratch\/temp copy"/],
     // d2 (stdin cluster): a hook loses its stdin-reader sync stamp
     // (stamps must not point at a guard that would let them silently rot).
     [(tree) => {

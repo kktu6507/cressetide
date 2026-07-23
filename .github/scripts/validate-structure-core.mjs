@@ -436,6 +436,7 @@ if (fs.existsSync(path.join(root, packetRel))) {
 const RIGOR_ANCHORS = [
   "Admission to the findings index", "Evidence grading", "refute your strongest finding", "as the fixed reference", /[Tt]wo channels/,
   "Non-mutating: inspect, don't change",
+  "scratch/temp copy",
   "materially underspecified",
   "clearly incorrect, materially unsafe", // the `blocker` definition
   "should be fixed before the work is considered ready", // the `major` definition
