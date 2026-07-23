@@ -109,10 +109,14 @@ split (`agents/arbiter.agent.md`, *Failure memory rules*). At Step 7, `arbiter` 
 run produced a decision worth recording, using four signal criteria: (1) a reviewer suggestion was
 explicitly declined, (2) a residual/Extended-Safe risk was accepted instead of blocking, (3) the
 plan chose between two or more genuinely-viable approaches, (4) a feature/skill candidate was
-rejected outright. `arbiter` proposes the entry text and filename (and, when this decision
-supersedes a prior `active` one, the old file's updated `Status` line too); the main thread performs
-the single serialized write at Step 9, alongside the failure-memory write and ledger append — never
-during the review/repair loop itself.
+rejected outright. **This list is the gate, not a set of illustrative examples** — a run that hits
+none of the four proposes no decision record; this is the deliberately bounded rule the user chose
+over open-ended subjective judgment, precisely to keep the record from becoming noise. When a signal
+does fire, no separate user approval is required beyond the run's normal verdict flow, the same as
+`FAILURE_MEMORY.md`'s write trigger. `arbiter` proposes the entry text and filename (and, when this
+decision supersedes a prior `active` one, the old file's updated `Status` line too); the main thread
+performs the single serialized write at Step 9, alongside the failure-memory write and ledger append
+— never during the review/repair loop itself.
 
 **Write (discussion path).** No prior plan-approval gate covers this write (unlike the vigil path,
 where the underlying decision was already approved at `ExitPlanMode`). Get one lightweight explicit
@@ -147,9 +151,10 @@ read never updates a `Status` field or any other file.
 
 - Missing `.ctide/decisions/` directory: the first write creates it; no migration path applies (a
   new convention, same as `EXPERIENCE.md`'s "new path, no legacy predecessor").
-- Filename collision (two decisions, same date, colliding slug): check existence before writing and
-  append a numeric suffix, the same never-assume discipline the shared one-time-migration procedure
-  already uses for trackedness checks.
+- Filename collision (two decisions, same date, colliding slug): check existence before writing
+  (`DECISION-<YYYYMMDD>-<slug>.md`); if taken, append `-2`, `-3`, … before the `.md` extension
+  (`DECISION-<YYYYMMDD>-<slug>-2.md`) — the same never-assume discipline the shared one-time-migration
+  procedure already uses for trackedness checks, applied to a new collision class.
 - Supersede is two file touches in one write step, by the same single writer: create the new
   `active` file, update the old file's `Status` to `superseded (by <new ref>)` — never left
   dangling.
