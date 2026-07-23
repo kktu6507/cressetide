@@ -29,10 +29,10 @@ hook and none runs in CI; they are session-time helpers the orchestrating thread
 state is never accidentally committed even in a consuming project that has not gitignored `.ctide/`
 at the root.
 
-Unlike `.ctide/output/`, this tree is **never overwritten or truncated**. `docs/runtime-contract.md`
-names it the third state class: committed semantic state (`map/`, `memory/`, `design/`, `incidents/`
-— tracked by Git), untracked-but-persistent **episodic** state (`ledger/` — self-gitignored, survives
-across runs), and untracked per-run scratch (`output/` — self-gitignored, overwritten each run).
+Unlike `.ctide/output/`, this tree is **never overwritten or truncated**. `docs/runtime-contract.md` names
+it the third state class: committed semantic state (`map/`, `memory/`, `design/`, `incidents/`, `decisions/`
+— tracked by Git), untracked-but-persistent **episodic** state (`ledger/` — self-gitignored, survives across
+runs), and untracked per-run scratch (`output/` — self-gitignored, overwritten each run).
 `run-consolidate.mjs` reads only the newest ~4MB of an oversized ledger (mirrors
 `failure-consolidate.mjs`'s own read-cap pattern) — that is a read-time optimization only; it never
 truncates or rewrites the file on disk.

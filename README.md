@@ -55,6 +55,7 @@ Everything ctide keeps in your project lives under one root folder:
   design/     # design.md — the UI design contract (committed)
   map/        # SYSTEM_MAP.md — repository and operational-readiness Map (committed)
   incidents/  # INCIDENT-<date>-<slug>.md journals — the audit trail (committed)
+  decisions/  # DECISION-<date>-<slug>.md — why we chose X over Y, what would revisit it (committed)
   ledger/     # runs.jsonl — append-only run history (persists across runs, self-gitignored)
   output/     # per-run scratch: contract.md, evidence, review diffs (never committed, self-gitignored)
 ```

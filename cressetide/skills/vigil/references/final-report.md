@@ -27,6 +27,7 @@ Emitted unless `--report full` was passed. Summary one-liner · a Verification b
 - Panel: <full, or name each evidence-substituted reviewer + the evidence that qualified it (fast lane — `references/reviewer-selection.md`)> — mirrored by the `ctide:panel=` footer line
 - External capabilities: only when a required MCP / skill / subagent was unavailable — name it, the local fallback, and the resulting verification gap (omit the line entirely when none were needed or all were available; a real capability gap is decision-relevant, so it stays visible even in the compact report).
 - Migration status: only when NOT migrated (this run consulted a legacy-only `ai/FAILURE_MEMORY.md` but the one-time `git mv` to `.ctide/memory/FAILURE_MEMORY.md` was not performed) — name the outstanding `git mv` action for the main thread (omit the line entirely when migrated or not applicable; NOT migrated is a required post-verdict action, not a nice-to-know, so it stays visible even in the compact report).
+- Decision memory: only when a decision record was proposed this run — the target file (new, or the superseded file's updated Status when applicable) and a one-line reason (omit the line entirely when not required).
 - Live-verification gap: only when a UI-impacting or observable-behavior acceptance criterion needed live verification and Detect → Use → Else-Disclose (`references/external-capabilities.md`) resolved to no live-verification capability — name the gap distinctly and the blocked acceptance-criterion id when determinable (omit the line entirely when no such gap occurred). It withholds `READY` on the blocked criterion, so it stays visible even in the compact report. A live-drive/live-process gap (browser or app-launch) is reported here, not under `External capabilities` (which covers other MCP/skill/subagent unavailability).
 - Plan drift: real runs only — planned paths/risk vs. actual (contract- and git-derived, never self-asserted), observed repair-iteration count, and any Map corrections discovered mid-run; omit entirely when nothing drifted. Narrative facts only — never expressed as a score or rate. Mirrors the failure-path drift-aware Stuck Summary (`references/verification-gate.md`) for the success path.
 - Ledger: real runs only, once `.ctide/ledger/runs.jsonl` has ≥1 prior closed run — one line of counts from `run-consolidate.mjs --json` (open runs · escaped closures in the last 14 days), plus `— retro suggested` only when the threshold is crossed; omit entirely on a fresh/empty ledger or when there is nothing to report. This line is relayed only once this run's own verdict is already decided (not the physical position in this report), for the user's reading only — it must never be reasoned over to justify or adjust this run's own scope, risk tier, or panel selection.
@@ -51,7 +52,7 @@ If blocked, add a `## Stuck Summary` (above the footer) with the unresolved bloc
 
 ## `--report full`
 
-Opt in with `--report full` for the detailed tables. This is the compact report **plus** an Outcome table, a per-agent activity table, a Files Changed table, the full Cost table (with the `█`/`░` Share bar + Source + ~Cost columns), and Assumptions / Missing Tests / Risks / Failure Memory sections. The sentinel footer is still the last thing emitted.
+Opt in with `--report full` for the detailed tables. This is the compact report **plus** an Outcome table, a per-agent activity table, a Files Changed table, the full Cost table (with the `█`/`░` Share bar + Source + ~Cost columns), and Assumptions / Missing Tests / Risks / Failure Memory / Decision Memory sections. The sentinel footer is still the last thing emitted.
 
 ~~~markdown
 ## Summary
@@ -129,6 +130,15 @@ Per-component basis: the harness rarely surfaces a per-subagent Input/Output/Cac
 | Entry added | yes / no — <target file path when applicable> |
 | Migration status | migrated / NOT migrated / n/a — when NOT migrated, the named `git mv` action for the main thread |
 
+## Decision Memory
+
+| Field | Value |
+|---|---|
+| Required | required / not required |
+| Reason | <why> |
+| Entry added | yes / no — <target file path when applicable> |
+| Superseded | n/a — <old file's Status update, when applicable> |
+
 ## Final Verdict
 - pick one: ✅ **READY** · ⚠️ **FIX REQUIRED** · 🔴 **NOT READY**
 
@@ -143,7 +153,7 @@ The footer restates the report's decision so the human-readable report and the m
 
 Cost honesty (no telemetry) — **every figure carries its basis**: `observed` (the per-agent number the harness surfaces for a finished subagent) or `estimate` (the orchestrator / main-thread figure, and anything derived from it); **never present an estimate as observed**. No figure surfaced for a subagent ⇒ write `not reported`, do not guess. The grand total includes the orchestrator figure, so it is never pure `observed` — the `--report full` Total row tags it `observed + estimate`, never plain `observed`. An estimate must **state its assumption**: figures are **new tokens** — the billable `/cost` total re-counts cached context every turn (~20–30× in tokens, but cache reads bill at ~a tenth of the input rate, so the dollar cost scales much closer to the new-token figure; don't over-scare) — and `~Cost` is a rough band, not a bill: state the assumed per-model rate(s) and date, or give tokens only and write "× your plan's rate". The compact report collapses this to the one-line cost summary (new tokens + tier, basis named); `--report full` expands it into the per-agent Cost table whose `Source` column carries each row's basis, itemizing **Input / Output / Cache-write / Cache-read** (they bill at different rates) alongside the New-tokens total — each component carries its own `observed` / `estimate` / `not reported` basis, and an unobserved per-subagent split is never shown as `observed`.
 
-**Presentation.** Prefer tables for the list-like sections (Files Changed, Checks, Cost, Findings, Per-agent activity, Outcome, Failure Memory); keep Assumptions / Missing Tests / Risks as bullets — narrative, a table would be forced. Light, terminal-renderable cues: the `█`/`░` Share bar in the cost table (observed figures only — never bar an estimate or a "not reported"), and status glyphs (✅ pass · ❌ fail · ⚠️ unrun; 🔴 blocker · 🟠 major · 🟡 minor; ✅ / ⚠️ / 🔴 before the verdict). **Glyphs are decoration only — keep the machine-checked literals as plain words beside them** (the verdicts, severities, and `ctide:` sentinels per the footer contract above); replacing a literal with only a glyph blinds the Stop hook. Never let a table or bar imply precision the figures do not have (no telemetry).
+**Presentation.** Prefer tables for the list-like sections (Files Changed, Checks, Cost, Findings, Per-agent activity, Outcome, Failure Memory, Decision Memory); keep Assumptions / Missing Tests / Risks as bullets — narrative, a table would be forced. Light, terminal-renderable cues: the `█`/`░` Share bar in the cost table (observed figures only — never bar an estimate or a "not reported"), and status glyphs (✅ pass · ❌ fail · ⚠️ unrun; 🔴 blocker · 🟠 major · 🟡 minor; ✅ / ⚠️ / 🔴 before the verdict). **Glyphs are decoration only — keep the machine-checked literals as plain words beside them** (the verdicts, severities, and `ctide:` sentinels per the footer contract above); replacing a literal with only a glyph blinds the Stop hook. Never let a table or bar imply precision the figures do not have (no telemetry).
 
 ## Evidence Record (real runs only)
 

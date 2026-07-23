@@ -55,6 +55,7 @@ ctide 放進你專案裡的所有東西，都收在一個根目錄底下：
   design/     # design.md — UI design contract（committed）
   map/        # SYSTEM_MAP.md — 儲存庫與操作就緒 Map（committed）
   incidents/  # INCIDENT-<date>-<slug>.md journals — 稽核軌跡（committed）
+  decisions/  # DECISION-<date>-<slug>.md — 選擇 X 而非 Y 的理由與重新檢視條件（committed）
   ledger/     # runs.jsonl — append-only 執行歷史（跨執行留存、自帶 gitignore）
   output/     # 每次執行的 scratch：contract.md、evidence、review diffs（永不 commit、自帶 gitignore）
 ```

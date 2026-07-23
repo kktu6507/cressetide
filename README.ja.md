@@ -55,6 +55,7 @@ ctide があなたのプロジェクト内に保持するものは、すべて1�
   design/     # design.md — UI の design contract（committed）
   map/        # SYSTEM_MAP.md — リポジトリと運用準備の Map（committed）
   incidents/  # INCIDENT-<date>-<slug>.md journals — 監査証跡（committed）
+  decisions/  # DECISION-<date>-<slug>.md — Y ではなく X を選んだ理由と見直す条件（committed）
   ledger/     # runs.jsonl — append-only の実行履歴（実行をまたいで永続、自前の gitignore 付き）
   output/     # 実行ごとのスクラッチ：contract.md、evidence、review diffs（決して commit しない、自前の gitignore 付き）
 ```

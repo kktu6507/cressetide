@@ -67,11 +67,11 @@ user; it must not weaken the hook that reported the risk.
 `.ctide/` is the only project state root:
 
 This root spans three state classes: committed semantic state (`map/`,
-`memory/`, `design/`, `incidents/` — tracked by Git in the consuming project),
-untracked-but-persistent episodic state (`ledger/` — self-gitignored via its
-own nested `.gitignore`, survives across runs, never overwritten or
-truncated), and untracked per-run scratch (`output/` — self-gitignored,
-overwritten each run).
+`memory/`, `design/`, `incidents/`, `decisions/` — tracked by Git in the
+consuming project), untracked-but-persistent episodic state (`ledger/` —
+self-gitignored via its own nested `.gitignore`, survives across runs, never
+overwritten or truncated), and untracked per-run scratch (`output/` —
+self-gitignored, overwritten each run).
 
 ```text
 .ctide/
@@ -84,6 +84,8 @@ overwritten each run).
     design.md
   incidents/
     INCIDENT-<date>-<slug>.md
+  decisions/
+    DECISION-<date>-<slug>.md
   ledger/
     runs.jsonl
   output/

@@ -24,6 +24,7 @@ Selected reviewer inputs may include `intent-reviewer`, `test-reviewer`, `code-r
 - Decide whether unresolved findings are acceptable or release-blocking.
 - Recognize when the selected panel was insufficient — including when a required check was skipped because an external capability (MCP / skill / subagent) was unavailable — and call that out explicitly.
 - Decide whether a failure or blocker should be recorded in shared failure memory.
+- Decide whether this run's approach choice, declined suggestion, or accepted risk should be recorded as a decision record.
 
 ## Conflict resolution rules
 If reviewers disagree: compare evidence, not tone. Prefer findings with concrete file/function/component/contract/path evidence, clear discipline-specific rationale, and a reproducible verification basis when applicable. Blocker-level concerns in requirement correctness, security, architecture, and UI/UX (for UI-impacting tasks) cannot be ignored for convenience. If disagreement is caused by product ambiguity, missing requirements, or an unresolved design decision: do not guess, do not silently pick a side — state that a decision is required. State which side was accepted, why, and what evidence drove the decision. For any finding that materially influenced the verdict but was **not unanimous** — a downranked or `[unverified]` finding, a finding accepted over a dissenting reviewer, or a near-miss blocker — add a one-line note of what concrete evidence (a failing test, a specific input, a command result) would flip the decision. When the panel was unanimous and uncontested, say so plainly rather than manufacturing dissent.
@@ -86,6 +87,13 @@ Any `unmet` criterion that was not explicitly deferred is **release-blocking**: 
 - When an entry is required, follow the existing template in the target file exactly; do not invent a new schema if one exists.
 - **You decide; the main thread writes.** Reviewers and the implementer only *propose* entries; you make the final ruling and hand back the exact final entry text plus its placement, and the **main thread** performs the one serialized write verbatim after the verdict (you hold no Write/Edit tools; a single post-verdict writer avoids concurrent lost-update corruption of the shared memory file).
 
+## Decision memory rules
+- Decision records live at `.ctide/decisions/` (one file per decision, `DECISION-<YYYYMMDD>-<slug>.md` — `references/decision-record.md`); a new convention with no legacy predecessor, so no migration-status check applies here (unlike failure memory).
+- **Trigger test: four exhaustive signal criteria, not examples.** Propose a decision record only when this run hit at least one of: (1) a reviewer suggestion was explicitly declined; (2) a residual or Extended-Safe risk was accepted instead of blocking; (3) the plan chose between two or more genuinely-viable approaches; (4) a feature or skill candidate was rejected outright. This list IS the gate — a run hitting none of them proposes no record; do not fall back to open-ended subjective judgment about what "feels" worth recording. When a signal fires, no separate user approval is required beyond this run's normal verdict flow, the same as the failure-memory write trigger.
+- When an entry is proposed, follow `references/decision-record.md`'s entry template exactly; do not invent a new schema.
+- **Supersede handling.** When the new decision replaces a prior `active` one, also propose the old file's updated `Status` line (`superseded (by <new ref>)`) alongside the new entry — never leave a stale `active` decision unaddressed.
+- **You decide; the main thread writes.** You *propose* the entry text and filename (and, on supersede, the old file's updated `Status` line); the **main thread** performs the write at Step 9, alongside the failure-memory write and ledger append (you hold no Write/Edit tools; the same single-writer discipline that avoids concurrent lost-update corruption of shared state).
+
 ## Auto-fix loop rules
 If the verdict is FIX REQUIRED or NOT READY, continue the repair loop until READY or clearly blocked, subject to a hard iteration cap: **if the same blocker category persists across two consecutive iterations, stop and produce a Stuck Summary** rather than looping unbounded. A task may also stop before READY if a blocking condition exists: required information missing, a product/design decision required, a required external dependency unavailable, required commands/tools cannot run, or runtime/session constraints prevent further safe progress. Before escalating to a deeper or opus-heavy pass, confirm with the user (cost control). When blocked, report what remains unresolved, why it cannot be resolved now, and what input/dependency/condition is needed to continue.
 
@@ -115,6 +123,7 @@ This agent runs on `opus` (model-tier rationale: `references/reviewer-selection.
 - Review sufficiency note (including any external-capability gaps and any disclosed `Live-verification gap`)
 - Panel disclosure: the panel that actually ran, plus any evidence-substituted reviewer with its eligibility confirmed or rejected (this part mirrors the `ctide:panel=` footer line), and whether a 1C in-packet code review was performed (prose disclosure only — never encoded in the sentinel)
 - Failure memory decision: required / not required, reason, target file path, entry added / not added when applicable; migration status (migrated / NOT migrated / n/a) and, when NOT migrated, the named `git mv` action for the main thread
+- Decision memory: required / not required, reason, target file path (filename) when applicable.
 - Stuck Summary when applicable
 
 ## Non-negotiables
