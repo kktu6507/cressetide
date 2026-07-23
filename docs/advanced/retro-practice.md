@@ -16,6 +16,11 @@ automatic action, and not something the run in progress reasons about itself
 (`references/run-ledger.md`, *The post-verdict boundary*). A retro is deliberately something a human
 schedules after reading the disclosure, not something the tripwire launches on its own.
 
+A second, independent recurrence signal also exists: `failure-consolidate.mjs`'s tag-recurrence
+candidates (two live `FAILURE_MEMORY.md` entries whose `Tags` overlap by 2+ tokens), surfaced through
+that script's own advisory output and the `final-report.md` conditional `Tag recurrence` field — not
+through `run-consolidate.mjs`'s tripwire above.
+
 ## Cases first
 
 Start from the actual `escaped` (and, where relevant, `survived` / `superseded` / `building-upon`)

@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildLedgerLines, retrieve, defaultLedgerPath, ledgerKey } from "../cressetide/skills/vigil/scripts/failure-retrieve.mjs";
-import { readLedger, consolidationReport, formatReport, KNOWN_FLAGS } from "../cressetide/skills/vigil/scripts/failure-consolidate.mjs";
+import { readLedger, consolidationReport, formatReport, tagRecurrenceCandidates, KNOWN_FLAGS } from "../cressetide/skills/vigil/scripts/failure-consolidate.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const RETRIEVE = path.join(root, "cressetide", "skills", "vigil", "scripts", "failure-retrieve.mjs");
@@ -146,6 +146,181 @@ test("formatReport states it is advisory-only and never modifies the file", () =
   assert.match(out, /modifies nothing/i);
 });
 
+// --- tagRecurrenceCandidates: a structural/cumulative signal, independent of the ledger -- do two live
+// entries' Tags fields overlap by >= 2 tokens? No time window (unlike expireCandidates' staleness
+// claim), no transitive clustering (qualifying pairs are reported individually, never fused into a
+// bigger cluster), no separate occurrence-count gate (the >=2-tag threshold already does that
+// noise-reduction job). The six cases below are the design spec's own Testing section, verbatim. ---
+
+test("tagRecurrenceCandidates: two entries sharing 2 tags report the pair with both shared tags", () => {
+  const mem = `# FM
+
+### 2026-05-01 — alpha lesson
+- **Prevention rule**: r.
+- **Tags**: node / ci / testing.
+
+### 2026-05-02 — beta lesson
+- **Prevention rule**: r.
+- **Tags**: node / ci / docs.
+`;
+  const out = tagRecurrenceCandidates(parseEntries(mem));
+  assert.strictEqual(out.length, 1, "exactly one qualifying pair");
+  assert.match(out[0].titleA, /alpha lesson/);
+  assert.match(out[0].titleB, /beta lesson/);
+  assert.deepStrictEqual(out[0].sharedTags, ["node", "ci"]);
+});
+
+test("tagRecurrenceCandidates: two entries sharing only 1 tag do NOT report (noise-filter proof)", () => {
+  // The load-bearing negative case: a single shared tag (e.g. both entries merely tagged `node`) is
+  // expected noise, not signal -- asserted here as clearly as the positive cases above/below.
+  const mem = `# FM
+
+### 2026-05-01 — gamma solo
+- **Prevention rule**: r.
+- **Tags**: node.
+
+### 2026-05-02 — delta solo
+- **Prevention rule**: r.
+- **Tags**: node / docs.
+`;
+  const out = tagRecurrenceCandidates(parseEntries(mem));
+  assert.deepStrictEqual(out, [], "a single shared tag must NOT qualify as a candidate pair");
+});
+
+test("tagRecurrenceCandidates: a shared hyphenated multi-word tag reads as ONE tag via entry.tags, never shattered into words via entry.tagTokens (field-choice discrimination)", () => {
+  // tagSet() MUST parse entry.tags (the raw, curated `Tags:` string, split on `/`) -- never
+  // entry.tagTokens (failure-retrieve.mjs's generic word-tokenizer field, built by splitting on every
+  // non-alphanumeric run, hyphens included). The two entries below share exactly ONE tag,
+  // "point-patch-non-convergence", plus one different simple tag each. Under the correct `tags`
+  // reading that is a 1-tag overlap -- below the >=2 threshold, so no candidate. If tagSet() were ever
+  // regressed to read entry.tagTokens instead, the hyphenated tag would shatter into 4 identical tokens
+  // ("point","patch","non","convergence") on both sides -- a false 4-token intersection that WOULD
+  // cross the threshold and wrongly report a pair. Every existing fixture in this file uses single-word
+  // tags, where the two fields happen to agree; only a multi-word tag exposes the bug.
+  const mem = `# FM
+
+### 2026-05-01 — xi lesson
+- **Prevention rule**: r.
+- **Tags**: point-patch-non-convergence / docs.
+
+### 2026-05-02 — omicron lesson
+- **Prevention rule**: r.
+- **Tags**: point-patch-non-convergence / release.
+`;
+  const out = tagRecurrenceCandidates(parseEntries(mem));
+  assert.deepStrictEqual(out, [],
+    "a single shared multi-word tag (1 tag under the correct `tags` field) must not qualify -- a non-empty result here means tagSet() regressed to reading entry.tagTokens");
+});
+
+test("tagRecurrenceCandidates: two entries sharing 3 tags report the pair with all 3 shared tags", () => {
+  const mem = `# FM
+
+### 2026-05-01 — epsilon lesson
+- **Prevention rule**: r.
+- **Tags**: node / ci / docs.
+
+### 2026-05-02 — zeta lesson
+- **Prevention rule**: r.
+- **Tags**: node / ci / docs.
+`;
+  const out = tagRecurrenceCandidates(parseEntries(mem));
+  assert.strictEqual(out.length, 1);
+  assert.deepStrictEqual(out[0].sharedTags, ["node", "ci", "docs"], "all 3 shared tags listed, not just 2");
+});
+
+test("tagRecurrenceCandidates: a retired entry in an otherwise-qualifying pair does not count", () => {
+  const mem = `# FM
+
+### 2026-05-01 — eta lesson
+- **Prevention rule**: r.
+- **Tags**: node / ci.
+
+### 2026-05-02 — theta lesson (superseded by 2026-06-01)
+- **Prevention rule**: r.
+- **Tags**: node / ci.
+`;
+  const ents = parseEntries(mem);
+  assert.ok(ents[1].retired, "fixture sanity: the second entry must actually parse as retired");
+  const out = tagRecurrenceCandidates(ents);
+  assert.deepStrictEqual(out, [], "a retired entry must never form a candidate pair, even with a full tag overlap");
+});
+
+test("tagRecurrenceCandidates: the same tag across 3 entries forming 2 separate qualifying pairs reports both independently (no clustering)", () => {
+  // iota<->kappa share {x,y}; kappa<->lambda share {x,z}; iota<->lambda share only {x} (1 tag, below
+  // threshold). Both qualifying pairs must surface separately -- never fused into one iota-kappa-lambda
+  // cluster.
+  const mem = `# FM
+
+### 2026-05-01 — iota lesson
+- **Prevention rule**: r.
+- **Tags**: x / y.
+
+### 2026-05-02 — kappa lesson
+- **Prevention rule**: r.
+- **Tags**: x / y / z.
+
+### 2026-05-03 — lambda lesson
+- **Prevention rule**: r.
+- **Tags**: x / z.
+`;
+  const out = tagRecurrenceCandidates(parseEntries(mem));
+  assert.strictEqual(out.length, 2, "exactly two independent pairs, never fused into one 3-entry cluster");
+  assert.ok(out.some((c) => /iota lesson/.test(c.titleA) && /kappa lesson/.test(c.titleB) && c.sharedTags.join(",") === "x,y"),
+    "iota<->kappa shares x,y");
+  assert.ok(out.some((c) => /kappa lesson/.test(c.titleA) && /lambda lesson/.test(c.titleB) && c.sharedTags.join(",") === "x,z"),
+    "kappa<->lambda shares x,z");
+  assert.ok(!out.some((c) => /iota lesson/.test(c.titleA) && /lambda lesson/.test(c.titleB)),
+    "iota<->lambda shares only x (1 tag) -- must not qualify, and must not be implied by the other two pairs");
+});
+
+test("tagRecurrenceCandidates: tag comparison is case-insensitive -- 'Node / CI' and 'node / ci' correctly pair", () => {
+  // tagSet() lowercases after trim so curator casing drift (one entry's Tags line written "Node / CI",
+  // another's "node / ci") does not silently hide a real overlap. Pure hardening: every tag in the
+  // current global FAILURE_MEMORY.md is already lowercase, so this fixes no observed miss today.
+  const mem = `# FM
+
+### 2026-05-01 — sigma lesson
+- **Prevention rule**: r.
+- **Tags**: Node / CI.
+
+### 2026-05-02 — tau lesson
+- **Prevention rule**: r.
+- **Tags**: node / ci.
+`;
+  const out = tagRecurrenceCandidates(parseEntries(mem));
+  assert.strictEqual(out.length, 1, "differently-cased but otherwise-identical tags must still pair");
+  assert.deepStrictEqual(out[0].sharedTags, ["node", "ci"], "shared tags are reported in lowercase form");
+});
+
+test("tagRecurrenceCandidates: no entries share 2+ tags anywhere reports none", () => {
+  // Reuses the top-of-file MEM fixture (node/ci, python/functions, go/maps -- zero pairwise overlap).
+  const out = tagRecurrenceCandidates(entries);
+  assert.deepStrictEqual(out, [], "MEM's three entries share no 2+ tag overlap anywhere");
+  const rendered = formatReport(consolidationReport(entries, [], { now: NOW, staleDays: 60 }), out);
+  assert.match(rendered, /tag recurrence candidates: none/);
+});
+
+test("formatReport includes the tag-recurrence block: 'none' when empty, one full line per pair when found", () => {
+  const base = consolidationReport(entries, [], { now: NOW, staleDays: 60 });
+  assert.match(formatReport(base, []), /tag recurrence candidates: none/);
+  // A missing (not just empty-array) tagCandidates argument must default safely -- never render "undefined".
+  assert.doesNotMatch(formatReport(base), /undefined/);
+
+  const pairMem = `# FM
+
+### 2026-05-01 — mu lesson
+- **Tags**: node / ci / testing.
+
+### 2026-05-02 — nu lesson
+- **Tags**: node / ci / docs.
+`;
+  const pairEntries = parseEntries(pairMem);
+  const out = formatReport(consolidationReport(pairEntries, [], { now: NOW, staleDays: 60 }), tagRecurrenceCandidates(pairEntries));
+  assert.match(out, /tag recurrence candidates \(2\+ entries sharing 2\+ tags\):/);
+  assert.ok(out.includes(`"${pairEntries[0].title}" <-> "${pairEntries[1].title}" — shared: node, ci`),
+    "the exact pair line, with both shared tags, is present");
+});
+
 // --- end-to-end: retrieve --log writes the ledger, consolidate reads it ---
 
 test("round-trip: retrieve --log appends the sibling ledger; the memory file is never modified", () => {
@@ -180,6 +355,41 @@ test("a bare retrieve (no --log) writes NO ledger (pure read by default)", () =>
     fs.writeFileSync(memFile, MEM, "utf8");
     cp.execFileSync("node", [RETRIEVE, "--file", memFile, "--query", "node ci"]);
     assert.ok(!fs.existsSync(defaultLedgerPath(memFile)), "no ledger without --log");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- e2e: failure-consolidate's own CLI wiring for tag recurrence (main() must actually call
+// tagRecurrenceCandidates() and print its output through a REAL spawned process -- exporting the pure
+// function is not enough on its own to prove main() uses it) ---
+
+test("CLI e2e: a spawned failure-consolidate process actually prints the tag-recurrence header and pair line for a fixture with a real 2+-tag overlap", () => {
+  // The two CLI-spawn tests above both use the top-of-file MEM fixture, which has ZERO pairwise 2+-tag
+  // overlap -- so they pass byte-identical stdout even if tagRecurrenceCandidates() were removed from
+  // main() entirely (a full revert of the wiring). This fixture's two entries DO share 2 tags, so an
+  // unmodified, actually-spawned CLI process must print both the tag-recurrence header and the specific
+  // pair line -- if main()'s wiring is ever dropped or broken, this goes red.
+  const pairMem = `# FM
+
+### 2026-05-01 — pi lesson
+- **Prevention rule**: r.
+- **Tags**: node / ci / testing.
+
+### 2026-05-02 — rho lesson
+- **Prevention rule**: r.
+- **Tags**: node / ci / docs.
+`;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-fc-tagcli-"));
+  try {
+    const memFile = path.join(dir, "FAILURE_MEMORY.md");
+    fs.writeFileSync(memFile, pairMem, "utf8");
+    const out = cp.execFileSync("node", [CONSOLIDATE, "--file", memFile]).toString();
+    assert.ok(out.includes("tag recurrence candidates (2+ entries sharing 2+ tags):"),
+      "the tag-recurrence header must appear in real CLI stdout");
+    const pairEntries = parseEntries(pairMem);
+    assert.ok(out.includes(`"${pairEntries[0].title}" <-> "${pairEntries[1].title}" — shared: node, ci`),
+      "the specific pair line, with both entries' titles and shared tags, must appear in real CLI stdout");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

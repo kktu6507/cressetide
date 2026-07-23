@@ -3,10 +3,13 @@
 // Closes the feedback loop — `failure-retrieve.mjs --log` records which entries a real task signature
 // matched (a sibling append-only ledger), and this helper aggregates that usage into a prune report:
 // which entries are RETIRED (delete on the next write) and which are stale EXPIRE CANDIDATES (dated, old
-// enough, and never matched within the window). It is ADVISORY only — like contract-check.mjs, it hands
-// evidence to the arbiter, which decides the edits; the main thread (the single writer) applies them
-// after the verdict. It never modifies the memory file or the ledger. Dependency-free, fail-open: no
-// ledger / no usage data => no staleness claim, exit 0.
+// enough, and never matched within the window). It also surfaces TAG RECURRENCE CANDIDATES: pairs of
+// live entries whose Tags field overlaps by >= 2 tokens -- a structural/cumulative signal (no ledger, no
+// time window, unlike the staleness claim above) that two entries may share the same underlying
+// lesson-shape. It is ADVISORY only — like contract-check.mjs, it hands evidence to the arbiter, which
+// decides the edits; the main thread (the single writer) applies them after the verdict. It never
+// modifies the memory file or the ledger. Dependency-free, fail-open: no ledger / no usage data => no
+// staleness claim, exit 0.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -96,9 +99,51 @@ export function consolidationReport(entries, records, opts = {}) {
   };
 }
 
+// Parse a raw `Tags` field into a trimmed, lowercased token Set, split on the template's `/` delimiter.
+// Lowercasing keeps a curator's casing drift (e.g. "Node / CI" on one entry, "node / ci" on another) from
+// silently hiding a real overlap -- cheap hardening; every tag in the current global FAILURE_MEMORY.md is
+// already lowercase, so this changes no live comparison today. Deliberately NOT entry.tagTokens (that's
+// tokenize()'s generic word-split, used for failure-retrieve.mjs's relevance scoring, which would shatter
+// a multi-word tag like "point-patch-non-convergence" into separate dash-split words) -- tag recurrence
+// needs exact-token comparison over the curated, already-structured Tags line, never a guess about
+// markdown formatting variants.
+function tagSet(tagsField) {
+  const out = new Set();
+  for (const raw of String(tagsField || "").split("/")) {
+    const t = raw.trim().toLowerCase();
+    if (t) out.add(t);
+  }
+  return out;
+}
+
+// Do two entries share a lesson-shape, not just an incidental single tag? For every DISTINCT pair of
+// live, non-retired entries, a pair qualifies when its tag-set intersection has >= 2 tokens -- a single
+// shared tag (e.g. both entries merely tagged `node`) is expected noise; the motivating real examples
+// shared 3 tags at once. Reports EVERY qualifying pair independently, the first time it qualifies: no
+// transitive clustering (A-B and B-C qualifying independently never fuse into an A-B-C group), no time
+// window (a structural/cumulative fact, unlike consolidationReport's ledger-based staleness claim above,
+// which needs a recency window to be honest), and no separate occurrence-count gate on top of the
+// >=2-tag threshold (that threshold already does the noise-reduction job a count gate would otherwise
+// exist for). An entry with an empty/malformed Tags field naturally falls out of pairing on its own (its
+// tag Set is empty, so no intersection can ever reach size 2) -- no special-case skip needed. Pure
+// function, no side effects.
+export function tagRecurrenceCandidates(entries) {
+  const live = entries.filter((e) => !e.placeholder); // mirrors consolidationReport's own live[] pool
+  const pool = live.filter((e) => !e.retired); // a retired entry never pairs, same exclusion consolidationReport's active/expireCandidates loop applies
+  const tagged = pool.map((e) => ({ title: e.title, tags: tagSet(e.tags) }));
+  const candidates = [];
+  for (let i = 0; i < tagged.length; i++) {
+    for (let j = i + 1; j < tagged.length; j++) {
+      const shared = [...tagged[i].tags].filter((t) => tagged[j].tags.has(t));
+      if (shared.length >= 2) candidates.push({ titleA: tagged[i].title, titleB: tagged[j].title, sharedTags: shared });
+    }
+  }
+  return candidates;
+}
+
 // One compact, LLM-readable advisory for the arbiter. States plainly that the arbiter decides and
 // the main thread makes the edits (single writer), and that this report changes nothing on disk.
-export function formatReport(report) {
+export function formatReport(report, tagCandidates = []) {
   const lines = ["ctide failure-consolidate (deterministic advisory):"];
   lines.push("  entries: " + report.total + " (" + report.active.length + " matched in window, " + report.retired.length + " retired)");
   lines.push(report.retired.length
@@ -111,6 +156,14 @@ export function formatReport(report) {
       ? "  expire candidates (dated, >=" + report.staleDays + "d old, 0 retrieval hits in window): " +
         report.expireCandidates.map((c) => c.key + " (" + c.ageDays + "d)").join("; ")
       : "  expire candidates: none (every aged entry was matched within the window)");
+  }
+  if (tagCandidates.length) {
+    lines.push("  tag recurrence candidates (2+ entries sharing 2+ tags):");
+    for (const c of tagCandidates) {
+      lines.push("    \"" + c.titleA + "\" <-> \"" + c.titleB + "\" — shared: " + c.sharedTags.join(", "));
+    }
+  } else {
+    lines.push("  tag recurrence candidates: none");
   }
   lines.push("  note: advisory only — the main thread makes the actual edits from the arbiter's decision (single writer); this report modifies nothing.");
   return lines.join("\n");
@@ -161,7 +214,8 @@ function main(argv) {
   const records = readLedger(readCapped(ledgerPath));
   const staleDays = parseInt(get("--stale", String(DEFAULT_STALE_DAYS)), 10);
   const report = consolidationReport(entries, records, { now: Date.now(), staleDays });
-  process.stdout.write(formatReport(report) + "\n");
+  const tagCandidates = tagRecurrenceCandidates(entries);
+  process.stdout.write(formatReport(report, tagCandidates) + "\n");
   process.exit(0);
 }
 

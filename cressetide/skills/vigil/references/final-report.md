@@ -27,6 +27,7 @@ Emitted unless `--report full` was passed. Summary one-liner · a Verification b
 - Panel: <full, or name each evidence-substituted reviewer + the evidence that qualified it (fast lane — `references/reviewer-selection.md`)> — mirrored by the `ctide:panel=` footer line
 - External capabilities: only when a required MCP / skill / subagent was unavailable — name it, the local fallback, and the resulting verification gap (omit the line entirely when none were needed or all were available; a real capability gap is decision-relevant, so it stays visible even in the compact report).
 - Migration status: only when NOT migrated (this run consulted a legacy-only `ai/FAILURE_MEMORY.md` but the one-time `git mv` to `.ctide/memory/FAILURE_MEMORY.md` was not performed) — name the outstanding `git mv` action for the main thread (omit the line entirely when migrated or not applicable; NOT migrated is a required post-verdict action, not a nice-to-know, so it stays visible even in the compact report).
+- Tag recurrence: only when failure-consolidate.mjs found a qualifying pair — the two entry titles and their shared tags (omit the line entirely when none found).
 - Decision memory: only when a decision record was proposed this run — the target file (new, or the superseded file's updated Status when applicable) and a one-line reason (omit the line entirely when not required).
 - Live-verification gap: only when a UI-impacting or observable-behavior acceptance criterion needed live verification and Detect → Use → Else-Disclose (`references/external-capabilities.md`) resolved to no live-verification capability — name the gap distinctly and the blocked acceptance-criterion id when determinable (omit the line entirely when no such gap occurred). It withholds `READY` on the blocked criterion, so it stays visible even in the compact report. A live-drive/live-process gap (browser or app-launch) is reported here, not under `External capabilities` (which covers other MCP/skill/subagent unavailability).
 - Plan drift: real runs only — planned paths/risk vs. actual (contract- and git-derived, never self-asserted), observed repair-iteration count, and any Map corrections discovered mid-run; omit entirely when nothing drifted. Narrative facts only — never expressed as a score or rate. Mirrors the failure-path drift-aware Stuck Summary (`references/verification-gate.md`) for the success path.
@@ -129,6 +130,7 @@ Per-component basis: the harness rarely surfaces a per-subagent Input/Output/Cac
 | Reason | <why> |
 | Entry added | yes / no — <target file path when applicable> |
 | Migration status | migrated / NOT migrated / n/a — when NOT migrated, the named `git mv` action for the main thread |
+| Tag recurrence | none — or the qualifying pair(s) `failure-consolidate.mjs` found: `"<entry A title>" <-> "<entry B title>" — shared: tag1, tag2` (`; `-separated when multiple pairs qualify) |
 
 ## Decision Memory
 

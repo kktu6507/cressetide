@@ -85,6 +85,7 @@ Any `unmet` criterion that was not explicitly deferred is **release-blocking**: 
 - Do not require an entry for trivial, low-value mistakes. Do require one when a blocker, major rejection, repeated failure, or blocked task yields reusable engineering learning.
 - Prefer concise, prevention-oriented entries. On a Stuck Summary, evaluate whether failure memory must be updated.
 - When an entry is required, follow the existing template in the target file exactly; do not invent a new schema if one exists.
+- **Weigh tag-recurrence candidates as additional evidence.** When `failure-consolidate.mjs`'s advisory reports a tag-recurrence candidate (two live entries whose `Tags` overlap by 2+ tokens), treat it as extra evidence when deciding whether a new entry, a merge, or a structural-fix consideration is warranted — a mechanical tag overlap is evidence, not an automatic conclusion; still judge whether the pair actually shares a reusable lesson-shape worth surfacing.
 - **You decide; the main thread writes.** Reviewers and the implementer only *propose* entries; you make the final ruling and hand back the exact final entry text plus its placement, and the **main thread** performs the one serialized write verbatim after the verdict (you hold no Write/Edit tools; a single post-verdict writer avoids concurrent lost-update corruption of the shared memory file).
 
 ## Decision memory rules
