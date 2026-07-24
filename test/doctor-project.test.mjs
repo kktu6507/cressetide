@@ -111,6 +111,27 @@ function writeIncident(dir, filename, body) {
   write(path.join(dir, ".ctide", "incidents", filename), body);
 }
 
+// A handful of tests below cp.spawnSync a brand-new CHILD PROCESS to immediately load a scratch doctor.mjs
+// this same test just wrote/copied moments earlier. Plain fs.writeFileSync()/fs.cpSync() return once their
+// write() syscall completes but before fsync() -- durable and visible to a freshly-spawned sibling process
+// immediately on Windows and CI's ubuntu-latest, but NOT reliably on CI's macos-latest (ARM64) runner, where
+// this raced (real CI failure: the child saw an empty/incomplete file and either printed nothing -- a spawned
+// JSON.parse of empty stdout throws "Unexpected end of JSON input" -- or silently ran the pre-mutation
+// source). fsyncPath()/writeFileSyncDurable() force the write durable BEFORE the spawn starts; do not
+// "simplify" either back to a plain fs.writeFileSync/fs.cpSync call.
+function fsyncPath(filePath) {
+  // "r+" (read-write, existing file), not "r": Windows' FlushFileBuffers (what fsyncSync calls under the
+  // hood there) needs write access on the handle and throws EPERM on a read-only-opened fd -- confirmed
+  // directly (this repo's own local Windows run) rather than assumed.
+  const fd = fs.openSync(filePath, "r+");
+  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
+
+function writeFileSyncDurable(filePath, content) {
+  fs.writeFileSync(filePath, content, "utf8");
+  fsyncPath(filePath);
+}
+
 // --- AC-1 / item (g): default (no --project) output stays byte-for-byte the shipped baseline -----------
 
 const BASELINE_CHECK_NAMES = [
@@ -612,7 +633,7 @@ test("red->green proof: the literal --cwd --project swallow example fails agains
   const unguarded = source.replace(guardedFunction,
     'function argument(name) {\n  const index = process.argv.indexOf(name);\n  return index >= 0 ? process.argv[index + 1] : undefined;\n}');
   assert.notStrictEqual(unguarded, source, "fixture sanity: the revert must actually change the source");
-  fs.writeFileSync(scratchDoctor, unguarded, "utf8");
+  writeFileSyncDurable(scratchDoctor, unguarded);
 
   const dir = temporary("ctide-doctor-redgreen-project-");
   writeIncident(dir, "INCIDENT-20260601-redgreencanary.md", "# INCIDENT-20260601-redgreencanary\n\n- Status: open\n");
@@ -648,6 +669,12 @@ test("--project degrades to a reported failure-memory-health: fail (never a proc
     const scratchPlugin = path.join(scratchDir, "cressetide");
     fs.cpSync(pluginRoot, scratchPlugin, { recursive: true });
     const scratchDoctor = path.join(scratchPlugin, "skills", "doctor", "scripts", "doctor.mjs");
+    // Same write-then-cross-process-read race as writeFileSyncDurable's own call sites above, but via
+    // fs.cpSync instead of fs.writeFileSync: this test's flagless spawn below is the FIRST read of
+    // scratchDoctor by any process since the copy, with no in-process readFileSync to warm it first.
+    // Confirmed against this exact test's own real macos-latest CI failure log (an empty spawned stdout,
+    // "Unexpected end of JSON input" at the JSON.parse below) -- not a hypothetical.
+    fsyncPath(scratchDoctor);
     const brokenVigilFile = path.join(scratchPlugin, "skills", "vigil", "scripts", "failure-consolidate.mjs");
     assert.ok(fs.existsSync(brokenVigilFile), "fixture sanity: the file this test breaks must actually exist in the scratch copy first");
     fs.rmSync(brokenVigilFile);
@@ -733,7 +760,7 @@ test("--project: an unexpected exception inside the project-health block is caug
     // unhandled rejection at the top-level `await diagnose(...)` call), not produce a clean report.
     const redSource = withThrow.replace(wrappedBlock, unwrappedBlock);
     assert.notStrictEqual(redSource, withThrow, "fixture sanity: the unwrap revert must actually change the source");
-    fs.writeFileSync(scratchDoctor, redSource, "utf8");
+    writeFileSyncDurable(scratchDoctor, redSource);
     const projectCwd = temporary("ctide-doctor-fix8-project-");
     const red = cp.spawnSync(process.execPath,
       [scratchDoctor, "--plugin-root", scratchPlugin, "--project", "--cwd", projectCwd, "--json"],
@@ -745,7 +772,7 @@ test("--project: an unexpected exception inside the project-health block is caug
 
     // GREEN: the shipped try/catch-wrapped block, with the same throw injected -- must degrade to a
     // reported project-health: fail check instead.
-    fs.writeFileSync(scratchDoctor, withThrow, "utf8");
+    writeFileSyncDurable(scratchDoctor, withThrow);
     const green = cp.spawnSync(process.execPath,
       [scratchDoctor, "--plugin-root", scratchPlugin, "--project", "--cwd", projectCwd, "--json"],
       { encoding: "utf8" });

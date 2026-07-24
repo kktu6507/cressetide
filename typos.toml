@@ -25,3 +25,4 @@ mis = "mis"                 # hyphenated prefix tokens: "mis-pair(s)", "mis-simu
 releas = "releas"           # regex stem in orchestration-check.js: releas(?:e|ing) — machine content, never edit
 OT = "OT"                   # uppercase-run token from "OTPs" (one-time passwords) in browser-evidence.md
 fo = "fo"                   # PowerShell abbreviated -fo (Force) flag inside a destructive-guard deny-list TEST FIXTURE command
+entrys = "entrys"           # literal WRONG spelling the round-3 pluralization bug fix (summarizeMemoryHealth/pluralize() in doctor.mjs) closed; quoted deliberately in code comments and a test title to show exactly what the bug looked like, never a real misspelling in prose
