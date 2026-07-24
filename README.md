@@ -36,7 +36,7 @@ Learning loop  run verdict -> ledger record -> the next planning reconciles: esc
 ## What's inside
 
 <p align="center">
-  <img src=".github/assets/flow_overview.svg" alt="Cressetide component flow: the vigil run contains plan-implement-verify and the risk-selected subagent panel; salvage, map, committed memory files, and the local run ledger feed it" width="100%">
+  <img src=".github/assets/flow_overview.svg" alt="Cressetide component flow: intent leads to a plan the human approves, then vigil implements and verifies before the risk-selected subagent panel decides; salvage, map, committed memory files, and the local run ledger feed the loop; doctor and ship are manually-triggered, standalone read-only checks with no loop connection" width="100%">
 </p>
 
 - **Two flows**: dev ([`vigil`](#the-dev-flow-vigil)) and incident ([`salvage`](#the-incident-flow-salvage)). An incident's formal fix is handed back to the dev flow as a `--lite` run with the incident reproduction as its primary acceptance criterion.
@@ -194,6 +194,8 @@ Map owns the operational-preparation contract: [`operational-readiness.md`](cres
 ## Health check (doctor)
 
 `/ctide:doctor` runs a local, read-only self-check of the hooks and environment (plugin identity, Node availability, whether the hooks are wired up), and transmits nothing (no telemetry). Run it when the gate never blocks, hooks seem silent, or Node may be missing.
+
+Add `--project` (optionally with `--cwd <path>`) to layer two more checks on top: `failure-memory-health` summarizes the project's own `FAILURE_MEMORY.md` (never the machine-global one), and `incident-journals` flags any `.ctide/incidents/*.md` not confirmed `closed`. Both are opt-in and additive — the default `/ctide:doctor` output never changes.
 
 ## Release-readiness check (ship)
 

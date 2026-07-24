@@ -36,7 +36,7 @@ Incident flow  警報 -> Triage -> 保全證據 -> 先止血（可回復的動�
 ## 裡面有什麼
 
 <p align="center">
-  <img src=".github/assets/flow_overview.svg" alt="Cressetide 元件流程圖：vigil run 內含 plan-implement-verify 與依風險挑選的 subagent 面板；salvage、map、committed 記憶檔案與本地 run ledger 餵入它" width="100%">
+  <img src=".github/assets/flow_overview.svg" alt="Cressetide 元件流程圖：intent 先產生 plan、經使用者核准後才進 implement 與 verify，再交給依風險挑選的 subagent 面板決定；salvage、map、committed 記憶檔案與本地 run ledger 餵入這個迴圈；doctor 與 ship 是手動觸發、獨立的唯讀檢查，不接進迴圈" width="100%">
 </p>
 
 - **兩條 flow**：dev（[`vigil`](#開發流程vigil)）與 incident（[`salvage`](#事故應變流程salvage)）。事故的正式修復會以 `--lite` run 交回 dev flow，並以「事故的 reproduction 轉綠」作為主要 acceptance criterion。
@@ -194,6 +194,8 @@ Map 承接 operational-preparation 契約：[`operational-readiness.md`](cresset
 ## 健康檢查（doctor）
 
 `/ctide:doctor` 做本機、唯讀的 hooks 與環境自檢（plugin 身分、Node 是否存在、hook 有沒有接上），且不傳送任何東西（無 telemetry）。gate 沒擋、hook 沒反應、或 Node 可能不存在時就跑它。
+
+加上 `--project`（可搭配 `--cwd <path>`）會多疊兩項檢查：`failure-memory-health` 摘要專案自己的 `FAILURE_MEMORY.md`（不會碰機器全域那份），`incident-journals` 標出 `.ctide/incidents/*.md` 裡還沒確認 `closed` 的項目。兩者都是選配、疊加式的——預設的 `/ctide:doctor` 輸出不會變。
 
 ## Release-readiness 檢查（ship）
 

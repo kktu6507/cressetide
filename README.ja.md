@@ -36,7 +36,7 @@ Incident flow  アラート -> Triage -> 証拠保全 -> まず止血（可逆�
 ## 同梱されているもの
 
 <p align="center">
-  <img src=".github/assets/flow_overview.svg" alt="Cressetide のコンポーネントフロー：vigil の run には plan-implement-verify とリスクに応じた subagent パネルが含まれ、salvage、map、committed なメモリファイル、ローカルの run ledger がそこに供給します" width="100%">
+  <img src=".github/assets/flow_overview.svg" alt="Cressetide のコンポーネントフロー：intent が plan を生み、人間が承認してから implement と verify に進み、リスクに応じた subagent パネルが判定します；salvage、map、committed なメモリファイル、ローカルの run ledger がこのループに供給します；doctor と ship は手動起動・独立した読み取り専用チェックで、ループには接続しません" width="100%">
 </p>
 
 - **2つのフロー**：dev（[`vigil`](#開発フローvigil)）と incident（[`salvage`](#インシデントフローsalvage)）。インシデントの正式な修正は、「インシデントの reproduction がグリーンになる」を主要な acceptance criterion として `--lite` run で dev flow に戻されます。
@@ -194,6 +194,8 @@ Map は operational-preparation の契約を担います：[`operational-readine
 ## ヘルスチェック（doctor）
 
 `/ctide:doctor` は hooks と環境のローカルで読み取り専用のセルフチェック（plugin の同一性、Node の有無、hook がつながっているか）を行い、何も送信しません（telemetry なし）。gate が一度も block しない、hooks が無反応、あるいは Node が入っていない可能性があるときに実行してください。
+
+`--project`（`--cwd <path>` を併用可）を付けると、2つのチェックが追加で重なります：`failure-memory-health` はプロジェクト自身の `FAILURE_MEMORY.md` を要約します（マシン全体のものには触れません）、`incident-journals` は `.ctide/incidents/*.md` のうち `closed` と確認されていない項目を報告します。どちらもオプトインかつ加算的——デフォルトの `/ctide:doctor` 出力は変わりません。
 
 ## Release-readiness チェック（ship）
 
