@@ -112,13 +112,20 @@ function writeIncident(dir, filename, body) {
 }
 
 // A handful of tests below cp.spawnSync a brand-new CHILD PROCESS to immediately load a scratch doctor.mjs
-// this same test just wrote/copied moments earlier. Plain fs.writeFileSync()/fs.cpSync() return once their
-// write() syscall completes but before fsync() -- durable and visible to a freshly-spawned sibling process
-// immediately on Windows and CI's ubuntu-latest, but NOT reliably on CI's macos-latest (ARM64) runner, where
-// this raced (real CI failure: the child saw an empty/incomplete file and either printed nothing -- a spawned
-// JSON.parse of empty stdout throws "Unexpected end of JSON input" -- or silently ran the pre-mutation
-// source). fsyncPath()/writeFileSyncDurable() force the write durable BEFORE the spawn starts; do not
-// "simplify" either back to a plain fs.writeFileSync/fs.cpSync call.
+// this same test just wrote/copied moments earlier. fsyncPath()/writeFileSyncDurable() force the write
+// durable (fsync, opened "r+" for Windows' FlushFileBuffers) BEFORE the spawn starts -- retained as
+// generically-valid defense-in-depth for the "write/copy a file then hand it to a freshly-spawned sibling
+// process with no intervening in-process read" pattern. CORRECTION: these helpers did NOT resolve the CI
+// failures they were originally written for -- real CI evidence gathered AFTER this fsync fix shipped
+// showed the identical 3 failures unchanged on CI's macos-latest (ARM64) runner. The actual, verified root
+// cause was a symlink-unsafe process.argv[1]/import.meta.url entry-point comparison in doctor.mjs itself:
+// process.argv[1] is left literal (never symlink-resolved) while import.meta.url IS resolved through
+// symlinks by Node's ESM loader, and macOS permanently symlinks /var -> /private/var (os.tmpdir() lives
+// under /var/folders/...), so the naive comparison silently mismatched and the CLI body was skipped
+// entirely -- nothing printed, exit 0. Fixed via isInvokedDirectly()'s fs.realpathSync() comparison,
+// applied at doctor.mjs and 13 sibling call sites in this same commit (see there for the fix). Do not
+// "simplify" either helper back to a plain fs.writeFileSync/fs.cpSync call -- they remain sound, unrelated
+// hardening for the write-visibility race class; they were just never the fix for THIS bug.
 function fsyncPath(filePath) {
   // "r+" (read-write, existing file), not "r": Windows' FlushFileBuffers (what fsyncSync calls under the
   // hood there) needs write access on the handle and throws EPERM on a read-only-opened fd -- confirmed
@@ -613,6 +620,49 @@ test("doctor: for EVERY value-bearing flag in KNOWN_FLAGS, a value slot occupied
         `${F} swallowed by ${G}: --cwd must still resolve to the real seeded project dir, not a bogus '${G}'-shaped path`);
       assert.match(canary.detail, /status=open/);
     }
+  }
+});
+
+// --- entry-point regression test: doctor.mjs invoked through a REAL symlinked/junctioned ancestor ---------
+// --- directory (isInvokedDirectly()'s fs.realpathSync fix), proven directly and cross-platform rather -----
+// --- than relying on macOS's incidental /var -> /private/var temp-dir symlinking (what the tests below, ---
+// --- and the pre-existing red->green/vigil-broken/Fix-8 tests further down, exercise only incidentally) ---
+
+test("doctor.mjs invoked via a path THROUGH a real symlinked/junctioned ancestor directory (fs.symlinkSync, not an incidental temp-dir symlink) is still recognized as directly-invoked and runs its full CLI body, producing the 14 baseline checks -- proves isInvokedDirectly()'s fs.realpathSync comparison directly", (t) => {
+  const scratchDir = temporary("ctide-doctor-symlink-entrypoint-");
+  try {
+    const scratchPlugin = path.join(scratchDir, "cressetide");
+    fs.cpSync(pluginRoot, scratchPlugin, { recursive: true });
+    const scratchDoctor = path.join(scratchPlugin, "skills", "doctor", "scripts", "doctor.mjs");
+    // Same write-then-cross-process-read pattern the corrected comment above still guards against
+    // (defense-in-depth; not the cause of the 3 CI failures this task's production fix actually closes).
+    fsyncPath(scratchDoctor);
+
+    // The real bug: process.argv[1] is left literal (never symlink-resolved) while import.meta.url IS
+    // resolved through symlinks by Node's ESM loader. macOS's permanent /var -> /private/var symlink under
+    // os.tmpdir() is only ONE way to reach that mismatch (what the tests elsewhere in this file rely on
+    // incidentally); a symlinked/junctioned ANCESTOR directory reproduces the identical mismatch
+    // deliberately and cross-platform, matching how the bug actually manifests (a symlinked directory
+    // somewhere on the path, not the entry file itself). "junction" needs no elevated privileges on
+    // Windows (unlike "file"/"dir" true symlinks, which throw EPERM without Developer Mode/admin --
+    // confirmed directly); mirrors the symlink-attempt/t.skip(e.code) precedent this file already
+    // established above (the broken-symlink incident-journal test) rather than assuming success.
+    const linkedPlugin = path.join(scratchDir, "cressetide-link");
+    try {
+      fs.symlinkSync(scratchPlugin, linkedPlugin, process.platform === "win32" ? "junction" : "dir");
+    } catch (e) {
+      return t.skip("cannot create a symlink/junction here: " + (e && e.code));
+    }
+    const doctorViaLink = path.join(linkedPlugin, "skills", "doctor", "scripts", "doctor.mjs");
+
+    const r = cp.spawnSync(process.execPath, [doctorViaLink, "--plugin-root", scratchPlugin, "--json"], { encoding: "utf8" });
+    assert.strictEqual(r.status, 0, `must recognize itself as directly-invoked through the symlink/junction and run its full CLI body, not silently no-op: ${r.stderr}`);
+    assert.ok(r.stdout && r.stdout.trim().length > 0, "must produce real JSON output, not empty stdout (the false-negative symptom this fix closes)");
+    const report = JSON.parse(r.stdout);
+    assert.deepStrictEqual(report.checks.map((c) => c.name), BASELINE_CHECK_NAMES,
+      "the full 14-check baseline must run, proving the CLI body was not silently skipped");
+  } finally {
+    fs.rmSync(scratchDir, { recursive: true, force: true });
   }
 });
 

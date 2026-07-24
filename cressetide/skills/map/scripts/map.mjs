@@ -592,8 +592,16 @@ function args(argv) {
   return { mode, root: index >= 0 ? argv[index + 1] : process.cwd() };
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) {
+function isInvokedDirectly() {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (isInvokedDirectly()) {
   try {
     const input = args(process.argv.slice(2));
     if (input.mode === "verify") {

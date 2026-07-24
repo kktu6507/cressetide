@@ -461,8 +461,16 @@ function publish(tag) {
   return verifyOrRepairPublished(tag, built);
 }
 
-const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (invokedDirectly) {
+function isInvokedDirectly() {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (isInvokedDirectly()) {
   try {
     const mode = process.argv[2] || "--archive";
     const tagIndex = process.argv.indexOf("--tag");

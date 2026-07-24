@@ -413,8 +413,16 @@ export function runRelease({
   return { tag, action: "created-release" };
 }
 
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
-if (isMain) {
+function isInvokedDirectly() {
+  if (!process.argv[1]) return false;
+  try {
+    return pathToFileURL(fs.realpathSync(process.argv[1])).href === import.meta.url;
+  } catch {
+    return false;
+  }
+}
+
+if (isInvokedDirectly()) {
   try {
     runRelease();
   } catch (error) {

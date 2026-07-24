@@ -557,6 +557,15 @@ async function main(argv) {
   process.exit(0);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+function isInvokedDirectly() {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (isInvokedDirectly()) {
   main(process.argv).catch(() => process.exit(0));
 }

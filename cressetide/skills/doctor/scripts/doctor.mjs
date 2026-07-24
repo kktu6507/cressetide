@@ -564,8 +564,16 @@ export async function diagnose(pluginRoot = resolvePluginRoot(), options = {}) {
   };
 }
 
-const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (invokedDirectly) {
+function isInvokedDirectly() {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (isInvokedDirectly()) {
   const report = await diagnose(undefined, { project: process.argv.includes("--project") });
   if (process.argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
   else {
