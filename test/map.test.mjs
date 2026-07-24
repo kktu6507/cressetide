@@ -1210,7 +1210,15 @@ test("Map CLI: `create` then `verify` via real spawned subprocesses write and va
     const createResult = spawnSync(process.execPath, [mapScriptPath, "create", "--root", projectRoot], { encoding: "utf8" });
     assert.strictEqual(createResult.status, 0, `spawned create must exit 0: ${createResult.stderr}`);
     assert.ok(fs.existsSync(target), "spawned create must write .ctide/map/SYSTEM_MAP.md");
-    assert.strictEqual(createResult.stdout.trim(), target, "spawned create must print the written target path");
+    // map.mjs's repositoryRoot() deliberately resolves the root via fs.realpathSync.native() (a real
+    // security-hardening step feeding its path-containment checks, map.mjs:176) before writeMap()
+    // builds `target` from it -- so the printed path is always the CANONICAL one. On a temp dir that
+    // sits behind a symlink (macOS's /var -> /private/var) or a short-name path component (Windows'
+    // 8.3 RUNNER~1 form), the raw `target` built above differs textually from the canonical path the
+    // child process actually reports, even though both name the identical file -- confirmed directly
+    // against real CI failures on both platforms, not a hypothetical. Resolve the same way before
+    // comparing, matching production's own resolution rather than a platform-specific string shape.
+    assert.strictEqual(createResult.stdout.trim(), fs.realpathSync.native(target), "spawned create must print the written target path");
 
     // The freshly-created, unenriched baseline is not clean (mirrors this file's in-process assertion
     // above) -- the spawned CLI must report that too, not silently exit 0.
