@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import test from "node:test";
-import { temporary, write, hardenGitSigning } from "./helpers.mjs";
+import { root, temporary, write, hardenGitSigning } from "./helpers.mjs";
 import { verifyMap, writeMap } from "../cressetide/skills/map/scripts/map.mjs";
+
+const mapScriptPath = path.join(root, "cressetide", "skills", "map", "scripts", "map.mjs");
 
 function git(root, ...args) {
   return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -1194,4 +1196,72 @@ test("Map candidate entry points ignore a null package.json bin field without cr
   const candidates = candidateLine.split(", ").map(value => value.trim());
   assert.ok(candidates.includes("main.js"), `expected the filename-convention match to remain a candidate despite the null bin field: ${candidateLine}`);
   assert.equal(candidates.length, 1, `a null bin field must contribute no candidates beyond the control file: ${candidateLine}`);
+});
+
+// --- CLI entry-point coverage: map.mjs's own `if (isInvokedDirectly())` block, exercised as a real ---
+// --- spawned subprocess (create/verify modes, bare-`map` aliasing, and --root), plus the symlink/ -----
+// --- junction entry-point regression proven directly (mirrors test/doctor-project.test.mjs's --------
+// --- established pattern). Fully local: no network, no gh. ---------------------------------------------
+
+test("Map CLI: `create` then `verify` via real spawned subprocesses write and validate .ctide/map/SYSTEM_MAP.md, using --root", () => {
+  const projectRoot = repository();
+  try {
+    const target = path.join(projectRoot, ".ctide", "map", "SYSTEM_MAP.md");
+    const createResult = spawnSync(process.execPath, [mapScriptPath, "create", "--root", projectRoot], { encoding: "utf8" });
+    assert.strictEqual(createResult.status, 0, `spawned create must exit 0: ${createResult.stderr}`);
+    assert.ok(fs.existsSync(target), "spawned create must write .ctide/map/SYSTEM_MAP.md");
+    assert.strictEqual(createResult.stdout.trim(), target, "spawned create must print the written target path");
+
+    // The freshly-created, unenriched baseline is not clean (mirrors this file's in-process assertion
+    // above) -- the spawned CLI must report that too, not silently exit 0.
+    const dirtyVerify = spawnSync(process.execPath, [mapScriptPath, "verify", "--root", projectRoot], { encoding: "utf8" });
+    assert.strictEqual(dirtyVerify.status, 1, "spawned verify against an unenriched baseline must exit 1, not silently pass");
+    assert.match(dirtyVerify.stderr, /unverified section/);
+
+    enrichGeneratedBaseline(target);
+    const cleanVerify = spawnSync(process.execPath, [mapScriptPath, "verify", "--root", projectRoot], { encoding: "utf8" });
+    assert.strictEqual(cleanVerify.status, 0, `spawned verify against an enriched map must exit 0: ${cleanVerify.stderr}`);
+    assert.strictEqual(cleanVerify.stdout, "", "a clean spawned verify must print nothing to stdout");
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("Map CLI: explicit `map` mode aliases to `create` via a real spawned subprocess", () => {
+  // args()'s mode is positional (argv[0]), so exercising the "map" -> "create" alias (`if (mode ===
+  // "map") mode = "create";`) while also passing --root deterministically requires the literal "map"
+  // token first -- omitting it entirely would make "--root" itself become argv[0], which is not a
+  // recognized mode and throws a usage error (confirmed directly, not assumed).
+  const projectRoot = repository();
+  try {
+    const target = path.join(projectRoot, ".ctide", "map", "SYSTEM_MAP.md");
+    const result = spawnSync(process.execPath, [mapScriptPath, "map", "--root", projectRoot], { encoding: "utf8" });
+    assert.strictEqual(result.status, 0, `\`map\` must alias to create and exit 0: ${result.stderr}`);
+    assert.ok(fs.existsSync(target), "`map` must alias to create and write the map");
+  } finally {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("Map CLI: invoked via a real symlinked/junctioned ancestor directory is still recognized as directly-invoked, running its full CLI body (isInvokedDirectly()'s fs.realpathSync check)", (t) => {
+  const parentDir = temporary("ctide-map-symlink-entrypoint-");
+  const projectRoot = repository();
+  try {
+    const scratchPlugin = path.join(parentDir, "cressetide");
+    fs.cpSync(path.join(root, "cressetide"), scratchPlugin, { recursive: true });
+    const linkedPlugin = path.join(parentDir, "cressetide-link");
+    try {
+      fs.symlinkSync(scratchPlugin, linkedPlugin, process.platform === "win32" ? "junction" : "dir");
+    } catch (e) {
+      return t.skip("cannot create a symlink/junction here: " + (e && e.code));
+    }
+    const mapViaLink = path.join(linkedPlugin, "skills", "map", "scripts", "map.mjs");
+    const result = spawnSync(process.execPath, [mapViaLink, "create", "--root", projectRoot], { encoding: "utf8" });
+    assert.strictEqual(result.status, 0, `must recognize itself as directly-invoked through the symlink/junction and run its full CLI body, not silently no-op: ${result.stderr}`);
+    assert.ok(fs.existsSync(path.join(projectRoot, ".ctide", "map", "SYSTEM_MAP.md")),
+      "must actually write the map through the symlinked entry point, not silently no-op");
+  } finally {
+    fs.rmSync(parentDir, { recursive: true, force: true });
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  }
 });

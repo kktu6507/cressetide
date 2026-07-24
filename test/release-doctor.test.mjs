@@ -239,6 +239,19 @@ test("release inventory helper never echoes malformed stdout and classifies raw 
     stderr: "Invalid gh release view response",
   });
 
+  // Gap-closing addition (test-reviewer finding): the malformed case above only fails at JSON.parse
+  // itself, never isolating the separate `if (!Array.isArray(parsed.assets)) throw` check
+  // (publish-release.mjs:351). Syntactically-valid JSON with a non-array `assets` field reaches that
+  // check on its own and must classify identically.
+  const nonArrayAssets = inspectPublishedRelease("v0.1.0", {
+    execute: () => ({ status: 0, stdout: JSON.stringify({ assets: "oops" }), stderr: "" }),
+  });
+  assert.deepEqual(nonArrayAssets, {
+    outcome: "transport-error",
+    category: "response",
+    stderr: "Invalid gh release view response",
+  });
+
   const notFound = inspectPublishedRelease("v0.1.0", {
     execute: () => ({
       status: 1,

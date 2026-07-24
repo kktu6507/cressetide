@@ -446,19 +446,19 @@ export function verifyOrRepairPublished(tag, built, options = {}) {
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 }
 
-function publish(tag) {
+export function publish(tag, options = {}) {
   if (!tag) throw new Error("Publishing requires --tag vX.Y.Z");
   const identity = releaseIdentityFromTag(root, tag);
   validateTaggedReleaseState(root, identity);
   const built = createArchive(path.join(root, "_release"), { tag, identity });
-  const inspection = inspectPublishedRelease(tag);
-  if (inspection.outcome === "found") return verifyOrRepairPublished(tag, built);
+  const inspection = inspectPublishedRelease(tag, options);
+  if (inspection.outcome === "found") return verifyOrRepairPublished(tag, built, options);
   if (inspection.outcome !== "not-found") {
     throw new Error(`Unable to inspect release ${tag}: ${inspection.category}; ${inspection.stderr || "no stderr captured"}`);
   }
   runReleaseCommand("create", tag,
-    ["release", "create", tag, built.assetPath, built.checksumPath, "--verify-tag", "--title", tag, "--generate-notes"]);
-  return verifyOrRepairPublished(tag, built);
+    ["release", "create", tag, built.assetPath, built.checksumPath, "--verify-tag", "--title", tag, "--generate-notes"], options);
+  return verifyOrRepairPublished(tag, built, options);
 }
 
 function isInvokedDirectly() {
