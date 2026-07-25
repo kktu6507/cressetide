@@ -592,6 +592,7 @@ function args(argv) {
   return { mode, root: index >= 0 ? argv[index + 1] : process.cwd() };
 }
 
+// isInvokedDirectly() kept in sync with the other 13 CLI entry points (documented copy — see garden hash guard)
 function isInvokedDirectly() {
   if (!process.argv[1]) return false;
   try {

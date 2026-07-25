@@ -752,6 +752,40 @@ test("validate-structure: garden 9d FAILS on drift in the map.mjs/ship.mjs mirro
   }
 });
 
+test("validate-structure: garden 9d FAILS on drift/extraction/marker-loss in the isInvokedDirectly() entry-point cluster (14 CLI scripts)", () => {
+  for (const [mutate, expected] of [
+    // Single-site body drift: one forward-direction file's isInvokedDirectly() body diverges from
+    // the rest of the 13-file cluster. doctor.mjs is first in the file list and stays unmutated, so
+    // it is the reference body every other site is compared against.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "vigil", "scripts", "run-ledger.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("!process.argv[1]", "!process.argv[2]"), "utf8");
+    }, /garden 9d: isInvokedDirectly\(\) drifted between cressetide\/skills\/doctor\/scripts\/doctor\.mjs and cressetide\/skills\/vigil\/scripts\/run-ledger\.mjs/],
+    // Unextractable: renaming the function's declaration in ONE file makes it unlocatable there,
+    // exercising the "cannot extract" branch rather than the drift branch.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "vigil", "scripts", "pack-review-diff.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("function isInvokedDirectly(", "function isInvokedDirectlyRenamed("), "utf8");
+    }, /garden 9d: cannot extract isInvokedDirectly\(\) from cressetide\/skills\/vigil\/scripts\/pack-review-diff\.mjs — the function moved or lost its column-0 shape/],
+    // Missing stamp: the sync-comment line is deleted but the function body is left byte-identical,
+    // so only the marker-presence check (not the byte-identity check) must fire.
+    [(tree) => {
+      const p = path.join(tree, "eval", "check-model-provenance.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace(
+        "// isInvokedDirectly() kept in sync with the other 13 CLI entry points (documented copy — see garden hash guard)\n", ""
+      ), "utf8");
+    }, /garden 9d: eval\/check-model-provenance\.mjs lost the isInvokedDirectly\(\) sync marker/],
+  ]) {
+    const tree = copyRepoTree();
+    try {
+      mutate(tree);
+      const { code, out } = runValidator(tree);
+      assert.notStrictEqual(code, 0, `a drifted/unextractable/unmarked isInvokedDirectly() copy must fail the build (${expected})`);
+      assert.match(out, expected, "the failure must name the drifted, unextractable, or unmarked entry-point site");
+    } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  }
+});
+
 test("validate-structure: garden 9e FAILS on a bare plugin-script invocation missing ${CLAUDE_PLUGIN_ROOT}", () => {
   const tree = copyRepoTree();
   try {

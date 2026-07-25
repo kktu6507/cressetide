@@ -678,12 +678,24 @@ if (plugin && Array.isArray(plugin.agents)) {
 }
 
 // 9d. Copy-sync guards for documented byte-identical infra copies (deterministic string/regex
-// extraction only): the per-hook copies in cressetide/hooks/, plus the map.mjs/ship.mjs skill-script
-// pair (d4, below). Each check fails CLOSED when it cannot locate what it guards, so a refactor
-// cannot silently disarm it — the message then says to re-point the guard.
+// extraction only): the per-hook copies in cressetide/hooks/, the map.mjs/ship.mjs skill-script
+// pair (d4, below), and the 14-site isInvokedDirectly() CLI entry-point cluster (d5, below). Each
+// check fails CLOSED when it cannot locate what it guards, so a refactor cannot silently disarm it
+// — the message then says to re-point the guard.
 {
   const hookRel = (name) => `${PLUGIN}/hooks/${name}`;
   const readHook = (rel) => fs.readFileSync(path.join(root, rel), "utf8").replace(/\r\n/g, "\n");
+  // Shared with d4 and d5 below: given already-read file text and a function name, extract the
+  // `function <name>(` line through its closing `}` at column 0, or null if not found in that shape.
+  const extractSkillFn = (text, name) => {
+    const lines = text.split("\n");
+    const start = lines.findIndex((l) => l.startsWith(`function ${name}(`));
+    if (start === -1) return null;
+    for (let i = start + 1; i < lines.length; i++) {
+      if (lines[i] === "}") return lines.slice(start, i + 1).join("\n");
+    }
+    return null;
+  };
 
   // d1. dd-of= regex identity: plan-gate.js and destructive-guard.js each carry
   // the dd write-detection pattern with a "kept character-identical / reused verbatim" comment — make
@@ -792,15 +804,7 @@ if (plugin && Array.isArray(plugin.agents)) {
   if (fs.existsSync(path.join(root, mapRel)) && fs.existsSync(path.join(root, shipRel))) {
     const mapText = readHook(mapRel);
     const shipText = readHook(shipRel);
-    const extractSkillFn = (text, name) => {
-      const lines = text.split("\n");
-      const start = lines.findIndex((l) => l.startsWith(`function ${name}(`));
-      if (start === -1) return null;
-      for (let i = start + 1; i < lines.length; i++) {
-        if (lines[i] === "}") return lines.slice(start, i + 1).join("\n");
-      }
-      return null;
-    };
+    // extractSkillFn is defined once, above (shared with d5 below).
     const extractSkillConst = (text, name) => {
       const line = text.split("\n").find((l) => l.startsWith(`const ${name} = `));
       return line === undefined ? null : line;
@@ -822,6 +826,49 @@ if (plugin && Array.isArray(plugin.agents)) {
         fail(`garden 9d: ${name} drifted between ${mapRel} and ${shipRel} — documented byte-identical copy; change both together`);
       }
     }
+  }
+
+  // d5. isInvokedDirectly() entry-point self-check, byte-identical across 13 CLI scripts (the
+  // fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url) forward-direction form)
+  // plus a 14th sibling, publish-release-core.mjs, which imports pathToFileURL rather than
+  // fileURLToPath and so necessarily carries the reverse-direction pathToFileURL(fs.realpathSync(...))
+  // .href === import.meta.url form — semantically identical, not a body match, so it is checked only
+  // for marker presence below, never body-compared against the 13. Reuses extractSkillFn (defined
+  // above, shared with d4) unmodified: isInvokedDirectly() needs no per-file substitution since the
+  // 13 forward bodies are already 100% textually identical.
+  const ENTRY_POINT_FORWARD = [
+    `${PLUGIN}/skills/doctor/scripts/doctor.mjs`,
+    `${PLUGIN}/skills/map/scripts/map.mjs`,
+    `${PLUGIN}/skills/ship/scripts/ship.mjs`,
+    `${PLUGIN}/skills/vigil/scripts/contract-check.mjs`,
+    `${PLUGIN}/skills/vigil/scripts/failure-retrieve.mjs`,
+    `${PLUGIN}/skills/vigil/scripts/failure-consolidate.mjs`,
+    `${PLUGIN}/skills/vigil/scripts/run-reconcile.mjs`,
+    `${PLUGIN}/skills/vigil/scripts/regression-delta.mjs`,
+    `${PLUGIN}/skills/vigil/scripts/run-ledger.mjs`,
+    `${PLUGIN}/skills/vigil/scripts/pack-review-diff.mjs`,
+    `${PLUGIN}/skills/vigil/scripts/run-consolidate.mjs`,
+    "eval/check-model-provenance.mjs",
+    ".github/scripts/publish-release.mjs",
+  ];
+  const ENTRY_POINT_REVERSE = ".github/scripts/publish-release-core.mjs";
+  const ENTRY_POINT_MARKER = "isInvokedDirectly() kept in sync with";
+
+  const entryPointPresent = ENTRY_POINT_FORWARD.filter((rel) => fs.existsSync(path.join(root, rel)));
+  const entryPointBodies = entryPointPresent.map((rel) => [rel, extractSkillFn(readHook(rel), "isInvokedDirectly")]);
+  for (const [rel, body] of entryPointBodies) {
+    if (body === null) fail(`garden 9d: cannot extract isInvokedDirectly() from ${rel} — the function moved or lost its column-0 shape; re-point the 9d copy guard`);
+  }
+  const entryPointFound = entryPointBodies.filter(([, b]) => b !== null);
+  for (let i = 1; i < entryPointFound.length; i++) {
+    if (entryPointFound[i][1] !== entryPointFound[0][1])
+      fail(`garden 9d: isInvokedDirectly() drifted between ${entryPointFound[0][0]} and ${entryPointFound[i][0]} — these are documented byte-identical copies (13 of 14 — publish-release-core.mjs is the documented reverse-direction exception, checked separately below); change ALL 13 together`);
+  }
+
+  for (const rel of [...ENTRY_POINT_FORWARD, ENTRY_POINT_REVERSE]) {
+    if (!fs.existsSync(path.join(root, rel))) continue; // missing files are reported elsewhere (each site is statically imported by its own test — a module-import crash; publish-release.mjs also has a dedicated §5h existence check)
+    if (!readHook(rel).includes(ENTRY_POINT_MARKER))
+      fail(`garden 9d: ${rel} lost the isInvokedDirectly() sync marker ("${ENTRY_POINT_MARKER} …") — keep the stamp naming the sibling copies (or update this guard if the cluster was consciously dissolved)`);
   }
 }
 

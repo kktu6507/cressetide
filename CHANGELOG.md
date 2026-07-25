@@ -4,6 +4,8 @@ All notable changes to Cressetide will be documented in this file.
 
 ## [Unreleased]
 
+- 新增 garden 9d 第 5 個群集：byte-comparison 守護 `c6ab7f7`（14 處 symlink-unsafe entry-point 修復）留下的 `isInvokedDirectly()` 共用邏輯——13 個正向站點（`doctor.mjs`／`map.mjs`／`ship.mjs`／vigil 全部 8 支 script／`eval/check-model-provenance.mjs`／`.github/scripts/publish-release.mjs`）逐位元組比對函式本體，任一站 drift 或無法擷取即 fail；第 14 個反向站點 `publish-release-core.mjs`（改用 `pathToFileURL`，函式本體本就不同）僅檢查同步標記是否存留。14 個站點比照既有 hooks-family 慣例，逐一補上 `isInvokedDirectly() kept in sync with the other 13 CLI entry points …` 註記（`publish-release-core.mjs` 額外三行說明其反向差異）；`extractSkillFn`（原 d4 區塊內部函式）同步提升為 9d 共用作用域供 d5 重用，d4 本身行為不變。此缺口原由 `c6ab7f7` 自身的四人 review panel 點名為 fast-follow（無同步註記、14 站無防漂移機制）。`test/validate-structure.test.mjs` 新增 3 組參數化測試（單點函式本體 drift、改名觸發「無法擷取」、遺失同步標記各一），皆經 red→green 驗證。
+
 ## [0.6.0] - 2026-07-24
 
 - `destructive-guard.js` 新增 6 條狹義 infra／data-store destructive-command patterns，涵蓋 IaC 整體拆除（`terraform`／`pulumi`／`cdk destroy`）、kubectl namespace 刪除（`kubectl delete namespace`／`ns`）、容器 volume 資料流失（`docker volume rm`／`prune`）、Postgres 刪庫（`dropdb`）、MySQL 刪庫（`mysqladmin drop`）、Redis 全庫清空（`redis-cli flushall`／`flushdb`）：沿用既有的 quote-stripped `unquoted` 字串與行首／分隔符錨定慣例，無 raw-vs-mask split，新舊 pattern 全部吃同一份 `unquoted`。`permissionDecisionReason` 同步擴充列舉，並新增一句框架說明：部分新涵蓋指令（kubectl、IaC、DB-admin CLI）可能觸及遠端或共享／production 系統，不只是本機。同步更新 `docs/runtime-contract.md`、三語 README（`README.md`／`README.zh-TW.md`／`README.ja.md`）與 `test/plan-gate-guards.test.mjs`／`test/hooks.test.mjs` 兩份測試檔。

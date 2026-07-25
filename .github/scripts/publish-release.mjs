@@ -461,6 +461,7 @@ export function publish(tag, options = {}) {
   return verifyOrRepairPublished(tag, built, options);
 }
 
+// isInvokedDirectly() kept in sync with the other 13 CLI entry points (documented copy — see garden hash guard)
 function isInvokedDirectly() {
   if (!process.argv[1]) return false;
   try {
