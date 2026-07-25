@@ -1,6 +1,6 @@
 # Shared Decision & Provenance Model（共同決策與溯源模型）
 
-- 狀態：**draft v1.7 — 單點修訂待 panel**（前一放行版本：approved v1.6）。本次唯一變更：§9 gate scope 的測試集合納入 deleted／retagged／moved（下游 test-provenance 掃描發現的上游缺口）；其餘條文一字未動。本文件為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念，可附加實作欄位但不得改變本文欄位語義。
+- 狀態：**draft v1.7 — 修訂待 panel**（前一放行版本：approved v1.6）。本次變更集中於 §9：測試集合納入移除／改綁／移動，並把綁定拆成 **pre-change／post-change 兩相**（前態只驗可解析與 snapshot integrity，現時效力只課於後態）；其餘章節未動。本文件為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念，可附加實作欄位但不得改變本文欄位語義。
 - 日期：2026-07-25
 - 範圍：只定義模型 —— 物件、權威、分流、狀態、不變量。scan 觸發與流程、檢查器實作、reviewer prompt 調整、hook 接線屬於下游 spec。
 - 背景：源自 demo1 webhook-dispatcher A/B 實驗的失敗分析 —— 23 個未申報假設以測試形式被釘死（oracle 不相容 23:1）、規格沉默區被單方面填補後用綠色測試鎖死。本模型同時治理「猜錯」（intent 層）與「猜了沒說」（provenance 層）。
@@ -380,25 +380,60 @@ ASSUM: active → revised(ASSUM-m) | superseded(REQ-m | DEC-m) | retired
 **Gate scope（brownfield，單值化）**：
 
 ```
-gate scope ＝ 本次 **added｜modified｜deleted｜retagged｜moved** 的測試
-             （v1.7：deleted／retagged／moved 為本版新增 —— 舊版只列「新增／修改」，
-              會使刪除或改標的測試落到 scope 外 observe-only；
-              此集合的機械導出見 test-provenance spec 的 ChangedTestInventory）
-           ∪ 該測試 **tagBefore 與 tagAfter** 直接引用的 clause 及其 sourceRef／basisRefs Source
-             （含 Transition 推導的 status 與 applicable；deleted／retagged 者的舊 clause
-              必須在 scope 內，否則「改標即脫逃」）
+gate scope ＝ **本次 provenance binding 有變動的測試**
+             （新增、移除、binding 改變、或位置移動 —— v1.7 擴充：舊版只列「新增／修改」，
+              會使移除或改綁的測試落到 scope 外 observe-only。此集合的機械導出方式
+              由下游 implementation spec 定義，本文不依賴其欄位名）
+           ∪ 這些測試的 **preChangeBinding 與 postChangeBinding** 所引用的 clause
+             及其 sourceRef／basisRefs Source（含 Transition 推導的 status 與 applicable）
+             —— 前態必須在 scope 內，否則「改綁即脫逃」
            ∪ 本次新增／修改的 clause／Source／Transition
            ∪ 所有 current terminal ref 指向本次 changed／transitioned／drifted／expired
              clause 的 DP（INV-4 影響閉包）
 ```
 
+### 綁定兩相（v1.7）—— 前態不受現時效力課責
+
+```
+binding ＝ { clauseRef, dpRef? } | EXPL | null
+preChangeBinding  ＝ 本次變更**前**的 binding（新增測試、未標記 legacy 皆為 null —— 合法可表達）
+postChangeBinding ＝ 本次變更**後**的 binding（測試已移除者為 null）
+```
+
+| 相 | 課予的條件 | 用途 |
+|---|---|---|
+| **preChangeBinding** | clause 與 Source **可解析** ∧ immutable snapshot integrity（Check A）成立。**不要求** active／mechanicallyApplicable／Source live-current／exception 未過期 | scope closure、語義審查輸入 |
+| **postChangeBinding**（非 null 且非 EXPL） | clause `active ∧ mechanicallyApplicable`（per-kind §2）∧ Source 檢查（Check A/B）∧ exception chain 有效（owner 相符、未過期） | 現時效力 |
+| **postChangeBinding == null**（測試已移除） | **無 post 驗證**；「tag 必須存在」不適用 | — |
+| **postChangeBinding == EXPL** | 不做 clause／Source resolution | — |
+
+**理由**：前態是歷史事實，合法修復正是「從失效的綁定移走」。若對前態課現時效力，模型會反過來擋掉它應該鼓勵的修復。
+
+**State matrix（合法性判定）**：
+
+| preChangeBinding | postChangeBinding | 判定 |
+|---|---|---|
+| inactive／superseded clause | active successor clause | **通過** —— 前態只驗可解析＋snapshot；後態驗全套 |
+| inactive clause | `EXPL` | **通過** —— 後態不做 clause resolution |
+| 失效 clause（stale tagged test 移除） | `null` | **通過** —— 無 post 驗證 |
+| `null`（未標記 legacy 移除） | `null` | **通過** —— pre 為 null 是合法狀態 |
+| clause A | clause B（同時移動位置） | 前態驗 A、後態驗 B，兩相獨立 |
+| 已過期 exception-backed REQ | 替換的 clause 或 `null` | **通過** —— 過期只擋後態，不擋前態 |
+| 任意 | active 但 **Source drift** 的 clause | **fail-closed**（後態課責） |
+
+### 檢查分層
+
 | 層 | 內容 | 失敗行為 | 範圍 |
 |---|---|---|---|
-| 結構 | tag 存在、ID 可解析到 clause；**引用的 clause 必須 active 且 mechanicallyApplicable**（per-kind，§2），exception-backed 時另驗 `scopeRulingRef` 可解析 ∧ record.by == {discipline: intent} ∧ **record.subjectRef == current DP**（任一失敗 fail-closed；否則 retag 至後繼或重新裁決）；**Transition 完整矩陣驗證**：對每筆本次新增 Transition 驗 §2 合法性表的 `subject × action × successor × authority` **全矩陣**，含 **witness binding**（§2：ackRef payload 與 authorityRef principal／subject 的綁定 —— review-ruling.by 與 subjectRef、user-answer.subjectRef == 該 DP、plan-gate target 與三欄一致 §7、constraint-revocation 與 ownerRef 相等）、ASSUM 的 governedBy／domain-transfer 治理；ackRef 依 External-record contract 解析 | fail-closed | gate scope |
-| 來源 | Source 存在、Check A、Check B；**contentKind=exception-grant 完整鏈**：resolve targetConstraintRef → target 必須是 authority=hard-constraint 的 REQ → grantAuthorityRef == target.ownerRef → 未過期，**任一失敗皆 fail-closed** | fail-closed | gate scope |
+| 結構（**postChangeBinding**） | binding 非 null 且非 EXPL 時：tag 存在、ID 可解析、clause **active ∧ mechanicallyApplicable**（per-kind，§2）；exception-backed 另驗 `scopeRulingRef` 可解析 ∧ `record.by == {discipline: intent}` ∧ **`record.subjectRef == current DP`**（否則 retag 至後繼或重新裁決）。binding 為 `null`（測試已移除）→ 本列不適用；`EXPL` → 不做 clause resolution | fail-closed | gate scope |
+| 結構（**preChangeBinding**） | 僅驗 clause／Source **可解析** ＋ snapshot integrity（Check A）。**不課** active／applicable／live-current／未過期 —— 前態是歷史事實，合法修復正是從失效綁定移走 | fail-closed（僅可解析性） | gate scope |
+| 結構（Transition） | 對每筆本次新增 Transition 驗 §2 合法性表的 `subject × action × successor × authority` **全矩陣**，含 **witness binding**（§2：ackRef payload 與 authorityRef principal／subject 的綁定 —— review-ruling.by 與 subjectRef、user-answer.subjectRef == 該 DP、plan-gate target 與三欄一致 §7、constraint-revocation 與 ownerRef 相等）、ASSUM 的 governedBy／domain-transfer 治理；ackRef 依 External-record contract 解析 | fail-closed | gate scope |
+| 來源 | Source 存在、Check A（一律）；**Check B 與 exception 現時效力只課於 postChangeBinding 所引用者**：`contentKind=exception-grant` 完整鏈 —— resolve targetConstraintRef → target 必須是 `authority=hard-constraint` 的 REQ → `grantAuthorityRef == target.ownerRef` → 未過期，任一失敗 fail-closed。preChangeBinding 所引用的 Source 只課 Check A | fail-closed | gate scope |
 | DP 完整性 | 對 gate scope 內每個 DP（含 INV-4 影響閉包）：terminal refs 三者互斥、status 與 terminal ref 型別一致（resolved↔REQ、decided↔DEC、assumed↔ASSUM）、terminal ref 指向 active ∧ applicable clause、有 applicable successor 時已全部 repoint、無 applicable successor 時已全部 reopen | fail-closed | gate scope |
 | 語義 | assertion 是否被 clause 蘊含、是否超出 tag 範圍 | test discipline 判斷 | 全部 |
 | Legacy | gate scope 以外的既有測試／條款 | 允許全量語義觀測；findings **observe-only**，不阻擋本次 run | scope 外 |
+
+**v1.7 驗收案例**（gate 契約層）：① inactive clause → active successor：通過；② inactive clause → `EXPL`：通過；③ 移除引用失效 clause 的 stale tagged test：通過；④ 移除未標記 legacy test（`preChangeBinding == null`）：通過；⑤ move ＋ 改綁：前後兩相各自驗證；⑥ 過期 exception-backed REQ → 替換或移除：通過；⑦ 後態 clause 有 Source drift：fail-closed。
 
 **Assurance boundary（明文）**：機械檢查止於 presence／resolution／digest／status／mechanicallyApplicable／ref 一致性比對。**scopeCovers 是 intent discipline 的語義判斷**（機械層驗 ruling 存在、intent principal、及 `record.subjectRef == current DP`；不判斷 scopeCovers 的語義真實性）；語義蘊含由 test discipline 審；ownerRef 匹配驗的是模型內 ref 相等，**不驗現實身分**（non-adversarial 邊界，同 demo1 receipt 的定位）。presence 級檢查不得宣稱為完整 provenance 保證（failure memory：presence-only check 曾被當 coverage 讀）。
 
