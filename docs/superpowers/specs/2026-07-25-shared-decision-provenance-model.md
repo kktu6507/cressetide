@@ -1,6 +1,6 @@
 # Shared Decision & Provenance Model（共同決策與溯源模型）
 
-- 狀態：**approved v1.6**（2026-07-25 正式 panel 放行）。本文件為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念，可附加實作欄位但不得改變本文欄位語義。
+- 狀態：**draft v1.7 — 單點修訂待 panel**（前一放行版本：approved v1.6）。本次唯一變更：§9 gate scope 的測試集合納入 deleted／retagged／moved（下游 test-provenance 掃描發現的上游缺口）；其餘條文一字未動。本文件為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念，可附加實作欄位但不得改變本文欄位語義。
 - 日期：2026-07-25
 - 範圍：只定義模型 —— 物件、權威、分流、狀態、不變量。scan 觸發與流程、檢查器實作、reviewer prompt 調整、hook 接線屬於下游 spec。
 - 背景：源自 demo1 webhook-dispatcher A/B 實驗的失敗分析 —— 23 個未申報假設以測試形式被釘死（oracle 不相容 23:1）、規格沉默區被單方面填補後用綠色測試鎖死。本模型同時治理「猜錯」（intent 層）與「猜了沒說」（provenance 層）。
@@ -380,9 +380,13 @@ ASSUM: active → revised(ASSUM-m) | superseded(REQ-m | DEC-m) | retired
 **Gate scope（brownfield，單值化）**：
 
 ```
-gate scope ＝ 本次新增／修改的測試
-           ∪ 該測試 @src 直接引用的 clause 及其 sourceRef／basisRefs Source
-             （含 Transition 推導的 status 與 applicable）
+gate scope ＝ 本次 **added｜modified｜deleted｜retagged｜moved** 的測試
+             （v1.7：deleted／retagged／moved 為本版新增 —— 舊版只列「新增／修改」，
+              會使刪除或改標的測試落到 scope 外 observe-only；
+              此集合的機械導出見 test-provenance spec 的 ChangedTestInventory）
+           ∪ 該測試 **tagBefore 與 tagAfter** 直接引用的 clause 及其 sourceRef／basisRefs Source
+             （含 Transition 推導的 status 與 applicable；deleted／retagged 者的舊 clause
+              必須在 scope 內，否則「改標即脫逃」）
            ∪ 本次新增／修改的 clause／Source／Transition
            ∪ 所有 current terminal ref 指向本次 changed／transitioned／drifted／expired
              clause 的 DP（INV-4 影響閉包）
