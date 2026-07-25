@@ -1,5 +1,4 @@
-// Tests for doctor.mjs's opt-in `--project`/`--cwd` flags (docs/superpowers/specs/2026-07-23-doctor-
-// project-health-design.md, docs/superpowers/specs/2026-07-25-doctor-ledger-health-design.md): three
+// Tests for doctor.mjs's opt-in `--project`/`--cwd` flags: three
 // additive checks (failure-memory-health, incident-journals, ledger-health) layered on top of the existing
 // 14 plugin-health checks, plus a KNOWN_FLAGS-guarded argument() fix covering the pre-existing
 // --plugin-root flag too. Sibling to, not an extension of, test/doctor-security.test.mjs (that file is
@@ -851,8 +850,7 @@ test("--project: an unexpected exception inside the project-health block is caug
   }
 });
 
-// --- ledger-health (--project's third check, docs/superpowers/specs/2026-07-25-doctor-ledger-health-
-// --- design.md): resolves .ctide/ledger/runs.jsonl and folds reconciliation debt (consolidateState,
+// --- ledger-health (--project's third check): resolves .ctide/ledger/runs.jsonl and folds reconciliation debt (consolidateState,
 // --- run-consolidate.mjs) and a commits-since-last-entry git fact into one check row. Six cases from the
 // --- design spec's own Testing/Error-handling sections: no ledger; clean (0 open); actionable via open>0
 // --- alone; actionable via alarm alone (proving the OR, never AND); commits-since count and short SHA;
