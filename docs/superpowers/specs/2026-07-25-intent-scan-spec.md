@@ -1,6 +1,6 @@
 # Intent-Scan Implementation Spec
 
-- 狀態：draft v1.0-rc —— 九輪修訂（deferred reopen 的 prior-terminal CAS 模式、DEC／ASSUM postcondition 機械化、驗收與 inputPacketDigest 契約對齊）；審閱中
+- 狀態：**approved v1.0**（2026-07-25 正式 panel 放行，經九輪修訂）。實作以本文為準；變更需重新過 panel。
 - 日期：2026-07-25
 - 上游：`2026-07-25-shared-decision-provenance-model.md`（**approved v1.6**）。本 spec 只落地其 intent-scan 半邊；不重新定義任何 shared concept，附加的實作欄位一律以「annotation」標示且不改變上游欄位語義。
 - 姊妹 spec：test-provenance（未寫）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
@@ -499,6 +499,11 @@ intentScan: {
 39. **Postcondition table**：`product-tradeoff` ruling 套用後，loader 驗得 `DP.layer == intent`、`classificationBasis == basis`、`classificationRulingRef == record`；已不被 current ref 引用的歷史 ruling 只驗 snapshot／digest 自洽。
 40. **Deferred reopen 可收斂**：active ASSUM 執行 `reopen-dp` 後 run 結束；**下一個 run** 取得既存 REQ，以 `replace-terminal(casMode=reopened-prior)` 通過 prior-terminal CAS 完成合法 Transition，舊 ASSUM 不再 active。`casMode=current-terminal` 在此情境（current 已為 null）必須拒寫。
 41. **DEC／ASSUM 綁定不可借用**：把一筆**其他 DP 的**合法 `technical-decision` ruling 配上新建 DEC → postcondition 比對（`DEC.derivedFrom`、`decision`、`alternatives`、`approvedBy`、`basisRefs`）失敗 → 拒寫。
+
+### Store-script 實作層 assertion（非模型規則，直接寫進 script tests）
+
+- `technical-decision.selectedAlternative` 必須存在於 input snapshot 的 `alternatives`。
+- `approved-provisional` 的 selected／rejected 必須**互異**且**皆來自** `alternatives`；另驗 `ASSUM.layer == DP.layer`。
 
 ## 14. 邊界與非目標
 
