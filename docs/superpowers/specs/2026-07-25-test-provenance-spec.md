@@ -1,7 +1,7 @@
 # Test-Provenance Implementation Spec
 
-- 狀態：draft v0.3 —— 二輪修訂（orchestrator 順序寫死、TestSemanticReviewBatch 逐 test 完整性、ruling freshness、DP qualifier canonical grammar、ASSUM delete／retag 納入候選、gate scope 依賴上游 v1.7）；審閱中
-- **上游依賴**：本文 §6／§8 依賴 shared model **v1.7**（gate scope 納入 deleted／retagged／moved）。v1.7 未過 panel 前本文不得放行。
+- 狀態：draft v0.4 —— 三輪修訂（ASSUM Transition 的治理 witness 路由、finding 陣列化、outcome→disposition gate、effective-oracle 依賴閉包）；審閱中
+- **上游依賴**：本文依賴 shared model **v1.7**（provenance binding 變動的測試納入 gate scope；binding 拆 pre／post 兩相，現時效力只課於後態）。**v1.7 未過 panel 前本文不得放行。**本文的 inventory 欄位對映上游語義：`tagBefore → preChangeBinding`、`tagAfter → postChangeBinding`。
 - 日期：2026-07-25
 - 上游：`2026-07-25-shared-decision-provenance-model.md`（**approved v1.6**）。不重新定義任何 shared concept；附加欄位一律標為 annotation 且不改上游語義。
 - 姊妹 spec：`2026-07-25-intent-scan-spec.md`（**approved v1.0**）。provenance store、store script 命令面、task manifest、Review Packet 接線由該 spec 定義，本文消費而不重定義。**Gate scope 直接消費 shared model §9 的 canonical 定義**（不在本文改寫或摘要）。
@@ -29,13 +29,19 @@ test("duplicate eventId 回傳同一個 promise，不會再送一次", …)
 tag        := clauseTag | "EXPL"
 clauseTag  := clauseRef [ "@" dpRef ]
 clauseRef  := ("REQ" | "DEC" | "ASSUM") "-" ULID
-dpRef      := "DP-" ULID          ← 僅 exception-backed REQ 使用（§7）
+dpRef      := "DP-" ULID
 解析結果一律表示為 { clauseRef, dpRef? } | { expl: true }
+
+解析層拒絕（fail-closed，不留到後續檢查）：
+  DEC-…@DP-…       ← DEC 不得帶 qualifier
+  ASSUM-…@DP-…     ← ASSUM 不得帶 qualifier
+  非 exception-backed 的 REQ-…@DP-…
+  即：`@dpRef` **僅** exception-backed REQ 合法（§7）
 ```
 - **每個測試恰好一個 tag**。需要兩個來源者**必須拆成兩個測試** —— 這正是攔截「掛名 AC、實際釘設計選擇」的結構。
 - **Parameterized／table-driven**：一個宣告一個 tag 涵蓋其全部 row；**但若不同 row 的期望來自不同 clause，必須拆成不同宣告** ——「一宣告一 tag」不使 mixed-source table 合法。
 - **exception-backed REQ 的限定形式**：`@src REQ-x@DP-y`（見 §7 Blocker 4 規則）。
-- helper、fixture、共用 setup 不需 tag。
+- helper、fixture、共用 setup 不需 tag，**但其變更必須經由 effective-oracle 依賴閉包反推到受影響測試**（§6）—— 否則改一個帶斷言的 helper 就能在 inventory 為空的情況下改變測試語義。
 
 **偵測單位是 framework adapter，不是 per-language regex**：
 
@@ -61,7 +67,29 @@ adapter = { adapterId, language, framework,
 零個命中 → fail-closed；多個命中且 precedence 無法唯一決定 → fail-closed
 ```
 
-**Test identity（`testRef`）**：`{ path, adapterId, structuralId }`。`structuralId` 由 adapter 定義（宣告在檔內的結構位置＋正規化名稱），**不得只用 declarationName** —— 同檔同名、generated／dynamic name、move+retag 都會碰撞。§6 的 inventory matching 必須 **one-to-one**；任何一對多或多對一 → **fail-closed**。
+**Test identity（`testRef`）**：`{ path, adapterId, structuralId }`。
+
+`structuralId` 由 adapter 定義為 **path-independent** 的檔內結構鍵（container chain ＋正規化宣告名稱），**不得只用 declarationName** —— 同檔同名、generated／dynamic name 都會碰撞。path 不入 `structuralId`，因此**單純搬檔仍保持 identity**（`status=moved`）。
+
+檔內結構重整（container 改名／嵌套改變）會使 `structuralId` 變動，此時：
+
+```
+matching 必須 one-to-one；任何一對多或多對一 → fail-closed
+無法唯一配對時，作者可在宣告上加明示穩定 ID（adapter 定義之 annotation）
+  → 該 ID 優先於推導的 structuralId
+仍無法唯一配對 → fail-closed（不得猜測，也不得降級成 added＋deleted）
+```
+
+**`inventoryDigest` 的 canonical encoding（不可只寫「同上游」）**：
+
+```
+entries 依 (path, structuralId) 的 Unicode code point 序排序
+每個 entry 的 object key 依 code point 排序
+bodyDigest 的 body span ＝ adapter 定義的宣告完整範圍
+  （含 decorator／attribute／attachmentRule 所涵蓋的前置區塊，不含前後空白行）
+body 正規化：UTF-8 無 BOM、LF、不 trim 內部空白
+inventoryDigest ＝ sha256(canonical JSON of entries[])
+```
 
 ## 3. 沉默即不斷言（減法規則）
 
@@ -113,7 +141,7 @@ adapter = { adapterId, language, framework,
 
 ```
 head 側存在 tag 指向該 criterion 的測試
-∧ 該 tag 的語義有效（§6 batch outcome == clean）
+∧ 該 tag 的語義有效（§6 batch 中該 entry 的 findings 為空）
 ∧ 現行 criterion → test mapping 承認它
 ∧ 具備 red→green 證據，或 verification-gate 允許的替代證據
 四者缺一 → 不算覆蓋
@@ -128,10 +156,11 @@ head 側存在 tag 指向該 criterion 的測試
             status ∈ { modified, deleted, retagged }
             （**含 deleted 與 retagged** —— 否則「改行為 → 刪測試／改標成 EXPL」可完全繞過）
 對每個候選，§6 batch 必須有 outcome：
-  outcome == assum-reading-change
-    → ASSUM-x 必須有本 run 的 revise／retire／supersede Transition（含 ackRef）
+  findings 含 assum-reading-change
+    → 依 §6 治理路由取得**符合 Transition matrix 的 witness**（非 test discipline 的 ruling）
+    → ASSUM-x 必須有本 run 的 revise／retire／supersede Transition（ackRef 為該治理 witness）
     → 缺 → fail-closed
-  outcome == clean（純搬檔／換 coverage／換層，選定讀法仍為 A）
+  findings 為空（純搬檔／換 coverage／換層，選定讀法仍為 A）
     → 不建 Transition
 ```
 
@@ -159,6 +188,19 @@ matching 規則（closed，依序；結果必須 **one-to-one**，任何歧義 f
 
 Inventory 是**機械導出**，不含語義判斷。
 
+**Effective-oracle 依賴閉包（否則間接變更完全隱形）** —— 測試的判準未必寫在宣告本體內：assertion-bearing helper、fixture／setup、snapshot／golden file、外部 parameterized expected-data，改動任一者都可能改變測試語義而宣告本體毫無變動。
+
+```
+adapter 必須提供 effectiveOracleDeps(decl) → [檔案／區段 ref]
+  涵蓋：被呼叫的 assertion helper、fixture／setup chain、
+        snapshot／golden 檔、外部 expected-data（table／fixture 檔）
+inventory 產生時：
+  上述任一 dep 於本次變更 → 受影響測試以 status=modified 進 inventory，
+  並將 dep digest 納入該 entry 的 bodyDigest 計算
+adapter 無法可靠歸屬的 assertion style（動態組裝、反射式斷言…）
+  → **fail-closed**，不得視為 inventory empty
+```
+
 ### `TestSemanticReviewBatch`（current task 一份；test discipline 的 typed 輸出）
 
 逐 finding 的設計無法區分「審過且乾淨」與「漏審」—— 改為 **batch＋完整性不變量**：
@@ -166,15 +208,22 @@ Inventory 是**機械導出**，不含語義判斷。
 ```
 taskId
 inventoryDigest             ← 綁定當下 inventory 全文
-results[]:
+results[]:                  ← 對 inventory entry 一對一
   testRef
   clauseRef?                ← EXPL entry **省略此欄**（上游：EXPL 無 clause）
   dpRef?                    ← exception-backed（§7）
-  outcome: clean | wrong-tag | missing-source | scope-violation | assum-reading-change
-  observedBaseBodyDigest?   ← reviewer 所見 base 側宣告本體
+  observedBaseBodyDigest?   ← reviewer 所見 base 側宣告本體（含 oracle deps）
   observedHeadBodyDigest?   ← 同上 head 側
   tagBefore, tagAfter
+  findings: Finding[]       ← **陣列**；`clean` ⇔ findings 為空
+    Finding:
+      kind: wrong-tag | missing-source | scope-violation | assum-reading-change
+      binding?: { clauseRef, dpRef? }   ← 該 finding 所涉綁定
+      evidence: 具體指認（斷言位置、超界的斷言、引不出的來源…）
+      disposition: unresolved | resolved   ← 見 §8 disposition 表
 ```
+
+**四個 reviewer 問題彼此獨立**，同一測試可能同時 wrong-tag、missing-source、scope-violation **並且**改變 ASSUM 讀法 —— 單一 enum 必然丟失其中幾項，故改為陣列。
 
 **不變量**：`results` 與 inventory `entries` **一對一且完全覆蓋**。缺任一 entry → 視同語義審查未完成 → **fail-closed**（reviewer 跑了但漏審四個測試，不得被讀成 reviewed-clean）。
 
@@ -195,12 +244,31 @@ tagBefore／tagAfter    == current inventory
 ```
 reviewer  → batch proposal（上列欄位，無 rulingRef）
 main thread → batch 落 per-run scratch
-            → 對 outcome == assum-reading-change 的項，**另建** review-ruling record
-              （by = {discipline: test}；subjectRef = 該 ASSUM **clause ref**，符合上游型別；
-               testRef 與 body digests 置於 ruling payload）
-              → 該 record 即 §5 Transition 的 ackRef witness
+            → 對含 assum-reading-change finding 的項，另建 review-ruling record
+              （by = {discipline: test}；subjectRef = 該 ASSUM clause ref；
+               testRef 與 body digests 置於 payload）
+              → **此 record 是 semantic evidence，不是治理授權**（見下）
 checker／arbiter 只消費 batch 與 ruling records，**不讀 reviewer 敘述**
 ```
+
+### ASSUM Transition 的治理 witness 路由（test discipline 無權授權）
+
+上游 Transition matrix 規定 ASSUM 的 revise／retire 須由該 ASSUM 的 `governedBy` principal 或 arbiter 授權；supersede → REQ 須 user。**test discipline 只能認定「讀法變了」，不能批准撤銷一個 `governedBy=security` 的假設。**
+
+```
+1. test-reviewer 的 assum-reading-change ruling ＝ **semantic evidence only**
+2. main thread 依該 ASSUM 的 governedBy 路由治理裁決：
+     revise／retire        → governedBy principal 或 arbiter
+     supersede → REQ       → user（plan 具名揭露 subject → successor，
+                             核准後鑄 target == subject 的 plan-gate witness）
+     supersede → DEC       → governedBy 或 arbiter，或**經正式 rerouting 的
+                             current review principal**（上游 domain transfer 規則，
+                             需 DP-bound review-ruling witness）
+3. 取得符合 matrix 的治理 witness 後，main thread 才寫 Transition
+4. 治理 witness 缺席 → Transition 不得建立 → §5 的存在性檢查 fail-closed
+```
+
+semantic evidence 與治理 witness 是**兩筆不同的 record**，前者不得充當後者的 `ackRef`。
 
 ## 7. exception-backed REQ 的 test → DP 綁定
 
@@ -247,17 +315,30 @@ checker 讀 `.ctide/provenance.json`（tracked）、scratch manifest、`ChangedT
 |---|---|---|
 | 結構（`REQ`／`DEC`／`ASSUM`） | tag 存在、grammar 合法（§2）、可解析到 clause、clause `active ∧ mechanicallyApplicable`（per-kind，上游 §2）；exception-backed 依 §7 綁定 DP 並驗五項；§5 的 ASSUM Transition 存在性 | **fail-closed** |
 | Batch 完整性與新鮮度 | `results` ↔ inventory entries 一對一完全覆蓋；`taskId`／`inventoryDigest`／各 body digest／tag 前後值重算相符（§6） | **fail-closed** |
+| **Finding disposition** | 每個 finding 依下表有對應處置且 `disposition == resolved`；**任一 `unresolved` → `status=fail`** | **fail-closed** |
 | 結構（`EXPL`） | **不做 clause／Source resolution** —— 只驗 tag 語法與必要-suite policy | fail-closed（僅語法／policy） |
 | 來源 | Source 存在、Check A、Check B（`driftMode=repo-file`）；`contentKind=exception-grant` **完整鏈**：resolve `targetConstraintRef` → target 必須是 `authority=hard-constraint` 的 REQ → `grantAuthorityRef == target.ownerRef` → 未過期 | **fail-closed** |
-| 語義 | 不做 —— 消費 §6 的 typed finding，其認定本身移交 test-reviewer（§9） | — |
+| 語義（認定本身） | 不做 —— 認定移交 test-reviewer（§9）；但其**結果的處置**由上一列機械強制 | — |
 | Legacy | gate scope 外：允許全量觀測，findings **observe-only** | fail-open |
+
+### Finding → disposition（closed；任一 unresolved 即 `--provenance` fail）
+
+| finding kind | 合法處置（達成後 `disposition=resolved`） |
+|---|---|
+| `wrong-tag` | retag 至正確 clause；或拆分；或恢復原斷言使既有 tag 重新成立 |
+| `missing-source` | 刪除該斷言；或縮小到既有 clause 支持的範圍；或先走 plan／DP routing 取得 REQ／ASSUM 後再引 |
+| `scope-violation` | 拆分成各自有來源的測試；或把超界斷言縮回 tag 範圍 |
+| `assum-reading-change` | 依 §6 路由取得治理 witness 後建立 revise／retire／supersede Transition |
+
+**沒有「已知悉但不處理」這個選項** —— fresh 且完整的 batch 只要含任一 `unresolved` finding，`--provenance` 即 `status=fail`，arbiter 不得 `READY`。v0.3 把語義列寫成「不做」，使含 `scope-violation` 的 batch 仍可能 pass，本版修正。
 
 **機械結果與阻擋層**（既有 `contract-check.mjs` 明寫 fail-open、git 錯誤回空集合、永遠 exit 0 —— 不可依賴其現行 exit code 表達 fail-closed）：
 
 ```
 新增 --provenance 模式：
   輸出 machine result { provenance: { status: pass|fail, violations[] } }
-  gate scope 內的結構／來源違規 → status=fail ∧ **exit code 非 0**
+  gate scope 內的結構／來源違規、batch 不完整或不新鮮、**任一 unresolved finding**
+    → status=fail ∧ **exit code 非 0**
 既有預設模式：exit-0 契約不變（向後相容，既有呼叫端不受影響）
 arbiter：執行 --provenance；status=fail → **不得 READY**（與 exit code 雙重把關）
 git 錯誤或無法判定 gate scope → status=fail（不得回空集合當作通過）
@@ -298,7 +379,9 @@ snapshot 寫入 scratch，於既有 verdict 後的**單一** run record 無條�
 testProvenance: {
   taggedTests: { REQ, DEC, ASSUM, EXPL },
   inventory: { added, modified, deleted, retagged, moved },
-  batchOutcomes: { clean, wrongTag, missingSource, scopeViolation, assumReadingChange },
+  findingKinds: { wrongTag, missingSource, scopeViolation, assumReadingChange },
+  cleanEntries: n,                // findings 為空的 entry 數
+  oracleDepTriggered: n,          // 因 effective-oracle 依賴而入 inventory 的測試數
   assumTransitions: n,
   adapterMisses: n,
   staleBatchRejections: n,
@@ -322,12 +405,14 @@ testProvenance: {
 | `cressetide/agents/arbiter.agent.md` | `test → source` 方向；執行並讀 `--provenance` 機械結果 |
 | `cressetide/skills/vigil/references/review-packet.md` | packet 帶 inventory 摘要與變更測試的 tag／clause |
 | `cressetide/skills/vigil/references/test-layer-boundaries.md` | 澄清：本 spec 管 tag 與來源，不改「哪一層」的判斷 |
+| `docs/runtime-contract.md` | tracked store 與 per-run scratch（inventory、batch）的 state-class 正式登記 |
+| `cressetide/skills/vigil/references/runtime-policy.md` | single-writer 邊界：reviewer propose／main thread persist，涵蓋 batch 與治理 witness |
 | `cressetide/skills/vigil/scripts/run-ledger.mjs` ＋ `references/run-ledger.md` | `testProvenance` 欄位 |
 
 ## 13. 驗收條件
 
 1. **HeaderBag 重演**：demo1 webhook 案例重跑，引用「plain-object response headers 以 `Object.entries()` 順序…」的測試在撰寫時即暴露 `plain` 修飾詞。
-2. **範圍違規可見**：`duplicate eventId` 測試含 `attempts: 0` 斷言 → batch outcome `scope-violation` → 要求拆分。
+2. **範圍違規可見且會擋**：`duplicate eventId` 測試含 `attempts: 0` 斷言 → finding `scope-violation`；未拆分（`disposition=unresolved`）時 `--provenance` **fail**，arbiter 不出 `READY`；拆分後通過。
 3. **無來源斷言不存在**：13 條 constructor error-type 測試引不出 clause → 不寫，或先經 plan gate 成為 REQ／ASSUM。
 4. **未標記即擋**：變更測試缺 `@src` → 結構層 fail-closed。
 5. **失效 clause 即擋**：`@src` 指向 superseded／retired／非 applicable clause → fail-closed。
@@ -356,6 +441,14 @@ testProvenance: {
 27. **Move + retag**：測試同時搬檔並改 tag → inventory 正確產出單一 entry（`status=moved`＋`tagBefore`≠`tagAfter`），不被拆成 added＋deleted。
 28. **Adapter 多重命中**：兩個 adapter 皆命中同一檔且 precedence 無法唯一決定 → fail-closed；零命中亦然。
 29. **順序正確**：`--provenance` 在 test-reviewer 產出並固化後才執行；在該步之前執行時，因 batch 不存在而 `status=fail`（證明它未沿用既有 pre-review 位置）。
+30. **治理授權分離**：`ASSUM.governedBy = security` 的假設讀法改變時，僅有 test discipline 的 semantic ruling **不足以**建立 Transition → fail-closed；取得 security（或 arbiter）的治理 witness 後才通過。`supersede → REQ` 需 user／plan-gate witness。
+31. **同時多問題不遺失**：一個測試同時 wrong-tag、missing-source、scope-violation 且改變 ASSUM 讀法 → batch 該 entry 的 `findings` 含四筆，各自需處置；只處理其中三筆 → 仍 fail。
+32. **未處置即擋**：batch fresh 且完整、但含一筆 `disposition=unresolved` 的 `scope-violation` → `--provenance` `status=fail`（v0.3 此情形會誤 pass）。
+33. **間接 oracle 變更被捕獲**：（i）修改帶斷言的 helper、（ii）修改 fixture／setup、（iii）更新 snapshot／golden 檔、（iv）改動外部 parameterized expected-data —— 四者皆使受影響測試以 `status=modified` 進 inventory 並需語義審查；宣告本體未動不構成豁免。
+34. **無法歸屬即擋**：adapter 無法可靠解析的 assertion style（動態組裝／反射式斷言）→ fail-closed，**不得**視為 inventory empty。
+35. **Grammar 解析層拒絕**：`DEC-x@DP-y`、`ASSUM-x@DP-y`、非 exception-backed 的 `REQ-x@DP-y` → 解析層即 fail-closed。
+36. **結構重整可救**：container 改名使 `structuralId` 變動且無法唯一配對 → fail-closed；加上明示穩定 ID 後配對成功。單純搬檔（僅 path 變）→ `status=moved`，identity 維持。
+37. **前態不被課現時效力**（上游 v1.7）：把測試從 inactive／superseded clause retag 到 active successor、或移除引用過期 exception-backed REQ 的測試 → **通過**，不因舊 binding 失效而被擋。
 
 ## 14. 邊界與非目標
 
