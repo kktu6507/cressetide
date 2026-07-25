@@ -394,17 +394,29 @@ gate scope ＝ **本次 provenance binding 有變動的測試**
 
 ### 綁定兩相（v1.7）—— 前態不受現時效力課責
 
+**existence 必須進型別** —— 只用 `null` 會把「測試已移除」與「測試還在、但把綁定拿掉了」混為一談，後者正是最該擋的逃逸路徑（拆掉 tag 即跳過 post 驗證）：
+
 ```
-binding ＝ { clauseRef, dpRef? } | EXPL | null
-preChangeBinding  ＝ 本次變更**前**的 binding（新增測試、未標記 legacy 皆為 null —— 合法可表達）
-postChangeBinding ＝ 本次變更**後**的 binding（測試已移除者為 null）
+binding   ＝ { clauseRef, dpRef? } | EXPL
+preState  ＝ { exists: false, binding: null }                 ← 本次新增的測試
+            | { exists: true,  binding: binding | null }      ← 既有測試；null ＝ 未標記 legacy
+postState ＝ { exists: false, binding: null }                 ← 測試已移除
+            | { exists: true,  binding: binding }             ← **不允許 null**
+
+preChangeBinding  ＝ preState.binding
+postChangeBinding ＝ postState.binding
+
+INV-B1：postChangeBinding == null  ⇔  post-state 測試不存在
+INV-B2：post-state 測試存在 ⇒ binding 必為 clause binding 或 EXPL
 ```
+
+**非對稱是刻意的**：`preState` 允許「存在且未標記」（brownfield legacy 合法）；`postState` 不允許 —— 一個落入 gate scope 的測試在變更後必須有綁定。連帶後果：**修改一個未標記的 legacy 測試會強制為它補上綁定**（既有 ratchet，非本版新增）。
 
 | 相 | 課予的條件 | 用途 |
 |---|---|---|
 | **preChangeBinding** | clause 與 Source **可解析** ∧ immutable snapshot integrity（Check A）成立。**不要求** active／mechanicallyApplicable／Source live-current／exception 未過期 | scope closure、語義審查輸入 |
 | **postChangeBinding**（非 null 且非 EXPL） | clause `active ∧ mechanicallyApplicable`（per-kind §2）∧ Source 檢查（Check A/B）∧ exception chain 有效（owner 相符、未過期） | 現時效力 |
-| **postChangeBinding == null**（測試已移除） | **無 post 驗證**；「tag 必須存在」不適用 | — |
+| **postState.exists == false**（測試已移除） | **無 post 驗證**；「tag 必須存在」不適用。判定依 `exists`，**不得**由 `binding == null` 反推（INV-B1／B2） | — |
 | **postChangeBinding == EXPL** | 不做 clause／Source resolution | — |
 
 **理由**：前態是歷史事實，合法修復正是「從失效的綁定移走」。若對前態課現時效力，模型會反過來擋掉它應該鼓勵的修復。
@@ -420,6 +432,8 @@ postChangeBinding ＝ 本次變更**後**的 binding（測試已移除者為 nul
 | clause A | clause B（同時移動位置） | 前態驗 A、後態驗 B，兩相獨立 |
 | 已過期 exception-backed REQ | 替換的 clause 或 `null` | **通過** —— 過期只擋後態，不擋前態 |
 | 任意 | active 但 **Source drift** 的 clause | **fail-closed**（後態課責） |
+| clause A | **測試仍存在但綁定被移除** | **fail-closed** —— `postState.exists == true` 時 binding 不得為 null（INV-B2）；不得被誤讀成「已移除」 |
+| clause A | clause A（**僅位置移動**） | **通過** —— identity 維持，前後同綁定 |
 
 ### 檢查分層
 
@@ -433,7 +447,7 @@ postChangeBinding ＝ 本次變更**後**的 binding（測試已移除者為 nul
 | 語義 | assertion 是否被 clause 蘊含、是否超出 tag 範圍 | test discipline 判斷 | 全部 |
 | Legacy | gate scope 以外的既有測試／條款 | 允許全量語義觀測；findings **observe-only**，不阻擋本次 run | scope 外 |
 
-**v1.7 驗收案例**（gate 契約層）：① inactive clause → active successor：通過；② inactive clause → `EXPL`：通過；③ 移除引用失效 clause 的 stale tagged test：通過；④ 移除未標記 legacy test（`preChangeBinding == null`）：通過；⑤ move ＋ 改綁：前後兩相各自驗證；⑥ 過期 exception-backed REQ → 替換或移除：通過；⑦ 後態 clause 有 Source drift：fail-closed。
+**v1.7 驗收案例**（gate 契約層）：① inactive clause → active successor：通過；② inactive clause → `EXPL`：通過；③ 移除引用失效 clause 的 stale tagged test：通過；④ 移除未標記 legacy test（`preState = {exists:true, binding:null}`）：通過；⑤ move ＋ 改綁：前後兩相各自驗證；⑥ 過期 exception-backed REQ → 替換或移除：通過；⑦ 後態 clause 有 Source drift：fail-closed；⑧ **move-only**（綁定 A→A、僅位置變動）：identity 維持，通過；⑨ **過期 exception 的 DP 收斂**：有 applicable successor → 所有受影響 DP repoint；無 → reopen（INV-4 影響閉包）；⑩ **malformed／dangling 原始 tag**（語法不合法、或 ID 解析不到任何 clause）：**在映射為 binding 之前** fail-closed —— 不得先當成 `binding == null` 再走 existence 分支，那會把語法錯誤誤讀成「測試不存在」。
 
 **Assurance boundary（明文）**：機械檢查止於 presence／resolution／digest／status／mechanicallyApplicable／ref 一致性比對。**scopeCovers 是 intent discipline 的語義判斷**（機械層驗 ruling 存在、intent principal、及 `record.subjectRef == current DP`；不判斷 scopeCovers 的語義真實性）；語義蘊含由 test discipline 審；ownerRef 匹配驗的是模型內 ref 相等，**不驗現實身分**（non-adversarial 邊界，同 demo1 receipt 的定位）。presence 級檢查不得宣稱為完整 provenance 保證（failure memory：presence-only check 曾被當 coverage 讀）。
 
