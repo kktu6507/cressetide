@@ -1,13 +1,13 @@
 # Intent-Scan Implementation Spec
 
-- 狀態：draft v0.1 — 審閱中
+- 狀態：draft v0.2 —— 一輪修訂（store 改 tracked、兩個 pre-implementation checkpoint、contract derivation、Stage B 執行者、Review Packet 接線）；審閱中
 - 日期：2026-07-25
-- 上游：`2026-07-25-shared-decision-provenance-model.md`（**approved v1.6**）。本 spec 只落地其 intent-scan 半邊；不重新定義任何 shared concept，附加的實作欄位以「annotation」標示且不改變上游欄位語義。
-- 姊妹 spec：test-provenance（未寫）。本文 §7 的 provenance store 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
+- 上游：`2026-07-25-shared-decision-provenance-model.md`（**approved v1.6**）。本 spec 只落地其 intent-scan 半邊；不重新定義任何 shared concept，附加的實作欄位一律以「annotation」標示且不改變上游欄位語義。
+- 姊妹 spec：test-provenance（未寫）。§8 的 provenance store 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
 
 ## 1. 目的與範圍
 
-把 shared model 的 DP 發現（七維度 scan）、分流（§5 routing）、Ask 批次與 plan gate 接線落到 CTide vigil 流程。**不含**：test tag 語法、contract-check 三層檢查、test-reviewer prompt（皆屬 test-provenance spec）。
+把 shared model 的 DP 發現（七維度 scan）、分流（§5 routing）、Ask 批次、post-approval 治理 checkpoint 與 plan gate 接線落到 CTide vigil 流程。**不含**：test tag 語法、contract-check 三層檢查、test-reviewer prompt（皆屬 test-provenance spec）。
 
 ## 2. 觸發
 
@@ -20,12 +20,14 @@
 
 ## 3. 執行位置（不新增 agent、不新增 pass、plan 階段 read-only）
 
-| 風險 | 執行者 | 位置 |
-|---|---|---|
-| 低／中 | orchestrator inline | `SKILL.md` plan 步驟的 acceptance-criteria 定義處，起草 contract 時順做 |
-| 高／correctness-critical | navigator | 併入 `plan-grounding.md` Stage B 的 assumption register —— 同一次完成，不重複執行 |
+**scan 的執行者一律是 main thread** —— 它需要 AskUserQuestion、需求整合與 plan gate，這些職責 navigator 不能擁有（`plan-grounding.md` 既有分工）：
 
-與 `hooks/plan-gate.js` 相容：scan 在 plan 階段**只產出內容**（進 plan 文本與 gate 揭露）；provenance store 的實體寫入發生在 **post-approval 第一步**，由 implementer 與 `.ctide/output/contract.md` 同批落檔（沿用 `task-contract.md` 既有的 read/write split）。
+| 風險 | Stage A（code grounding） | intent scan |
+|---|---|---|
+| 低／中 | 不執行（既有規則不變） | main thread inline，於 `SKILL.md` plan 步驟起草 contract 時順做 |
+| 高／correctness-critical | **navigator**（既有 Stage A，不變） | **main thread** 於既有 **Stage B** 執行 —— Stage A 的 grounding 輸出作為 scan 的證據輸入；同一次完成，不重複 |
+
+與 `hooks/plan-gate.js` 相容：plan 階段 scan **只產出內容**（進 plan 文本與 gate 揭露）；一切 store 寫入發生在 post-approval（§6），與 `task-contract.md` 既有 read/write split 一致。
 
 ## 4. 七維度協定
 
@@ -42,43 +44,92 @@ closed set（上游 §2 DP.dimension）。逐維度先判 applicable，applicabl
 | time | 有時間性規則嗎 | 時區？計費錨點？冷卻／配額／期限？ |
 | OTHER | — | 僅在**已有具體 distinguishingScenario** 時可用；ledger 記 `otherDimensionUsed`，事後進 taxonomy review |
 
-每個 DP 依上游 §2 建檔門檻：寫不出 distinguishingScenario 即不建。建檔時完成 layer 分類（decision-authority 判準；無法判別 → intent discipline，操作上＝orchestrator 於 plan 揭露並在 review 階段由 intent-reviewer 確認分類）。
+每個 DP 依上游建檔門檻：寫不出 distinguishingScenario 即不建。建檔時完成 layer 分類（decision-authority 判準；無法判別 → intent discipline —— 於 §6 checkpoint 由 intent-reviewer 確認）。
 
-## 5. Routing 執行（上游 §5 逐 DP；本節只定義流程對應）
+## 5. Routing 執行（上游 §5 逐 DP；本節定義流程對應）
 
-- **row 1**（binding clause 可裁）：cite 進 plan；exception-backed 需 scopeCovers ruling —— plan 階段由 intent discipline 出 ruling 的操作對應為：**review 階段 intent-reviewer 補 ruling record**，plan 先揭露暫判（annotation `pendingScopeRuling`），arbiter 於 gate 檢查 ruling 已落檔。
-- **rows 2／4／6**（Ask）：全部收進 **ask batch**。`AskUserQuestion` 每輪 ≤4 題：header=dimension、每個選項附一行 scenario 摘要、alternatives 為選項；超過 4 題分輪 —— ask-tagged **一題不減**（`plan-grounding.md` 既有規則）。回答 → `user-answer` record（subjectRef=該 DP）→ 新 REQ（authority=approved-requirement；成為驗收條件者 kind=acceptance，其餘 specification）。使用者明示延後 → ASSUM＋user-ack。
-- **row 5**（safeToAssume）：建 ASSUM，`governedBy` 依上游固定映射（intent→`{discipline: intent}`；implementation→`{discipline: code}`）。
-- **row 7**（¬safe ∧ implementation）：plan 階段**沒有 reviewer ruling 可用** —— DP 保持 `open` 並加 annotation `pendingReview: <discipline>`；plan 揭露該 fork 與**暫用候選**，實作依暫用候選進行；review 階段由對應 discipline reviewer 裁決 → ruling record → DEC（或推翻 → repair loop）。**arbiter gate**：存在未裁決的 `pendingReview` DP → 不得 `READY`（納入既有 panel-gap 邏輯）。
+- **row 1（一般 binding clause）**：cite 進 plan。
+- **row 1（exception-backed REQ）**：**沒有 DP-bound scope ruling 之前，scopeCovers 不成立、clause 不 applicable、不得走 row 1** —— plan 階段標 annotation `pendingScopeRuling`，處置依 §6 checkpoint；ruling 不成立則回 row 2。
+- **rows 2／4／6（Ask）**：全部收進 **ask batch**。`AskUserQuestion` 每輪 ≤4 題：header=dimension、選項=alternatives（各附一行 scenario 摘要）；超過 4 題分輪，ask-tagged **一題不減**（`plan-grounding.md` 既有規則）。回答與明示延後的固化見 §6。
+- **row 5（safeToAssume）**：ASSUM，`governedBy` 依上游固定映射（intent→`{discipline: intent}`；implementation→`{discipline: code}`）。
+- **row 7（¬safe ∧ implementation）**：plan 階段標 annotation `pendingReview: <discipline>`，揭露候選方案；**在該 DP 的 outcome 落檔且 active ∧ applicable 之前，受影響實作不得開始**（§6 checkpoint）。
 
-## 6. Plan gate 接線
+## 6. Post-approval 治理 checkpoint（conditional pre-implementation）
 
-ExitPlanMode 的 plan 內容新增 intent-scan 節，含：維度 applicability 一覽、resolved citations、ask 批次的問答結果（或待問清單）、ASSUM 清單（text＋alternative）、`pendingReview` 清單與暫用候選、或 `no-applicable-dimension`／`skipped-no-observable-change` 宣告。核准即上游 §2 所稱 plan-gate 核准紀錄的建立時點（`plan-gate` record 於 post-approval 落檔）。
+ExitPlanMode 核准後、受影響實作開始前，依序執行。**這不是新增 scan pass** —— row 7 的技術裁決與 exception 的 scope ruling 本來就是上游要求，只是在真的產生此類 DP 時提前到實作前：
 
-## 7. 產物：provenance store（shared infrastructure）
-
-`.ctide/provenance.json` —— **durable、跨 run 存活**（DP 沿用需要），gitignored（與 `.ctide/output` 同策略）。已知取捨：不 commit ⇒ 跨 clone 沿用遺失，屬 v1 揭露的限制；重建由 reopen triggers（來源 drift 等）自然吸收。
-
-```json
-{
-  "provenanceVersion": 1,
-  "sources": [],        // S-n，append-only
-  "clauses": [],        // REQ-n | DEC-n | ASSUM-n，append-only、immutable
-  "transitions": [],    // T-n，append-only
-  "records": [],        // R-n（user-answer | review-ruling | plan-gate | …），append-only
-  "decisionPoints": []  // DP-n，可變工作紀錄（上游 §2）
-}
+```
+1. main thread 落檔：Sources（需求固化）、DPs、plan-gate record、
+   ask 回答 → user-answer records → REQ clauses、
+   明示延後 → ASSUM＋user-ack、row 5 → ASSUM clauses
+2. 存在 pendingScopeRuling DP：
+   spawn intent-reviewer（read-only）→ 回傳 scope ruling proposal
+   → main thread 固化 review-ruling record
+   → 機械驗 by == {discipline: intent} ∧ subjectRef == current DP
+   → 成立：row 1 resolved；不成立：回 row 2（Ask）
+3. 存在 pendingReview DP：
+   spawn 對應 discipline reviewer（read-only）→ 回傳 ruling proposal
+   → main thread 固化 review-ruling record ＋ DEC／ASSUM／REQ ＋ Transition
+   → outcome active ∧ applicable 後，該 DP 的受影響實作才解鎖
+4. 與任何 pending DP 無關的工作可先進行，不阻擋整個 task
 ```
 
-- id 鑄造：per-prefix 單調遞增，跨 run 續號；run 內外皆唯一。
-- 上游 minimum payloads 逐欄照收；**annotation 欄位**（`pendingReview`、`pendingScopeRuling`）為本 spec 附加，不改上游語義。
-- `contract.md` machine block 相容性：`acceptanceCriteria[]` 由 `REQ(kind=acceptance)` **導出**、`assumptions[]` 由 ASSUM 導出（保留既有欄位形狀，附 id 對映）—— 既有 `contract-check.mjs` 不需本 spec 改動；正式三層檢查屬 test-provenance spec。
+- **Single-writer 邊界**：reviewer 只回傳 proposal，**一切 store 寫入由 main thread 執行**（與既有 reviewer read-only 工具邊界一致）；arbiter 在 gate 讀 store 驗 terminal state（不是驗 reviewer 的口頭輸出）。
+- **受影響範圍判定**（哪些檔案／區域屬於某 DP 的「受影響實作」）是語義判斷 —— main thread 判、plan 揭露；誠實列入 assurance boundary。
+- arbiter gate 仍為最後防線：任何 pending annotation 未清 → 不得 `READY`；但 checkpoint 的目的正是讓它幾乎永遠不需要出手。
 
-## 8. 沿用與 reopen
+## 7. Plan gate 接線
 
-scan 開始前先讀 store：同一 DP（scenario 語義相同）已有 active 且 applicable 的 outcome 且無 reopen trigger → **沿用 cite，不重問**（上游 §8）。reopen 依 closed trigger list，重入記 `reopenedBy`；intent fork 重入重經 plan-gate routing（僅在仍無 binding 裁決時才 ask）。DP 同一性判定（「同一個 DP」）是語義判斷 —— 由 orchestrator 判、plan 揭露沿用清單，使用者可推翻；不做機械 scenario 比對（誠實列為 assurance boundary）。
+ExitPlanMode 的 plan 內容新增 intent-scan 節，含：維度 applicability 一覽、resolved citations、ask 待問清單（或已得回答）、ASSUM 清單（text＋alternative）、`pendingReview`／`pendingScopeRuling` 清單與候選、沿用清單（§9）、或 `no-applicable-dimension`／`skipped-no-observable-change` 宣告。核准即上游所稱 plan-gate 核准的發生時點；record 於 §6 步驟 1 落檔。
 
-## 9. Run ledger 觀測（非 gate）
+## 8. 產物：provenance store（shared infrastructure）
+
+依既有 runtime contract 的三分（committed semantic state／untracked episodic／per-run scratch）：
+
+| 檔案 | 分類 | 內容 |
+|---|---|---|
+| `.ctide/provenance.json` | **tracked canonical semantic state（committed）** | sources／clauses／transitions／records／DPs —— 測試 `@src` 引用鏈的全部對象，**與引用它們的程式／測試一起提交**；fresh clone／CI 必須能解析完整 chain |
+| `.ctide/output/pending-governance.json` | per-run scratch（untracked） | `pendingReview`／`pendingScopeRuling`／`currentTaskRef` 等 annotation —— 不進 Git |
+| ledger | 既有分類不變 | 觀測 telemetry（§10） |
+
+- **ID 鑄造：branch-safe opaque id** —— `<PREFIX>-<ULID>`（如 `REQ-01J9XKQ…`），全 prefix 適用；上游的「n」讀作 opaque suffix，非全 repo 整數序號。append-only sections ＋ opaque id ⇒ 平行 branch 合併無 collision，衝突僅剩相鄰行 append，解法＝聯集。
+- 上游 minimum payloads 逐欄照收。
+
+**Contract derivation（`contract-check.mjs` 零修改的前提）**：
+
+- annotation `taskRef`：§6 步驟 1 為本 task 鑄造 taskId（ULID），stamp 在本 task 建立的 DP／clause／record 上；`currentTaskRef` 存於 pending-governance scratch。
+- annotation `REQ.acceptance: { behaviorChanging, verification }`：REQ(kind=acceptance) 必附 —— 補齊既有 `acceptanceCriteria[]` 需要的欄位。
+- 導出規則：
+
+```
+acceptanceCriteria = currentTaskRef 可達的 active REQ(kind=acceptance)
+                     → { id, text, behaviorChanging, verification }
+assumptions        = currentTaskRef 可達的 active ASSUM
+                     → { id, text, alternative, basis }
+可達 ＝ taskRef == currentTaskRef 建立的 clause
+     ∪ 本 task DP 的 resolvedBy 所 cite 的 clause
+```
+
+- **非-intent AC 不消失**：intent scan 被 skip（或 no-applicable-dimension）的 task，其 plan-approved acceptance criteria **一律仍建立 REQ(kind=acceptance)**，sourceRef 指向固化後的需求 Source（需求固化本來就是上游要求）。統一走 REQ 使 test-provenance 的 `@src` 解析對所有 task 一致。
+
+## 9. 沿用與 reopen
+
+scan 開始前先讀 tracked store：同一 DP（scenario 語義相同）已有 active 且 applicable 的 outcome 且無 reopen trigger → **必須沿用 cite，不重問**（上游 §8）；store tracked 後跨 clone 沿用成立，v0.1 的「跨 clone 遺失」限制**撤銷**。reopen 依 closed trigger list，重入記 `reopenedBy`；intent fork 重入重經 plan-gate routing。DP 同一性判定是語義判斷 —— main thread 判、plan 揭露沿用清單、使用者可推翻；機械層不宣稱。
+
+## 10. Review Packet 與 arbiter 接線
+
+reviewer 不依賴完整 thread history。`references/review-packet.md` 增列 packet 必帶：
+
+```
+provenance store path（.ctide/provenance.json）
+currentTaskRef
+本 task 相關的 DP／clause／record id 清單
+pending governance items（pendingReview／pendingScopeRuling 現況）
+```
+
+Writer 協定（與 §6 一致）：**reviewer 產生 ruling proposal → main thread 固化 ruling／DEC／Transition → arbiter 讀 store 驗 terminal state**。arbiter 檢查項：pending 清零、INV-1..4、terminal ref active ∧ applicable。
+
+## 11. Run ledger 觀測（非 gate）
 
 scan 完成即 append（**流程副作用，不綁報告格式 sentinel** —— failmem 教訓）：
 
@@ -86,38 +137,44 @@ scan 完成即 append（**流程副作用，不綁報告格式 sentinel** ——
 intentScan: {
   outcome: completed | no-applicable-dimension | skipped-no-observable-change,
   dpCounts: { byLayer, byStatus, byDiscoveredAt, reopened },
-  askCount, assumeCount, pendingReviewCount,
+  askCount, assumeCount, pendingReviewCount, pendingScopeRulingCount,
   otherDimensionUsed: bool
 }
 ```
 
 觀測值永不當 gate；數字上升可能是偵測變好（上游 §10）。
 
-## 10. 修改檔案清單
+## 12. 修改檔案清單
 
 | 檔案 | 變更 |
 |---|---|
-| `cressetide/skills/vigil/references/intent-scan.md` | **新增** —— 本 spec §2–§6、§8 的協定本體（plugin 慣用英文撰寫） |
-| `cressetide/skills/vigil/references/reviewer-selection.md` | Plan Grounding 段落：intent-scan 子集全域化（觸發與風險脫鉤）；Stage A 維持 high-risk gated |
-| `cressetide/skills/vigil/references/plan-grounding.md` | Stage B assumption register 改為引用 intent-scan 協定（高風險＝完整版，含 Stage A grounding） |
-| `cressetide/skills/vigil/SKILL.md` | plan 步驟：非高風險 inline scan 指令＋plan gate 揭露節 |
-| `cressetide/skills/vigil/references/task-contract.md` | machine block 與 provenance store 的導出對映 |
-| `cressetide/agents/navigator.agent.md` | Stage B 內含 scan（高風險路徑） |
-| `cressetide/agents/intent-reviewer.agent.md` | layer 分類 fallback 確認、scopeCovers ruling、ask 擬題職責 |
-| `cressetide/agents/arbiter.agent.md` | `pendingReview`／`pendingScopeRuling` 未落檔 → 不得 READY |
+| `cressetide/skills/vigil/references/intent-scan.md` | **新增** —— §2–§7、§9 協定本體（plugin 慣用英文撰寫） |
+| `cressetide/skills/vigil/references/reviewer-selection.md` | Plan Grounding 段落：intent-scan 觸發與風險脫鉤；Stage A 維持 high-risk gated |
+| `cressetide/skills/vigil/references/plan-grounding.md` | Stage B（main thread）改為引用 intent-scan 協定；Stage A（navigator）不變 |
+| `cressetide/skills/vigil/SKILL.md` | plan 步驟：inline scan 指令＋plan gate 揭露節；post-approval checkpoint 順序 |
+| `cressetide/skills/vigil/references/task-contract.md` | machine block 由 store 導出的對映（§8） |
+| `cressetide/skills/vigil/references/review-packet.md` | packet 增列 §10 四項 |
+| `cressetide/skills/vigil/references/runtime-policy.md` | `.ctide/provenance.json` 登記為 committed semantic state；pending-governance 登記為 per-run scratch |
+| `cressetide/agents/navigator.agent.md` | 澄清：navigator 僅 Stage A，不執行 scan |
+| `cressetide/agents/intent-reviewer.agent.md` | layer 分類確認、scope ruling proposal、ask 擬題職責 |
+| `cressetide/agents/arbiter.agent.md` | pending 清零＋INV 檢查＋terminal state 讀 store 驗證 |
 | `cressetide/skills/vigil/scripts/run-ledger.mjs` ＋ `references/run-ledger.md` | `intentScan` 欄位 |
 
-## 11. 驗收條件
+## 13. 驗收條件
 
-1. **綠地訂閱**（人類一句話需求）：money／lifecycle／actor／external／failure／time 維度產出 material forks，全部進 ask batch；零 caller 不影響任何判定。
-2. **顯示名稱可編輯**：唯一性、歷史顯示 → Ask；冷卻期 → `ASSUM(layer=intent, governedBy=intent)`；既有 code 只作為證據揭露。
-3. **demo1 webhook TASK.md**：輸出 `no-applicable-dimension` 或全 resolved；**不標 trivial**；Risk Matrix 仍獨立判 correctness-critical、panel 不縮。
-4. 機械可驗：ledger 出現 `intentScan` entry（不依賴報告 sentinel）；plan 文本含 scan 節；store 落檔於 post-approval 且 plan 階段零寫入（plan-gate.js 無觸發）。
-5. `pendingReview` DP 未裁決時 arbiter 不出 `READY`（以一個 row-7 案例演練）。
+1. **綠地訂閱**（人類一句話需求）：money／lifecycle／actor／external／failure／time 產出 material forks，全數進 ask batch；零 caller 不影響判定。
+2. **顯示名稱可編輯**：唯一性、歷史顯示 → Ask；冷卻期 → `ASSUM(layer=intent, governedBy=intent)`；既有 code 只作證據揭露。
+3. **demo1 webhook TASK.md**：`no-applicable-dimension` 或全 resolved；不標 trivial；Risk Matrix 獨立判 correctness-critical、panel 不縮。
+4. **Fresh clone 完整性**：已提交 `@src REQ-<id>` 的測試在 fresh clone 可解析完整 provenance chain（clause → source → record）。
+5. **Row 7 checkpoint**：`pendingReview` 未裁決時，**受影響實作尚未開始**（非僅 arbiter 不出 READY）；無關工作可先行。
+6. **Exception checkpoint**：exception-backed REQ 無 DP-bound ruling 時不得走 row 1、不得開始相關實作；ruling 不成立回 row 2。
+7. **高風險路徑**：Stage A=navigator、scan=main thread（Stage B），scan 不重複執行。
+8. **Contract derivation**：只取 currentTaskRef 可達的 active clause；`behaviorChanging`／`verification` 保留；歷史任務條款不滲入本次 contract；skip-scan task 的 AC 仍以 REQ 形式存在。
+9. 機械可驗：ledger 出現 `intentScan` entry（不依賴報告 sentinel）；plan 文本含 scan 節；plan 階段零 store 寫入（plan-gate.js 無觸發）。
 
-## 12. 邊界與非目標
+## 14. 邊界與非目標
 
 - 不動 test tag／contract-check／test-reviewer（test-provenance spec）。
 - 不削弱 `verification-gate.md` 紅→綠。
-- 不新增 reviewer pass；scan 是 plan 階段的枚舉紀律，不是新 agent。
-- DP 同一性（§8）與 layer 初判是語義判斷，機械層不宣稱 —— assurance boundary 與上游一致。
+- 不新增 reviewer pass；§6 checkpoint 是上游本就要求的裁決提前，僅在產生對應 DP 時執行。
+- 語義判斷明文不宣稱機械保證：DP 同一性（§9）、受影響範圍判定（§6）、layer 初判（§4）。
