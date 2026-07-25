@@ -1,6 +1,6 @@
 # Shared Decision & Provenance Model（共同決策與溯源模型）
 
-- 狀態：draft v1.6 — 六輪修訂（scopeRulingRef 的 DP 綁定、subjectRef 移除 T-n dead arm）；審閱中。核准後成為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念。
+- 狀態：**approved v1.6**（2026-07-25 正式 panel 放行）。本文件為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念，可附加實作欄位但不得改變本文欄位語義。
 - 日期：2026-07-25
 - 範圍：只定義模型 —— 物件、權威、分流、狀態、不變量。scan 觸發與流程、檢查器實作、reviewer prompt 調整、hook 接線屬於下游 spec。
 - 背景：源自 demo1 webhook-dispatcher A/B 實驗的失敗分析 —— 23 個未申報假設以測試形式被釘死（oracle 不相容 23:1）、規格沉默區被單方面填補後用綠色測試鎖死。本模型同時治理「猜錯」（intent 層）與「猜了沒說」（provenance 層）。
@@ -396,7 +396,7 @@ gate scope ＝ 本次新增／修改的測試
 | 語義 | assertion 是否被 clause 蘊含、是否超出 tag 範圍 | test discipline 判斷 | 全部 |
 | Legacy | gate scope 以外的既有測試／條款 | 允許全量語義觀測；findings **observe-only**，不阻擋本次 run | scope 外 |
 
-**Assurance boundary（明文）**：機械檢查止於 presence／resolution／digest／status／mechanicallyApplicable／ref 一致性比對。**scopeCovers 是 intent discipline 的語義判斷**（機械層只驗 ruling 存在與 discipline）；語義蘊含由 test discipline 審；ownerRef 匹配驗的是模型內 ref 相等，**不驗現實身分**（non-adversarial 邊界，同 demo1 receipt 的定位）。presence 級檢查不得宣稱為完整 provenance 保證（failure memory：presence-only check 曾被當 coverage 讀）。
+**Assurance boundary（明文）**：機械檢查止於 presence／resolution／digest／status／mechanicallyApplicable／ref 一致性比對。**scopeCovers 是 intent discipline 的語義判斷**（機械層驗 ruling 存在、intent principal、及 `record.subjectRef == current DP`；不判斷 scopeCovers 的語義真實性）；語義蘊含由 test discipline 審；ownerRef 匹配驗的是模型內 ref 相等，**不驗現實身分**（non-adversarial 邊界，同 demo1 receipt 的定位）。presence 級檢查不得宣稱為完整 provenance 保證（failure memory：presence-only check 曾被當 coverage 讀）。
 
 ## 10. 觀測（非 gate）
 
