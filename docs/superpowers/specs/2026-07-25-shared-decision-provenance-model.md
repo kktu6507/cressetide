@@ -1,6 +1,6 @@
 # Shared Decision & Provenance Model（共同決策與溯源模型）
 
-- 狀態：draft v1.3 — 三輪修訂（constraint ownership、applicable 拆分、原子協定泛化、proposal interface、reopen routing）；審閱中。核准後成為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念。
+- 狀態：draft v1.4 — 四輪修訂（external-record contract、ReviewerPrincipal、gate scope DP closure、完整 Transition matrix、per-kind applicability）；審閱中。核准後成為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念。
 - 日期：2026-07-25
 - 範圍：只定義模型 —— 物件、權威、分流、狀態、不變量。scan 觸發與流程、檢查器實作、reviewer prompt 調整、hook 接線屬於下游 spec。
 - 背景：源自 demo1 webhook-dispatcher A/B 實驗的失敗分析 —— 23 個未申報假設以測試形式被釘死（oracle 不相容 23:1）、規格沉默區被單方面填補後用綠色測試鎖死。本模型同時治理「猜錯」（intent 層）與「猜了沒說」（provenance 層）。
@@ -22,9 +22,12 @@
 
 ```
 discipline ∈ { security | architecture | code | test | operability | ui-ux | intent }
+
+ReviewerPrincipal ＝ { kind: discipline, discipline: 上列 enum }
+                  | { kind: arbiter }
 ```
 
-shared model 只使用 discipline，不綁 agent 名稱；下游 spec 負責映射到具體 reviewer。`intent` discipline 擁有 requirement-fidelity 與產品語義判斷：layer 分類 fallback、ASSUM(intent) 治理、row 2／4／6 的 Ask 擬題。
+`DEC.approvedBy`、`ASSUM.governedBy`、Transition 權威、row 7 與 rerun routing **全部共用 `ReviewerPrincipal`** —— arbiter-owned outcome 因此可直接寫進 schema。shared model 只使用 discipline／principal，不綁 agent 名稱；下游 spec 負責映射到具體 reviewer。`intent` discipline 擁有 requirement-fidelity 與產品語義判斷：layer 分類 fallback、ASSUM(intent) 治理、row 2／4／6 的 Ask 擬題。
 
 治理順序（供 Transition 權威判定）：同 discipline 互為同級；**arbiter** 為跨 discipline 的最終裁決者，視為較高。
 
@@ -83,7 +86,7 @@ derivedFrom: DP-n
 decision:    選定方案
 alternatives: [...]
 basisRefs:   [S-n | observational refs | review ruling]
-approvedBy:  discipline（§1；arbiter 亦可）
+approvedBy:  ReviewerPrincipal（§1）
 ```
 
 ### Clause：ASSUM（immutable）
@@ -97,9 +100,10 @@ alternative: 被否決讀法（必填）
 basis:       選擇依據
 basisRefs:   [S-n | observational refs]（row 6 明示延後時含 user answer snapshot）
 scenario:    distinguishingScenario（intent 層必填）
-governedBy:  discipline —— 治理此假設的權威：
-             row 7 產生 → 繼承審查它的 discipline
-             row 5 產生 → 固定映射：layer=intent → intent；layer=implementation → code
+governedBy:  ReviewerPrincipal —— 治理此假設的權威：
+             row 7 產生 → 繼承審查它的 principal（可為 arbiter）
+             row 5 產生 → 固定映射：layer=intent → {discipline: intent}；
+                          layer=implementation → {discipline: code}
 ```
 
 ### Transition（append-only event log —— 生命週期的唯一真相）
@@ -111,11 +115,12 @@ action:    revise | supersede | retire
 successor: clause ref（retire 無後繼 → ∅）
 authorityRef:
   kind:       user | discipline | arbiter | source-authority
-  discipline: §1 enum（kind=discipline 必填）
-  ref:        stable record id（kind=source-authority 時指向 constraint owner record，無 discipline）
-ackRef:
-  kind: user-answer | review-ruling | plan-gate | exception-grant | constraint-revocation
-  ref:  stable record id
+  discipline: §1 enum（kind=discipline 必填；kind∈{discipline, arbiter} 的組合即 ReviewerPrincipal，
+              與 DEC.approvedBy／ASSUM.governedBy 同型別）
+  ref:        stable record id（依 External-record contract 解析；
+              kind=source-authority 時指向 constraint owner record，無 discipline）
+ackRef:     RecordRef（kind: user-answer | review-ruling | plan-gate | exception-grant |
+            constraint-revocation；依 External-record contract 解析）
 compatibility:（僅 subject=REQ ∧ action=supersede，必填）impact 陳述 ＋ disposition（§7）
 ```
 
@@ -129,8 +134,8 @@ compatibility:（僅 subject=REQ ∧ action=supersede，必填）impact 陳述 �
 | REQ（**hard-constraint**） | retire | kind=source-authority ∧ **匹配該 REQ 的 ownerRef** | ackRef.kind=constraint-revocation，撤回文件固化為 Source；user／discipline／arbiter 不可冒充 |
 | REQ | revise | **不存在** —— REQ 語義變更一律走 supersede | |
 | DEC | supersede / retire | 同 discipline 或 arbiter | successor=REQ 時為 kind=user（產品裁決） |
-| ASSUM | revise / retire | 修訂者（工程端即可），ackRef 必附具名理由 | revision-allowed 本義 |
-| ASSUM | supersede | successor=REQ → kind=user；successor=DEC → 該 discipline | 升級收斂 |
+| ASSUM | revise / retire | **governedBy 的同一 principal，或 arbiter**；ackRef 必附具名理由 | 防止他 discipline 撤銷 security／operability 治理的暫定假設 |
+| ASSUM | supersede | successor=REQ → kind=user；successor=DEC → governedBy 同一 principal 或 arbiter（＝該 DEC.approvedBy） | 升級收斂；替換＝撤銷＋新立，適用同一治理保護 |
 
 - Transition 僅在 subject 當時為 active 時有效；**每個 clause 至多一個生效 Transition**（單終態）。
 - `authorityRef` 與 `ackRef` 為每筆 Transition 必填，且必須**可解析**（§9 結構層治理驗證）。
@@ -141,13 +146,42 @@ compatibility:（僅 subject=REQ ∧ action=supersede，必填）impact 陳述 �
 status(c)       ＝ active（無生效 Transition）| revised | superseded | retired（依生效 Transition.action）
 revisedBy(c)    ＝ T.successor where T.subject=c ∧ action=revise
 supersededBy(c) ＝ T.successor where T.subject=c ∧ action=supersede
-mechanicallyApplicable(c) ＝ status=active
-                          ∧ 來源檢查通過（§9 Check A/B）
-                          ∧（exception-backed 時：未過期 ∧ targetConstraintRef 可解析）
-scopeCovers(c, DP)        ＝ intent discipline 的語義判斷 —— 僅 exception-backed 時非空，
-                            ruling 以 DP.scopeRulingRef 留存 stable ref；其餘 clause 恆真
+mechanicallyApplicable(c) —— per kind（下游不得自行猜測「來源檢查」對 DEC／ASSUM 的意思）：
+  REQ:   status=active ∧ 來源檢查通過（§9 Check A/B）
+         ∧（exception-backed 時：未過期 ∧ targetConstraintRef 可解析）
+  DEC:   status=active ∧ approvedBy principal 合法（§1 型別）∧ derivedFrom DP 可解析
+  ASSUM: status=active ∧ governedBy principal 合法 ∧ derivedFrom DP 可解析
+         ∧ basisRefs 中的 S-n／RecordRef 可解析（純觀察性描述不解析）
+scopeCovers(c, DP)        ＝ intent discipline 的語義判斷 —— 僅 exception-backed REQ 非恆真，
+                            ruling 以 DP.scopeRulingRef 留存 stable ref
 applicable(c, DP)         ＝ mechanicallyApplicable(c) ∧ scopeCovers(c, DP)
 ```
+
+### External-record contract（RecordRef —— 跨物件共用的可解析引用）
+
+```
+RecordRef:
+  kind: source-authority | user-answer | review-ruling | plan-gate |
+        constraint-revocation | exception-grant
+  ref:  stable record id（R-n；kind=exception-grant 例外 —— 解析到 Source namespace 的 S-n）
+```
+
+- **Namespace 與 lookup 邊界**：R-n 與 S-n／REQ-n／DEC-n／ASSUM-n／DP-n／T-n 同屬本 repo 的 provenance store；解析只在 store 內進行。repo 外的 URL／文件不是可解析 ref —— 需先固化為 Source。實體儲存與 id 鑄造由下游 spec 定，**payload 要求不得更動**。
+- **Immutability**：record 一經建立即 immutable；更正＝新 record，既有 ref 不改指。
+- **「可解析」成功條件**：record 存在於 store ∧ kind 與期待相符 ∧ minimum payload 齊備。
+- **Minimum payloads**（全部隱含 immutable）：
+
+```
+source-authority:      recordId, authorityIdentity（constraint 擁有者身分，固化描述）
+user-answer:           recordId, subjectRef（DP-n）, answer
+review-ruling:         recordId, by: ReviewerPrincipal, ruling
+plan-gate:             recordId, target, impact, disposition, approvedBy（user）
+constraint-revocation: recordId, targetConstraintRef, authorityRef（source-authority，
+                       匹配 ownerRef）, effectiveAt
+exception-grant:       ＝ Source（contentKind=exception-grant；payload 見 Source schema）
+```
+
+- **Non-adversarial boundary**：checker 證明 record 存在、型別正確、ref 相等，不證明現實身分。
 
 ### DecisionPoint（流程工作紀錄，可變）
 
@@ -166,7 +200,7 @@ status:              open | asked | resolved | decided | assumed
 resolvedBy:          REQ-n（status=resolved 必填，INV-2）
 decidedBy:           DEC-n（status=decided 必填，INV-2）
 assumedAs:           ASSUM-n（status=assumed 必填，INV-1）
-scopeRulingRef:      {kind: review-ruling, discipline: intent, ref}
+scopeRulingRef:      RecordRef(kind=review-ruling)，其 record.by 必須＝{discipline: intent}
                      （resolvedBy 為 exception-backed REQ 時必填 —— scopeCovers 的可追溯憑據）
 ```
 
@@ -263,7 +297,9 @@ open ─ row7 ───→ 技術審查 ─┬─ resolved(REQ)
 │                          ├─ decided(decidedBy: DEC-n)
 │                          ├─ assumed(assumedAs: ASSUM-n)
 │                          └─ asked（產品取捨）
-assumed | decided ─ reopen trigger ─→ open 重入分流
+resolved | assumed | decided ─ terminal outcome 失效（INV-4）─→
+    successor applicable ? repoint（維持對應 status） : open（reopen）
+assumed | decided ─ 其他 reopen trigger ─→ open 重入分流
     （intent fork 重入必須重經 plan-gate routing 揭露；
       僅在仍未被 binding source 裁決時才進 row 2/4/6 asked ——
       新 applicable binding authority 已裁決時直接 row 1 resolved）
@@ -327,12 +363,15 @@ gate scope ＝ 本次新增／修改的測試
            ∪ 該測試 @src 直接引用的 clause 及其 sourceRef／basisRefs Source
              （含 Transition 推導的 status 與 applicable）
            ∪ 本次新增／修改的 clause／Source／Transition
+           ∪ 所有 current terminal ref 指向本次 changed／transitioned／drifted／expired
+             clause 的 DP（INV-4 影響閉包）
 ```
 
 | 層 | 內容 | 失敗行為 | 範圍 |
 |---|---|---|---|
-| 結構 | tag 存在、ID 可解析到 clause；**引用的 clause 必須 active 且 mechanicallyApplicable**，exception-backed 時另驗 `scopeRulingRef` 存在 ∧ discipline=intent ∧ ref 可解析（否則 retag 至後繼或重新裁決）；**Transition 治理驗證**：authorityRef／ackRef 的 ref 可解析、discipline 相符、DEC supersede 滿足同 discipline 或 arbiter、plan-gate proposal record 可解析出 target／impact／disposition 且與 Transition 完全一致（§7）、exception-grant.grantAuthorityRef 與 constraint-revocation 的 authorityRef 匹配 ownerRef | fail-closed | gate scope |
+| 結構 | tag 存在、ID 可解析到 clause；**引用的 clause 必須 active 且 mechanicallyApplicable**（per-kind，§2），exception-backed 時另驗 `scopeRulingRef` 存在 ∧ record.by={discipline: intent} ∧ ref 可解析（否則 retag 至後繼或重新裁決）；**Transition 完整矩陣驗證**：對每筆本次新增 Transition 驗 §2 合法性表的 `subject × action × successor × authority` **全矩陣**（含 ASSUM 的 governedBy 治理、hard-constraint 的 ownerRef 匹配、plan-gate proposal 三欄與 Transition 完全一致 §7）；authorityRef／ackRef 依 External-record contract 解析 | fail-closed | gate scope |
 | 來源 | Source 存在、Check A、Check B、exception expiry／targetConstraintRef | fail-closed | gate scope |
+| DP 完整性 | 對 gate scope 內每個 DP（含 INV-4 影響閉包）：terminal refs 三者互斥、status 與 terminal ref 型別一致（resolved↔REQ、decided↔DEC、assumed↔ASSUM）、terminal ref 指向 active ∧ applicable clause、有 applicable successor 時已全部 repoint、無 applicable successor 時已全部 reopen | fail-closed | gate scope |
 | 語義 | assertion 是否被 clause 蘊含、是否超出 tag 範圍 | test discipline 判斷 | 全部 |
 | Legacy | gate scope 以外的既有測試／條款 | 允許全量語義觀測；findings **observe-only**，不阻擋本次 run | scope 外 |
 
