@@ -1,6 +1,6 @@
 # Shared Decision & Provenance Model（共同決策與溯源模型）
 
-- 狀態：draft v1.2 — 二輪 FIX REQUIRED 修訂；審閱中。核准後成為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念。
+- 狀態：draft v1.3 — 三輪修訂（constraint ownership、applicable 拆分、原子協定泛化、proposal interface、reopen routing）；審閱中。核准後成為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念。
 - 日期：2026-07-25
 - 範圍：只定義模型 —— 物件、權威、分流、狀態、不變量。scan 觸發與流程、檢查器實作、reviewer prompt 調整、hook 接線屬於下游 spec。
 - 背景：源自 demo1 webhook-dispatcher A/B 實驗的失敗分析 —— 23 個未申報假設以測試形式被釘死（oracle 不相容 23:1）、規格沉默區被單方面填補後用綠色測試鎖死。本模型同時治理「猜錯」（intent 層）與「猜了沒說」（provenance 層）。
@@ -33,7 +33,7 @@ shared model 只使用 discipline，不綁 agent 名稱；下游 spec 負責映�
 三種 binding authority 是分類，不構成自動覆蓋鏈：
 
 - **hard-constraint**（法規、組織安全政策、外部契約）：不可被 requirement supersede；普通 user 亦**不可 retire**（見 §2 Transition 有效性表 —— 僅 constraint owner 的撤回憑據可使其失效）。與 requirement 衝突且無涵蓋本 DP 的有效例外 → Ask「改需求或取得有效例外」，不給選邊。
-  **有效例外**：固化為 `exception-grant` Source（§2，必含 targetConstraintRef、grantAuthorityRef、scope、expiry），再建立 REQ 引用之。**存在 active、未過期、scope 涵蓋本 DP、且 targetConstraintRef 指向該 constraint 的 exception-backed REQ 時 → 本 DP 於例外 scope 內走 row 1 resolved，不重複 Ask；scope 外仍由原 hard-constraint 裁決。**例外只建立 scoped exception，永不退役原 constraint。
+  **有效例外**：固化為 `exception-grant` Source（§2，必含 targetConstraintRef、grantAuthorityRef、scope、expiry；grantAuthorityRef **必須匹配該 constraint 的 `ownerRef`**，§9 機械驗證 —— user／discipline／arbiter 不可冒充 constraint owner），再建立 REQ 引用之。**存在 applicable（§2：mechanicallyApplicable ∧ scopeCovers）的 exception-backed REQ 時 → 本 DP 於例外 scope 內走 row 1 resolved，不重複 Ask；scope 外仍由原 hard-constraint 裁決。**例外只建立 scoped exception，永不退役原 constraint。
 - **approved-requirement vs compatibility**：無自動優先。無 plan-gate 核准的 supersede proposal → Ask（row 4）；持完整 proposal（§7）→ row 3。
 - **同層衝突** → Ask。
 - **observational**（code、tests、callers、資料現況）：只是證據，單向升高風險，永不裁決 intent。升格 binding 的唯一路徑：plan gate 核准的 compatibility clause，一次一條。
@@ -54,7 +54,8 @@ excerpt:      被引用的 anchored 內文（存於模型內，即 immutable sna
 digest:       sha256(canonical(excerpt))，§9
 --- contentKind=exception-grant 必含 ---
 targetConstraintRef:  REQ-n（authority=hard-constraint，被例外的對象）
-grantAuthorityRef:    typed ref（constraint owner，結構同 Transition.authorityRef）
+grantAuthorityRef:    {kind: source-authority, ref} —— 必須與 targetConstraintRef 所指 REQ 的
+                      ownerRef 相等（§9 機械比對；user／discipline／arbiter 不可冒充）
 scope:                適用範圍
 expiry:               期限
 ```
@@ -69,6 +70,8 @@ authority:  hard-constraint | approved-requirement | compatibility
 kind:       acceptance | specification
 text:       條款內文
 sourceRef:  S-n（＋locator）
+ownerRef:   {kind: source-authority, ref}（authority=hard-constraint 必填 ——
+            constraint 的現實擁有者：監管機關、外部契約方、組織政策擁有者，固化為 stable record）
 ```
 
 ### Clause：DEC（immutable）
@@ -107,9 +110,9 @@ subject:   REQ-n | DEC-n | ASSUM-n
 action:    revise | supersede | retire
 successor: clause ref（retire 無後繼 → ∅）
 authorityRef:
-  kind:       user | discipline | arbiter
+  kind:       user | discipline | arbiter | source-authority
   discipline: §1 enum（kind=discipline 必填）
-  ref:        stable record id
+  ref:        stable record id（kind=source-authority 時指向 constraint owner record，無 discipline）
 ackRef:
   kind: user-answer | review-ruling | plan-gate | exception-grant | constraint-revocation
   ref:  stable record id
@@ -123,7 +126,7 @@ compatibility:（僅 subject=REQ ∧ action=supersede，必填）impact 陳述 �
 | REQ（approved-requirement／compatibility） | supersede | kind=user（經 plan gate） | §7 proposal 必備；ackRef.kind=plan-gate |
 | REQ（approved-requirement／compatibility） | retire | kind=user 授權撤除 | |
 | REQ（**hard-constraint**） | supersede | **禁止** | 只能走 scoped exception（§1） |
-| REQ（**hard-constraint**） | retire | constraint owner 撤回憑據 | ackRef.kind=constraint-revocation，撤回文件固化為 Source |
+| REQ（**hard-constraint**） | retire | kind=source-authority ∧ **匹配該 REQ 的 ownerRef** | ackRef.kind=constraint-revocation，撤回文件固化為 Source；user／discipline／arbiter 不可冒充 |
 | REQ | revise | **不存在** —— REQ 語義變更一律走 supersede | |
 | DEC | supersede / retire | 同 discipline 或 arbiter | successor=REQ 時為 kind=user（產品裁決） |
 | ASSUM | revise / retire | 修訂者（工程端即可），ackRef 必附具名理由 | revision-allowed 本義 |
@@ -138,9 +141,12 @@ compatibility:（僅 subject=REQ ∧ action=supersede，必填）impact 陳述 �
 status(c)       ＝ active（無生效 Transition）| revised | superseded | retired（依生效 Transition.action）
 revisedBy(c)    ＝ T.successor where T.subject=c ∧ action=revise
 supersededBy(c) ＝ T.successor where T.subject=c ∧ action=supersede
-applicable(c, DP) ＝ status=active
-                  ∧ 來源檢查未 drift-failure（§9）
-                  ∧（exception-backed 時：未過期 ∧ scope 涵蓋本 DP）
+mechanicallyApplicable(c) ＝ status=active
+                          ∧ 來源檢查通過（§9 Check A/B）
+                          ∧（exception-backed 時：未過期 ∧ targetConstraintRef 可解析）
+scopeCovers(c, DP)        ＝ intent discipline 的語義判斷 —— 僅 exception-backed 時非空，
+                            ruling 以 DP.scopeRulingRef 留存 stable ref；其餘 clause 恆真
+applicable(c, DP)         ＝ mechanicallyApplicable(c) ∧ scopeCovers(c, DP)
 ```
 
 ### DecisionPoint（流程工作紀錄，可變）
@@ -160,6 +166,8 @@ status:              open | asked | resolved | decided | assumed
 resolvedBy:          REQ-n（status=resolved 必填，INV-2）
 decidedBy:           DEC-n（status=decided 必填，INV-2）
 assumedAs:           ASSUM-n（status=assumed 必填，INV-1）
+scopeRulingRef:      {kind: review-ruling, discipline: intent, ref}
+                     （resolvedBy 為 exception-backed REQ 時必填 —— scopeCovers 的可追溯憑據）
 ```
 
 ## 3. layer 判準（decision authority）
@@ -191,7 +199,7 @@ materiality 是衍生值：`materialReasons[]` ＝ 失敗的 conjunct 清單；�
 
 | # | 前提 | 路由 | 產物 |
 |---|---|---|---|
-| 1 | 有適用 active 且 **applicable** binding clause 且無衝突（含字面規則；含 scope 涵蓋本 DP 的 exception-backed REQ） | resolved | cite REQ-n |
+| 1 | 有適用 active 且 **applicable** binding clause 且無衝突（含字面規則；exception-backed REQ 需 scopeCovers ruling，記入 DP.scopeRulingRef） | resolved | cite REQ-n |
 | 2 | 衝突涉 hard-constraint，**且無涵蓋本 DP 的有效例外** | Ask「改需求／取得例外」（不給選邊） | 回答 → 新 REQ，或 exception-grant Source＋引用它的 REQ（此後同類 DP 於 scope 內走 row 1） |
 | 3 | requirement vs compatibility，**已有 plan-gate 核准的 supersede proposal**（§7：具名 target＋impact＋disposition 完整） | 執行 supersede＋揭露 | 建立新 REQ＋supersede Transition（完成後即 effective supersede）；舊 clause 轉 superseded（derived） |
 | 4 | 其他 clause 衝突（同層；或 proposal 不完整） | Ask | 回答 → proposal 核准／需求修訂 → 新 REQ |
@@ -235,6 +243,8 @@ effective supersede（post-state）＝ 依 proposal 執行的 Transition(action=
     compatibility block 抄錄 proposal 內容
 ```
 
+- **Proposal record 是 typed external interface**（不新增模型物件）：`ackRef(kind=plan-gate)` 指向的紀錄必須可解析出 target／impact／disposition 三欄，且與 Transition 的 `subject`／`compatibility` block **完全一致**（§9 機械比對）。只驗「存在」不足 —— 否則任何不相關的 plan-gate 核准都能被拿來當授權。
+
 - 不存在「較新所以自動覆蓋」。
 - disposition 全覆蓋且必填 —— 沉默永不代表無影響：零 dependents → `no-affected-dependents`；有 dependents 但不破壞 → `backward-compatible`；major 版本 → `version-boundary`；破壞且明示接受 → `accepted-breaking`。
 - hard-constraint 不可被 supersede；只能取得 scoped exception（§1）或由 constraint owner 撤回（§2 有效性表）。
@@ -253,7 +263,10 @@ open ─ row7 ───→ 技術審查 ─┬─ resolved(REQ)
 │                          ├─ decided(decidedBy: DEC-n)
 │                          ├─ assumed(assumedAs: ASSUM-n)
 │                          └─ asked（產品取捨）
-assumed | decided ─ reopen trigger ─→ open 重入分流（intent fork 重入必經 asked）
+assumed | decided ─ reopen trigger ─→ open 重入分流
+    （intent fork 重入必須重經 plan-gate routing 揭露；
+      僅在仍未被 binding source 裁決時才進 row 2/4/6 asked ——
+      新 applicable binding authority 已裁決時直接 row 1 resolved）
 assumed ─ 使用者裁決 → resolved；原 ASSUM 經 Transition(supersede, successor=REQ-m)
 decided ─ 產品裁決 → resolved；原 DEC 經 Transition(supersede, successor=REQ-m)
 ```
@@ -269,12 +282,15 @@ decided ─ 產品裁決 → resolved；原 DEC 經 Transition(supersede, succes
 terminal clause 失效且無後繼（INV-4）  新 applicable binding authority 出現
 ```
 
-**Reopen 產生新結果時，原子執行：**
+**Terminal clause 替換（含 row 3 的 REQ supersede、reopen 產生新結果、ASSUM 修訂）一律原子執行：**
 
 ```
-1. 對舊 DEC／ASSUM 建立 supersede／retire Transition
-2. 建立新 clause
-3. 更新 DP terminal ref 與 status
+1. 建立 successor clause（先建 —— Transition 永不指向尚不存在的 successor）
+2. 對舊 terminal clause（REQ | DEC | ASSUM）建立 supersede／revise／retire Transition
+3. 原子更新所有引用 subject 的 DP：
+   - successor applicable → repoint 並設定對應 status
+     （successor 為 REQ → resolved；DEC → decided；ASSUM → assumed）
+   - 無後繼，或 successor 不 applicable → reopen（§8 trigger）
 ```
 
 **Clause 生命週期**（全部經 Transition，§2 有效性表；status 為 derived）：
@@ -315,12 +331,12 @@ gate scope ＝ 本次新增／修改的測試
 
 | 層 | 內容 | 失敗行為 | 範圍 |
 |---|---|---|---|
-| 結構 | tag 存在、ID 可解析到 clause；**引用的 clause 必須 active 且 applicable**（否則 retag 至後繼或重新裁決）；**Transition 治理驗證**：authorityRef／ackRef 的 ref 可解析、discipline 相符、DEC supersede 滿足同 discipline 或 arbiter、user／plan-gate 授權紀錄確實存在 | fail-closed | gate scope |
+| 結構 | tag 存在、ID 可解析到 clause；**引用的 clause 必須 active 且 mechanicallyApplicable**，exception-backed 時另驗 `scopeRulingRef` 存在 ∧ discipline=intent ∧ ref 可解析（否則 retag 至後繼或重新裁決）；**Transition 治理驗證**：authorityRef／ackRef 的 ref 可解析、discipline 相符、DEC supersede 滿足同 discipline 或 arbiter、plan-gate proposal record 可解析出 target／impact／disposition 且與 Transition 完全一致（§7）、exception-grant.grantAuthorityRef 與 constraint-revocation 的 authorityRef 匹配 ownerRef | fail-closed | gate scope |
 | 來源 | Source 存在、Check A、Check B、exception expiry／targetConstraintRef | fail-closed | gate scope |
 | 語義 | assertion 是否被 clause 蘊含、是否超出 tag 範圍 | test discipline 判斷 | 全部 |
 | Legacy | gate scope 以外的既有測試／條款 | 允許全量語義觀測；findings **observe-only**，不阻擋本次 run | scope 外 |
 
-**Assurance boundary（明文）**：機械檢查止於 presence／resolution／digest／status／applicable；語義蘊含由 test discipline 審。presence 級檢查不得宣稱為完整 provenance 保證（failure memory：presence-only check 曾被當 coverage 讀）。
+**Assurance boundary（明文）**：機械檢查止於 presence／resolution／digest／status／mechanicallyApplicable／ref 一致性比對。**scopeCovers 是 intent discipline 的語義判斷**（機械層只驗 ruling 存在與 discipline）；語義蘊含由 test discipline 審；ownerRef 匹配驗的是模型內 ref 相等，**不驗現實身分**（non-adversarial 邊界，同 demo1 receipt 的定位）。presence 級檢查不得宣稱為完整 provenance 保證（failure memory：presence-only check 曾被當 coverage 讀）。
 
 ## 10. 觀測（非 gate）
 
