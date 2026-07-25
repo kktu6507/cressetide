@@ -21,6 +21,18 @@ import { fileURLToPath } from "node:url";
 // source in diagnose(), never a process crash.
 const VIGIL_RETRIEVE_MODULE = "../../vigil/scripts/failure-retrieve.mjs";
 const VIGIL_CONSOLIDATE_MODULE = "../../vigil/scripts/failure-consolidate.mjs";
+// The --project ledger-health check (below, alongside the two checks above) reuses vigil's run-ledger
+// stack via the same lazy-import discipline: runsLedgerPath/readRunsLedger (run-ledger.mjs),
+// consolidateState (run-consolidate.mjs), runRecords (run-reconcile.mjs). VIGIL_RUN_CONSOLIDATE_MODULE is
+// DELIBERATELY a different constant from VIGIL_CONSOLIDATE_MODULE just above, not a reuse of it: that
+// constant points at failure-consolidate.mjs (FAILURE_MEMORY.md entries -- consolidationReport /
+// tagRecurrenceCandidates / readLedger); this one points at run-consolidate.mjs (the run ledger --
+// consolidateState / formatDigest / readLedgerTailCapped). Two same-genre-but-unrelated "consolidate"
+// scripts with disjoint export lists, confirmed by reading both files' real exports directly rather than
+// assumed from the similar filenames.
+const VIGIL_LEDGER_MODULE = "../../vigil/scripts/run-ledger.mjs";
+const VIGIL_RUN_CONSOLIDATE_MODULE = "../../vigil/scripts/run-consolidate.mjs";
+const VIGIL_RECONCILE_MODULE = "../../vigil/scripts/run-reconcile.mjs";
 
 const expectedHooks = [
   "plan-gate.js", "destructive-guard.js", "contract-guard.js",
@@ -429,6 +441,114 @@ function checkIncidentJournals(cwd, checks, now) {
   return { actionable: true };
 }
 
+// git log <head>..HEAD --oneline against `cwd`, counting output lines -- the one genuinely new fact
+// checkLedgerHealth (below) adds beyond what run-consolidate.mjs/run-reconcile.mjs already compute.
+// Explicit argv array via spawnSync, never a shell string and never execFileSync/execSync: a real
+// FAILURE_MEMORY.md lesson (2026-07-19, "cwd-scoped execFileSync('git', ...) in a fail-open script leaks
+// the failing child's raw stderr to the caller unless stdio is piped") empirically confirmed spawnSync
+// captures a failing child's stdout/stderr into its own result object by default -- unlike
+// execFileSync/execSync, which inherit stderr to the parent unless stdio is explicitly piped -- so no
+// explicit stdio option is needed here, matching .github/scripts/validate-structure-core.mjs:487
+// (`spawnSync("git", [...], { cwd, encoding: "utf8" })`, no stdio option at all either) -- NOT map.mjs's/
+// ship.mjs's own git() helpers, which explicitly DO set `stdio: ["ignore", "pipe", "pipe"]` and so would
+// illustrate the opposite of this claim. A non-zero exit or spawn error (the last recorded head not
+// resolving in the current git history -- rebase, squash, or a ledger carried over from a different clone
+// -- cwd not a git repository, or git itself unavailable) degrades to a disclosed limitation phrase; this
+// never throws and never reports fail for what is, from this check's own read-only perspective, an
+// ordinary condition.
+function commitsSinceLastEntry(cwd, head) {
+  const NOT_FOUND = "cannot compare — last entry's head not found in history";
+  // `head` is read back from .ctide/ledger/runs.jsonl, not a caller-supplied flag -- run-ledger.mjs's
+  // appendRun always populates it from `git rev-parse HEAD` (a real SHA), so in the ordinary case it is
+  // already hex-only. But this check treats it as untrusted on-disk data, not as a trusted invariant: it
+  // used to be interpolated straight into git log's argv unguarded (`${head}..HEAD`), and a crafted head
+  // shaped like a flag (e.g. "--output=pwned") reaches git as an OPTION rather than a revision range --
+  // empirically reproduced (`git log "--output=pwned..HEAD" --oneline` exits 0 and writes a file named
+  // "pwned"). A real git SHA can never start with "-" or contain anything outside [0-9a-f], so this shape
+  // guard rejects anything else BEFORE it is ever built into an argv element, degrading to the exact same
+  // disclosed-limitation phrase already used below for "head not found in history" -- from this check's
+  // own read-only perspective, an unparseable head is caught no differently than one that fails to resolve.
+  if (!/^[0-9a-f]{4,40}$/i.test(head)) {
+    return NOT_FOUND;
+  }
+  let probe;
+  try {
+    probe = spawnSync("git", ["log", `${head}..HEAD`, "--oneline"], { cwd, encoding: "utf8", timeout: 10000 });
+  } catch (error) {
+    probe = null;
+  }
+  if (!probe || probe.error || probe.status !== 0) {
+    return NOT_FOUND;
+  }
+  const count = String(probe.stdout || "").split(/\r?\n/).filter(Boolean).length;
+  return `${pluralize(count, "commit")} since last entry (${head.slice(0, 7)})`;
+}
+
+// Resolves .ctide/ledger/runs.jsonl (runsLedgerPath/readRunsLedger, run-ledger.mjs -- reused verbatim, not
+// reimplemented) and reports two independently-real facts, folded into ONE check row (mirroring
+// checkFailureMemoryHealth's own multi-fact-in-one-detail-string precedent, not split into two entries):
+// (1) reconciliation debt -- consolidateState's own open/escapedInWindow/alarm computation
+// (run-consolidate.mjs, reused verbatim; see the VIGIL_RUN_CONSOLIDATE_MODULE comment above for why this is
+// a different constant than the pre-existing VIGIL_CONSOLIDATE_MODULE), and (2) how far HEAD has moved past
+// the most recent run record (runRecords, run-reconcile.mjs, reused verbatim) via commitsSinceLastEntry
+// above -- a neutral, git-derived fact, never a judgment, and never a contributor to `actionable` on its
+// own (an active repo will almost always show a nonzero count between two doctor runs; folding it into
+// `actionable` would manufacture noise on top of the real open/alarm signal). Byte-read reuses doctor.mjs's
+// OWN readCappedTail (above) rather than run-consolidate.mjs's own readLedgerTailCapped: that vigil helper
+// is deliberately fail-open (returns "" on ANY read error, including a permissions failure), which cannot
+// distinguish "no ledger file" from "found but unreadable" -- the exact distinction this check must report,
+// and the same reason checkFailureMemoryHealth above uses readCappedTail rather than a vigil-side reader
+// for its own file. The one-line detail string is composed directly from consolidateState's own returned
+// fields, not by calling formatDigest (whose multi-line block is a different shape than the one-line row
+// this check emits) -- mirrors summarizeMemoryHealth's own established relationship to consolidationReport
+// above (format doctor's own summary from the module's computed fields, never call that module's own
+// separate formatter). Status: unverified (no ledger file at all -- fail-open, no claim), fail (ledger file
+// exists but a genuine read error occurred), pass (the check itself completed, regardless of what it found)
+// -- identical three-state contract to the two sibling checks. `actionable` is open > 0 || alarm ONLY, per
+// the same reasoning as the commits-since count above.
+async function checkLedgerHealth(cwd, checks, now) {
+  let vigilLedger, vigilRunConsolidate, vigilReconcile;
+  try {
+    [vigilLedger, vigilRunConsolidate, vigilReconcile] = await Promise.all([
+      import(VIGIL_LEDGER_MODULE),
+      import(VIGIL_RUN_CONSOLIDATE_MODULE),
+      import(VIGIL_RECONCILE_MODULE),
+    ]);
+  } catch (error) {
+    checks.push(result("ledger-health", "fail", `vigil module load failed (${safeErrorCode(error)})`));
+    return { actionable: false };
+  }
+  const { runsLedgerPath, readRunsLedger } = vigilLedger;
+  const { consolidateState } = vigilRunConsolidate;
+  const { runRecords } = vigilReconcile;
+
+  const file = runsLedgerPath(cwd);
+  let exists = false;
+  try { exists = fs.statSync(file).isFile(); } catch (error) { exists = false; }
+  if (!exists) {
+    checks.push(result("ledger-health", "unverified", "no .ctide/ledger/runs.jsonl found"));
+    return { actionable: false };
+  }
+  let raw;
+  try {
+    raw = readCappedTail(file);
+  } catch (error) {
+    checks.push(result("ledger-health", "fail", `.ctide/ledger/runs.jsonl found but read failed (${safeErrorCode(error)})`));
+    return { actionable: false };
+  }
+
+  const records = readRunsLedger(raw);
+  const state = consolidateState(records, { now });
+  const runs = runRecords(records);
+  const commitsPart = runs.length === 0
+    ? "no run records to anchor from"
+    : commitsSinceLastEntry(cwd, runs[runs.length - 1].head);
+  const alarmSuffix = state.alarm ? " — retro suggested" : "";
+  checks.push(result("ledger-health", "pass",
+    `${state.open} open, ${state.escapedInWindow} escaped/${state.windowDays}d${alarmSuffix}; ${commitsPart}`));
+  return { actionable: state.open > 0 || state.alarm };
+}
+
 export async function diagnose(pluginRoot = resolvePluginRoot(), options = {}) {
   const checks = [];
   const project = options.project === true;
@@ -537,15 +657,22 @@ export async function diagnose(pluginRoot = resolvePluginRoot(), options = {}) {
   // every other check here. No concrete throwing input is known today; this is defense in depth, not a fix
   // for an observed bug. A residual exception is converted into its own reported `fail` check
   // (project-health) rather than an uncaught rejection, matching diagnose()'s existing per-check pattern.
+  // checkLedgerHealth (added later) follows this same discipline: its own module-LOAD path is
+  // independently try/catch-wrapped (matching checkFailureMemoryHealth's pattern) and its git-log edge
+  // cases degrade without throwing by construction -- this outer net remains defense in depth for it too.
   if (project) {
     try {
       const memoryFinding = await checkFailureMemoryHealth(cwd, checks, now);
       const incidentFinding = checkIncidentJournals(cwd, checks, now);
+      const ledgerFinding = await checkLedgerHealth(cwd, checks, now);
       if (memoryFinding.actionable) {
         guidance.push("FAILURE_MEMORY.md has findings (expire candidates, retired entries, or tag-recurrence pairs) — hand this to a vigil run to consolidate (or edit directly for a trivial single-entry cleanup)");
       }
       if (incidentFinding.actionable) {
         guidance.push("An incident journal is not confirmed closed — re-enter salvage's closure flow to close it properly");
+      }
+      if (ledgerFinding.actionable) {
+        guidance.push("The run ledger has an open window or an escaped-closure alarm — run reconciliation disposal via the next vigil planning round, or run-reconcile.mjs close/scan directly");
       }
     } catch (error) {
       checks.push(result("project-health", "fail", `--project checks failed unexpectedly (${safeErrorCode(error)})`));
