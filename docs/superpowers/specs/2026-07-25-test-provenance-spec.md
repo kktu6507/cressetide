@@ -3,7 +3,7 @@
 - 狀態：draft v0.4 —— 三輪修訂（ASSUM Transition 的治理 witness 路由、finding 陣列化、outcome→disposition gate、effective-oracle 依賴閉包）；審閱中
 - **上游依賴**：本文依賴 shared model **v1.7**（provenance binding 變動的測試納入 gate scope；binding 拆 pre／post 兩相，現時效力只課於後態）。**v1.7 未過 panel 前本文不得放行。**本文的 inventory 欄位對映上游語義：`tagBefore → preChangeBinding`、`tagAfter → postChangeBinding`。
 - 日期：2026-07-25
-- 上游：`2026-07-25-shared-decision-provenance-model.md`（**approved v1.6**）。不重新定義任何 shared concept；附加欄位一律標為 annotation 且不改上游語義。
+- 上游：`2026-07-25-shared-decision-provenance-model.md`（**draft v1.7**，前一放行版本 approved v1.6）。不重新定義任何 shared concept；附加欄位一律標為 annotation 且不改上游語義。
 - 姊妹 spec：`2026-07-25-intent-scan-spec.md`（**approved v1.0**）。provenance store、store script 命令面、task manifest、Review Packet 接線由該 spec 定義，本文消費而不重定義。**Gate scope 直接消費 shared model §9 的 canonical 定義**（不在本文改寫或摘要）。
 
 ## 1. 目的與範圍
@@ -421,7 +421,7 @@ testProvenance: {
 8. **After-state 失覆蓋才擋**：刪除某 behavior-changing criterion 的唯一測試且無替代 → fail-closed（依 verification-gate，非 clause 生命週期規則）。
 9. **DEC 無對應規則**：刪除 `@src DEC-x` 測試不要求 DEC Transition；若造成 coverage gap 則由 test-reviewer 以一般覆蓋率職責提出。
 10. **ASSUM 無聲修改被擋**：修改 `@src ASSUM-x` 測試且 outcome `assum-reading-change`、卻無 revise／retire／supersede Transition → fail-closed；補上含 ackRef 的 Transition 後通過。
-10b. **ASSUM delete／retag 不可繞過**：行為由 A 改為 B 後（i）刪除該 ASSUM 測試、（ii）retag 成 `EXPL` —— 兩種情形皆進入候選集合、皆需 batch outcome；判 `assum-reading-change` 而無 Transition → fail-closed。純搬檔／換層且行為仍為 A → outcome `clean`，**不要求** Transition。
+10b. **ASSUM delete／retag 不可繞過**：行為由 A 改為 B 後（i）刪除該 ASSUM 測試、（ii）retag 成 `EXPL` —— 兩種情形皆進入候選集合、皆需 batch result；含 `assum-reading-change` finding 而無治理 witness 支撐的 Transition → fail-closed。純搬檔／換層且行為仍為 A → `findings` 為空，**不要求** Transition。
 11. **ASSUM 升級**：`ASSUM → REQ` supersede 後，原測試 retag 至新 REQ 或對其重做 red→green，兩者皆為合法終局。
 12. **EXPL 不被誤擋**：`@src EXPL` 測試通過結構層（不做 clause resolution），僅受語法與必要-suite policy 約束。
 13. **exception-backed 綁定**：裸 `@src REQ-x` 在 current task 有兩個 DP resolve 到該 REQ 時 → fail-closed；改用 `REQ-x@DP-y` 後通過；恰一個候選時裸形式自動綁定成功。
