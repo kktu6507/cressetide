@@ -182,7 +182,7 @@ Proposal 在 plan mode 只存在於 plan 文本；核准後才由 main thread �
             provisional／decided outcome 的效果）。
    （v0.8 的「僅 row 3」是本 spec 的過度收窄 —— 上游 witness binding 本就涵蓋這些
    transition；此處修正下游，不動上游。）
-2. 存在 pendingReview DP —— row-7 checkpoint（上游四分逐支）：
+2. 存在 pendingReviewPrincipal DP —— row-7 checkpoint（上游四分逐支）：
    spawn 對應 discipline reviewer（Governance Packet）→ ruling proposal →
    main thread 依 rulingKind 固化：
      binding-policy       → **adopt-existing-outcome**（指向既存 active ∧ applicable REQ）；
@@ -444,7 +444,7 @@ intentScan: {
 2. **顯示名稱**：唯一性、歷史顯示 → Ask；冷卻期 → `ASSUM(intent, governedBy=intent)`。
 3. **demo1 webhook**：`no-applicable-dimension` 或全 resolved；不標 trivial；panel 不縮。
 4. **Fresh clone**：`@src REQ-<id>` 測試可解析完整 provenance chain。
-5. **Row 7 checkpoint**：`pendingReview` 未裁決時受影響實作未開始。
+5. **Row 7 checkpoint**：`pendingReviewPrincipal` 未裁決時受影響實作未開始。
 6. **Exception 前移**：scope ruling 於 pre-gate 取得；無 DP-bound `scopeCovers=true` 不得走 row 1。
 7. **高風險路徑**：Stage A=navigator、scan=main thread，不重複。
 8. **Contract derivation**：只取 manifest 可達的 active clause；`behaviorChanging`／`verification` 保留；歷史條款不滲入；skip-scan AC 仍為 REQ。
