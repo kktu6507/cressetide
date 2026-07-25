@@ -1,6 +1,6 @@
 # Shared Decision & Provenance Model（共同決策與溯源模型）
 
-- 狀態：draft v1.4 — 四輪修訂（external-record contract、ReviewerPrincipal、gate scope DP closure、完整 Transition matrix、per-kind applicability）；審閱中。核准後成為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念。
+- 狀態：draft v1.5 — 五輪修訂（authority witness binding、basisRefs 型別統一、exception owner 檢查落 Source 層、domain-transfer 授權、scope-ruling 原子順序）；審閱中。核准後成為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念。
 - 日期：2026-07-25
 - 範圍：只定義模型 —— 物件、權威、分流、狀態、不變量。scan 觸發與流程、檢查器實作、reviewer prompt 調整、hook 接線屬於下游 spec。
 - 背景：源自 demo1 webhook-dispatcher A/B 實驗的失敗分析 —— 23 個未申報假設以測試形式被釘死（oracle 不相容 23:1）、規格沉默區被單方面填補後用綠色測試鎖死。本模型同時治理「猜錯」（intent 層）與「猜了沒說」（provenance 層）。
@@ -85,7 +85,7 @@ layer:       implementation（固定 —— intent 層的裁決屬產品，走 R
 derivedFrom: DP-n
 decision:    選定方案
 alternatives: [...]
-basisRefs:   [S-n | observational refs | review ruling]
+basisRefs:   [S-n | RecordRef(review-ruling) | ObservationalRef]
 approvedBy:  ReviewerPrincipal（§1）
 ```
 
@@ -98,7 +98,8 @@ derivedFrom: DP-n
 text:        選定讀法
 alternative: 被否決讀法（必填）
 basis:       選擇依據
-basisRefs:   [S-n | observational refs]（row 6 明示延後時含 user answer snapshot）
+basisRefs:   [S-n | RecordRef(user-answer | review-ruling) | ObservationalRef]
+             （row 6 明示延後時含 user-answer RecordRef）
 scenario:    distinguishingScenario（intent 層必填）
 governedBy:  ReviewerPrincipal —— 治理此假設的權威：
              row 7 產生 → 繼承審查它的 principal（可為 arbiter）
@@ -113,14 +114,15 @@ id:        T-n
 subject:   REQ-n | DEC-n | ASSUM-n
 action:    revise | supersede | retire
 successor: clause ref（retire 無後繼 → ∅）
-authorityRef:
+authorityRef:（宣告的權威 principal —— 本身不是獨立 witness，效力由 ackRef 建立）
   kind:       user | discipline | arbiter | source-authority
   discipline: §1 enum（kind=discipline 必填；kind∈{discipline, arbiter} 的組合即 ReviewerPrincipal，
               與 DEC.approvedBy／ASSUM.governedBy 同型別）
-  ref:        stable record id（依 External-record contract 解析；
-              kind=source-authority 時指向 constraint owner record，無 discipline）
+  ref:        僅 kind=source-authority 必填 —— constraint owner record（R-n），
+              必須等於 target REQ 的 ownerRef
 ackRef:     RecordRef（kind: user-answer | review-ruling | plan-gate | exception-grant |
-            constraint-revocation；依 External-record contract 解析）
+            constraint-revocation；依 External-record contract 解析）——
+            授權本 Transition 的 witness
 compatibility:（僅 subject=REQ ∧ action=supersede，必填）impact 陳述 ＋ disposition（§7）
 ```
 
@@ -135,10 +137,21 @@ compatibility:（僅 subject=REQ ∧ action=supersede，必填）impact 陳述 �
 | REQ | revise | **不存在** —— REQ 語義變更一律走 supersede | |
 | DEC | supersede / retire | 同 discipline 或 arbiter | successor=REQ 時為 kind=user（產品裁決） |
 | ASSUM | revise / retire | **governedBy 的同一 principal，或 arbiter**；ackRef 必附具名理由 | 防止他 discipline 撤銷 security／operability 治理的暫定假設 |
-| ASSUM | supersede | successor=REQ → kind=user；successor=DEC → governedBy 同一 principal 或 arbiter（＝該 DEC.approvedBy） | 升級收斂；替換＝撤銷＋新立，適用同一治理保護 |
+| ASSUM | supersede | successor=REQ → kind=user；successor=DEC → 原 governedBy principal ∨ arbiter ∨ **經正式 rerouting 的 current review principal**（需 review-ruling witness：`by == DEC.approvedBy == authorityRef principal`，subjectRef 綁定本 DP） | 升級收斂；防任意跨 discipline 覆寫，同時容許 reopen 後的 domain transfer |
 
 - Transition 僅在 subject 當時為 active 時有效；**每個 clause 至多一個生效 Transition**（單終態）。
-- `authorityRef` 與 `ackRef` 為每筆 Transition 必填，且必須**可解析**（§9 結構層治理驗證）。
+- `authorityRef` 與 `ackRef` 為每筆 Transition 必填。**Witness binding** —— authority 的效力由 ackRef 指向的 witness payload 建立，任意合法 record 不可借用：
+
+```
+kind=discipline|arbiter → ackRef.kind=review-ruling
+                          ∧ review-ruling.by == authorityRef principal
+                          ∧ review-ruling.subjectRef 綁定本 Transition 的 subject 或其 DP
+kind=user             → 依 action：supersede／retire → plan-gate record，
+                          target == subject（supersede 另含 §7 三欄一致）；
+                          ask 回答產生的轉移 → user-answer record，subjectRef == 該 DP
+kind=source-authority → ackRef.kind=constraint-revocation
+                          ∧ ack.authorityRef == target REQ.ownerRef == authorityRef.ref
+```
 
 **Derived fields（read model 推導，不再是 authored 欄位）**：
 
@@ -150,8 +163,9 @@ mechanicallyApplicable(c) —— per kind（下游不得自行猜測「來源檢
   REQ:   status=active ∧ 來源檢查通過（§9 Check A/B）
          ∧（exception-backed 時：未過期 ∧ targetConstraintRef 可解析）
   DEC:   status=active ∧ approvedBy principal 合法（§1 型別）∧ derivedFrom DP 可解析
+         ∧ basisRefs 中的 S-n／RecordRef 可解析（ObservationalRef 不解析）
   ASSUM: status=active ∧ governedBy principal 合法 ∧ derivedFrom DP 可解析
-         ∧ basisRefs 中的 S-n／RecordRef 可解析（純觀察性描述不解析）
+         ∧ basisRefs 中的 S-n／RecordRef 可解析（ObservationalRef 不解析）
 scopeCovers(c, DP)        ＝ intent discipline 的語義判斷 —— 僅 exception-backed REQ 非恆真，
                             ruling 以 DP.scopeRulingRef 留存 stable ref
 applicable(c, DP)         ＝ mechanicallyApplicable(c) ∧ scopeCovers(c, DP)
@@ -174,13 +188,14 @@ RecordRef:
 ```
 source-authority:      recordId, authorityIdentity（constraint 擁有者身分，固化描述）
 user-answer:           recordId, subjectRef（DP-n）, answer
-review-ruling:         recordId, by: ReviewerPrincipal, ruling
+review-ruling:         recordId, by: ReviewerPrincipal, subjectRef（DP-n | clause ref | T-n）, ruling
 plan-gate:             recordId, target, impact, disposition, approvedBy（user）
 constraint-revocation: recordId, targetConstraintRef, authorityRef（source-authority，
                        匹配 ownerRef）, effectiveAt
 exception-grant:       ＝ Source（contentKind=exception-grant；payload 見 Source schema）
 ```
 
+- **ObservationalRef**：對觀察性證據（code path、caller、資料現況）的描述性指標 —— **明文不解析**，disclosure-only；不屬 RecordRef，不參與機械 resolution。
 - **Non-adversarial boundary**：checker 證明 record 存在、型別正確、ref 相等，不證明現實身分。
 
 ### DecisionPoint（流程工作紀錄，可變）
@@ -246,7 +261,7 @@ row 7 審查結果四分：
 ```
 找到既有 binding technical policy → resolved(REQ)   ← 政策固化為 Source，新 REQ cite 之
 正式工程裁決                      → decided(DEC)
-證據不足、僅核准暫定預設           → assumed(ASSUM，governedBy=審查 discipline)
+證據不足、僅核准暫定預設           → assumed(ASSUM，governedBy=審查 principal)
 浮現產品取捨                      → 轉 row 6（asked）
 ```
 
@@ -309,7 +324,7 @@ decided ─ 產品裁決 → resolved；原 DEC 經 Transition(supersede, succes
 
 **DP 沿用與 reopen（防重複裁決）**
 
-同一 DP 已有 active 且 applicable 的 DEC／ASSUM 且無 reopen trigger → **必須沿用**（cite 既有 clause），不重入分流；rerun／review 回到該 clause 的 `governedBy`／`approvedBy` discipline。reopen triggers（closed list，重入時記入 `reopenedBy`）：
+同一 DP 已有 active 且 applicable 的 DEC／ASSUM 且無 reopen trigger → **必須沿用**（cite 既有 clause），不重入分流；rerun／review 回到該 clause 的 `governedBy`／`approvedBy` principal（arbiter-owned outcome 回 arbiter）。reopen triggers（closed list，重入時記入 `reopenedBy`）：
 
 ```
 新 dependent／caller 出現            review 證據推翻 basis
@@ -322,11 +337,14 @@ terminal clause 失效且無後繼（INV-4）  新 applicable binding authority 
 
 ```
 1. 建立 successor clause（先建 —— Transition 永不指向尚不存在的 successor）
-2. 對舊 terminal clause（REQ | DEC | ASSUM）建立 supersede／revise／retire Transition
-3. 原子更新所有引用 subject 的 DP：
-   - successor applicable → repoint 並設定對應 status
+2. successor 為 exception-backed REQ 時：對每個可能 repoint 的 DP 建立／取得
+   scope ruling（scopeRulingRef 憑據須在 repoint 前備妥 ——
+   否則 repoint 當下即違反 INV-4）
+3. 對舊 terminal clause（REQ | DEC | ASSUM）建立 supersede／revise／retire Transition
+4. 原子處理所有引用 subject 的 DP：
+   - successor applicable 且（如適用）scopeRulingRef 完整 → repoint 並設定對應 status
      （successor 為 REQ → resolved；DEC → decided；ASSUM → assumed）
-   - 無後繼，或 successor 不 applicable → reopen（§8 trigger）
+   - 否則（無後繼、不 applicable、或 scope ruling 缺）→ reopen（§8 trigger）
 ```
 
 **Clause 生命週期**（全部經 Transition，§2 有效性表；status 為 derived）：
@@ -369,8 +387,8 @@ gate scope ＝ 本次新增／修改的測試
 
 | 層 | 內容 | 失敗行為 | 範圍 |
 |---|---|---|---|
-| 結構 | tag 存在、ID 可解析到 clause；**引用的 clause 必須 active 且 mechanicallyApplicable**（per-kind，§2），exception-backed 時另驗 `scopeRulingRef` 存在 ∧ record.by={discipline: intent} ∧ ref 可解析（否則 retag 至後繼或重新裁決）；**Transition 完整矩陣驗證**：對每筆本次新增 Transition 驗 §2 合法性表的 `subject × action × successor × authority` **全矩陣**（含 ASSUM 的 governedBy 治理、hard-constraint 的 ownerRef 匹配、plan-gate proposal 三欄與 Transition 完全一致 §7）；authorityRef／ackRef 依 External-record contract 解析 | fail-closed | gate scope |
-| 來源 | Source 存在、Check A、Check B、exception expiry／targetConstraintRef | fail-closed | gate scope |
+| 結構 | tag 存在、ID 可解析到 clause；**引用的 clause 必須 active 且 mechanicallyApplicable**（per-kind，§2），exception-backed 時另驗 `scopeRulingRef` 存在 ∧ record.by={discipline: intent} ∧ ref 可解析（否則 retag 至後繼或重新裁決）；**Transition 完整矩陣驗證**：對每筆本次新增 Transition 驗 §2 合法性表的 `subject × action × successor × authority` **全矩陣**，含 **witness binding**（§2：ackRef payload 與 authorityRef principal／subject 的綁定 —— review-ruling.by 與 subjectRef、plan-gate target 與三欄一致 §7、constraint-revocation 與 ownerRef 相等）、ASSUM 的 governedBy／domain-transfer 治理；ackRef 依 External-record contract 解析 | fail-closed | gate scope |
+| 來源 | Source 存在、Check A、Check B；**contentKind=exception-grant 完整鏈**：resolve targetConstraintRef → target 必須是 authority=hard-constraint 的 REQ → grantAuthorityRef == target.ownerRef → 未過期，**任一失敗皆 fail-closed** | fail-closed | gate scope |
 | DP 完整性 | 對 gate scope 內每個 DP（含 INV-4 影響閉包）：terminal refs 三者互斥、status 與 terminal ref 型別一致（resolved↔REQ、decided↔DEC、assumed↔ASSUM）、terminal ref 指向 active ∧ applicable clause、有 applicable successor 時已全部 repoint、無 applicable successor 時已全部 reopen | fail-closed | gate scope |
 | 語義 | assertion 是否被 clause 蘊含、是否超出 tag 範圍 | test discipline 判斷 | 全部 |
 | Legacy | gate scope 以外的既有測試／條款 | 允許全量語義觀測；findings **observe-only**，不阻擋本次 run | scope 外 |
@@ -387,5 +405,5 @@ gate scope ＝ 本次新增／修改的測試
 
 - 不削弱 `verification-gate.md`：REQ（kind=acceptance）照規定紅→綠。
 - brownfield：gate scope 如 §9 單值定義；scope 外 observe-only。
-- reviewer 路由以 discipline 表述：ASSUM → 其 `governedBy`（不再寫 test／code 二選一）；DEC → 其 `approvedBy`；與既有 repair-loop rerun 規則一致。§9 的語義蘊含檢查恆屬 test discipline —— 「治理假設內容」與「審測試蘊含」是兩個不同職責。下游 spec 映射 discipline → 具體 agent。
+- reviewer 路由以 principal 表述：ASSUM → 其 `governedBy`；DEC → 其 `approvedBy`（arbiter-owned outcome 路由到 arbiter）；與既有 repair-loop rerun 規則一致。§9 的語義蘊含檢查恆屬 test discipline —— 「治理假設內容」與「審測試蘊含」是兩個不同職責。下游 spec 映射 principal → 具體 agent。
 - 下游分工：**intent-scan spec**（觸發條件、七維度流程、Ask 批次、plan gate 接線）；**test-provenance spec**（tag 語法、contract-check 三層檢查、test discipline prompt、ledger 接線）。
