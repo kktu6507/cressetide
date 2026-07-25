@@ -1,6 +1,6 @@
 # Intent-Scan Implementation Spec
 
-- 狀態：draft v0.9 —— 八輪修訂（expectedCurrentTerminalRef 取代前置 reopen 寫入、plan-gate witness 涵蓋所有 user-authorized transition、per-rulingKind postcondition table、array canonicalization 規則）；審閱中
+- 狀態：draft v1.0-rc —— 九輪修訂（deferred reopen 的 prior-terminal CAS 模式、DEC／ASSUM postcondition 機械化、驗收與 inputPacketDigest 契約對齊）；審閱中
 - 日期：2026-07-25
 - 上游：`2026-07-25-shared-decision-provenance-model.md`（**approved v1.6**）。本 spec 只落地其 intent-scan 半邊；不重新定義任何 shared concept，附加的實作欄位一律以「annotation」標示且不改變上游欄位語義。
 - 姊妹 spec：test-provenance（未寫）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
@@ -253,11 +253,13 @@ observational → binding 的唯一路徑仍是上游 §1：plan gate 核准的 
 | `layer-classification` | `DP.layer == classifiedLayer`、`DP.classificationBasis == basis`、`DP.classificationRulingRef == record` |
 | `product-tradeoff` | `DP.layer == intent`、`DP.classificationBasis == basis`、`DP.classificationRulingRef == record` |
 | `scope-coverage`（true 且被採用） | `DP.scopeRulingRef == record` |
-| `technical-decision` | `DP.decidedBy` 指向由此 ruling 建立的 DEC |
-| `approved-provisional` | `DP.assumedAs` 指向由此 ruling 建立的 ASSUM |
+| `technical-decision` | `DP.decidedBy == DEC.id`、`DEC.derivedFrom == DP.id`、`DEC.decision == ruling.selectedAlternative`、`DEC.alternatives == inputPacketSnapshot.alternatives`、`DEC.approvedBy == ruling.by`、`DEC.basisRefs` 含本 ruling record |
+| `approved-provisional` | `DP.assumedAs == ASSUM.id`、`ASSUM.derivedFrom == DP.id`、`ASSUM.text == ruling.selectedAlternative`、`ASSUM.alternative == ruling.rejectedAlternative`、`ASSUM.basis == ruling.basis`、`ASSUM.governedBy == ruling.by`、`ASSUM.basisRefs` 含本 ruling record |
 | `binding-policy` | `DP.resolvedBy == bindingClauseRef` |
 
 `product-tradeoff` 的 payload 不含 `classifiedLayer`，但套用時必然觸發 `reclassify-dp(layer=intent)` —— 本表把該隱含後果寫成機械可驗的條件。`scope-coverage=false` 不改動 DP terminal，僅作為 row 2 的依據留存。
+
+`technical-decision`／`approved-provisional` 的條件刻意展開成 **schema 欄位比對**：「由此 ruling 建立」不是可查的欄位，只寫那句話等於允許把任意 DEC／ASSUM 配上一筆合法舊 ruling —— 與 witness 原則（任意合法 record 不可借用）相違。上列每一條都可由 loader 直接比對。
 
 ### Row-7 principal routing table（closed；回傳 **ReviewerPrincipal**，不是 discipline）
 
@@ -319,12 +321,26 @@ create-initial-outcome    open DP → **新** clause＋terminal ref（**不建 T
                           可同一交易攜帶必要 Source／Record
 replace-terminal          successor（**新鑄或既存 clause 皆可** —— reopened DP adopt 既存 REQ 時
                           走此路）＋Transition＋**所有**引用該 terminal 的 DP repoint／reopen。
-                          **subject 由 payload 的 `expectedCurrentTerminalRef` 指定**，writer
-                          於同一交易驗 `canonical DP.currentTerminalRef == expected`（DP 層 CAS）
-                          —— **不預先要求 canonical DP 上已有 `priorTerminalRef`**，
-                          因此「plan 只標 scratch → 單筆交易完成 ASSUM→REQ」成立。
-                          `priorTerminalRef` 可於同交易寫成歷史 annotation，但**不是取得
-                          subject 的前置資料**（Transition 自身即保存 subject）
+                          payload 必含 **`casMode`**（明示，不由 writer 推測），兩種模式：
+
+                          casMode=current-terminal（**未持久化 reopen**：plan 只標 scratch）
+                            expectedCurrentTerminalRef ＝ 舊 clause
+                            writer 驗 canonical DP.currentTerminalRef == expected
+                            → 不預先要求 canonical DP 上已有 priorTerminalRef，
+                              「scratch 標記 → 單筆交易完成 ASSUM→REQ」因此成立
+
+                          casMode=reopened-prior（**已持久化 reopen**，可跨 run）
+                            expectedCurrentTerminalRef ＝ null
+                            expectedPriorTerminalRef  ＝ 舊 clause
+                            writer 驗 DP.status == open ∧ DP.currentTerminalRef == null
+                              ∧ DP.priorTerminalRef == expectedPriorTerminalRef
+                              ∧ reopenedBy 為 closed trigger ∧ 舊 clause 仍 active
+                            → 同交易建立 Transition(subject=舊 clause)＋新 terminal
+
+                          兩模式的 subject 都由 payload 明示並經 CAS 驗證；`priorTerminalRef`
+                          在 current-terminal 模式下僅為順帶寫入的歷史 annotation，
+                          在 reopened-prior 模式下是 CAS 的比對對象。
+                          舊 clause 已非 active 時不需 Transition → 改走 `adopt-existing-outcome`
 supersede-requirement     replace-terminal 的 row-3 變體：plan-gate witness＋compatibility block。
                           payload 另含 **`initiatingDpIds`** —— 觸發 row 3 的 open／reopened DP
                           不一定引用舊 REQ，若不處理會出現「clause 已 supersede、
@@ -337,10 +353,12 @@ supersede-requirement     replace-terminal 的 row-3 變體：plan-gate witness�
 resolve-exception         exception-grant Source＋REQ＋scope ruling record＋DP resolve
 reclassify-dp             原子更新 DP.layer＋classificationBasis（人可讀）
                           ＋classificationRulingRef
-reopen-dp                 **限「當下沒有 successor、確實必須持久化 open 狀態」** 的情形：
+reopen-dp                 **限「當下沒有 successor、確實必須持久化 open 狀態」**（含跨 run）：
                           原子地保存 `priorTerminalRef` ＋清 terminal ＋記 closed trigger。
                           有 successor 時**不得**先 reopen 再 replace（那會產生兩筆交易與
-                          可見中間態）—— 直接單筆 `replace-terminal`
+                          可見中間態）—— 直接單筆 `replace-terminal(casMode=current-terminal)`。
+                          日後取得 successor 時走 `casMode=reopened-prior`，
+                          deferred reopen 因此可收斂
 ```
 
 **移除**裸 `append-clause`／`append-transition`／`set-dp-outcome` —— 它們無法在不違反 INV-4 的前提下單獨完成 terminal replacement。
@@ -368,7 +386,7 @@ load＋validate → 記錄原檔 digest → 在記憶體套用該交易的全部
 | `pendingReviewPrincipal` | DP（scratch） | **ReviewerPrincipal**（discipline 或 arbiter） | row 7 待裁決時 |
 | `pendingScopeRuling` | DP（scratch） | bool | exception-backed row-1 候選待 ruling 時 |
 | `pendingReopen` | DP（scratch） | `{ trigger, expectedCurrentTerminalRef }` | plan 階段標記待 reopen，**不改動 canonical DP**；`expectedCurrentTerminalRef` 供交易做 DP 層 CAS |
-| `priorTerminalRef` | DP | 前一個 terminal clause ref | **歷史 annotation** —— `reopen-dp` 必寫、`replace-terminal` 可順帶寫；**不是**取得 Transition subject 的前置資料 |
+| `priorTerminalRef` | DP | 前一個 terminal clause ref | `reopen-dp` 必寫；`replace-terminal(current-terminal)` 順帶寫為歷史 annotation；`replace-terminal(reopened-prior)` 以它為 **CAS 比對對象**。兩種模式的 Transition subject 都由 payload 明示，不從此欄推導 |
 | `initiatingDpIds` | supersede-requirement 交易 payload | DP id 陣列 | row 3 一律 |
 
 ### Contract derivation
@@ -464,8 +482,8 @@ intentScan: {
 22. **Ledger 單筆**：`intentScan` 只出現在最終那筆 run-ledger record，不提前建立半成品；且不因報告格式 sentinel 缺失而遺漏。
 23. **零 DP task**：skip-scan、零 DP、一條 plan-approved AC 的 task 可經 `create-requirement` 建立 `REQ(kind=acceptance)`，並出現在導出的 contract `acceptanceCriteria`。
 24. **Gate lock**：`converged=false` 時 ExitPlanMode、contract derivation、implementer 全部被鎖；使用者新裁決重入迴圈後才解鎖，單純核准 plan 不解鎖。
-25. **Proposal 新鮮度**：Ask 修改 `scenario`／`alternatives` 後，舊 classification／scope proposal 因 `packetDigest` 不符被拒，重出後才落檔；被消除的預鑄 DP 及其 proposal 不落檔。
-26. **classificationBasis 型別**：`DP.classificationBasis` 維持人可讀理由（上游語義不變），ruling 由 `classificationRulingRef` 承載並驗 `by`／`subjectRef`／`packetDigest`。
+25. **Proposal 新鮮度**：Ask 修改 `scenario`／`alternatives` 後，舊 proposal 於 **mutation 前**因 `inputPacketDigest` 與當下 canonical pre-state packet 不符而被拒，重出後才落檔；被消除的預鑄 DP 及其 proposal 不落檔。
+26. **classificationBasis 型別**：`DP.classificationBasis` 維持人可讀理由（上游語義不變）；ruling 由 `classificationRulingRef` 承載，loader 驗 `by`／`subjectRef`、**對 record 內 snapshot 重算 digest 自洽**，並依 per-kind postcondition 驗 current 欄位 —— **不與 mutable current packet 比 digest**。
 27. **row 1 可執行**：一般 row 1（cite 既有 active applicable REQ）與 exception-backed row 1（同交易帶 scope ruling＋`scopeRulingRef`）各一例，皆經 `adopt-existing-outcome` 落檔，store 內無新 clause、無 Transition。
 28. **binding-policy 收窄**：ruling 指向既存 active ∧ applicable ∧ 無衝突 REQ 時 → adopt；指向非-clause 的 policy Source（含 repo 內未核准 policy 檔）時 → fail-closed，改落 DEC／ASSUM／product-tradeoff。
 29. **Fingerprint 欄位域**：新證據只改變 `materialReasons`（DP 數、scenario、alternatives 不變）→ fingerprint 改變 → 判為合法進展，不誤判打轉。
@@ -479,6 +497,8 @@ intentScan: {
 37. **單筆完成 reopen-replace**：plan scratch 標 `pendingReopen{trigger, expectedCurrentTerminalRef}` 後，**不先寫 canonical reopen**，直接由**單筆** `replace-terminal` 完成 ASSUM → 既存 REQ；`expectedCurrentTerminalRef` 與 canonical 不符時整筆拒寫。
 38. **User-authorized transition 有 witness**：`ASSUM → 既存 REQ` 與 `DEC → 既存 REQ` 兩例，plan 內具名揭露 subject → successor、核准後鑄造 target == subject 的 plan-gate record，Transition 的 `authorityRef.kind=user` 通過 witness binding 驗證。
 39. **Postcondition table**：`product-tradeoff` ruling 套用後，loader 驗得 `DP.layer == intent`、`classificationBasis == basis`、`classificationRulingRef == record`；已不被 current ref 引用的歷史 ruling 只驗 snapshot／digest 自洽。
+40. **Deferred reopen 可收斂**：active ASSUM 執行 `reopen-dp` 後 run 結束；**下一個 run** 取得既存 REQ，以 `replace-terminal(casMode=reopened-prior)` 通過 prior-terminal CAS 完成合法 Transition，舊 ASSUM 不再 active。`casMode=current-terminal` 在此情境（current 已為 null）必須拒寫。
+41. **DEC／ASSUM 綁定不可借用**：把一筆**其他 DP 的**合法 `technical-decision` ruling 配上新建 DEC → postcondition 比對（`DEC.derivedFrom`、`decision`、`alternatives`、`approvedBy`、`basisRefs`）失敗 → 拒寫。
 
 ## 14. 邊界與非目標
 
