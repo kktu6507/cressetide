@@ -1,6 +1,6 @@
 # Intent-Scan Implementation Spec
 
-- 狀態：draft v0.5 —— 四輪修訂（store 改 domain transaction、pre-gate ID 預鑄與收斂迴圈、product-tradeoff resume／reclassify、per-rulingKind payload 與 discipline routing、ledger 一 run 一 record）；審閱中
+- 狀態：draft v0.6 —— 五輪修訂（create-requirement、fingerprint 收斂判準與 gate lock、packetDigest 新鮮度、re-gate 重入 fixed point、binding-policy 需既存 binding authority、classificationBasis 型別回歸）；審閱中
 - 日期：2026-07-25
 - 上游：`2026-07-25-shared-decision-provenance-model.md`（**approved v1.6**）。本 spec 只落地其 intent-scan 半邊；不重新定義任何 shared concept，附加的實作欄位一律以「annotation」標示且不改變上游欄位語義。
 - 姊妹 spec：test-provenance（未寫）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
@@ -54,7 +54,14 @@ plan mode：main thread 在記憶中預鑄 DP 的 final ULID；
 post-approval：init-task 接受並持久化同一批預鑄 ID，不重新鑄造
 ```
 
-這讓 pre-gate ruling 的 `subjectRef` 從一開始就綁定到最終持久化的那個 DP。
+這讓 pre-gate ruling 的 `subjectRef` 從一開始就綁定到最終持久化的那個 DP。**迴圈中被消除的預鑄 DP 及其 proposal 一律不得落檔。**
+
+**Proposal 新鮮度（packetDigest）** —— ID 綁定只保證「同一個 DP」，不保證「內容沒變」：Ask 回答可修改 `scenario`／`alternatives`，同一 ULID 的舊 classification／scope proposal 會在只驗 subjectRef 時蒙混過關。因此 Governance Packet、proposal 與落檔 ruling **三者都帶 `packetDigest`**（對 packet 的裁決相關欄位正規化後取 sha256）：
+
+```
+main thread 只接受 packetDigest == 目前 canonical packet 的 proposal；
+任何影響裁決的欄位變動 → 舊 proposal 失效 → 重出 ruling
+```
 
 **Pre-gate 收斂迴圈（conditional、read-only、直到 fixed point）**：
 
@@ -73,7 +80,32 @@ iterate:
 fixed point → ExitPlanMode
 ```
 
-**非收斂處置**：若某輪未使未決集合縮小、亦未產生淨新 DP（原地打轉），停止迴圈並在 plan gate 揭露該情形與卡住的 DP，交使用者裁決；ledger 記 `preGateIterations` 與 `converged`。Proposal 在 plan mode 只存在於 plan 文本；核准後才由 main thread 固化（§6 步驟 1）。**核准後不存在「回頭 Ask」的 scope 路徑** —— 這正是前移的目的。
+**收斂判準：state fingerprint，不用集合大小** —— 數量不是 progress metric（例：Ask 取得 exception 後下一輪才需 scope ruling，此時未決 DP 數不減、也無新 DP，但這是**合法進展**）。
+
+```
+fingerprint(state) ＝ 對下列內容正規化後取雜湊：
+  每個 live DP 的 { id、scenario、alternatives、layer、classificationBasis、
+                   pending flags（未分類／待 scope ruling／未問／pendingReview）、
+                   適用的 binding clause 與 exception 集合 }
+  ＋ 已回答問題集合（question → answer）
+
+fingerprint 與上一輪不同        → 有進展，繼續
+fingerprint 與任何前輪重複      → 打轉 → converged=false
+達 iteration cap（預設 8，揭露） → converged=false
+```
+
+**`converged=false` 是 gate lock，不只是揭露**：
+
+```
+converged=false ⇒ 禁止 ExitPlanMode、禁止 contract derivation、implementer 不得開工
+使用者提供新裁決時 → 記為該 DP 的問答結果並**重入迴圈**
+                    （post-approval 才固化為 user-answer record）
+單純核准 plan **不構成** DP 的解決 —— 一般核准不是 user-answer record
+```
+
+不會死鎖：使用者的新裁決或**明示延後**（→ ASSUM＋user-ack）都是合法答案，兩者都能讓該 DP 離開未決集合。ledger 記 `preGateIterations` 與 `converged`。
+
+Proposal 在 plan mode 只存在於 plan 文本；核准後才由 main thread 固化（§6 步驟 1）。**核准後不存在「回頭 Ask」的 scope 路徑** —— 這正是前移的目的。
 
 ## 5. Routing 執行（上游 §5 逐 DP）
 
@@ -91,7 +123,8 @@ fixed point → ExitPlanMode
    pre-gate ask 回答 → user-answer records → 新 REQ（create-initial-outcome）、
    明示延後 → ASSUM＋user-ack、row 5 → ASSUM、
    pre-gate 的 layer-classification 與 scope-coverage proposals → **各建 review-ruling record**
-   （DP.classificationBasis／DP.scopeRulingRef 指向之）。
+   （`DP.classificationRulingRef`／`DP.scopeRulingRef` 指向之；上游的
+   `DP.classificationBasis` **維持人可讀理由**，不改型別）。
    一般核准是流程事件，不建 RecordRef；plan-gate record 僅 row 3 supersede proposal。
 2. 存在 pendingReview DP —— row-7 checkpoint（上游四分逐支）：
    spawn 對應 discipline reviewer（Governance Packet）→ ruling proposal →
@@ -99,9 +132,11 @@ fixed point → ExitPlanMode
      binding-policy       → Source＋REQ＋resolve（單一 create-initial-outcome transaction）
      technical-decision   → DEC → decided
      approved-provisional → ASSUM → assumed
-     product-tradeoff     → reclassify-dp（layer=intent，classificationBasis 指向該 ruling）
-                            → 回 row 6 Ask → **重新 ExitPlanMode**
-                            → 核准後 resume-task（沿用同 taskId／manifest，不重建既有物件）
+     product-tradeoff     → reclassify-dp（layer=intent；classificationBasis 更新為人可讀
+                            理由，classificationRulingRef 指向該 ruling）
+                            → 回 row 6 Ask → **重入 §4 fixed-point 迴圈**（回答仍可能新增 DP、
+                            取得 exception、或改變其他 DP 的分類／scope）
+                            → 收斂後才 **重新 ExitPlanMode** → 核准後 resume-task
                             → 新核准前受影響實作保持鎖定
    初次（open DP）不建 Transition；reopen 替換既有 terminal 走 replace-terminal transaction。
 3. pending 清零（含 product-tradeoff 的重新核准完成）
@@ -117,16 +152,18 @@ fixed point → ExitPlanMode
 
 ```
 輸入（Governance Packet）：
-  DP id（final ULID）、scenario、alternatives、layer＋classificationBasis、
-  materialReasons、basisRefs／relevant Sources、requested discipline
+  packetDigest（裁決相關欄位的正規化雜湊）、DP id（final ULID）、scenario、alternatives、
+  layer＋classificationBasis、materialReasons、basisRefs／relevant Sources、requested discipline
 
 輸出（ruling proposal）：
   by: ReviewerPrincipal          必須 == requested principal
   subjectRef: DP id              必須 == packet.DP
+  packetDigest                   必須 == 目前 canonical packet（§4 新鮮度）
   rulingKind: 下表六選一
   basis
   ＋ 依 rulingKind 的必填 payload：
-    binding-policy       bindingSourceCandidate／sourceRef、clauseText、authority
+    binding-policy       bindingSourceRef（見下，須為**既存 binding authority**）、
+                         clauseText、authority（由該 binding authority 衍生）
     technical-decision   selectedAlternative
     approved-provisional selectedAlternative、rejectedAlternative、basis
     product-tradeoff     productQuestion、alternatives
@@ -134,7 +171,22 @@ fixed point → ExitPlanMode
     layer-classification classifiedLayer
 ```
 
-Payload 缺項 → **fail-closed，退回重出 ruling**（例如 binding-policy 無 source evidence 時不得建 REQ）。`scope-coverage`／`layer-classification` 由 §4 pre-gate 消費；其餘四種由步驟 2 消費。
+Payload 缺項、`by`／`subjectRef`／`packetDigest` 不符 → **fail-closed，退回重出 ruling**。`scope-coverage`／`layer-classification` 由 §4 pre-gate 消費；其餘四種由步驟 2 消費。
+
+**`binding-policy` 的 authority 驗證（防 observational 升格）** —— 「有來源」不等於「有權威」：
+
+```
+bindingSourceRef 必須解析到**既存 binding authority**：
+  active 的 hard-constraint／approved-requirement／compatibility clause，
+  或既有核准來源的 Source
+  —— 僅「可解析的 Source」不足（repo 內未核准的 policy 檔不算）
+authority 必須由該 binding authority 衍生，**不得 reviewer 自填**
+authority=approved-requirement 只能源自既有核准來源，或 user／plan-gate
+找不到既存 binding authority → **不得回 binding-policy**，
+  只能落 technical-decision／approved-provisional／product-tradeoff
+```
+
+observational → binding 的唯一路徑仍是上游 §1：plan gate 核准的 compatibility clause，一次一條。
 
 ### Row-7 discipline routing table（closed）
 
@@ -170,9 +222,16 @@ ExitPlanMode 的 plan 內容新增 intent-scan 節：維度 applicability 一覽
 ```
 validate                  唯讀：refs＋Transition matrix＋INV-1..4＋merge reconciliation
 init-task                 持久化預鑄 taskId 與 DP ID（首次核准）
-resume-task               沿用既有 taskId／currentTaskDpIds（product-tradeoff re-gate 後）
+resume-task               沿用既有 taskId／currentTaskDpIds（product-tradeoff re-gate 後）：
+                          可加入該輪新預鑄的 final DP ID；**不刪除／不重寫**已持久化物件；
+                          原 persisted DP 必須取得 terminal outcome 或合法明示延後，
+                          不得因回答而「消失」
 append-source             immutable Source（不被 DP terminal ref 引用，可獨立）
 append-record             immutable Record（同上）
+create-requirement        **DP 無關**的 REQ（plan-approved AC；kind=acceptance｜specification）
+                          ＋`taskRef`；可同一交易攜帶其 Source。
+                          不設 DP terminal、不建 Transition ——
+                          零 DP／skip-scan task 的唯一合法 AC 建立路徑
 create-initial-outcome    open DP → clause＋terminal ref（**不建 Transition**）；
                           可同一交易攜帶必要 Source／Record（如 binding-policy）
 replace-terminal          successor＋Transition(subject=舊 terminal)＋
@@ -211,7 +270,7 @@ assumptions        = currentTaskDpIds[].assumedAs → active ASSUM
 decidedBy          → Review Packet／governance context，不導出成 assumptions
 ```
 
-- **非-intent AC 不消失**：skip-scan task 的 plan-approved AC 一律仍建 REQ(kind=acceptance)，sourceRef 指固化需求 Source。
+- **非-intent AC 不消失**：skip-scan task 的 plan-approved AC 一律仍建 REQ(kind=acceptance)，sourceRef 指固化需求 Source —— 經 `create-requirement` 交易（零 DP task 亦適用）。
 - **時序**：contract.md 於 §6 步驟 3（pending 清零後）由 main thread 一次導出，**早於 implementer**；implementer 不再手寫 machine block。
 
 ## 9. 沿用與 reopen
@@ -234,7 +293,8 @@ intentScan: {
   detectedPendingReviewCount,   // 發現時
   finalPendingReviewCount,      // 收尾時；READY 應為 0
   scopeRulings: { true: n, false: n },
-  preGateIterations, converged,
+  preGateIterations, converged, reGateRounds,
+  staleProposalRejections,
   otherDimensionUsed: bool
 }
 ```
@@ -282,9 +342,13 @@ intentScan: {
 17. **Contract 時序**：row-7 產生的 ASSUM 出現在最終 contract assumptions，且 contract 寫入早於 implementer 開工。
 18. **交易原子性**：`replace-terminal` 對多個引用 DP 只做**一次** atomic commit；中途狀態不可見（並行 loader 只會看到套用前或套用後）。
 19. **ID 同一性**：pre-gate proposal 的 `subjectRef` 與 post-approval 持久化的 DP 是同一個 ULID。
-20. **迴圈收斂**：Ask 新增 exception 後會重新取得 scope ruling，再進 ExitPlanMode；未收斂時於 gate 揭露卡住的 DP。
-21. **binding-policy fail-closed**：proposal 缺 source evidence 時不得建 Source／REQ，退回重出。
+20. **迴圈收斂**：Ask 新增 exception 後會重新取得 scope ruling，再進 ExitPlanMode；**該輪未決 DP 數不減也無新 DP，仍須判為合法進展**（fingerprint 已變）。
+21. **binding-policy fail-closed**：proposal 缺 payload 時退回重出；**repo 內存在未核准的 policy 檔時不得據以建立 REQ**，只能落 DEC／ASSUM／product-tradeoff。
 22. **Ledger 單筆**：`intentScan` 只出現在最終那筆 run-ledger record，不提前建立半成品；且不因報告格式 sentinel 缺失而遺漏。
+23. **零 DP task**：skip-scan、零 DP、一條 plan-approved AC 的 task 可經 `create-requirement` 建立 `REQ(kind=acceptance)`，並出現在導出的 contract `acceptanceCriteria`。
+24. **Gate lock**：`converged=false` 時 ExitPlanMode、contract derivation、implementer 全部被鎖；使用者新裁決重入迴圈後才解鎖，單純核准 plan 不解鎖。
+25. **Proposal 新鮮度**：Ask 修改 `scenario`／`alternatives` 後，舊 classification／scope proposal 因 `packetDigest` 不符被拒，重出後才落檔；被消除的預鑄 DP 及其 proposal 不落檔。
+26. **classificationBasis 型別**：`DP.classificationBasis` 維持人可讀理由（上游語義不變），ruling 由 `classificationRulingRef` 承載並驗 `by`／`subjectRef`／`packetDigest`。
 
 ## 14. 邊界與非目標
 
