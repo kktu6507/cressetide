@@ -1,6 +1,6 @@
 # Shared Decision & Provenance Model（共同決策與溯源模型）
 
-- 狀態：draft v1.5 — 五輪修訂（authority witness binding、basisRefs 型別統一、exception owner 檢查落 Source 層、domain-transfer 授權、scope-ruling 原子順序）；審閱中。核准後成為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念。
+- 狀態：draft v1.6 — 六輪修訂（scopeRulingRef 的 DP 綁定、subjectRef 移除 T-n dead arm）；審閱中。核准後成為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念。
 - 日期：2026-07-25
 - 範圍：只定義模型 —— 物件、權威、分流、狀態、不變量。scan 觸發與流程、檢查器實作、reviewer prompt 調整、hook 接線屬於下游 spec。
 - 背景：源自 demo1 webhook-dispatcher A/B 實驗的失敗分析 —— 23 個未申報假設以測試形式被釘死（oracle 不相容 23:1）、規格沉默區被單方面填補後用綠色測試鎖死。本模型同時治理「猜錯」（intent 層）與「猜了沒說」（provenance 層）。
@@ -188,7 +188,7 @@ RecordRef:
 ```
 source-authority:      recordId, authorityIdentity（constraint 擁有者身分，固化描述）
 user-answer:           recordId, subjectRef（DP-n）, answer
-review-ruling:         recordId, by: ReviewerPrincipal, subjectRef（DP-n | clause ref | T-n）, ruling
+review-ruling:         recordId, by: ReviewerPrincipal, subjectRef（DP-n | clause ref）, ruling
 plan-gate:             recordId, target, impact, disposition, approvedBy（user）
 constraint-revocation: recordId, targetConstraintRef, authorityRef（source-authority，
                        匹配 ownerRef）, effectiveAt
@@ -215,7 +215,9 @@ status:              open | asked | resolved | decided | assumed
 resolvedBy:          REQ-n（status=resolved 必填，INV-2）
 decidedBy:           DEC-n（status=decided 必填，INV-2）
 assumedAs:           ASSUM-n（status=assumed 必填，INV-1）
-scopeRulingRef:      RecordRef(kind=review-ruling)，其 record.by 必須＝{discipline: intent}
+scopeRulingRef:      RecordRef(kind=review-ruling)
+                     ∧ record.by == {kind: discipline, discipline: intent}
+                     ∧ record.subjectRef == 本 DP（他 DP 的合法 intent ruling 不可借用）
                      （resolvedBy 為 exception-backed REQ 時必填 —— scopeCovers 的可追溯憑據）
 ```
 
@@ -338,11 +340,12 @@ terminal clause 失效且無後繼（INV-4）  新 applicable binding authority 
 ```
 1. 建立 successor clause（先建 —— Transition 永不指向尚不存在的 successor）
 2. successor 為 exception-backed REQ 時：對每個可能 repoint 的 DP 建立／取得
-   scope ruling（scopeRulingRef 憑據須在 repoint 前備妥 ——
-   否則 repoint 當下即違反 INV-4）
+   scope ruling（須滿足 §2 綁定：by == intent ∧ subjectRef == 該 DP ——
+   憑據在 repoint 前備妥，否則 repoint 當下即違反 INV-4；
+   ruling 存在但指向他 DP 者不算備妥）
 3. 對舊 terminal clause（REQ | DEC | ASSUM）建立 supersede／revise／retire Transition
 4. 原子處理所有引用 subject 的 DP：
-   - successor applicable 且（如適用）scopeRulingRef 完整 → repoint 並設定對應 status
+   - successor applicable 且（如適用）scopeRulingRef 完整（含 subjectRef == 該 DP）→ repoint 並設定對應 status
      （successor 為 REQ → resolved；DEC → decided；ASSUM → assumed）
    - 否則（無後繼、不 applicable、或 scope ruling 缺）→ reopen（§8 trigger）
 ```
@@ -387,7 +390,7 @@ gate scope ＝ 本次新增／修改的測試
 
 | 層 | 內容 | 失敗行為 | 範圍 |
 |---|---|---|---|
-| 結構 | tag 存在、ID 可解析到 clause；**引用的 clause 必須 active 且 mechanicallyApplicable**（per-kind，§2），exception-backed 時另驗 `scopeRulingRef` 存在 ∧ record.by={discipline: intent} ∧ ref 可解析（否則 retag 至後繼或重新裁決）；**Transition 完整矩陣驗證**：對每筆本次新增 Transition 驗 §2 合法性表的 `subject × action × successor × authority` **全矩陣**，含 **witness binding**（§2：ackRef payload 與 authorityRef principal／subject 的綁定 —— review-ruling.by 與 subjectRef、plan-gate target 與三欄一致 §7、constraint-revocation 與 ownerRef 相等）、ASSUM 的 governedBy／domain-transfer 治理；ackRef 依 External-record contract 解析 | fail-closed | gate scope |
+| 結構 | tag 存在、ID 可解析到 clause；**引用的 clause 必須 active 且 mechanicallyApplicable**（per-kind，§2），exception-backed 時另驗 `scopeRulingRef` 可解析 ∧ record.by == {discipline: intent} ∧ **record.subjectRef == current DP**（任一失敗 fail-closed；否則 retag 至後繼或重新裁決）；**Transition 完整矩陣驗證**：對每筆本次新增 Transition 驗 §2 合法性表的 `subject × action × successor × authority` **全矩陣**，含 **witness binding**（§2：ackRef payload 與 authorityRef principal／subject 的綁定 —— review-ruling.by 與 subjectRef、user-answer.subjectRef == 該 DP、plan-gate target 與三欄一致 §7、constraint-revocation 與 ownerRef 相等）、ASSUM 的 governedBy／domain-transfer 治理；ackRef 依 External-record contract 解析 | fail-closed | gate scope |
 | 來源 | Source 存在、Check A、Check B；**contentKind=exception-grant 完整鏈**：resolve targetConstraintRef → target 必須是 authority=hard-constraint 的 REQ → grantAuthorityRef == target.ownerRef → 未過期，**任一失敗皆 fail-closed** | fail-closed | gate scope |
 | DP 完整性 | 對 gate scope 內每個 DP（含 INV-4 影響閉包）：terminal refs 三者互斥、status 與 terminal ref 型別一致（resolved↔REQ、decided↔DEC、assumed↔ASSUM）、terminal ref 指向 active ∧ applicable clause、有 applicable successor 時已全部 repoint、無 applicable successor 時已全部 reopen | fail-closed | gate scope |
 | 語義 | assertion 是否被 clause 蘊含、是否超出 tag 範圍 | test discipline 判斷 | 全部 |
