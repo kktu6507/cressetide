@@ -1,6 +1,6 @@
 # Intent-Scan Implementation Spec
 
-- 狀態：draft v0.8 —— 七輪修訂（inputPacketDigest 時間分離＋canonical encoding、ReviewerPrincipal 全鏈打通、reopened DP 強制走 Transition、row 3 initiating DP 失敗即整筆 fail-closed）；審閱中
+- 狀態：draft v0.9 —— 八輪修訂（expectedCurrentTerminalRef 取代前置 reopen 寫入、plan-gate witness 涵蓋所有 user-authorized transition、per-rulingKind postcondition table、array canonicalization 規則）；審閱中
 - 日期：2026-07-25
 - 上游：`2026-07-25-shared-decision-provenance-model.md`（**approved v1.6**）。本 spec 只落地其 intent-scan 半邊；不重新定義任何 shared concept，附加的實作欄位一律以「annotation」標示且不改變上游欄位語義。
 - 姊妹 spec：test-provenance（未寫）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
@@ -71,9 +71,9 @@ main thread **在 mutation 之前** 比對 inputPacketDigest == 當下 canonical
 ```
 對 ruling record 內的 snapshot 重算 digest（自洽，immutable）
 驗 subjectRef／by
-驗 current DP 的對應欄位 == ruling output
-  （layer-classification：DP.layer；scope-coverage：DP.scopeRulingRef 指向本 record）
+依 **per-rulingKind postcondition table**（§6）驗 current DP 的對應欄位
 **不**把歷史 inputPacketDigest 與 mutable current packet 比較
+歷史 ruling（已不再被任何 current ref 引用）**只驗 snapshot／digest 自洽**，不與 current DP 比較
 ```
 
 **Canonical payload（closed set；本 spec 唯一的「影響裁決欄位」清單）**：
@@ -85,7 +85,14 @@ basisRefs 正規化為 [(sourceId, digest) | RecordRef | ObservationalRef 描述
 排除：digest 欄位自身
 ```
 
-**Canonical encoding（不同 writer 必須算出同一 digest）**：UTF-8 無 BOM、換行 LF、object key 依 Unicode code point 排序、**array 保留 builder 宣告順序**（builder 必須確定性產生）、無多餘空白、字串不 trim；`digest ＝ sha256(canonical JSON)`。
+**Canonical encoding（不同 writer 必須算出同一 digest）**：UTF-8 無 BOM、換行 LF、object key 依 Unicode code point 排序、無多餘空白、字串不 trim；`digest ＝ sha256(canonical JSON)`。**Array 逐欄定序**（「builder 自行確定性」不足以讓兩個獨立 writer 一致）：
+
+| array | 定序規則 |
+|---|---|
+| `alternatives` | **保留語義順序**（讀法 A／B 的先後有意義） |
+| `materialReasons` | 依 safeToAssume conjunct 的 closed enum 宣告序 |
+| `basisRefs` | 依 `kind` → `sourceId`／`ref`／ObservationalRef 描述字串 排序 |
+| 適用 binding／exception clause 集合 | 依 clause id 排序 |
 
 §4 收斂 fingerprint 直接由這份清單導出 —— **不維護第二套欄位清單**。
 
@@ -154,7 +161,7 @@ Proposal 在 plan mode 只存在於 plan 文本；核准後才由 main thread �
 - **rows 2／4／6（Ask）**：全部收進 ask batch，**於 gate 前完成**。`AskUserQuestion` 每輪 ≤4 題：header=dimension、選項=alternatives（各附一行 scenario 摘要）；超過 4 題分輪，ask-tagged 一題不減。
 - **row 5（safeToAssume）**：ASSUM，`governedBy` 依上游固定映射。
 - **row 7（¬safe ∧ implementation）**：plan 揭露候選＋annotation `pendingReviewPrincipal`（依 §6 routing table 回傳的 ReviewerPrincipal）；裁決依 §6 checkpoint，**受影響實作在 outcome active ∧ applicable 前不得開始**。
-- **reopened DP 的 row 1**：`priorTerminalRef` 仍 active 時**不得**走 `adopt-existing-outcome`（該路徑不建 Transition，會把舊 DEC／ASSUM 留成 active、違反 lifecycle 收斂）；改走 `replace-terminal`，successor 為該既存 clause。
+- **reopened DP 的 row 1**：current terminal 仍 active 時**不得**走 `adopt-existing-outcome`（該路徑不建 Transition，會把舊 DEC／ASSUM 留成 active、違反 lifecycle 收斂）；改走 `replace-terminal`（successor＝該既存 clause，`expectedCurrentTerminalRef`＝scratch `pendingReopen` 記下的 terminal）。plan 階段**不預先 reopen canonical DP**。
 
 ## 6. Post-approval 序列（single-writer；implementer 最後才進場）
 
@@ -166,7 +173,15 @@ Proposal 在 plan mode 只存在於 plan 文本；核准後才由 main thread �
    pre-gate 的 layer-classification 與 scope-coverage proposals → **各建 review-ruling record**
    （`DP.classificationRulingRef`／`DP.scopeRulingRef` 指向之；上游的
    `DP.classificationBasis` **維持人可讀理由**，不改型別）。
-   一般核准是流程事件，不建 RecordRef；plan-gate record 僅 row 3 supersede proposal。
+   一般核准仍是流程事件、**不建 RecordRef**。plan-gate record 的鑄造時機是
+   **「row 3 supersede proposal，或上游 Transition matrix 明文要求 user authority 的
+   任何 clause transition」**（例：ASSUM／DEC supersede → REQ）：
+     已有指向該 DP 的明示 user-answer → 以它作 witness，不另建 plan-gate record；
+     否則 → plan 必須**具名揭露 subject → successor**，核准後建立 target == subject 的
+            plan-gate witness（impact／disposition 描述以該 successor 取代原
+            provisional／decided outcome 的效果）。
+   （v0.8 的「僅 row 3」是本 spec 的過度收窄 —— 上游 witness binding 本就涵蓋這些
+   transition；此處修正下游，不動上游。）
 2. 存在 pendingReview DP —— row-7 checkpoint（上游四分逐支）：
    spawn 對應 discipline reviewer（Governance Packet）→ ruling proposal →
    main thread 依 rulingKind 固化：
@@ -231,6 +246,19 @@ observational → binding 的唯一路徑仍是上游 §1：plan gate 核准的 
 
 **已揭露的上游子分支收窄**：上游 §5 row 7 的「政策固化為 Source＋新 REQ cite 之」在 v1 只實作「政策已 clause 化」這個可機械驗證的子集。要支援從尚未 clause 化的外部 policy 鑄造 REQ，**必須先在 shared model 定義 typed authority witness**（類似 hard-constraint 的 `ownerRef`）；下游 spec 不得自行發明。在該 witness 存在前，此類 fork 走 DEC／ASSUM／product-tradeoff。
 
+### Per-rulingKind postcondition table（closed；loader 套用後驗證的對象）
+
+| rulingKind | 套用後必須成立 |
+|---|---|
+| `layer-classification` | `DP.layer == classifiedLayer`、`DP.classificationBasis == basis`、`DP.classificationRulingRef == record` |
+| `product-tradeoff` | `DP.layer == intent`、`DP.classificationBasis == basis`、`DP.classificationRulingRef == record` |
+| `scope-coverage`（true 且被採用） | `DP.scopeRulingRef == record` |
+| `technical-decision` | `DP.decidedBy` 指向由此 ruling 建立的 DEC |
+| `approved-provisional` | `DP.assumedAs` 指向由此 ruling 建立的 ASSUM |
+| `binding-policy` | `DP.resolvedBy == bindingClauseRef` |
+
+`product-tradeoff` 的 payload 不含 `classifiedLayer`，但套用時必然觸發 `reclassify-dp(layer=intent)` —— 本表把該隱含後果寫成機械可驗的條件。`scope-coverage=false` 不改動 DP terminal，僅作為 row 2 的依據留存。
+
 ### Row-7 principal routing table（closed；回傳 **ReviewerPrincipal**，不是 discipline）
 
 | DP 的主要 concern | 回傳 principal |
@@ -248,7 +276,7 @@ observational → binding 的唯一路徑仍是上游 §1：plan gate 核准的 
 
 ## 7. Plan gate 接線
 
-ExitPlanMode 的 plan 內容新增 intent-scan 節：維度 applicability 一覽、resolved citations（含 scope-coverage 判定與依據）、layer 分類揭露、ask 問答結果、ASSUM 清單（text＋alternative）、`pendingReview` 清單與候選、沿用清單（§9）、迴圈收斂情形（未收斂時含卡住的 DP）、或 `no-applicable-dimension`／`skipped-no-observable-change` 宣告。一般核准是流程事件，不鑄造 RecordRef。
+ExitPlanMode 的 plan 內容新增 intent-scan 節：維度 applicability 一覽、resolved citations（含 scope-coverage 判定與依據）、layer 分類揭露、ask 問答結果、ASSUM 清單（text＋alternative）、`pendingReviewPrincipal` 清單與候選、沿用清單（§9）、迴圈收斂情形（未收斂時含卡住的 DP）、**需 user authority 的 clause transition 之具名 `subject → successor` 揭露**、或 `no-applicable-dimension`／`skipped-no-observable-change` 宣告。一般核准本身是流程事件、不鑄造 RecordRef；上述具名揭露經核准後才於 §6 步驟 1 鑄造 target == subject 的 plan-gate record。
 
 ## 8. 產物：provenance store（shared infrastructure）
 
@@ -290,9 +318,13 @@ adopt-existing-outcome    **僅限 initial-open DP**（從未有 terminal，或 
 create-initial-outcome    open DP → **新** clause＋terminal ref（**不建 Transition**）；
                           可同一交易攜帶必要 Source／Record
 replace-terminal          successor（**新鑄或既存 clause 皆可** —— reopened DP adopt 既存 REQ 時
-                          走此路）＋Transition(subject=舊 terminal)＋
-                          **所有**引用該 terminal 的 DP repoint／reopen。
-                          subject 取自 DP 的 `priorTerminalRef`，不靠猜測
+                          走此路）＋Transition＋**所有**引用該 terminal 的 DP repoint／reopen。
+                          **subject 由 payload 的 `expectedCurrentTerminalRef` 指定**，writer
+                          於同一交易驗 `canonical DP.currentTerminalRef == expected`（DP 層 CAS）
+                          —— **不預先要求 canonical DP 上已有 `priorTerminalRef`**，
+                          因此「plan 只標 scratch → 單筆交易完成 ASSUM→REQ」成立。
+                          `priorTerminalRef` 可於同交易寫成歷史 annotation，但**不是取得
+                          subject 的前置資料**（Transition 自身即保存 subject）
 supersede-requirement     replace-terminal 的 row-3 變體：plan-gate witness＋compatibility block。
                           payload 另含 **`initiatingDpIds`** —— 觸發 row 3 的 open／reopened DP
                           不一定引用舊 REQ，若不處理會出現「clause 已 supersede、
@@ -305,9 +337,10 @@ supersede-requirement     replace-terminal 的 row-3 變體：plan-gate witness�
 resolve-exception         exception-grant Source＋REQ＋scope ruling record＋DP resolve
 reclassify-dp             原子更新 DP.layer＋classificationBasis（人可讀）
                           ＋classificationRulingRef
-reopen-dp                 記錄 closed trigger 的 reopen，並**保留 `priorTerminalRef`**
-                          （歷史身分不得清除 —— plan 階段只在 scratch 標 `pendingReopen`，
-                          不可先清 terminal 再期待後續交易猜回舊 subject）
+reopen-dp                 **限「當下沒有 successor、確實必須持久化 open 狀態」** 的情形：
+                          原子地保存 `priorTerminalRef` ＋清 terminal ＋記 closed trigger。
+                          有 successor 時**不得**先 reopen 再 replace（那會產生兩筆交易與
+                          可見中間態）—— 直接單筆 `replace-terminal`
 ```
 
 **移除**裸 `append-clause`／`append-transition`／`set-dp-outcome` —— 它們無法在不違反 INV-4 的前提下單獨完成 terminal replacement。
@@ -334,8 +367,8 @@ load＋validate → 記錄原檔 digest → 在記憶體套用該交易的全部
 | `inputPacketDigest` ＋ `inputPacketSnapshot` | Governance Packet／proposal／review-ruling record | sha256(canonical payload) ＋ 該 immutable snapshot 本體，closed set 與 encoding 見 §4 | 治理 ruling 一律 |
 | `pendingReviewPrincipal` | DP（scratch） | **ReviewerPrincipal**（discipline 或 arbiter） | row 7 待裁決時 |
 | `pendingScopeRuling` | DP（scratch） | bool | exception-backed row-1 候選待 ruling 時 |
-| `pendingReopen` | DP（scratch） | bool | plan 階段標記待 reopen，**不清除 terminal** |
-| `priorTerminalRef` | DP | 前一個 terminal clause ref | DP 曾有 terminal 而後 reopen 時必填 —— `replace-terminal` 由此取 Transition subject |
+| `pendingReopen` | DP（scratch） | `{ trigger, expectedCurrentTerminalRef }` | plan 階段標記待 reopen，**不改動 canonical DP**；`expectedCurrentTerminalRef` 供交易做 DP 層 CAS |
+| `priorTerminalRef` | DP | 前一個 terminal clause ref | **歷史 annotation** —— `reopen-dp` 必寫、`replace-terminal` 可順帶寫；**不是**取得 Transition subject 的前置資料 |
 | `initiatingDpIds` | supersede-requirement 交易 payload | DP id 陣列 | row 3 一律 |
 
 ### Contract derivation
@@ -442,7 +475,10 @@ intentScan: {
 33. **Digest 不自我失效**：`layer-classification` ruling 套用（`reclassify-dp` 改動 layer／classificationBasis）後，loader 仍能驗證該 ruling —— 對 record 內 snapshot 重算 digest 自洽、`by`／`subjectRef` 相符、current `DP.layer` == ruling output；該 DP 之後再 reopen 也不使歷史 ruling 變 stale。
 34. **Arbiter round trip**：security 與 operability 同時命中 → routing 回 `{kind: arbiter}`；`pendingReviewPrincipal`、packet 的 `requestedPrincipal`、`ruling.by` 三者皆可表示且相等，全程無需降級成 discipline。
 35. **Reopen 走 Transition**：`ASSUM → reopen（保留 priorTerminalRef）→ 採用既存 REQ` 產生合法 supersede Transition(subject=舊 ASSUM)，舊 ASSUM 不再 active；同一情境呼叫 `adopt-existing-outcome` 必須被拒寫。
-36. **Canonical encoding**：兩個獨立 writer 對同一 packet 內容算出相同 digest（key 排序、array 順序、LF、不 trim 一致）。
+36. **Canonical encoding**：兩個獨立 writer 對同一 packet 內容算出相同 digest —— 特別是 `materialReasons`、`basisRefs`、binding／exception 集合以不同插入順序建構時，定序規則使 digest 相同；`alternatives` 順序不同則 digest 必須不同。
+37. **單筆完成 reopen-replace**：plan scratch 標 `pendingReopen{trigger, expectedCurrentTerminalRef}` 後，**不先寫 canonical reopen**，直接由**單筆** `replace-terminal` 完成 ASSUM → 既存 REQ；`expectedCurrentTerminalRef` 與 canonical 不符時整筆拒寫。
+38. **User-authorized transition 有 witness**：`ASSUM → 既存 REQ` 與 `DEC → 既存 REQ` 兩例，plan 內具名揭露 subject → successor、核准後鑄造 target == subject 的 plan-gate record，Transition 的 `authorityRef.kind=user` 通過 witness binding 驗證。
+39. **Postcondition table**：`product-tradeoff` ruling 套用後，loader 驗得 `DP.layer == intent`、`classificationBasis == basis`、`classificationRulingRef == record`；已不被 current ref 引用的歷史 ruling 只驗 snapshot／digest 自洽。
 
 ## 14. 邊界與非目標
 
