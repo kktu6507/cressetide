@@ -1,6 +1,6 @@
 # Intent-Scan Implementation Spec
 
-- 狀態：**approved v1.0**（2026-07-25 正式 panel 放行，經九輪修訂）。實作以本文為準；變更需重新過 panel。
+- 狀態：**draft v1.1 — 修訂待 panel**（前一放行版本：approved v1.0，經九輪修訂）。本次變更僅限 §8 store command surface：`replace-terminal` 支援 `successor=null`（retire —— v1.0 的命令面**沒有任何交易能產生 `retire` Transition**，是既有缺口），並新增 `commit-test-provenance-resolution` 複合交易（下游 test-provenance spec 的持久化需求）。其餘章節未動。
 - 日期：2026-07-25
 - 上游：`2026-07-25-shared-decision-provenance-model.md`（**approved v1.6**）。本 spec 只落地其 intent-scan 半邊；不重新定義任何 shared concept，附加的實作欄位一律以「annotation」標示且不改變上游欄位語義。
 - 姊妹 spec：test-provenance（未寫）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
@@ -320,7 +320,10 @@ adopt-existing-outcome    **僅限 initial-open DP**（從未有 terminal，或 
 create-initial-outcome    open DP → **新** clause＋terminal ref（**不建 Transition**）；
                           可同一交易攜帶必要 Source／Record
 replace-terminal          successor（**新鑄或既存 clause 皆可** —— reopened DP adopt 既存 REQ 時
-                          走此路）＋Transition＋**所有**引用該 terminal 的 DP repoint／reopen。
+                          走此路；**`successor=null` 正式表示 retire**，此時
+                          Transition.action=retire、無後繼，所有 dependent DP 一律 **reopen**
+                          —— v1.0 的命令面沒有任何交易能產生 retire Transition，此為補洞）
+                          ＋Transition＋**所有**引用該 terminal 的 DP repoint／reopen。
                           payload 必含 **`casMode`**（明示，不由 writer 推測），兩種模式：
 
                           casMode=current-terminal（**未持久化 reopen**：plan 只標 scratch）
@@ -353,6 +356,16 @@ supersede-requirement     replace-terminal 的 row-3 變體：plan-gate witness�
 resolve-exception         exception-grant Source＋REQ＋scope ruling record＋DP resolve
 reclassify-dp             原子更新 DP.layer＋classificationBasis（人可讀）
                           ＋classificationRulingRef
+commit-test-provenance-resolution
+                          **單筆 CAS 交易**，供下游 test-provenance 收斂一批語義審查結果：
+                            鑄造 semantic evidence record ＋治理 witness ＋ Transition
+                              （`successor=null` 即 retire）
+                            原子 repoint 或 reopen **所有** dependent DP
+                            鑄造 `RecordRef(kind=provenance-batch)`：完整 batch snapshot
+                              ＋batchDigest＋inventoryDigest＋relatedRefs[]（上游 §2 payload）
+                          設計理由：scratch 先寫、tracked 後寫會讓 batch 引用尚未鑄造的 ref，
+                          且 tracked 只留 digest 時內容不可復原。**scratch 因此降為衍生 cache**
+                          —— 遺失時可由 tracked 的 provenance-batch snapshot 完整重建
 reopen-dp                 **限「當下沒有 successor、確實必須持久化 open 狀態」**（含跨 run）：
                           原子地保存 `priorTerminalRef` ＋清 terminal ＋記 closed trigger。
                           有 successor 時**不得**先 reopen 再 replace（那會產生兩筆交易與
@@ -499,6 +512,12 @@ intentScan: {
 39. **Postcondition table**：`product-tradeoff` ruling 套用後，loader 驗得 `DP.layer == intent`、`classificationBasis == basis`、`classificationRulingRef == record`；已不被 current ref 引用的歷史 ruling 只驗 snapshot／digest 自洽。
 40. **Deferred reopen 可收斂**：active ASSUM 執行 `reopen-dp` 後 run 結束；**下一個 run** 取得既存 REQ，以 `replace-terminal(casMode=reopened-prior)` 通過 prior-terminal CAS 完成合法 Transition，舊 ASSUM 不再 active。`casMode=current-terminal` 在此情境（current 已為 null）必須拒寫。
 41. **DEC／ASSUM 綁定不可借用**：把一筆**其他 DP 的**合法 `technical-decision` ruling 配上新建 DEC → postcondition 比對（`DEC.derivedFrom`、`decision`、`alternatives`、`approvedBy`、`basisRefs`）失敗 → 拒寫。
+
+### v1.1 新增驗收
+
+43. **Retire 有路徑**：`replace-terminal(successor=null)` 產生 `action=retire` 的 Transition，所有 dependent DP **reopen**（無後繼可 repoint）；v1.0 命令面無法達成此結果。
+44. **批次提交原子性**：`commit-test-provenance-resolution` 於**單筆** CAS 交易內完成 evidence／witness／Transition／DP repoint-or-reopen／`provenance-batch` record；中途狀態不可見。
+45. **Scratch 可重建**：刪除全部 scratch 後，由 tracked 的 `provenance-batch` snapshot 可完整重建 batch 內容（非僅 digest）。
 
 ### Store-script 實作層 assertion（非模型規則，直接寫進 script tests）
 
