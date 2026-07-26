@@ -1,9 +1,9 @@
 # Intent-Scan Implementation Spec
 
-- 狀態：**draft v1.1 — 修訂待 panel**（前一放行版本：approved v1.0，經九輪修訂）。本次變更僅限 §8 store command surface：`replace-terminal` 支援 `successor=null`（retire —— v1.0 的命令面**沒有任何交易能產生 `retire` Transition**，是既有缺口），並新增 `commit-test-provenance-resolution` 複合交易（下游 test-provenance spec 的持久化需求）。其餘章節未動。
+- 狀態：**draft v1.1 — 修訂待 panel**（前一放行版本：approved v1.0，經九輪修訂）。本次變更僅限 §8 store command surface：`replace-terminal` 支援 `successor=null`（retire —— v1.0 的命令面**沒有任何交易能產生 `retire` Transition**，是既有缺口），並新增 `commit-test-provenance-batch` 複合交易（`0..N` ResolutionGroup，下游 test-provenance spec 的持久化需求）。其餘章節未動。
 - 日期：2026-07-25
-- 上游：`2026-07-25-shared-decision-provenance-model.md`（**approved v1.6**）。本 spec 只落地其 intent-scan 半邊；不重新定義任何 shared concept，附加的實作欄位一律以「annotation」標示且不改變上游欄位語義。
-- 姊妹 spec：test-provenance（未寫）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
+- 上游：`2026-07-25-shared-decision-provenance-model.md`（**draft v1.7**，前一放行版本 approved v1.6）。本 spec 只落地其 intent-scan 半邊；不重新定義任何 shared concept，附加的實作欄位一律以「annotation」標示且不改變上游欄位語義。
+- 姊妹 spec：`2026-07-25-test-provenance-spec.md`（**draft v0.7**，審閱中）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
 
 ## 1. 目的與範圍
 
@@ -356,16 +356,40 @@ supersede-requirement     replace-terminal 的 row-3 變體：plan-gate witness�
 resolve-exception         exception-grant Source＋REQ＋scope ruling record＋DP resolve
 reclassify-dp             原子更新 DP.layer＋classificationBasis（人可讀）
                           ＋classificationRulingRef
-commit-test-provenance-resolution
-                          **單筆 CAS 交易**，供下游 test-provenance 收斂一批語義審查結果：
-                            鑄造 semantic evidence record ＋治理 witness ＋ Transition
-                              （`successor=null` 即 retire）
-                            原子 repoint 或 reopen **所有** dependent DP
-                            鑄造 `RecordRef(kind=provenance-batch)`：完整 batch snapshot
-                              ＋batchDigest＋inventoryDigest＋relatedRefs[]（上游 §2 payload）
-                          設計理由：scratch 先寫、tracked 後寫會讓 batch 引用尚未鑄造的 ref，
-                          且 tracked 只留 digest 時內容不可復原。**scratch 因此降為衍生 cache**
-                          —— 遺失時可由 tracked 的 provenance-batch snapshot 完整重建
+commit-test-provenance-batch
+                          **單筆 CAS 交易**，供下游 test-provenance 收斂一批語義審查結果。
+                          Batch 的合法 cardinality 是 **0..N**，不是單數：clean batch 零筆、
+                          不同 ASSUM 的多筆 finding 需多筆 Transition、同一 ASSUM 的多個
+                          sibling test 則共用一筆 —— 單數契約會迫使 clean batch 虛構
+                          Transition，或讓多 finding 被錯誤聚合／漏記。
+
+                          payload:
+                            batchSnapshot
+                            resolutions: ResolutionGroup[0..N]   ← 依 subject clause 分組
+                              ResolutionGroup:
+                                subjectRef
+                                semanticEvidenceRefs[1..N]
+                                governanceWitnessRef
+                                transition                ← successor=null 即 retire
+
+                          不變量：
+                            同一 subject 每輪**至多一筆** Transition
+                            同一 subject 的 sibling findings 可共同引用該 Transition
+                            witness 必須涵蓋該 group 的**全部** semanticEvidenceRefs
+                            同一 subject 若要求不同 successor／action → **整筆 fail-closed**
+                            clean batch 合法表示為 `resolutions=[]`，只提交 provenance-batch record
+
+                          交易內固定順序：
+                            1) 記憶體預鑄全部 ID
+                            2) 建立完整 batchSnapshot 與 resolution groups
+                            3) 計算 canonical batchDigest（上游 §2）
+                            4) 建立 provenance-batch record 與 chain relation（previousBatchRef）
+                            5) 驗 final snapshot（refs＋Transition matrix＋INV-1..4＋head 唯一性）
+                            6) CAS ＋ atomic replace
+
+                          原子涵蓋：全部 evidence／witness／Transition／**所有** dependent DP 的
+                          repoint 或 reopen ／ provenance-batch record。
+                          **scratch 因此降為衍生 cache** —— 遺失時可由 tracked chain 完整重建
 reopen-dp                 **限「當下沒有 successor、確實必須持久化 open 狀態」**（含跨 run）：
                           原子地保存 `priorTerminalRef` ＋清 terminal ＋記 closed trigger。
                           有 successor 時**不得**先 reopen 再 replace（那會產生兩筆交易與
@@ -516,8 +540,12 @@ intentScan: {
 ### v1.1 新增驗收
 
 43. **Retire 有路徑**：`replace-terminal(successor=null)` 產生 `action=retire` 的 Transition，所有 dependent DP **reopen**（無後繼可 repoint）；v1.0 命令面無法達成此結果。
-44. **批次提交原子性**：`commit-test-provenance-resolution` 於**單筆** CAS 交易內完成 evidence／witness／Transition／DP repoint-or-reopen／`provenance-batch` record；中途狀態不可見。
-45. **Scratch 可重建**：刪除全部 scratch 後，由 tracked 的 `provenance-batch` snapshot 可完整重建 batch 內容（非僅 digest）。
+44. **批次提交原子性**：`commit-test-provenance-batch` 於**單筆** CAS 交易內完成全部 evidence／witness／Transition／DP repoint-or-reopen／`provenance-batch` record；中途狀態不可見。
+45. **Scratch 可重建**：刪除全部 scratch 後，由 tracked chain 的 `provenance-batch` snapshot 可完整重建 batch 內容（非僅 digest）。
+46. **Cardinality 0..N**：（i）clean batch 以 `resolutions=[]` 提交，**不虛構** Transition；（ii）兩個不同 ASSUM 的 finding → 兩個 ResolutionGroup、兩筆 Transition；（iii）同一 ASSUM 的三個 sibling test → 一個 group、三筆 `semanticEvidenceRefs`、共用一筆 Transition。
+47. **同 subject 衝突整筆拒**：同一 subject 的兩個 group 要求不同 successor 或不同 action → 整筆 fail-closed，store 不變。
+48. **Witness 涵蓋性**：`governanceWitnessRef` 未涵蓋該 group 全部 `semanticEvidenceRefs` → fail-closed。
+49. **Chain head 唯一**：交易後該 task 的 `provenance-batch` chain 恰有一個 tip；人為造出零個或兩個 tip → loader fail-closed。
 
 ### Store-script 實作層 assertion（非模型規則，直接寫進 script tests）
 
