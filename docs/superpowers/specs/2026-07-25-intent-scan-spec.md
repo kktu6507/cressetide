@@ -3,7 +3,7 @@
 - 狀態：**draft v1.1 — 修訂待 panel**（前一放行版本：approved v1.0，經九輪修訂）。本次變更僅限 §8 store command surface：`replace-terminal` 支援 `successor=null`（retire —— v1.0 的命令面**沒有任何交易能產生 `retire` Transition**，是既有缺口），並新增 `commit-test-provenance-batch` 複合交易（`0..N` ResolutionGroup，下游 test-provenance spec 的持久化需求）。其餘章節未動。
 - 日期：2026-07-25
 - 上游：`2026-07-25-shared-decision-provenance-model.md`（**draft v1.7**，前一放行版本 approved v1.6）。本 spec 只落地其 intent-scan 半邊；不重新定義任何 shared concept，附加的實作欄位一律以「annotation」標示且不改變上游欄位語義。
-- 姊妹 spec：`2026-07-25-test-provenance-spec.md`（**draft v0.7**，審閱中）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
+- 姊妹 spec：`2026-07-25-test-provenance-spec.md`（**draft v0.8**，審閱中）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
 
 ## 1. 目的與範圍
 
@@ -285,7 +285,7 @@ ExitPlanMode 的 plan 內容新增 intent-scan 節：維度 applicability 一覽
 | 檔案 | 分類 | 內容 |
 |---|---|---|
 | `.ctide/provenance.json` | **tracked canonical semantic state（committed）** | sources／clauses／transitions／records／DPs —— 與引用它們的程式／測試一起提交；fresh clone／CI 必須能解析完整 chain |
-| `.ctide/output/pending-governance.json` | per-run scratch（untracked） | task manifest（taskId＋currentTaskDpIds）、預鑄 ID、pending annotations、intentScan snapshot |
+| `.ctide/output/pending-governance.json` | per-run scratch（untracked） | 預鑄 ID、pending annotations、intentScan snapshot、committed head 的 **cache**。**taskId／currentTaskDpIds／baseProvenance／committed head 的權威版本在 tracked TaskState**（上游 §2）—— scratch 僅為 cache，不得成為第二個 truth source |
 | ledger | 既有分類不變 | 觀測 telemetry（§11） |
 
 - **ID**：`<PREFIX>-<ULID>`，plan mode 預鑄、post-approval 持久化同一批。**ULID 只保證新 object id 不碰撞，不簡化 Git merge**：不同 id 的 immutable 物件可自動 set-union；同 subject 多 Transition、同 DP 不同 outcome、同 id 不同 payload **必須 fail-closed reconciliation**。
@@ -296,11 +296,13 @@ ExitPlanMode 的 plan 內容新增 intent-scan 節：維度 applicability 一覽
 
 ```
 validate                  唯讀：refs＋Transition matrix＋INV-1..4＋merge reconciliation
-init-task                 持久化預鑄 taskId 與 DP ID（首次核准）
-resume-task               沿用既有 taskId／currentTaskDpIds（product-tradeoff re-gate 後）：
-                          可加入該輪新預鑄的 final DP ID；**不刪除／不重寫**已持久化物件；
-                          原 persisted DP 必須取得 terminal outcome 或合法明示延後，
-                          不得因回答而「消失」
+init-task                 建立 **tracked TaskState**（上游 §2）：taskId、`baseProvenance`
+                          （inline、immutable）、預鑄 DP ID、`committedProvenanceBatchRef=null`
+resume-task               沿用既有 taskId（product-tradeoff re-gate 後）：
+                          **只能新增** `currentTaskDpIds` membership；
+                          **不得改動 `baseProvenance`**（改換 base 一律拒絕）；
+                          **不刪除／不重寫**已持久化物件；原 persisted DP 必須取得 terminal
+                          outcome 或合法明示延後，不得因回答而「消失」
 append-source             immutable Source（不被 DP terminal ref 引用，可獨立）
 append-record             immutable Record（同上）
 create-requirement        **DP 無關**的 REQ（plan-approved AC）。必填：
@@ -365,31 +367,45 @@ commit-test-provenance-batch
 
                           payload:
                             batchSnapshot
+                            **recordsToCreate[]**            ← 本交易要鑄造的新 record：
+                              semantic evidence drafts
+                              governance witness drafts（既存者不重建，直接引用）
                             resolutions: ResolutionGroup[0..N]   ← 依 subject clause 分組
                               ResolutionGroup:
                                 subjectRef
                                 semanticEvidenceRefs[1..N]
                                 governanceWitnessRef
-                                transition                ← successor=null 即 retire
+                                **transitionDraft**       ← successor=null 即 retire
+
+                          **所有 ref 必須解析至 pre-state 或同交易的 `recordsToCreate`**
+                          —— 只給 ref 而無 draft payload 時 writer 無從鑄造（v1.1 初稿的缺口）
 
                           不變量：
                             同一 subject 每輪**至多一筆** Transition
                             同一 subject 的 sibling findings 可共同引用該 Transition
-                            witness 必須涵蓋該 group 的**全部** semanticEvidenceRefs
+                            witness 必須涵蓋該 group 的**全部** semanticEvidenceRefs ——
+                              機械判準：witness record 的 `resolutionGroupDigest`
+                              == sha256(canonicalJson({subjectRef, action, successor,
+                                                       sortedSemanticEvidenceRefs}))（上游 §2）
                             同一 subject 若要求不同 successor／action → **整筆 fail-closed**
                             clean batch 合法表示為 `resolutions=[]`，只提交 provenance-batch record
 
                           交易內固定順序：
                             1) 記憶體預鑄全部 ID
-                            2) 建立完整 batchSnapshot 與 resolution groups
-                            3) 計算 canonical batchDigest（上游 §2）
-                            4) 建立 provenance-batch record 與 chain relation（previousBatchRef）
-                            5) 驗 final snapshot（refs＋Transition matrix＋INV-1..4＋head 唯一性）
-                            6) CAS ＋ atomic replace
+                            2) 由 recordsToCreate 鑄造 record，建立完整 batchSnapshot 與 groups
+                            3) 計算 canonical batchDigest（上游 §2 total order）
+                            4) 建立 provenance-batch record 與 chain relation
+                               （`previousBatchRef` == **pre-state** 的
+                                `TaskState.committedProvenanceBatchRef`；首筆為 null）
+                            5) **原子更新 `TaskState.committedProvenanceBatchRef`**
+                            6) 驗 final snapshot（refs＋Transition matrix＋INV-1..4＋
+                               relatedRefs derived set＋head 三分狀態＋witness digest）
+                            7) CAS ＋ atomic replace
 
-                          原子涵蓋：全部 evidence／witness／Transition／**所有** dependent DP 的
-                          repoint 或 reopen ／ provenance-batch record。
-                          **scratch 因此降為衍生 cache** —— 遺失時可由 tracked chain 完整重建
+                          原子涵蓋：recordsToCreate／全部 Transition／**所有** dependent DP 的
+                          repoint 或 reopen ／ provenance-batch record ／ TaskState 更新。
+                          **scratch 因此降為衍生 cache** —— 遺失時可由 tracked TaskState 與
+                          chain 完整重建
 reopen-dp                 **限「當下沒有 successor、確實必須持久化 open 狀態」**（含跨 run）：
                           原子地保存 `priorTerminalRef` ＋清 terminal ＋記 closed trigger。
                           有 successor 時**不得**先 reopen 再 replace（那會產生兩筆交易與
@@ -505,7 +521,7 @@ intentScan: {
 8. **Contract derivation**：只取 manifest 可達的 active clause；`behaviorChanging`／`verification` 保留；歷史條款不滲入；skip-scan AC 仍為 REQ。
 9. 機械可驗：plan 文本含 scan 節；plan 階段零 store 寫入。
 10. **初次 outcome 無 Transition**；reopen 替換才有 Transition(subject=舊 clause)。
-11. **plan-gate record 限 supersede**：非 supersede task 全程不建立；row 3 三欄完整。
+11. **plan-gate record 的建立時機**：一般 ExitPlanMode 核准**不**建立 plan-gate record；**row 3 supersede proposal**，以及**上游 Transition matrix 要求 user authority 的具名 clause transition**（ASSUM／DEC supersede → REQ）才建立，且 target／impact／disposition 三欄完整。（v1.0 的「限 supersede、非 supersede task 全程不建立」與正文及 AC38 矛盾，本版更正。）
 12. **Pre-gate false 路徑**：scope ruling 於 pre-gate 判 `false` → Ask 完成後才出現可核准的 plan。
 13. **Merge reconciliation**：兩 branch 同 clause 各建 Transition → 任一 loader fail-closed。
 14. **Product-tradeoff re-gate**：先 `reclassify-dp` 到 `layer=intent` 才回 row 6；重新核准後走 `resume-task`，**沿用同 taskId**，不重建既有 Source／DP／ruling。
@@ -545,7 +561,11 @@ intentScan: {
 46. **Cardinality 0..N**：（i）clean batch 以 `resolutions=[]` 提交，**不虛構** Transition；（ii）兩個不同 ASSUM 的 finding → 兩個 ResolutionGroup、兩筆 Transition；（iii）同一 ASSUM 的三個 sibling test → 一個 group、三筆 `semanticEvidenceRefs`、共用一筆 Transition。
 47. **同 subject 衝突整筆拒**：同一 subject 的兩個 group 要求不同 successor 或不同 action → 整筆 fail-closed，store 不變。
 48. **Witness 涵蓋性**：`governanceWitnessRef` 未涵蓋該 group 全部 `semanticEvidenceRefs` → fail-closed。
-49. **Chain head 唯一**：交易後該 task 的 `provenance-batch` chain 恰有一個 tip；人為造出零個或兩個 tip → loader fail-closed。
+49. **Chain head 唯一**：交易後該 task 的 `provenance-batch` chain 恰有一個 tip 且 == `TaskState.committedProvenanceBatchRef`；人為造出零個或兩個 tip、或 ref ≠ tip → loader fail-closed。
+50. **Draft payload 可實作**：`resolutions` 引用的 evidence／witness 若既不在 pre-state、也不在 `recordsToCreate` → fail-closed；提供 draft 後，交易鑄造出的 record id 與 `semanticEvidenceRefs`／`governanceWitnessRef` 一致。
+51. **TaskState 為權威**：刪除全部 scratch 後，`taskId`／`currentTaskDpIds`／`baseProvenance`／committed head 仍可由 tracked TaskState 取得；`resume-task` 嘗試改動 `baseProvenance` → 拒絕。
+52. **Witness digest 對位**：`governanceWitnessRef` 的 `resolutionGroupDigest` 與該 group 重算值不等（少一筆 sibling evidence、或 successor／action 不同）→ fail-closed。
+53. **relatedRefs derived**：`relatedRefs` 與「recordsToCreate ∪ resolutions 中出現的 ref ∪ 本交易 Transition refs」排序去重後不符 → fail-closed。
 
 ### Store-script 實作層 assertion（非模型規則，直接寫進 script tests）
 
