@@ -1,6 +1,6 @@
 # Test-Provenance Implementation Spec
 
-- 狀態：draft v0.5 —— 四輪修訂（null/status invariant 鏡射、ASSUM 候選不依 status 枚舉、finding 分支完備、resolved 改為可驗終局、失敗閉環 fixed point、effective-oracle digest 可重現）；審閱中
+- 狀態：draft v0.6 —— 五輪修訂（resolutionRef 反借用契約、governance-affected sibling entry、depRef canonical path／span、fixed-point 非收斂終局、crash recovery 契約）；審閱中
 - **上游依賴**：本文依賴 shared model **v1.7**（provenance binding 變動的測試納入 gate scope；binding 拆 pre／post 兩相，現時效力只課於後態）。**v1.7 未過 panel 前本文不得放行。**本文的 inventory 欄位對映上游語義：`tagBefore → preChangeBinding`、`tagAfter → postChangeBinding`。
 - 日期：2026-07-25
 - 上游：`2026-07-25-shared-decision-provenance-model.md`（**draft v1.7**，前一放行版本 approved v1.6）。不重新定義任何 shared concept；附加欄位一律標為 annotation 且不改上游語義。
@@ -180,7 +180,11 @@ head 側存在 tag 指向該 criterion 的測試
 inventoryDigest:  依 **§2 定義的 canonical encoding** 計算（非「同上游」）
 entries[]:
   testRef:        { path, adapterId, structuralId }（deleted 者取 base 側，§2 identity）
-  status:         added | modified | deleted | retagged | moved
+  status:         added | modified | deleted | retagged | moved | governance-affected
+                  （**governance-affected**：body 與 binding 皆未變，但其綁定的 clause
+                   於本次 changed／transitioned／drifted／expired —— 由上游 clause → test
+                   反向閉包產生。未被改動的 sibling 測試因此仍須進 fixed-point review）
+  reason:         content-change | governance-affected
   tagBefore:      { clauseRef, dpRef? } | { expl: true } | null
   tagAfter:       同上 | null
   baseBodyDigest: §2 bodyDigest（status ≠ added 時必填）
@@ -190,6 +194,7 @@ entries[]:
 schema 不變量（**鏡射上游 INV-B1／B2，寫死在 schema，不靠 AC 補救**）：
   status == deleted  ⇔  tagAfter == null
   status != deleted  ⇒  tagAfter != null（必為 clause binding 或 EXPL）
+  reason == governance-affected ⇒ tagBefore == tagAfter ∧ baseBodyDigest == headBodyDigest
   ⇒ 「測試仍存在但把 @src 拿掉」在 schema 層即非法，不會被誤讀成已刪除
   tagBefore == null 僅表示「本次新增」或「既有未標記 legacy」，兩者皆合法
 matching 規則（closed，依序；結果必須 **one-to-one**，任何歧義 fail-closed）：
@@ -215,16 +220,28 @@ adapter 無法可靠歸屬的 assertion style（動態組裝、反射式斷言�
 **Digest 必須可重現**（否則兩個 writer 算不出同一個 `bodyDigest`）：
 
 ```
-depRef            ＝ { path, span? }；span 為 adapter 定義的區段（無則整檔）
+depRef.path       ＝ **repo-relative Git tree path**，分隔符固定 "/"；
+                     不得含 "." / ".." dot-segment；大小寫**依 Git tree 記錄的字面值**
+                     （不做 case-folding —— 跨 Windows／macOS／Linux 才會一致）；
+                     **symlink 不跟隨**，以 tree 中的 link entry 本身計 digest
+depRef.span       ＝ closed schema：{ kind: "whole-file" }
+                                  | { kind: "byte-range", startInclusive, endExclusive }
+                                  | { kind: "anchor", anchorId }（adapter 定義）
 canonical bytes   ＝ UTF-8 無 BOM、LF、不 trim 內部空白（同 §2 body 正規化）
 
-declarationDigest ＝ sha256(canonical declaration bytes)     ← §2 body span
-deps              ＝ effectiveOracleDeps 的**遞迴閉包**，
-                     依 canonical depRef（path 再 span，Unicode code point 序）排序並去重；
+edge contract     ＝ 所有節點（root 宣告與非 root dep）共用同一 effectiveOracleDeps 展開規則
+                     —— 非 root 節點不得改用其他展開方式
+deps(node, tree)  ＝ 於**指定 tree** 內遞迴展開；依 canonical depRef（path 再 span）
+                     Unicode code point 序排序並去重；
                      **cycle**：已訪問集合終止遞迴，不重複計入、不報錯
-depDigest(d)      ＝ sha256(canonical bytes of d)
-effectiveOracleDigest ＝ sha256(canonical JSON [{ref, digest}, …])   ← 依上述排序
-bodyDigest        ＝ sha256(canonical JSON { declarationDigest, effectiveOracleDigest })
+
+declarationDigest(tree) ＝ sha256(canonical declaration bytes)       ← §2 body span
+depDigest(d, tree)      ＝ sha256(canonical bytes of d in tree)
+effectiveOracleDigest(tree) ＝ sha256(canonical JSON [{ref, digest}, …])
+bodyDigest(tree)  ＝ sha256(canonical JSON { declarationDigest, effectiveOracleDigest })
+
+baseBodyDigest ＝ bodyDigest(base tree)      ← 兩棵樹**各自**求閉包，不混用
+headBodyDigest ＝ bodyDigest(head tree)
 ```
 
 動態依賴無法解析時依上述規則 **fail-closed**，不得以空閉包充數。
@@ -248,7 +265,7 @@ results[]:                  ← 對 inventory entry 一對一
       kind: wrong-tag | missing-source | scope-violation | assum-reading-change
       binding?: { clauseRef, dpRef? }   ← 該 finding 所涉綁定
       evidence: 具體指認（斷言位置、超界的斷言、引不出的來源…）
-      resolutionRef?: TransitionRef     ← **僅** assum-reading-change 適用（§8）
+      resolutionRef?: Resolution        ← **僅** assum-reading-change 適用（§8 反借用契約）
 ```
 
 **四個 reviewer 問題彼此獨立**，同一測試可能同時 wrong-tag、missing-source、scope-violation **並且**改變 ASSUM 讀法 —— 單一 enum 必然丟失其中幾項，故改為陣列。
@@ -351,9 +368,41 @@ loop:
   7. → pass 後才進 arbiter
 ```
 
-**user／plan-gate 分支不假設 main thread 當場拿得到 witness** —— 它可以離開 review、重新核准後以 `resume-task` 回到同一 task（intent-scan spec 既有機制）。迴圈的終止條件是 fresh batch 無一般 finding 且所有 `assum-reading-change` 皆有通過驗證的 `resolutionRef`。
+**Crash recovery（scratch 與 tracked store 的跨界提交）** —— 步驟 5 同時涉及 scratch batch、semantic ruling、治理 witness 與 tracked Transition；tracked store 的單筆 atomic transaction **不等於**跨 scratch／tracked 的原子提交：
 
-既有的 pre-review contract-check 呼叫**位置與 exit-0 契約皆不變**；`--provenance` 是新增的第 5 步。步驟 4 的 single-writer 落檔點必須明列於 `SKILL.md`。
+```
+寫入順序（固定）：
+  1) scratch 寫 batch（含 inventoryDigest 與各 body digest）
+  2) tracked store 交易：semantic ruling record ＋治理 witness ＋ Transition，
+     交易 payload 內含 **commitMarker = { taskId, inventoryDigest, batchDigest }**
+  3) scratch 寫入 commitMarker 副本（收尾）
+
+committed 判準：**以 tracked store 內的 commitMarker 為準**（步驟 2 成功即 committed）
+crash 後 resume：
+  tracked 有 marker、scratch 缺副本 → 補寫副本，視為已 committed
+  tracked 無 marker → 步驟 2 未發生；scratch batch 為 **orphan**，忽略並重跑 loop
+checker：只信任 batchDigest 與 tracked commitMarker **相符**的 batch；
+         不符或缺 marker → status=fail（不得採信孤兒 scratch）
+```
+
+**user／plan-gate 分支不假設 main thread 當場拿得到 witness** —— 它可以離開 review、重新核准後以 `resume-task` 回到同一 task（intent-scan spec 既有機制）。
+
+**成功終止條件**：fresh batch 無一般 finding 且所有 `assum-reading-change` 皆有通過驗證的 `resolutionRef`。
+
+**非收斂終局（比照 intent-scan §4，不能只有遙測）**：
+
+```
+fingerprint(state) ＝ 雜湊(inventoryDigest ＋ sorted(每筆 result 的 findings kind 集合))
+本 epoch 內 fingerprint 重複，或迭代數達 cap（預設 8，揭露）
+  → converged=false
+converged=false ⇒ **hard gate lock**：禁止 arbiter READY、禁止交付
+  （與 --provenance status=fail 並行，不倚賴任何一方）
+使用者或 arbiter 提供新裁決 → **開新 epoch**，重置本 epoch 的 fingerprint history 與 budget
+  （總迭代數仍累加）
+揭露：卡住的 findings（testRef＋kind）與**最後兩次 fingerprint**，避免無限震盪不可診斷
+```
+
+既有的 pre-review contract-check 呼叫**位置與 exit-0 契約皆不變**；`--provenance` 是新增的**第 6 步**。**第 5 步**的 single-writer 落檔點必須明列於 `SKILL.md`。
 
 checker 讀 `.ctide/provenance.json`（tracked）、scratch manifest、`ChangedTestInventory`、`TestSemanticReviewBatch` 與已固化的 review-ruling records，**不自行寫入**。
 
@@ -376,15 +425,51 @@ checker 讀 `.ctide/provenance.json`（tracked）、scratch manifest、`ChangedT
 | `wrong-tag` | retag 至正確 clause；拆分；或恢復原斷言使既有 tag 重新成立 | **final fresh batch 中不存在該 finding** |
 | `missing-source` | 刪除該斷言；縮小到既有 clause 支持的範圍；或先走 plan／DP routing 取得 REQ／ASSUM 後再引 | 同上 |
 | `scope-violation` | 拆分成各自有來源的測試；把超界斷言縮回 tag 範圍 | 同上 |
-| `assum-reading-change` | 依 §6 路由取得治理 witness 後建立 revise／retire／supersede Transition | **可保留該 finding**，但 `resolutionRef` 必須指向合法 Transition；checker 驗其 `subject`／`authority`／`ackRef`／witness binding |
+| `assum-reading-change` | 依 §6 路由取得治理 witness 後建立 revise／retire／supersede Transition | **可保留該 finding**，但須通過下方**反借用契約** |
 
 **reviewer 或 main thread 不得把同一筆 finding 直接翻成已處理** —— 語義**認定**可以是 reviewer judgment，處置**已完成**不能只是 reviewer judgment，否則本 spec 宣稱的機械強制落空。
+
+### `resolutionRef` 反借用契約（只驗 Transition 本身不足）
+
+只驗 `subject`／`authority`／`ackRef`／witness binding，證明的是「這是一筆合法處理該 ASSUM 的 Transition」—— **不能**證明它處理的是本 task、本 test、本組 body digest、本 finding、本次 post binding。同一 ASSUM 的舊 Transition，或 sibling test 已用過的 Transition，仍可被借來交差。改為 discriminated union：
+
+```
+Resolution ＝
+  | { mode: "this-round",
+      transitionRef, semanticEvidenceRef }
+  | { mode: "historical-convergence",
+      transitionRef }
+```
+
+**`this-round`**（本輪產生的 Transition）—— checker 驗全部：
+
+```
+semanticEvidence.taskId        == current taskId
+semanticEvidence.testRef       == 本 result.testRef
+semanticEvidence.base/headBodyDigest == 本 result 的對應值
+semanticEvidence.findingKind   == assum-reading-change
+semanticEvidence.binding       == finding.binding
+T.subject                      == finding.binding.clauseRef
+T.ackRef 的治理 witness **明確引用** semanticEvidenceRef
+outcome 對位：
+  post binding 為 clause → T.successor 或其 active successor chain == post binding
+  post 為 EXPL 或 deleted → 落入允許的 cleanup 終局（下一支）
+```
+
+**`historical-convergence`**（清理歷史 stale test）—— 不得要求它回頭引用尚不存在的本輪 evidence：
+
+```
+tagBefore == T.subject
+∧（post binding == T 的 active successor chain，或 post 為 EXPL／deleted）
+```
+
+這支存在的理由：把一個引用早已 superseded ASSUM 的舊測試 retag 到後繼或刪除，是**合法清理**，不應被反借用防線擋住。
 
 `--provenance` 的判準因此是：
 
 ```
 final fresh batch 中存在 wrong-tag | missing-source | scope-violation  → status=fail
-assum-reading-change 缺 resolutionRef，或其 Transition 驗證不通過      → status=fail
+assum-reading-change 缺 resolutionRef，或其 Resolution 未通過上述任一支 → status=fail
 ```
 
 **機械結果與阻擋層**（既有 `contract-check.mjs` 明寫 fail-open、git 錯誤回空集合、永遠 exit 0 —— 不可依賴其現行 exit code 表達 fail-closed）：
@@ -441,7 +526,11 @@ testProvenance: {
   },
   entriesWithoutFindings: n,
   oracleDepTriggered: n,          // 因 effective-oracle 依賴而入 inventory 的測試數
-  reviewLoopIterations: n,        // §8 fixed-point 迴圈輪數
+  governanceAffectedEntries: n,   // 由 clause → test 反向閉包拉進來的 sibling
+  reviewLoopIterations: n,        // 總輪數，跨 epoch 累加
+  convergenceEpochs: n, converged: bool,
+  taskId, inventoryDigest, batchDigest,   // scratch 消失後仍可診斷
+  lastStaleSubject: string | null         // 最後一次判 stale 的對象
   assumTransitions: n,
   adapterMisses: n,
   staleBatchRejections: n,
@@ -458,7 +547,7 @@ testProvenance: {
 | `cressetide/skills/vigil/scripts/contract-check.mjs` | 新增 `--provenance` 模式與結構／來源兩層（§8）；預設模式 exit-0 契約不變 |
 | `cressetide/skills/vigil/scripts/test-adapters.json` | **新增** —— §2 framework adapter registry |
 | `cressetide/skills/vigil/scripts/changed-test-inventory.mjs`（＋tests） | **新增** —— §6 base／head 導出、one-to-one matching、inventoryDigest |
-| `cressetide/skills/vigil/SKILL.md` | **§8 六步順序**；`--provenance` 的新位置（不沿用既有 contract-check 位置）；步驟 4 的 single-writer 落檔點 |
+| `cressetide/skills/vigil/SKILL.md` | **§8 七步 fixed-point loop**；`--provenance` 的新位置（第 6 步，不沿用既有 contract-check 位置）；第 5 步的 single-writer 落檔點與 crash-recovery 順序 |
 | `cressetide/agents/test-reviewer.agent.md` | §9 四個提問；typed finding 輸出格式 |
 | `cressetide/skills/vigil/references/reviewer-selection.md` | §9 的 substitution 例外 |
 | `cressetide/skills/vigil/references/verification-gate.md` | 記載第三個 traceability 方向；紅→綠不變 |
@@ -481,7 +570,7 @@ testProvenance: {
 8. **After-state 失覆蓋才擋**：刪除某 behavior-changing criterion 的唯一測試且無替代 → fail-closed（依 verification-gate，非 clause 生命週期規則）。
 9. **DEC 無對應規則**：刪除 `@src DEC-x` 測試不要求 DEC Transition；若造成 coverage gap 則由 test-reviewer 以一般覆蓋率職責提出。
 10. **ASSUM 無聲修改被擋**：修改 `@src ASSUM-x` 測試且 outcome `assum-reading-change`、卻無 revise／retire／supersede Transition → fail-closed；補上含 ackRef 的 Transition 後通過。
-10b. **ASSUM delete／retag 不可繞過**：行為由 A 改為 B 後（i）刪除該 ASSUM 測試、（ii）retag 成 `EXPL` —— 兩種情形皆進入候選集合、皆需 batch result；含 `assum-reading-change` finding 而無治理 witness 支撐的 Transition → fail-closed。純搬檔／換層且行為仍為 A → `findings` 為空，**不要求** Transition。
+10b. **ASSUM delete／retag 不可繞過**：行為由 A 改為 B 後（i）刪除該 ASSUM 測試、（ii）retag 成 `EXPL` —— 兩種情形皆進入候選集合、皆需 batch result；含 `assum-reading-change` finding 而無通過反借用契約的 `resolutionRef` → fail-closed。純搬檔／換層且行為仍為 A → `findings` 為空，**不要求** Transition。
 11. **ASSUM 升級**：`ASSUM → REQ` supersede 後，原測試 retag 至新 REQ 或對其重做 red→green，兩者皆為合法終局。
 12. **EXPL 不被誤擋**：`@src EXPL` 測試通過結構層（不做 clause resolution），僅受語法與必要-suite policy 約束。
 13. **exception-backed 綁定**：裸 `@src REQ-x` 在 current task 有兩個 DP resolve 到該 REQ 時 → fail-closed；改用 `REQ-x@DP-y` 後通過；恰一個候選時裸形式自動綁定成功。
@@ -514,6 +603,16 @@ testProvenance: {
 40. **ASSUM 第二分支**：`@src ASSUM-x` 測試只有 `wrong-tag`（讀法仍為 A）→ **不**要求 ASSUM Transition；該 finding 依一般規則收斂即可。
 41. **Fixed-point 閉環**：修復 `scope-violation` 後未重算 inventory／batch 即跑 `--provenance` → stale → fail；重算後通過。`supersede → REQ` 的 user witness 路徑可離開 review、重新核准後 `resume-task` 回到同一 taskId 繼續迴圈。
 42. **effectiveOracleDigest 可重現**：兩個獨立 writer 對同一測試與其遞迴 dep 閉包算出相同 `bodyDigest`；dep 之間存在循環引用時不報錯、不重複計入；動態 dep 無法解析時 fail-closed。
+43. **跨平台 digest 一致**：同一 repo 於 Windows 與 Linux 各算一次 `bodyDigest` 相同 —— path 為 repo-relative Git path、分隔符 `/`、大小寫取 Git tree 字面值、symlink 不跟隨。
+44. **base／head 各自求閉包**：dep 在 base 與 head 有不同內容時，`baseBodyDigest` 與 `headBodyDigest` 分別以各自的 tree 計算，不得混用。
+45. **反借用 — 舊 Transition**：同一 ASSUM 的**前一個 run** 的 Transition 被填入 `resolutionRef(mode="this-round")` → `semanticEvidence.taskId` 不符 → fail-closed。
+46. **反借用 — sibling 挪用**：sibling test 已用過的 Transition 被另一個 test 填入 → `semanticEvidence.testRef`／body digest 不符 → fail-closed。
+47. **反借用 — 治理 witness 未引用 evidence**：Transition 本身合法但其 `ackRef` 的治理 witness 未引用本輪 `semanticEvidenceRef` → fail-closed。
+48. **Outcome 對位**：post binding 為 clause 但 `T.successor`（含 active successor chain）不等於該 clause → fail-closed；post 為 `EXPL`／deleted 時落入 cleanup 終局 → 通過。
+49. **Historical-convergence 不被誤擋**：把引用早已 superseded ASSUM 的舊測試 retag 到其 active successor、或刪除 → `mode="historical-convergence"` 通過，**不要求**本輪 semantic evidence。
+50. **Sibling 反向閉包**：兩測試同綁 `ASSUM-x`，只改其中一個並使 `ASSUM-x` 發生 Transition → 未改動的 sibling 以 `status=governance-affected`／`reason=governance-affected` 進 inventory 並須有 batch result；忽略它 → batch 不完整 → fail-closed。
+51. **非收斂 hard lock**：迭代達 cap 或 fingerprint 重複 → `converged=false` → arbiter 不得 `READY`（即使 `--provenance` 因其他原因未 fail）；使用者裁決開新 epoch 後解鎖；揭露含卡住 findings 與最後兩次 fingerprint。
+52. **Crash recovery**：（i）tracked 有 `commitMarker`、scratch 副本缺失 → resume 補寫並視為 committed；（ii）tracked 無 marker → scratch batch 為 orphan，忽略並重跑；（iii）batch 的 `batchDigest` 與 tracked marker 不符 → checker `status=fail`，不採信孤兒 scratch。
 
 ## 14. 邊界與非目標
 
