@@ -1,6 +1,6 @@
 # Shared Decision & Provenance Model（共同決策與溯源模型）
 
-- 狀態：**draft v1.7 — 修訂待 panel**（前一放行版本：approved v1.6）。本次變更：§9 gate scope 改為具名 closed set（含 body／oracle 變更）＋ `lifecycleAffectedClauses` 反向閉包；綁定拆 **pre-change／post-change 兩相**（前態只驗可解析與 snapshot integrity，現時效力只課於後態）；§2 RecordRef 新增 `provenance-batch` kind（供下游批次提交，避免下游自行發明 store 常駐物件）。本文件為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念，可附加實作欄位但不得改變本文欄位語義。
+- 狀態：**draft v1.7 — 修訂待 panel**（前一放行版本：approved v1.6）。本次變更：§9 gate scope 改為具名 closed set（含 body／oracle 變更）＋ `lifecycleAffectedClauses` 反向閉包；綁定拆 **pre-change／post-change 兩相**；§9 新增 **base provenance witness**（前態存在性的 typed 依據）；§2 RecordRef 新增 `provenance-batch` kind，含 canonical `batchDigest`、typed `relatedRefs`、chain 與 **committed head** 規則。本文件為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念，可附加實作欄位但不得改變本文欄位語義。
 - 日期：2026-07-25
 - 範圍：只定義模型 —— 物件、權威、分流、狀態、不變量。scan 觸發與流程、檢查器實作、reviewer prompt 調整、hook 接線屬於下游 spec。
 - 背景：源自 demo1 webhook-dispatcher A/B 實驗的失敗分析 —— 23 個未申報假設以測試形式被釘死（oracle 不相容 23:1）、規格沉默區被單方面填補後用綠色測試鎖死。本模型同時治理「猜錯」（intent 層）與「猜了沒說」（provenance 層）。
@@ -193,10 +193,35 @@ plan-gate:             recordId, target, impact, disposition, approvedBy（user�
 constraint-revocation: recordId, targetConstraintRef, authorityRef（source-authority，
                        匹配 ownerRef）, effectiveAt
 exception-grant:       ＝ Source（contentKind=exception-grant；payload 見 Source schema）
-provenance-batch:      recordId, taskId, batchDigest, batchSnapshot（完整內容，
-                       非僅 digest —— scratch 遺失時須可由 tracked 重建）,
-                       inventoryDigest, relatedRefs[]（本批鑄造的 evidence／witness／
-                       Transition refs）
+provenance-batch:      recordId, taskId, inventoryDigest,
+                       batchSnapshot（完整內容，非僅 digest —— scratch 遺失時須可由 tracked 重建）,
+                       batchDigest（定義見下）,
+                       relatedRefs[]（typed；見下）,
+                       previousBatchRef: RecordRef(provenance-batch) | null（chain）
+```
+
+**`batchDigest` canonicalization**（不得留給實作猜測）：
+
+```
+batchDigest ＝ sha256(canonicalJson(batchSnapshot))
+
+canonicalJson 沿用本文既有規則（UTF-8 無 BOM、LF、object key 依 code point 排序、
+無多餘空白、字串不 trim），另加下列 array 定序：
+  batchSnapshot.results   依 canonical testRef（path 再 structuralId）排序
+  每筆 result 的 findings 依 (closed kind order, binding) 排序
+  relatedRefs             typed ref（{kind, ref}），依 (kind, ref) 排序並**去重**
+```
+
+**Batch chain 與 committed head**（scratch 全失後的單一可信依據）：
+
+```
+committedHead(task) ＝ 該 task 的 provenance-batch 中，
+                      **唯一未被任何其他 batch 的 previousBatchRef 引用**的 chain tip
+零個 head   → fail-closed（chain 斷裂）
+多個 head   → fail-closed（reconciliation required）
+scratch 只快取 head 的 ref；遺失後可由 tracked chain 完整重建
+消費者一律使用**明確的 `provenanceBatchRef`**，不得以 (taskId, inventoryDigest, batchDigest)
+模糊搜尋「對應 record」
 ```
 
 - **ObservationalRef**：對觀察性證據（code path、caller、資料現況）的描述性指標 —— **明文不解析**，disclosure-only；不屬 RecordRef，不參與機械 resolution。
@@ -381,6 +406,24 @@ ASSUM: active → revised(ASSUM-m) | superseded(REQ-m | DEC-m) | retired
 - `driftMode=snapshot-only`（對話、repo 外 policy、external-contract 等）：僅 Check A。**明文非聲稱**：對 snapshot-only 來源不偵測 live drift。
 - `contentKind=exception-grant` 加查 expiry 與 targetConstraintRef 可解析：逾期 → 引用它的 REQ 對任何 DP 不再 applicable，gate scope 內 fail-closed。
 
+### Base provenance witness（前態的 typed 依據）
+
+判斷「某物在本輪之前就已存在」不能靠敘述，必須有可解析的前態輸入：
+
+```
+baseProvenance:
+  treeOid      ← **與 gate scope 測試變更集合所用的同一個 Git base tree**
+                 （「Git base snapshot」與「task-start snapshot」不得混用為同義詞；
+                  本文選定前者為 canonical basis）
+  storePath    ← provenance store 在該 tree 中的路徑
+  storeDigest  ← 該檔 canonical bytes 的 sha256
+```
+
+- checker **必須**自 `treeOid` 讀出 canonical provenance store、驗 `storeDigest` 相符後，才據以判斷任何「前態存在性」。
+- 該路徑在 `treeOid` 中不存在時，採 **canonical empty store**：`{ provenanceVersion: 1, sources: [], clauses: [], transitions: [], records: [], decisionPoints: [] }`，其 digest 亦依 canonical 規則計算。
+- **resume 同一 task 時不得暗中改換 base** —— `treeOid` 一經定於 task 起始即固定；變更須顯式且重跑受影響判斷。
+- 缺 witness、witness 指向錯誤 tree／store、或 digest 不符 → **fail-closed**（不得退化為「當作不存在」或「當作存在」）。
+
 **Gate scope（brownfield，單值化）**：
 
 ```
@@ -474,7 +517,7 @@ INV-B2：post-state 測試存在 ⇒ binding 必為 clause binding 或 EXPL
 | 語義 | assertion 是否被 clause 蘊含、是否超出 tag 範圍 | test discipline 判斷 | 全部 |
 | Legacy | gate scope 以外的既有測試／條款 | 允許全量語義觀測；findings **observe-only**，不阻擋本次 run | scope 外 |
 
-**v1.7 驗收案例**（gate 契約層）：① inactive clause → active successor：通過；② inactive clause → `EXPL`：通過；③ 移除引用失效 clause 的 stale tagged test：通過；④ 移除未標記 legacy test（`preState = {exists:true, binding:null}`）：通過；⑤ move ＋ 改綁：前後兩相各自驗證；⑥ 過期 exception-backed REQ → 替換或移除：通過；⑦ 後態 clause 有 Source drift：fail-closed；⑧ **move-only**（綁定 A→A、僅位置變動）：identity 維持，通過；⑨ **過期 exception 的 DP 收斂**：有 applicable successor → 所有受影響 DP repoint；無 → reopen（INV-4 影響閉包）；⑩ **malformed／dangling 原始 tag**（語法不合法、或 ID 解析不到任何 clause）：**在映射為 binding 之前** fail-closed —— 不得先當成 `binding == null` 再走 existence 分支，那會把語法錯誤誤讀成「測試不存在」；⑪ **added test**（`exists:false, null` → `exists:true, clause|EXPL`）：通過，前態不做 resolution；⑫ **修改未標記 legacy**（`exists:true, null` → `exists:true, clause|EXPL`）：通過，且後態必須有綁定；⑬ **sibling 反向閉包**：兩測試同綁 `ASSUM-x`，只改其中一個並使 `ASSUM-x` 發生 Transition → 未被改動的 sibling 仍進 gate scope；⑭ **body-only 變更**：tag 不變、只改斷言 → 入 scope（不得因 binding 未變而落到 observe-only）；⑮ **oracle-only 變更**：tag 與宣告本體皆不變、只改 golden 或 helper → 入 scope；⑯ **clause 穩定時不擴散**：普通改斷言且其 clause 無生命週期事件 → **不**觸發 reverseClosure，sibling 不被拉入；⑰ **`EXPL` → deleted**：前態為 `EXPL` 的測試被移除 → 通過（前態不做 resolution，後態 `exists:false`）。
+**v1.7 驗收案例**（gate 契約層）：① inactive clause → active successor：通過；② inactive clause → `EXPL`：通過；③ 移除引用失效 clause 的 stale tagged test：通過；④ 移除未標記 legacy test（`preState = {exists:true, binding:null}`）：通過；⑤ move ＋ 改綁：前後兩相各自驗證；⑥ 過期 exception-backed REQ → 替換或移除：通過；⑦ 後態 clause 有 Source drift：fail-closed；⑧ **move-only**（綁定 A→A、僅位置變動）：identity 維持，通過；⑨ **過期 exception 的 DP 收斂**：有 applicable successor → 所有受影響 DP repoint；無 → reopen（INV-4 影響閉包）；⑩ **malformed／dangling 原始 tag**（語法不合法、或 ID 解析不到任何 clause）：**在映射為 binding 之前** fail-closed —— 不得先當成 `binding == null` 再走 existence 分支，那會把語法錯誤誤讀成「測試不存在」；⑪ **added test**（`exists:false, null` → `exists:true, clause|EXPL`）：通過，前態不做 resolution；⑫ **修改未標記 legacy**（`exists:true, null` → `exists:true, clause|EXPL`）：通過，且後態必須有綁定；⑬ **sibling 反向閉包**：兩測試同綁 `ASSUM-x`，只改其中一個並使 `ASSUM-x` 發生 Transition → 未被改動的 sibling 仍進 gate scope；⑭ **body-only 變更**：tag 不變、只改斷言 → 入 scope（不得因 binding 未變而落到 observe-only）；⑮ **oracle-only 變更**：tag 與宣告本體皆不變、只改 golden 或 helper → 入 scope；⑯ **clause 穩定時不擴散**：普通改斷言且其 clause 無生命週期事件 → **不**觸發 reverseClosure，sibling 不被拉入；⑰ **`EXPL` → deleted**：前態為 `EXPL` 的測試被移除 → 通過（前態不做 resolution，後態 `exists:false`）；⑱ **base witness 缺席／錯指／digest 不符** → 三者各自 fail-closed，不得退化為預設判斷；⑲ **canonical empty store**：`treeOid` 中無 store 檔 → 採空 store 且 digest 可驗，前態存在性一律為否；⑳ **head 規則**：零個 chain tip → fail-closed；兩個以上 tip → fail-closed（reconciliation required）；㉑ **base 不得暗換**：resume 同一 task 時 `treeOid` 維持不變。
 
 **Assurance boundary（明文）**：機械檢查止於 presence／resolution／digest／status／mechanicallyApplicable／ref 一致性比對。**scopeCovers 是 intent discipline 的語義判斷**（機械層驗 ruling 存在、intent principal、及 `record.subjectRef == current DP`；不判斷 scopeCovers 的語義真實性）；語義蘊含由 test discipline 審；ownerRef 匹配驗的是模型內 ref 相等，**不驗現實身分**（non-adversarial 邊界，同 demo1 receipt 的定位）。presence 級檢查不得宣稱為完整 provenance 保證（failure memory：presence-only check 曾被當 coverage 讀）。
 
