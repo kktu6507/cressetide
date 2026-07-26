@@ -390,6 +390,11 @@ gate scope ＝ **本次 provenance binding 有變動的測試**
            ∪ 本次新增／修改的 clause／Source／Transition
            ∪ 所有 current terminal ref 指向本次 changed／transitioned／drifted／expired
              clause 的 DP（INV-4 影響閉包）
+           ∪ **所有目前綁定指向上述 clause 的測試（clause → test 反向閉包）**
+             —— 兩個測試同綁一個 clause 時，只改其中一個會觸發該 clause 的 Transition，
+                未被改動的 sibling 不會出現在「binding 有變動」的集合裡，卻仍指向已失效
+                的 clause。反向閉包把它們拉進 scope；下游須以 lifecycle 觸發的 entry
+                表示（body／binding 未變亦然）
 ```
 
 ### 綁定兩相（v1.7）—— 前態不受現時效力課責
@@ -414,7 +419,9 @@ INV-B2：post-state 測試存在 ⇒ binding 必為 clause binding 或 EXPL
 
 | 相 | 課予的條件 | 用途 |
 |---|---|---|
-| **preChangeBinding** | clause 與 Source **可解析** ∧ immutable snapshot integrity（Check A）成立。**不要求** active／mechanicallyApplicable／Source live-current／exception 未過期 | scope closure、語義審查輸入 |
+| **preChangeBinding ＝ clause binding** | clause 與 Source **可解析** ∧ immutable snapshot integrity（Check A）成立。**不要求** active／mechanicallyApplicable／Source live-current／exception 未過期 | scope closure、語義審查輸入 |
+| **preChangeBinding ＝ null** | **不做** clause／Source resolution。僅在 `preState` 定義的兩種情形合法：測試本次新增（`exists:false`）、或既有未標記 legacy（`exists:true`） | 同上 |
+| **preChangeBinding ＝ EXPL** | **不做** clause／Source resolution | 同上 |
 | **postChangeBinding**（非 null 且非 EXPL） | clause `active ∧ mechanicallyApplicable`（per-kind §2）∧ Source 檢查（Check A/B）∧ exception chain 有效（owner 相符、未過期） | 現時效力 |
 | **postState.exists == false**（測試已移除） | **無 post 驗證**；「tag 必須存在」不適用。判定依 `exists`，**不得**由 `binding == null` 反推（INV-B1／B2） | — |
 | **postChangeBinding == EXPL** | 不做 clause／Source resolution | — |
@@ -434,20 +441,23 @@ INV-B2：post-state 測試存在 ⇒ binding 必為 clause binding 或 EXPL
 | 任意 | active 但 **Source drift** 的 clause | **fail-closed**（後態課責） |
 | clause A | **測試仍存在但綁定被移除** | **fail-closed** —— `postState.exists == true` 時 binding 不得為 null（INV-B2）；不得被誤讀成「已移除」 |
 | clause A | clause A（**僅位置移動**） | **通過** —— identity 維持，前後同綁定 |
+| `null`（`exists:false`，**本次新增**） | clause 或 `EXPL` | **通過** —— 前態不做 resolution |
+| `null`（`exists:true`，**未標記 legacy 被修改**） | clause 或 `EXPL` | **通過** —— 前態不做 resolution；後態必須有綁定（INV-B2 的 ratchet） |
+| `EXPL` | clause 或 `EXPL` | **通過** —— 前態不做 resolution |
 
 ### 檢查分層
 
 | 層 | 內容 | 失敗行為 | 範圍 |
 |---|---|---|---|
 | 結構（**postChangeBinding**） | binding 非 null 且非 EXPL 時：tag 存在、ID 可解析、clause **active ∧ mechanicallyApplicable**（per-kind，§2）；exception-backed 另驗 `scopeRulingRef` 可解析 ∧ `record.by == {discipline: intent}` ∧ **`record.subjectRef == current DP`**（否則 retag 至後繼或重新裁決）。binding 為 `null`（測試已移除）→ 本列不適用；`EXPL` → 不做 clause resolution | fail-closed | gate scope |
-| 結構（**preChangeBinding**） | 僅驗 clause／Source **可解析** ＋ snapshot integrity（Check A）。**不課** active／applicable／live-current／未過期 —— 前態是歷史事實，合法修復正是從失效綁定移走 | fail-closed（僅可解析性） | gate scope |
+| 結構（**preChangeBinding**） | binding 為 **clause** 時：僅驗 clause／Source **可解析** ＋ snapshot integrity（Check A）；**不課** active／applicable／live-current／未過期 —— 前態是歷史事實，合法修復正是從失效綁定移走。binding 為 **null**（本次新增／未標記 legacy）或 **EXPL** 時：**不做 clause／Source resolution**，本列僅驗該前態符合 `preState` 型別 | fail-closed（僅可解析性／型別合法性） | gate scope |
 | 結構（Transition） | 對每筆本次新增 Transition 驗 §2 合法性表的 `subject × action × successor × authority` **全矩陣**，含 **witness binding**（§2：ackRef payload 與 authorityRef principal／subject 的綁定 —— review-ruling.by 與 subjectRef、user-answer.subjectRef == 該 DP、plan-gate target 與三欄一致 §7、constraint-revocation 與 ownerRef 相等）、ASSUM 的 governedBy／domain-transfer 治理；ackRef 依 External-record contract 解析 | fail-closed | gate scope |
 | 來源 | Source 存在、Check A（一律）；**Check B 與 exception 現時效力只課於 postChangeBinding 所引用者**：`contentKind=exception-grant` 完整鏈 —— resolve targetConstraintRef → target 必須是 `authority=hard-constraint` 的 REQ → `grantAuthorityRef == target.ownerRef` → 未過期，任一失敗 fail-closed。preChangeBinding 所引用的 Source 只課 Check A | fail-closed | gate scope |
 | DP 完整性 | 對 gate scope 內每個 DP（含 INV-4 影響閉包）：terminal refs 三者互斥、status 與 terminal ref 型別一致（resolved↔REQ、decided↔DEC、assumed↔ASSUM）、terminal ref 指向 active ∧ applicable clause、有 applicable successor 時已全部 repoint、無 applicable successor 時已全部 reopen | fail-closed | gate scope |
 | 語義 | assertion 是否被 clause 蘊含、是否超出 tag 範圍 | test discipline 判斷 | 全部 |
 | Legacy | gate scope 以外的既有測試／條款 | 允許全量語義觀測；findings **observe-only**，不阻擋本次 run | scope 外 |
 
-**v1.7 驗收案例**（gate 契約層）：① inactive clause → active successor：通過；② inactive clause → `EXPL`：通過；③ 移除引用失效 clause 的 stale tagged test：通過；④ 移除未標記 legacy test（`preState = {exists:true, binding:null}`）：通過；⑤ move ＋ 改綁：前後兩相各自驗證；⑥ 過期 exception-backed REQ → 替換或移除：通過；⑦ 後態 clause 有 Source drift：fail-closed；⑧ **move-only**（綁定 A→A、僅位置變動）：identity 維持，通過；⑨ **過期 exception 的 DP 收斂**：有 applicable successor → 所有受影響 DP repoint；無 → reopen（INV-4 影響閉包）；⑩ **malformed／dangling 原始 tag**（語法不合法、或 ID 解析不到任何 clause）：**在映射為 binding 之前** fail-closed —— 不得先當成 `binding == null` 再走 existence 分支，那會把語法錯誤誤讀成「測試不存在」。
+**v1.7 驗收案例**（gate 契約層）：① inactive clause → active successor：通過；② inactive clause → `EXPL`：通過；③ 移除引用失效 clause 的 stale tagged test：通過；④ 移除未標記 legacy test（`preState = {exists:true, binding:null}`）：通過；⑤ move ＋ 改綁：前後兩相各自驗證；⑥ 過期 exception-backed REQ → 替換或移除：通過；⑦ 後態 clause 有 Source drift：fail-closed；⑧ **move-only**（綁定 A→A、僅位置變動）：identity 維持，通過；⑨ **過期 exception 的 DP 收斂**：有 applicable successor → 所有受影響 DP repoint；無 → reopen（INV-4 影響閉包）；⑩ **malformed／dangling 原始 tag**（語法不合法、或 ID 解析不到任何 clause）：**在映射為 binding 之前** fail-closed —— 不得先當成 `binding == null` 再走 existence 分支，那會把語法錯誤誤讀成「測試不存在」；⑪ **added test**（`exists:false, null` → `exists:true, clause|EXPL`）：通過，前態不做 resolution；⑫ **修改未標記 legacy**（`exists:true, null` → `exists:true, clause|EXPL`）：通過，且後態必須有綁定；⑬ **sibling 反向閉包**：兩測試同綁 `ASSUM-x`，只改其中一個並使 `ASSUM-x` 發生 Transition → 未被改動的 sibling 仍進 gate scope。
 
 **Assurance boundary（明文）**：機械檢查止於 presence／resolution／digest／status／mechanicallyApplicable／ref 一致性比對。**scopeCovers 是 intent discipline 的語義判斷**（機械層驗 ruling 存在、intent principal、及 `record.subjectRef == current DP`；不判斷 scopeCovers 的語義真實性）；語義蘊含由 test discipline 審；ownerRef 匹配驗的是模型內 ref 相等，**不驗現實身分**（non-adversarial 邊界，同 demo1 receipt 的定位）。presence 級檢查不得宣稱為完整 provenance 保證（failure memory：presence-only check 曾被當 coverage 讀）。
 
