@@ -380,21 +380,34 @@ ASSUM: active → revised(ASSUM-m) | superseded(REQ-m | DEC-m) | retired
 **Gate scope（brownfield，單值化）**：
 
 ```
-gate scope ＝ **本次 provenance binding 有變動的測試**
-             （新增、移除、binding 改變、或位置移動 —— v1.7 擴充：舊版只列「新增／修改」，
-              會使移除或改綁的測試落到 scope 外 observe-only。此集合的機械導出方式
-              由下游 implementation spec 定義，本文不依賴其欄位名）
+gate scope ＝ **provenanceRelevantTestChanges**（closed set）
+             ＝ existence change            （新增／移除）
+             ∪ binding change              （改綁，含改成／改自 EXPL）
+             ∪ identity／location change   （改名／搬移）
+             ∪ **declaration body change**  （tag 不變、斷言改了）
+             ∪ **effective-oracle dependency change**
+                                           （tag 與宣告本體皆不變，但 helper／fixture／
+                                            snapshot／golden／外部 expected-data 改了）
+             後兩者為 v1.7 補列 —— 若只寫「binding 有變動」，**最常見的改斷言**
+             反而落到 scope 外 observe-only。此集合的機械導出方式由下游
+             implementation spec 定義，本文不依賴其欄位名
            ∪ 這些測試的 **preChangeBinding 與 postChangeBinding** 所引用的 clause
              及其 sourceRef／basisRefs Source（含 Transition 推導的 status 與 applicable）
              —— 前態必須在 scope 內，否則「改綁即脫逃」
            ∪ 本次新增／修改的 clause／Source／Transition
            ∪ 所有 current terminal ref 指向本次 changed／transitioned／drifted／expired
              clause 的 DP（INV-4 影響閉包）
-           ∪ **所有目前綁定指向上述 clause 的測試（clause → test 反向閉包）**
-             —— 兩個測試同綁一個 clause 時，只改其中一個會觸發該 clause 的 Transition，
-                未被改動的 sibling 不會出現在「binding 有變動」的集合裡，卻仍指向已失效
-                的 clause。反向閉包把它們拉進 scope；下游須以 lifecycle 觸發的 entry
-                表示（body／binding 未變亦然）
+           ∪ **reverseClosure**（clause → test 反向閉包，seed 具名如下）
+
+lifecycleAffectedClauses ＝ semanticallyChangedClauses   （本次內容語義變更者）
+                         ∪ transitionedClauses          （本次有生效 Transition 者）
+                         ∪ driftedClauses               （Check B drift）
+                         ∪ expiredClauses               （exception 逾期）
+reverseClosure ＝ 目前綁定指向 **lifecycleAffectedClauses** 的所有測試
+
+**seed 必須具名，不得用「上述 clause」代稱** —— 後者會把「僅因某個變更測試的 pre／post
+binding 而進 scope、但生命週期毫無變動」的 clause 也算進去，於是一次普通的改斷言就會
+擴散成該 clause 全體 sibling 的 review。反向閉包只由生命週期事件觸發。
 ```
 
 ### 綁定兩相（v1.7）—— 前態不受現時效力課責
@@ -457,7 +470,7 @@ INV-B2：post-state 測試存在 ⇒ binding 必為 clause binding 或 EXPL
 | 語義 | assertion 是否被 clause 蘊含、是否超出 tag 範圍 | test discipline 判斷 | 全部 |
 | Legacy | gate scope 以外的既有測試／條款 | 允許全量語義觀測；findings **observe-only**，不阻擋本次 run | scope 外 |
 
-**v1.7 驗收案例**（gate 契約層）：① inactive clause → active successor：通過；② inactive clause → `EXPL`：通過；③ 移除引用失效 clause 的 stale tagged test：通過；④ 移除未標記 legacy test（`preState = {exists:true, binding:null}`）：通過；⑤ move ＋ 改綁：前後兩相各自驗證；⑥ 過期 exception-backed REQ → 替換或移除：通過；⑦ 後態 clause 有 Source drift：fail-closed；⑧ **move-only**（綁定 A→A、僅位置變動）：identity 維持，通過；⑨ **過期 exception 的 DP 收斂**：有 applicable successor → 所有受影響 DP repoint；無 → reopen（INV-4 影響閉包）；⑩ **malformed／dangling 原始 tag**（語法不合法、或 ID 解析不到任何 clause）：**在映射為 binding 之前** fail-closed —— 不得先當成 `binding == null` 再走 existence 分支，那會把語法錯誤誤讀成「測試不存在」；⑪ **added test**（`exists:false, null` → `exists:true, clause|EXPL`）：通過，前態不做 resolution；⑫ **修改未標記 legacy**（`exists:true, null` → `exists:true, clause|EXPL`）：通過，且後態必須有綁定；⑬ **sibling 反向閉包**：兩測試同綁 `ASSUM-x`，只改其中一個並使 `ASSUM-x` 發生 Transition → 未被改動的 sibling 仍進 gate scope。
+**v1.7 驗收案例**（gate 契約層）：① inactive clause → active successor：通過；② inactive clause → `EXPL`：通過；③ 移除引用失效 clause 的 stale tagged test：通過；④ 移除未標記 legacy test（`preState = {exists:true, binding:null}`）：通過；⑤ move ＋ 改綁：前後兩相各自驗證；⑥ 過期 exception-backed REQ → 替換或移除：通過；⑦ 後態 clause 有 Source drift：fail-closed；⑧ **move-only**（綁定 A→A、僅位置變動）：identity 維持，通過；⑨ **過期 exception 的 DP 收斂**：有 applicable successor → 所有受影響 DP repoint；無 → reopen（INV-4 影響閉包）；⑩ **malformed／dangling 原始 tag**（語法不合法、或 ID 解析不到任何 clause）：**在映射為 binding 之前** fail-closed —— 不得先當成 `binding == null` 再走 existence 分支，那會把語法錯誤誤讀成「測試不存在」；⑪ **added test**（`exists:false, null` → `exists:true, clause|EXPL`）：通過，前態不做 resolution；⑫ **修改未標記 legacy**（`exists:true, null` → `exists:true, clause|EXPL`）：通過，且後態必須有綁定；⑬ **sibling 反向閉包**：兩測試同綁 `ASSUM-x`，只改其中一個並使 `ASSUM-x` 發生 Transition → 未被改動的 sibling 仍進 gate scope；⑭ **body-only 變更**：tag 不變、只改斷言 → 入 scope（不得因 binding 未變而落到 observe-only）；⑮ **oracle-only 變更**：tag 與宣告本體皆不變、只改 golden 或 helper → 入 scope；⑯ **clause 穩定時不擴散**：普通改斷言且其 clause 無生命週期事件 → **不**觸發 reverseClosure，sibling 不被拉入；⑰ **`EXPL` → deleted**：前態為 `EXPL` 的測試被移除 → 通過（前態不做 resolution，後態 `exists:false`）。
 
 **Assurance boundary（明文）**：機械檢查止於 presence／resolution／digest／status／mechanicallyApplicable／ref 一致性比對。**scopeCovers 是 intent discipline 的語義判斷**（機械層驗 ruling 存在、intent principal、及 `record.subjectRef == current DP`；不判斷 scopeCovers 的語義真實性）；語義蘊含由 test discipline 審；ownerRef 匹配驗的是模型內 ref 相等，**不驗現實身分**（non-adversarial 邊界，同 demo1 receipt 的定位）。presence 級檢查不得宣稱為完整 provenance 保證（failure memory：presence-only check 曾被當 coverage 讀）。
 
