@@ -3,7 +3,7 @@
 - 狀態：**draft v1.1 — 修訂待 panel**（前一放行版本：approved v1.0，經九輪修訂）。本次變更僅限 §8 store command surface：`replace-terminal` 支援 `successor=null`（retire —— v1.0 的命令面**沒有任何交易能產生 `retire` Transition**，是既有缺口），並新增 `commit-test-provenance-batch` 複合交易（`0..N` ResolutionGroup，下游 test-provenance spec 的持久化需求）。其餘章節未動。
 - 日期：2026-07-25
 - 上游：`2026-07-25-shared-decision-provenance-model.md`（**draft v1.7**，前一放行版本 approved v1.6）。本 spec 只落地其 intent-scan 半邊；不重新定義任何 shared concept，附加的實作欄位一律以「annotation」標示且不改變上游欄位語義。
-- 姊妹 spec：`2026-07-25-test-provenance-spec.md`（**draft v0.8**，審閱中）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
+- 姊妹 spec：`2026-07-25-test-provenance-spec.md`（**draft v0.9**，審閱中）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
 
 ## 1. 目的與範圍
 
@@ -176,10 +176,14 @@ Proposal 在 plan mode 只存在於 plan 文本；核准後才由 main thread �
    一般核准仍是流程事件、**不建 RecordRef**。plan-gate record 的鑄造時機是
    **「row 3 supersede proposal，或上游 Transition matrix 明文要求 user authority 的
    任何 clause transition」**（例：ASSUM／DEC supersede → REQ）：
-     已有指向該 DP 的明示 user-answer → 以它作 witness，不另建 plan-gate record；
-     否則 → plan 必須**具名揭露 subject → successor**，核准後建立 target == subject 的
-            plan-gate witness（impact／disposition 描述以該 successor 取代原
-            provisional／decided outcome 的效果）。
+     **clause supersede／retire 的 Transition `ackRef` 一律必須是 `plan-gate`**
+     （上游 witness binding）。已有指向該 DP 的明示 user-answer **可作為 plan gate 的
+     輸入**，但**不能直接充當該 Transition 的 witness、不得跳過 plan gate**。
+     流程固定為：plan **具名揭露 subject → successor** → 核准 → 建立 target == subject 的
+     plan-gate witness（impact／disposition 描述以該 successor 取代原
+     provisional／decided outcome 的效果）。
+     `user-answer` 僅用於上游明定的「Ask 回答**直接產生**的轉移」，不涵蓋 clause
+     supersede／retire。
    （v0.8 的「僅 row 3」是本 spec 的過度收窄 —— 上游 witness binding 本就涵蓋這些
    transition；此處修正下游，不動上游。）
 2. 存在 pendingReviewPrincipal DP —— row-7 checkpoint（上游四分逐支）：
@@ -284,7 +288,7 @@ ExitPlanMode 的 plan 內容新增 intent-scan 節：維度 applicability 一覽
 
 | 檔案 | 分類 | 內容 |
 |---|---|---|
-| `.ctide/provenance.json` | **tracked canonical semantic state（committed）** | sources／clauses／transitions／records／DPs —— 與引用它們的程式／測試一起提交；fresh clone／CI 必須能解析完整 chain |
+| `.ctide/provenance.json` | **tracked canonical semantic state（committed）** | `sources`／`clauses`／`transitions`／`records`／`decisionPoints`／**`taskStates`**（上游 §2 carrier）—— 與引用它們的程式／測試一起提交；fresh clone／CI 必須能解析完整 chain 與 task membership |
 | `.ctide/output/pending-governance.json` | per-run scratch（untracked） | 預鑄 ID、pending annotations、intentScan snapshot、committed head 的 **cache**。**taskId／currentTaskDpIds／baseProvenance／committed head 的權威版本在 tracked TaskState**（上游 §2）—— scratch 僅為 cache，不得成為第二個 truth source |
 | ledger | 既有分類不變 | 觀測 telemetry（§11） |
 
@@ -370,12 +374,16 @@ commit-test-provenance-batch
                             **recordsToCreate[]**            ← 本交易要鑄造的新 record：
                               semantic evidence drafts
                               governance witness drafts（既存者不重建，直接引用）
-                            resolutions: ResolutionGroup[0..N]   ← 依 subject clause 分組
-                              ResolutionGroup:
+                            resolutions: **ResolutionGroupDraft**[0..N] ← 依 subject clause 分組
+                              ResolutionGroupDraft（**輸入型別**）:
                                 subjectRef
                                 semanticEvidenceRefs[1..N]
                                 governanceWitnessRef
                                 **transitionDraft**       ← successor=null 即 retire
+
+                          提交後 batchSnapshot 內對應為 **ResolutionGroup**（**持久型別**），
+                          其欄位為 **`transitionRef`**（交易鑄造 ID 後的實體）——
+                          同一欄位不得在不同 spec 同時代表 draft 與 persisted object
 
                           **所有 ref 必須解析至 pre-state 或同交易的 `recordsToCreate`**
                           —— 只給 ref 而無 draft payload 時 writer 無從鑄造（v1.1 初稿的缺口）
@@ -566,6 +574,9 @@ intentScan: {
 51. **TaskState 為權威**：刪除全部 scratch 後，`taskId`／`currentTaskDpIds`／`baseProvenance`／committed head 仍可由 tracked TaskState 取得；`resume-task` 嘗試改動 `baseProvenance` → 拒絕。
 52. **Witness digest 對位**：`governanceWitnessRef` 的 `resolutionGroupDigest` 與該 group 重算值不等（少一筆 sibling evidence、或 successor／action 不同）→ fail-closed。
 53. **relatedRefs derived**：`relatedRefs` 與「recordsToCreate ∪ resolutions 中出現的 ref ∪ 本交易 Transition refs」排序去重後不符 → fail-closed。
+54. **user witness 一律 plan-gate**：`ASSUM／DEC supersede → REQ` 僅提供既有 `user-answer` 而無 plan-gate record → **fail-closed**；補上具名揭露與核准後的 plan-gate witness 才通過。Ask 回答直接產生的轉移仍以 `user-answer` 為 witness。
+55. **Draft／persisted 型別分離**：交易輸入為 `ResolutionGroupDraft.transitionDraft`；提交後 batchSnapshot 內為 `ResolutionGroup.transitionRef`，指向實際鑄造的 Transition。
+56. **taskStates carrier**：`init-task` 寫入 `.ctide/provenance.json` 的 `taskStates`；fresh clone 可讀回 taskId／membership／baseProvenance／committed head。
 
 ### Store-script 實作層 assertion（非模型規則，直接寫進 script tests）
 
