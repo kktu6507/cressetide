@@ -59,10 +59,19 @@ export function canonicalText(value) {
   return value.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
+// TRUE code-point order. JavaScript's `<` on strings compares UTF-16 code UNITS, which orders any
+// non-BMP character (a surrogate pair, lead unit 0xD800-0xDBFF) BEFORE U+E000-U+FFFF — the opposite
+// of code-point order. The spec says "Unicode code point", so iterate by code point.
 export function compareCodePoint(a, b) {
-  const x = String(a);
-  const y = String(b);
-  return x < y ? -1 : x > y ? 1 : 0;
+  const x = Array.from(String(a));
+  const y = Array.from(String(b));
+  const n = Math.min(x.length, y.length);
+  for (let i = 0; i < n; i++) {
+    const cx = x[i].codePointAt(0);
+    const cy = y[i].codePointAt(0);
+    if (cx !== cy) return cx < cy ? -1 : 1;
+  }
+  return x.length === y.length ? 0 : x.length < y.length ? -1 : 1;
 }
 
 export function canonicalJson(value) {
@@ -109,6 +118,50 @@ export function sortTypedRefs(refs) {
     out.push({ kind: r.kind, ref: r.ref });
   }
   out.sort((a, b) => compareCodePoint(a.kind, b.kind) || compareCodePoint(a.ref, b.ref));
+  return out;
+}
+
+// shared §2 batchDigest total order. The caller's insertion order must NOT reach the digest:
+// results sort by the canonical testRef triple, findings by (closed kind order, binding, full
+// canonical bytes) with a null binding first.
+export const FINDING_KIND_ORDER = ["wrong-tag", "missing-source", "scope-violation", "assum-reading-change"];
+
+function findingSortKey(finding) {
+  const kindIndex = FINDING_KIND_ORDER.indexOf(finding && finding.kind);
+  return [
+    kindIndex < 0 ? FINDING_KIND_ORDER.length : kindIndex,          // unknown kinds sort last, deterministically
+    finding && finding.binding === undefined ? 0 : 1,               // null-first
+    finding && finding.binding === undefined ? "" : canonicalJson(finding.binding),
+    canonicalJson(finding),                                          // final tie-break: full canonical bytes
+  ];
+}
+
+function compareKeys(a, b) {
+  for (let i = 0; i < a.length; i++) {
+    if (typeof a[i] === "number") { if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1; continue; }
+    const c = compareCodePoint(a[i], b[i]);
+    if (c !== 0) return c;
+  }
+  return 0;
+}
+
+export function canonicalizeBatchSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return snapshot;
+  const out = { ...snapshot };
+  if (Array.isArray(out.results)) {
+    out.results = out.results
+      .map((r) => {
+        const copy = { ...r };
+        if (Array.isArray(copy.findings)) {
+          copy.findings = [...copy.findings].sort((x, y) => compareKeys(findingSortKey(x), findingSortKey(y)));
+        }
+        return copy;
+      })
+      .sort((x, y) => compareKeys(
+        [String(x.testRef?.path ?? ""), String(x.testRef?.adapterId ?? ""), String(x.testRef?.structuralId ?? "")],
+        [String(y.testRef?.path ?? ""), String(y.testRef?.adapterId ?? ""), String(y.testRef?.structuralId ?? "")],
+      ));
+  }
   return out;
 }
 
@@ -378,9 +431,11 @@ export function mechanicallyApplicable(index, clauseId, now = Date.now()) {
     if (!integrity.ok) return { ok: false, reason: integrity.reason };
     if (src.contentKind === "exception-grant") {
       if (!index.clauses.get(src.targetConstraintRef)) return { ok: false, reason: "exception-target-unresolvable" };
-      if (src.expiry !== undefined && src.expiry !== null && Date.parse(src.expiry) <= now) {
-        return { ok: false, reason: "exception-expired" };
-      }
+      // An unparseable expiry must NOT fail open: Date.parse returns NaN and every comparison with
+      // NaN is false, which would silently read as "not expired".
+      const expiresAt = Date.parse(src.expiry);
+      if (!Number.isFinite(expiresAt)) return { ok: false, reason: "exception-expiry-unparseable" };
+      if (expiresAt <= now) return { ok: false, reason: "exception-expired" };
     }
     return { ok: true };
   }
@@ -477,10 +532,31 @@ export function recordPayloadComplete(rec) {
       if (!isReviewerPrincipal(rec.by)) return { ok: false, reason: `record ${rec.recordId} has malformed by` };
       return { ok: true };
     }
-    case "plan-gate": return need(["recordId", "target", "impact", "disposition", "approvedBy"]);
+    case "plan-gate": {
+      const base = need(["recordId", "target", "impact", "disposition", "approvedBy"]);
+      if (!base.ok) return base;
+      // §7: the proposal is a USER approval. Presence alone would let any value stand in.
+      const approver = rec.approvedBy;
+      const isUser = approver === "user" || (approver && typeof approver === "object" && approver.kind === "user");
+      if (!isUser) return { ok: false, reason: `plan-gate ${rec.recordId} approvedBy must denote the user` };
+      if (!SUPERSEDE_DISPOSITIONS.includes(rec.disposition)) {
+        return { ok: false, reason: `plan-gate ${rec.recordId} has unknown disposition ${rec.disposition}` };
+      }
+      return { ok: true };
+    }
     case "constraint-revocation": return need(["recordId", "targetConstraintRef", "authorityRef", "effectiveAt"]);
-    case "provenance-batch":
-      return need(["recordId", "taskId", "inventoryDigest", "batchSnapshot", "batchDigest", "relatedRefs"]);
+    case "provenance-batch": {
+      const base = need(["recordId", "taskId", "inventoryDigest", "batchSnapshot", "batchDigest", "relatedRefs"]);
+      if (!base.ok) return base;
+      const witness = rec.batchSnapshot && rec.batchSnapshot.baseProvenance;
+      if (!witness || typeof witness !== "object" || typeof witness.treeOid !== "string") {
+        return { ok: false, reason: `provenance-batch ${rec.recordId} snapshot is missing its inline baseProvenance witness` };
+      }
+      if (rec.batchDigest !== digestOf(rec.batchSnapshot)) {
+        return { ok: false, reason: `provenance-batch ${rec.recordId} batchDigest does not match its snapshot` };
+      }
+      return { ok: true };
+    }
     default: return { ok: false, reason: `unknown record kind ${rec.kind}` };
   }
 }
@@ -950,6 +1026,117 @@ function validateTaskStatesAndHeads(index) {
   }
 }
 
+// IS §6 per-rulingKind postconditions + AC41 anti-borrowing. A governance ruling that merely EXISTS
+// proves nothing: without these field comparisons another DP's perfectly legitimate ruling can be
+// pinned to a freshly-minted clause. "The DEC this ruling created" is not a stored field, so the
+// binding has to be reconstructed from comparable fields.
+export const RULING_KINDS = [
+  "binding-policy", "technical-decision", "approved-provisional",
+  "product-tradeoff", "scope-coverage", "layer-classification",
+];
+
+function rulingSnapshotSelfConsistent(rec) {
+  if (rec.inputPacketSnapshot === undefined && rec.inputPacketDigest === undefined) return true;
+  if (rec.inputPacketSnapshot === undefined || rec.inputPacketDigest === undefined) return false;
+  return digestOf(rec.inputPacketSnapshot) === rec.inputPacketDigest;
+}
+
+function validateGovernanceRulings(index) {
+  for (const rec of index.store.records) {
+    if (rec.kind !== "review-ruling" || rec.rulingKind === undefined) continue;
+    if (!RULING_KINDS.includes(rec.rulingKind)) {
+      reject("E_ENUM", `review-ruling ${rec.recordId} has unknown rulingKind ${rec.rulingKind}`, rec.recordId);
+    }
+    if (!rulingSnapshotSelfConsistent(rec)) {
+      reject("E_RULING_SNAPSHOT", `review-ruling ${rec.recordId}: inputPacketDigest does not match its own inputPacketSnapshot`, rec.recordId);
+    }
+  }
+
+  for (const c of index.store.clauses) {
+    const kind = clauseKindOf(c.id);
+    if (kind !== "DEC" && kind !== "ASSUM") continue;
+    for (const ref of c.basisRefs || []) {
+      if (!ref || typeof ref !== "object" || ref.kind !== "review-ruling") continue;
+      const rec = index.records.get(ref.ref);
+      if (!rec || rec.rulingKind === undefined) continue; // a plain ruling carries no postcondition
+      const alternatives = rec.inputPacketSnapshot ? rec.inputPacketSnapshot.alternatives : undefined;
+
+      if (kind === "DEC" && rec.rulingKind === "technical-decision") {
+        if (rec.subjectRef !== c.derivedFrom && rec.subjectRef !== c.id) {
+          reject("E_RULING_BORROWED", `DEC ${c.id} cites technical-decision ruling ${rec.recordId}, which is bound to ${rec.subjectRef} — not this DP`, c.id);
+        }
+        if (c.decision !== rec.selectedAlternative) {
+          reject("E_RULING_POSTCONDITION", `DEC ${c.id}.decision does not equal the ruling's selectedAlternative`, c.id);
+        }
+        if (alternatives !== undefined && canonicalJson(c.alternatives) !== canonicalJson(alternatives)) {
+          reject("E_RULING_POSTCONDITION", `DEC ${c.id}.alternatives does not equal the ruling's input snapshot alternatives`, c.id);
+        }
+        if (!principalsEqual(c.approvedBy, rec.by)) {
+          reject("E_RULING_POSTCONDITION", `DEC ${c.id}.approvedBy does not equal the ruling's by`, c.id);
+        }
+        // store-script assertion (IS §13): the selection must come from the offered alternatives.
+        if (alternatives !== undefined && !alternatives.some((a) => canonicalJson(a) === canonicalJson(rec.selectedAlternative))) {
+          reject("E_RULING_SELECTION", `technical-decision ${rec.recordId}: selectedAlternative is not one of the input snapshot's alternatives`, rec.recordId);
+        }
+      }
+
+      if (kind === "ASSUM" && rec.rulingKind === "approved-provisional") {
+        if (rec.subjectRef !== c.derivedFrom && rec.subjectRef !== c.id) {
+          reject("E_RULING_BORROWED", `ASSUM ${c.id} cites approved-provisional ruling ${rec.recordId}, which is bound to ${rec.subjectRef} — not this DP`, c.id);
+        }
+        if (c.text !== rec.selectedAlternative) {
+          reject("E_RULING_POSTCONDITION", `ASSUM ${c.id}.text does not equal the ruling's selectedAlternative`, c.id);
+        }
+        if (c.alternative !== rec.rejectedAlternative) {
+          reject("E_RULING_POSTCONDITION", `ASSUM ${c.id}.alternative does not equal the ruling's rejectedAlternative`, c.id);
+        }
+        if (rec.basis !== undefined && c.basis !== rec.basis) {
+          reject("E_RULING_POSTCONDITION", `ASSUM ${c.id}.basis does not equal the ruling's basis`, c.id);
+        }
+        if (!principalsEqual(c.governedBy, rec.by)) {
+          reject("E_RULING_POSTCONDITION", `ASSUM ${c.id}.governedBy does not equal the ruling's by`, c.id);
+        }
+        // store-script assertions (IS §13): distinct, and both drawn from the alternatives.
+        if (canonicalJson(rec.selectedAlternative) === canonicalJson(rec.rejectedAlternative)) {
+          reject("E_RULING_SELECTION", `approved-provisional ${rec.recordId}: selected and rejected alternatives must differ`, rec.recordId);
+        }
+        if (alternatives !== undefined) {
+          for (const [label, value] of [["selected", rec.selectedAlternative], ["rejected", rec.rejectedAlternative]]) {
+            if (!alternatives.some((a) => canonicalJson(a) === canonicalJson(value))) {
+              reject("E_RULING_SELECTION", `approved-provisional ${rec.recordId}: the ${label} alternative is not in the input snapshot's alternatives`, rec.recordId);
+            }
+          }
+        }
+        const dp = index.dps.get(c.derivedFrom);
+        if (dp && c.layer !== dp.layer) {
+          reject("E_RULING_POSTCONDITION", `ASSUM ${c.id}.layer (${c.layer}) disagrees with its DP's layer (${dp.layer})`, c.id);
+        }
+      }
+    }
+  }
+
+  for (const d of index.store.decisionPoints) {
+    if (!d.classificationRulingRef) continue;
+    const resolved = resolveRecordRef(index, d.classificationRulingRef);
+    if (!resolved.ok || d.classificationRulingRef.kind !== "review-ruling") {
+      reject("E_DANGLING_REF", `DP ${d.id} classificationRulingRef does not resolve to a review-ruling`, d.id);
+    }
+    const rec = resolved.value;
+    if (rec.subjectRef !== d.id) {
+      reject("E_RULING_BORROWED", `DP ${d.id} cites classification ruling ${rec.recordId}, which is bound to ${rec.subjectRef}`, d.id);
+    }
+    if (rec.rulingKind === "layer-classification" && d.layer !== rec.classifiedLayer) {
+      reject("E_RULING_POSTCONDITION", `DP ${d.id}.layer (${d.layer}) does not equal the ruling's classifiedLayer (${rec.classifiedLayer})`, d.id);
+    }
+    if (rec.rulingKind === "product-tradeoff" && d.layer !== "intent") {
+      reject("E_RULING_POSTCONDITION", `DP ${d.id}: a product-tradeoff ruling implies layer=intent, found ${d.layer}`, d.id);
+    }
+    if (rec.basis !== undefined && d.classificationBasis !== rec.basis) {
+      reject("E_RULING_POSTCONDITION", `DP ${d.id}.classificationBasis does not equal the ruling's basis`, d.id);
+    }
+  }
+}
+
 export function validateAll(store, options = {}) {
   const now = options.now === undefined ? Date.now() : options.now;
   validateStructure(store);
@@ -957,6 +1144,7 @@ export function validateAll(store, options = {}) {
   validateRefs(index);
   validateMergeReconciliation(index);
   validateTransitionMatrix(index);
+  validateGovernanceRulings(index);
   validateInvariants(index, now);
   validateTaskStatesAndHeads(index);
   return { ok: true, index };
@@ -982,6 +1170,19 @@ function setTerminal(dp, clauseId) {
   if (!kind) reject("E_ID_PREFIX", `cannot set a terminal to ${clauseId}: unrecognised clause prefix`, clauseId);
   dp[TERMINAL_FIELD_BY_KIND[kind]] = clauseId;
   dp.status = STATUS_BY_KIND[kind];
+}
+
+// IS §8 / AC35: a reopened DP whose prior terminal is STILL ACTIVE may only be settled through
+// replace-terminal, which mints the Transition that takes the old clause out of active state.
+// Every no-Transition path has to refuse it, not just adopt-existing-outcome.
+function refuseReopenedWithActivePrior(draft, dp, command) {
+  if (!dp.priorTerminalRef) return;
+  if (statusOf(indexStore(draft), dp.priorTerminalRef) !== "active") return;
+  reject(
+    "E_REOPENED_NEEDS_TRANSITION",
+    `${command}: DP ${dp.id} was reopened and its priorTerminalRef ${dp.priorTerminalRef} is still active — use replace-terminal so the old clause actually leaves active state`,
+    dp.id,
+  );
 }
 
 function reopenDpInPlace(dp, priorTerminalRef, trigger) {
@@ -1151,6 +1352,7 @@ defineTransaction("create-initial-outcome", (store, payload) => {
   if (currentTerminalRef(dp)) {
     reject("E_DP_HAS_TERMINAL", `create-initial-outcome: DP ${dp.id} already has a terminal outcome`, dp.id);
   }
+  refuseReopenedWithActivePrior(draft, dp, "create-initial-outcome");
   draft.clauses.push(payload.clause);
   if (payload.scopeRulingRef) dp.scopeRulingRef = payload.scopeRulingRef;
   setTerminal(dp, payload.clause.id);
@@ -1168,14 +1370,8 @@ defineTransaction("adopt-existing-outcome", (store, payload, ctx) => {
   if (currentTerminalRef(dp)) {
     reject("E_DP_HAS_TERMINAL", `adopt-existing-outcome: DP ${dp.id} already has a terminal outcome`, dp.id);
   }
+  refuseReopenedWithActivePrior(draft, dp, "adopt-existing-outcome");
   const preIndex = indexStore(draft);
-  if (dp.priorTerminalRef && statusOf(preIndex, dp.priorTerminalRef) === "active") {
-    reject(
-      "E_REOPENED_NEEDS_TRANSITION",
-      `adopt-existing-outcome: DP ${dp.id} was reopened and its priorTerminalRef ${dp.priorTerminalRef} is still active — use replace-terminal so the old clause actually leaves active state`,
-      dp.id,
-    );
-  }
   if (!preIndex.clauses.get(payload.clauseRef)) {
     reject("E_UNKNOWN_CLAUSE", `adopt-existing-outcome: clause ${payload.clauseRef} does not exist`, payload.clauseRef);
   }
@@ -1286,6 +1482,7 @@ defineTransaction("resolve-exception", (store, payload, ctx) => {
   draft.clauses.push(payload.requirement);
   const dp = findDp(draft, payload.dpId, "resolve-exception");
   if (currentTerminalRef(dp)) reject("E_DP_HAS_TERMINAL", `resolve-exception: DP ${dp.id} already has a terminal outcome`, dp.id);
+  refuseReopenedWithActivePrior(draft, dp, "resolve-exception");
   dp.scopeRulingRef = { kind: "review-ruling", ref: payload.scopeRuling.recordId };
   const app = applicable(indexStore(draft), payload.requirement.id, dp, ctx.now);
   if (!app.ok) reject("E_NOT_APPLICABLE", `resolve-exception: ${payload.requirement.id} is not applicable to DP ${dp.id} (${app.reason})`, dp.id);
@@ -1296,15 +1493,17 @@ defineTransaction("resolve-exception", (store, payload, ctx) => {
 // intent-scan §8: atomic layer + classificationBasis (human-readable, upstream semantics unchanged)
 // + classificationRulingRef.
 defineTransaction("reclassify-dp", (store, payload) => {
-  requireFields(payload, ["dpId", "layer", "classificationBasis"], "reclassify-dp");
+  // classificationRulingRef is REQUIRED: a reclassification is a governance ruling's postcondition
+  // (IS annotation table), so reclassifying with no witness would let anything become layer=intent.
+  requireFields(payload, ["dpId", "layer", "classificationBasis", "classificationRulingRef"], "reclassify-dp");
   if (!DP_LAYERS.includes(payload.layer)) reject("E_ENUM", `reclassify-dp: unknown layer ${payload.layer}`, payload.layer);
   const draft = clone(store);
   pushRecords(draft, payload.records, "reclassify-dp");
   const dp = findDp(draft, payload.dpId, "reclassify-dp");
   dp.layer = payload.layer;
   dp.classificationBasis = payload.classificationBasis;
-  if (payload.classificationRulingRef) dp.classificationRulingRef = payload.classificationRulingRef;
-  return draft;
+  dp.classificationRulingRef = payload.classificationRulingRef;
+  return draft; // validateGovernanceRulings() enforces by / subjectRef / postconditions
 });
 
 // intent-scan §8: only when there is no successor to hand and the open state must genuinely
@@ -1343,9 +1542,13 @@ defineTransaction("commit-test-provenance-batch", (store, payload, ctx) => {
 
   // 2) mint the records this transaction creates, so every ref below can resolve.
   const created = pushRecords(draft, payload.recordsToCreate, "commit-test-provenance-batch");
-  const createdIds = new Set(created.map((r) => r.recordId));
-  const preRecordIds = new Set(store.records.map((r) => r.recordId));
-  const resolvableRecord = (ref) => createdIds.has(ref.ref) || preRecordIds.has(ref.ref);
+  // Resolution must match KIND as well as id — a typed ref naming a real record of a different
+  // kind is not resolvable (External-record contract, shared §2).
+  const byId = new Map([...store.records, ...created].map((r) => [r.recordId, r]));
+  const resolvableRecord = (ref) => {
+    const rec = byId.get(ref.ref);
+    return !!rec && rec.kind === ref.kind;
+  };
 
   const relatedRefs = [];
   for (const r of created) relatedRefs.push({ kind: r.kind, ref: r.recordId });
@@ -1420,8 +1623,14 @@ defineTransaction("commit-test-provenance-batch", (store, payload, ctx) => {
     });
   }
 
-  // 3-4) canonical digest, then the batch record and its chain link to the PRE-STATE head.
-  const snapshot = { ...payload.batchSnapshot, resolutions: persistedGroups };
+  // 3-4) canonical digest, then the batch record and its chain link to the PRE-STATE head. The
+  // committed snapshot carries the inline base witness (SM §9) taken from the tracked TaskState —
+  // a batch that does not record which base it was computed against cannot be re-checked later.
+  const snapshot = canonicalizeBatchSnapshot({
+    ...payload.batchSnapshot,
+    baseProvenance: ts.baseProvenance,
+    resolutions: persistedGroups,
+  });
   const previousBatchRef = ts.committedProvenanceBatchRef || null;
   if (payload.previousBatchRef !== undefined
       && canonicalJson(payload.previousBatchRef || null) !== canonicalJson(previousBatchRef)) {
@@ -1465,7 +1674,42 @@ export function applyTransaction(store, command, payload, options = {}) {
 // The full protocol: load+validate pre-state → CAS → apply in memory → validate FINAL snapshot →
 // temp write in the same directory → atomic replace. On any failure the canonical bytes are
 // untouched and no usable temp file survives.
+// A digest re-check immediately before renameSync still leaves a window: another writer can land
+// between the check and the swap and be silently clobbered. An exclusive lock closes that window
+// for every writer that goes through this script — which, by the single-writer contract, is all of
+// them. Honest boundary (same non-adversarial posture as the rest of the model): a process that
+// bypasses this script is not defended against, and a stale lock is reported rather than broken,
+// because auto-breaking would reintroduce exactly the race the lock exists to remove.
+export function withStoreLock(file, fn) {
+  const lock = `${file}.lock`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  let fd;
+  try {
+    fd = fs.openSync(lock, "wx");
+    fs.writeSync(fd, `${process.pid} ${new Date().toISOString()}\n`);
+  } catch (e) {
+    if (e && e.code === "EEXIST") {
+      reject(
+        "E_STORE_LOCKED",
+        `another writer holds ${lock}; the provenance store has a single writer by contract — remove the lock only after confirming no writer is live`,
+        lock,
+      );
+    }
+    throw e;
+  }
+  try {
+    return fn();
+  } finally {
+    try { fs.closeSync(fd); } catch { /* already closed */ }
+    try { fs.rmSync(lock, { force: true }); } catch { /* best effort: never mask the original error */ }
+  }
+}
+
 export function runTransaction(cwd, command, payload, options = {}) {
+  return withStoreLock(storePath(cwd), () => runTransactionLocked(cwd, command, payload, options));
+}
+
+function runTransactionLocked(cwd, command, payload, options = {}) {
   const loaded = loadStore(cwd);
   if (options.expectedStoreDigest !== undefined && options.expectedStoreDigest !== loaded.digest) {
     reject("E_CAS_MISMATCH", `store digest is ${loaded.digest}, expected ${options.expectedStoreDigest}`, loaded.digest);
