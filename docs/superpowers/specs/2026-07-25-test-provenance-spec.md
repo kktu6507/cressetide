@@ -1,9 +1,9 @@
 # Test-Provenance Implementation Spec
 
-- 狀態：draft v0.10 —— 九輪修訂（inventoryDigest 唯一公式、零 batch 為合法未提交、draft／persisted 型別同步）；審閱中
+- 狀態：**approved v1.0**（2026-07-26 panel 放行；自 draft v0.10 升版，經九輪修訂）。實作以本文為準；變更需重新過 panel。
 - 日期：2026-07-25
-- 上游：`2026-07-25-shared-decision-provenance-model.md`（**draft v1.7**，前一放行版本 approved v1.6）—— 提供 gate scope、pre／post binding 兩相、**base provenance witness**、`provenance-batch` record kind 與 chain head 規則。不重新定義任何 shared concept；附加欄位一律標為 annotation 且不改上游語義。inventory 欄位對映上游語義：`tagBefore → preChangeBinding`、`tagAfter → postChangeBinding`。
-- 姊妹 spec：`2026-07-25-intent-scan-spec.md`（**draft v1.1**，前一放行版本 approved v1.0）—— 提供 provenance store、store script 命令面（含 `commit-test-provenance-batch`、`successor=null` retire）、task manifest、Review Packet 接線；本文消費而不重定義。**Gate scope 直接消費 shared model §9 的 canonical 定義**（不在本文改寫或摘要）。
+- 上游：`2026-07-25-shared-decision-provenance-model.md`（**approved v1.7**）—— 提供 gate scope、pre／post binding 兩相、**base provenance witness**、`provenance-batch` record kind 與 chain head 規則。不重新定義任何 shared concept；附加欄位一律標為 annotation 且不改上游語義。inventory 欄位對映上游語義：`tagBefore → preChangeBinding`、`tagAfter → postChangeBinding`。
+- 姊妹 spec：`2026-07-25-intent-scan-spec.md`（**approved v1.1**）—— 提供 provenance store、store script 命令面（含 `commit-test-provenance-batch`、`successor=null` retire）、task manifest、Review Packet 接線；本文消費而不重定義。**Gate scope 直接消費 shared model §9 的 canonical 定義**（不在本文改寫或摘要）。
 - **三份互相依賴，皆須通過各自 panel**；v0.5 曾宣稱「不改 store script 命令面」，**該宣稱撤回**。
 
 ## 1. 目的與範圍
