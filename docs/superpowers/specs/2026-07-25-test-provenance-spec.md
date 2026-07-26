@@ -95,7 +95,6 @@ entries 依 (path, adapterId, structuralId) 的 Unicode code point 序排序
 bodyDigest 的 body span ＝ adapter 定義的宣告完整範圍
   （含 decorator／attribute／attachmentRule 所涵蓋的前置區塊，不含前後空白行）
 body 正規化：UTF-8 無 BOM、LF、不 trim 內部空白
-inventoryDigest ＝ sha256(canonical JSON of entries[])
 ```
 
 ## 3. 沉默即不斷言（減法規則）
@@ -378,7 +377,7 @@ loop:
           → 取得 witness 後 main thread 建 Transition，finding 保留並填 resolutionRef
        c. 無 finding → 續行
   5. → main thread 呼叫 **單一** `commit-test-provenance-batch`（intent-scan v1.1）：
-       batchSnapshot ＋ resolutions: ResolutionGroup[0..N]（依 subject clause 分組）
+       batchSnapshot ＋ resolutions: **ResolutionGroupDraft**[0..N]（依 subject clause 分組）
        clean batch ＝ `resolutions=[]`，仍提交 provenance-batch record
        交易內完成全部 evidence／witness／Transition／dependent DP repoint-or-reopen
        ／provenance-batch record 與 chain relation
@@ -392,7 +391,8 @@ loop:
 
 ```
 main thread 呼叫 intent-scan spec v1.1 的
-  commit-test-provenance-batch           ← 單筆 CAS 交易；resolutions: ResolutionGroup[0..N]
+  commit-test-provenance-batch           ← 單筆 CAS 交易；resolutions: ResolutionGroupDraft[0..N]
+                                           （`ResolutionGroup` 僅用於 committed batchSnapshot）
     clean batch ＝ resolutions=[]（**不虛構** Transition），仍提交 provenance-batch record
     每個 group（**輸入型別** `ResolutionGroupDraft`）：subjectRef、semanticEvidenceRefs[1..N]、
       governanceWitnessRef、**transitionDraft**；提交後 batchSnapshot 內為

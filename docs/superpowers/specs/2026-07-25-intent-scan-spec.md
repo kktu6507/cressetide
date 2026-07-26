@@ -1,9 +1,9 @@
 # Intent-Scan Implementation Spec
 
-- 狀態：**draft v1.1 — 修訂待 panel**（前一放行版本：approved v1.0，經九輪修訂）。本次變更僅限 §8 store command surface：`replace-terminal` 支援 `successor=null`（retire —— v1.0 的命令面**沒有任何交易能產生 `retire` Transition**，是既有缺口），並新增 `commit-test-provenance-batch` 複合交易（`0..N` ResolutionGroup，下游 test-provenance spec 的持久化需求）。其餘章節未動。
+- 狀態：**draft v1.1 — 修訂待 panel**（前一放行版本：approved v1.0，經九輪修訂）。本次變更範圍：**§8** store command surface —— `replace-terminal` 支援 `successor=null`（retire；v1.0 的命令面**沒有任何交易能產生 `retire` Transition**，是既有缺口）、新增 `commit-test-provenance-batch` 複合交易（`0..N` `ResolutionGroupDraft`）、`init-task`／`resume-task` 接上 tracked TaskState；**§6** —— user-authority clause transition 的 witness 一律為 plan-gate；**§13** —— AC11 更正並新增 AC43–56。其餘章節未動。
 - 日期：2026-07-25
 - 上游：`2026-07-25-shared-decision-provenance-model.md`（**draft v1.7**，前一放行版本 approved v1.6）。本 spec 只落地其 intent-scan 半邊；不重新定義任何 shared concept，附加的實作欄位一律以「annotation」標示且不改變上游欄位語義。
-- 姊妹 spec：`2026-07-25-test-provenance-spec.md`（**draft v0.9**，審閱中）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
+- 姊妹 spec：`2026-07-25-test-provenance-spec.md`（**draft v0.10**，審閱中）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
 
 ## 1. 目的與範圍
 
