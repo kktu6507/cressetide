@@ -1,11 +1,10 @@
 # Test-Provenance Implementation Spec
 
-- 狀態：draft v0.7 —— 六輪修訂（historical-convergence 需 base snapshot 佐證、持久化改用 typed 批次交易、governance-affected 狀態完整化、fingerprint 納入治理進度、testRef.path canonical）；審閱中
-- **本 spec 需要上游與姊妹 spec 同步修訂**：shared model **v1.7**（`provenance-batch` record kind）與 intent-scan **v1.1**（`commit-test-provenance-resolution`、`successor=null` retire）。v0.5 曾宣稱「不改 store script 命令面」，**該宣稱撤回**。三份皆須通過各自 panel。
-- **上游依賴**：本文依賴 shared model **v1.7**（provenance binding 變動的測試納入 gate scope；binding 拆 pre／post 兩相，現時效力只課於後態）。**v1.7 未過 panel 前本文不得放行。**本文的 inventory 欄位對映上游語義：`tagBefore → preChangeBinding`、`tagAfter → postChangeBinding`。
+- 狀態：draft v0.8 —— 七輪修訂（typed base provenance witness、批次 0..N cardinality、明確 provenanceBatchRef 與 chain head、Step 5 改單一交易、負向驗收）；審閱中
 - 日期：2026-07-25
-- 上游：`2026-07-25-shared-decision-provenance-model.md`（**draft v1.7**，前一放行版本 approved v1.6）。不重新定義任何 shared concept；附加欄位一律標為 annotation 且不改上游語義。
-- 姊妹 spec：`2026-07-25-intent-scan-spec.md`（**approved v1.0**）。provenance store、store script 命令面、task manifest、Review Packet 接線由該 spec 定義，本文消費而不重定義。**Gate scope 直接消費 shared model §9 的 canonical 定義**（不在本文改寫或摘要）。
+- 上游：`2026-07-25-shared-decision-provenance-model.md`（**draft v1.7**，前一放行版本 approved v1.6）—— 提供 gate scope、pre／post binding 兩相、**base provenance witness**、`provenance-batch` record kind 與 chain head 規則。不重新定義任何 shared concept；附加欄位一律標為 annotation 且不改上游語義。inventory 欄位對映上游語義：`tagBefore → preChangeBinding`、`tagAfter → postChangeBinding`。
+- 姊妹 spec：`2026-07-25-intent-scan-spec.md`（**draft v1.1**，前一放行版本 approved v1.0）—— 提供 provenance store、store script 命令面（含 `commit-test-provenance-batch`、`successor=null` retire）、task manifest、Review Packet 接線；本文消費而不重定義。**Gate scope 直接消費 shared model §9 的 canonical 定義**（不在本文改寫或摘要）。
+- **三份互相依賴，皆須通過各自 panel**；v0.5 曾宣稱「不改 store script 命令面」，**該宣稱撤回**。
 
 ## 1. 目的與範圍
 
@@ -258,6 +257,7 @@ headBodyDigest ＝ bodyDigest(head tree)
 
 ```
 taskId
+baseProvenanceRef           ← 上游 §9 witness（treeOid／storePath／storeDigest）
 inventoryDigest             ← 綁定當下 inventory 全文
 results[]:                  ← 對 inventory entry 一對一
   testRef
@@ -367,8 +367,12 @@ loop:
                 → 回到本 loop（同一 taskId，不重建既有物件）
           → 取得 witness 後 main thread 建 Transition，finding 保留並填 resolutionRef
        c. 無 finding → 續行
-  5. → main thread 固化（single-writer，經 store script）：batch 落 scratch、
-       assum semantic ruling record、治理 witness、Transition
+  5. → main thread 呼叫 **單一** `commit-test-provenance-batch`（intent-scan v1.1）：
+       batchSnapshot ＋ resolutions: ResolutionGroup[0..N]（依 subject clause 分組）
+       clean batch ＝ `resolutions=[]`，仍提交 provenance-batch record
+       交易內完成全部 evidence／witness／Transition／dependent DP repoint-or-reopen
+       ／provenance-batch record 與 chain relation
+       scratch 僅快取本輪的 `provenanceBatchRef`（衍生 cache）
   6. → contract-check --provenance
        stale（inventory／body digest 不符）或存在未收斂 finding → **goto 1**
   7. → pass 後才進 arbiter
@@ -378,20 +382,20 @@ loop:
 
 ```
 main thread 呼叫 intent-scan spec v1.1 的
-  commit-test-provenance-resolution      ← 單筆 CAS 交易，內含：
-    semantic evidence record
-    治理 witness
-    Transition（`successor=null` 即 retire）
-    所有 dependent DP 的原子 repoint／reopen
-    RecordRef(kind=provenance-batch)：完整 batch snapshot＋batchDigest
-                                      ＋inventoryDigest＋relatedRefs[]
+  commit-test-provenance-batch           ← 單筆 CAS 交易；resolutions: ResolutionGroup[0..N]
+    clean batch ＝ resolutions=[]（**不虛構** Transition），仍提交 provenance-batch record
+    每個 group：subjectRef、semanticEvidenceRefs[1..N]、governanceWitnessRef、transition
+    交易內完成所有 dependent DP 的 repoint／reopen 與 chain relation
 
 committed 判準：該交易成功 ⇔ 已提交（單一事實來源，無跨界 marker）
 crash 後 resume：
-  tracked 有對應 provenance-batch record → 已提交；**scratch 若遺失可由該 snapshot 完整重建**
-  tracked 無該 record → 交易未發生；scratch 內容一律視為 orphan，忽略並重跑 loop
-checker：只信任能在 tracked 找到對應 provenance-batch record 且 batchDigest 相符的 batch；
-         否則 status=fail（不採信孤兒 scratch）
+  自 tracked 的 provenance-batch **chain** 取 committed head
+    （上游 §2：唯一未被後繼引用的 tip；零個或多個 → fail-closed）
+  head 含本輪 → 已提交；**scratch 全失時可由 chain 的 batchSnapshot 完整重建**
+  head 不含本輪 → 交易未發生；scratch 內容視為 orphan，忽略並重跑 loop
+checker：消費**明確的 `provenanceBatchRef`**（不以 taskId／inventoryDigest／batchDigest
+         模糊搜尋「對應 record」），驗 batchDigest 與 batchSnapshot 相符；
+         ref 缺席或不符 → status=fail（不採信孤兒 scratch）
 ```
 
 **user／plan-gate 分支不假設 main thread 當場拿得到 witness** —— 它可以離開 review、重新核准後以 `resume-task` 回到同一 task（intent-scan spec 既有機制）。
@@ -474,16 +478,20 @@ outcome 對位：
   post 為 EXPL 或 deleted → 落入允許的 cleanup 終局（下一支）
 ```
 
-**`historical-convergence`**（清理歷史 stale test）—— 不得要求它回頭引用尚不存在的本輪 evidence，但**必須證明 T 真的是歷史的**：
+**`historical-convergence`**（清理歷史 stale test）—— 不得要求它回頭引用尚不存在的本輪 evidence，但**必須以 typed 前態輸入證明 T 真的是歷史的**：
 
 ```
-T **以及**用來對位 post binding 的完整 successor chain
-  皆已存在於 **base provenance snapshot（task-start snapshot）**    ← 關鍵條件
+checker 依上游 §9 的 baseProvenance witness（treeOid／storePath／storeDigest）
+  讀出 base provenance store 並驗 digest；缺席／錯指／不符 → fail-closed
+T **以及**用來對位 post binding 的**完整** successor chain
+  必須**逐一**存在於該 base store        ← 部分存在亦 fail-closed
 ∧ tagBefore == T.subject
 ∧（post binding == T 的 active successor chain，或 post 為 EXPL／deleted）
 
-base 中不存在的 Transition **一律只能走 this-round**
+base store 中不存在的 Transition **一律只能走 this-round**
 ```
+
+`baseProvenance.treeOid` **與 `ChangedTestInventory` 使用同一個 Git base tree**（上游已選定此為 canonical basis，不再與「task-start snapshot」混用）。
 
 少了 base 條件，本輪剛建立的合法 `T` 只要把 `mode` 寫成 `historical-convergence`，就能跳過 task／testRef／body digest／semantic evidence 的全部綁定。
 
@@ -571,8 +579,8 @@ testProvenance: {
 | `cressetide/skills/vigil/scripts/contract-check.mjs` | 新增 `--provenance` 模式與結構／來源兩層（§8）；預設模式 exit-0 契約不變 |
 | `cressetide/skills/vigil/scripts/test-adapters.json` | **新增** —— §2 framework adapter registry |
 | `cressetide/skills/vigil/scripts/changed-test-inventory.mjs`（＋tests） | **新增** —— §6 base／head 導出、one-to-one matching、inventoryDigest |
-| `cressetide/skills/vigil/SKILL.md` | **§8 七步 fixed-point loop**；`--provenance` 的新位置（第 6 步，不沿用既有 contract-check 位置）；第 5 步的 single-writer 落檔點＝呼叫 `commit-test-provenance-resolution` |
-| `cressetide/skills/vigil/scripts/provenance-store.mjs` | **（intent-scan v1.1 範圍）** `commit-test-provenance-resolution`、`successor=null` retire |
+| `cressetide/skills/vigil/SKILL.md` | **§8 七步 fixed-point loop**；`--provenance` 的新位置（第 6 步，不沿用既有 contract-check 位置）；第 5 步的 single-writer 落檔點＝呼叫 `commit-test-provenance-batch` |
+| `cressetide/skills/vigil/scripts/provenance-store.mjs` | **（intent-scan v1.1 範圍）** `commit-test-provenance-batch`、`successor=null` retire |
 | `cressetide/agents/test-reviewer.agent.md` | §9 四個提問；typed finding 輸出格式 |
 | `cressetide/skills/vigil/references/reviewer-selection.md` | §9 的 substitution 例外 |
 | `cressetide/skills/vigil/references/verification-gate.md` | 記載第三個 traceability 方向；紅→綠不變 |
@@ -636,19 +644,25 @@ testProvenance: {
 48. **Outcome 對位**：post binding 為 clause 但 `T.successor`（含 active successor chain）不等於該 clause → fail-closed；post 為 `EXPL`／deleted 時落入 cleanup 終局 → 通過。
 49. **Historical-convergence 不被誤擋**：把引用早已 superseded ASSUM 的舊測試 retag 到其 active successor、或刪除 → `mode="historical-convergence"` 通過，**不要求**本輪 semantic evidence。
 50. **Sibling 反向閉包**：兩測試同綁 `ASSUM-x`，只改其中一個並使 `ASSUM-x` 發生 Transition → 未改動的 sibling 以 `status=governance-affected`／`reason=governance-affected` 進 inventory 並須有 batch result；忽略它 → batch 不完整 → fail-closed。
-51. **非收斂 hard lock**：迭代達 cap 或 fingerprint 重複 → `converged=false` → arbiter 不得 `READY`（即使 `--provenance` 因其他原因未 fail）；使用者裁決開新 epoch 後解鎖；揭露含卡住 findings 與最後兩次 fingerprint。
+51. **非收斂 hard lock**：迭代達 cap 或 fingerprint 重複 → `converged=false` → arbiter 不得 `READY`（即使 `--provenance` 因其他原因未 fail）；**任何當下具治理權的 principal**（user、arbiter，或該 clause 的 `governedBy` discipline）提供新 ruling／witness 即可開新 epoch 並解鎖；揭露含卡住 findings 與最後兩次 fingerprint。
 52. **Crash recovery（逐邊界）**：（i）交易前 crash → tracked 無 `provenance-batch` record → scratch 一律視為 orphan、忽略重跑；（ii）交易後、scratch 收尾前 crash → tracked 有 record → 已提交；（iii）**tracked commit 存在但 scratch 全失** → 由 `provenance-batch` 的 snapshot **完整重建** batch 內容（非僅 digest）；（iv）batch 的 `batchDigest` 與 tracked record 不符 → checker `status=fail`。
 53. **Canonical scope 涵蓋主要變更**（上游 v1.7）：（i）tag 不變、只改斷言；（ii）tag 與宣告本體皆不變、只改 golden／helper —— 兩者都必須進 canonical gate scope，不得落到 observe-only。
 54. **穩定 clause 不擴散**：普通測試修改且其 clause 無生命週期事件 → **不**觸發反向閉包，其他 sibling 不進 inventory；只有 clause 發生 Transition／drift／expiry／語義變更才拉入。
 55. **本輪 T 冒充 historical 被拒**：本輪剛建立的 Transition 填成 `mode="historical-convergence"` → 因 T 不存在於 base provenance snapshot → **fail-closed**；改走 `this-round` 並補齊綁定後通過。
 56. **只有 governance-affected 也要審**：inventory 僅含 `governance-affected` entry 的 run，`test-reviewer` 仍不可 evidence-substituted，且 batch 必須覆蓋這些 entry。
 57. **Discipline ruling 構成進展**：`governedBy = security` 的 ASSUM，其 security ruling／witness 從缺到齊 → fingerprint 前進（不判打轉）；於 `converged=false` 後提供該 ruling → **可開新 epoch**。
-58. **Retire 原子性**：`ASSUM retire` 與其**所有** dependent DP 的 reopen 於**單筆** `commit-test-provenance-resolution` 完成；中途狀態不可見。
+58. **Retire 原子性**：`ASSUM retire` 與其**所有** dependent DP 的 reopen 於**單筆** `commit-test-provenance-batch` 完成；中途狀態不可見。
 59. **跨平台 testRef 一致**：同一 repo 於 Windows 與 Linux 產生相同的 `testRef` 與 `inventoryDigest`。
+60. **Base witness 負向**：（i）batch 缺 `baseProvenanceRef` → fail；（ii）witness 指向錯誤 tree 或 store path → fail；（iii）`storeDigest` 不符 → fail；（iv）`treeOid` 中無 store 檔 → 採 canonical empty store，前態存在性一律為否（非 fail）；（v）resume 時 `treeOid` 被改換 → fail。
+61. **Successor chain 部分存在**：`T` 在 base store 中，但用來對位 post binding 的 successor chain **只有部分**在 base → **fail-closed**（不得只驗 T 本身）。
+62. **Batch cardinality**：（i）clean batch 以 `resolutions=[]` 提交且**不**產生 Transition；（ii）兩個不同 ASSUM 的 finding → 兩個 group、兩筆 Transition；（iii）三個 sibling test 指向同一 ASSUM → 一個 group、三筆 `semanticEvidenceRefs`、共用一筆 Transition；（iv）同一 subject 的兩個 group 要求不同 successor／action → 整筆 fail-closed。
+63. **明確 ref，不模糊搜尋**：checker 以 `provenanceBatchRef` 定位 batch；刻意造出 `(taskId, inventoryDigest, batchDigest)` 相同但內容不同的兩筆 record 時，仍能唯一定位且不誤採。
+64. **Chain head**：（i）零個 tip → fail-closed；（ii）兩個以上 tip → fail-closed（reconciliation required）；（iii）scratch 全失後由 chain 取得 head 並重建。
+65. **testRef／path 負向**：（i）`structuralId` 碰撞或配對歧義 → fail-closed；（ii）path 含 `\`、`./`、`..` → 拒絕；（iii）大小寫與 Git tree 記錄不符 → 拒絕；（iv）跟隨 symlink 產生的 path → 拒絕。
 
 ## 14. 邊界與非目標
 
-- 不動 intent scan、DP 分流、治理 checkpoint。**store script 命令面例外**：本 spec 需要 intent-scan v1.1 的 `commit-test-provenance-resolution` 與 `successor=null` retire（v0.5 的「不改命令面」宣稱已撤回）。
+- 不動 intent scan、DP 分流、治理 checkpoint。**store script 命令面例外**：本 spec 需要 intent-scan v1.1 的 `commit-test-provenance-batch`（0..N ResolutionGroup）與 `successor=null` retire（v0.5 的「不改命令面」宣稱已撤回）。
 - **不設測試數量上限** —— demo1 實測顯示數量不是正確的打擊目標（69 vs 258，兩組 adjusted mutation 皆 10/10）；治的是來源，不是數量。
 - 不管 gate scope 外的既有測試（brownfield 邊界，範圍定義見 shared model §9）。
 - 語義判斷不宣稱機械保證（§10）；本 spec 保證的是它不被跳過、結果為 typed、機械後果被強制執行。
