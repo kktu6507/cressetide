@@ -220,14 +220,20 @@ canonicalJson 沿用本文既有規則（UTF-8 無 BOM、LF、object key 依 cod
 **Batch chain 與 committed head**（scratch 全失後的單一可信依據）：
 
 ```
-committedHead(task) ＝ 該 task 的 provenance-batch 中，
-                      **唯一未被任何其他 batch 的 previousBatchRef 引用**的 chain tip
-零個 head   → fail-closed（chain 斷裂）
-多個 head   → fail-closed（reconciliation required）
+task 尚無 provenance-batch：
+  committedHead ＝ null ∧ TaskState.committedProvenanceBatchRef ＝ null   → **合法**
+
+task 已有 provenance-batch：
+  必須**恰有一個**未被任何 previousBatchRef 引用的 tip
+  ∧ TaskState.committedProvenanceBatchRef == 該 tip
+  零個 tip（chain 斷裂）或多個 tip（reconciliation required）→ fail-closed
+
 scratch 只快取 head 的 ref；遺失後可由 tracked chain 完整重建
 消費者一律使用**明確的 `provenanceBatchRef`**，不得以 (taskId, inventoryDigest, batchDigest)
 模糊搜尋「對應 record」
 ```
+
+「零個 head 一律 fail-closed」是舊條文，與下方 TaskState 的三態互相否定 —— 未提交過的 task 本來就沒有 tip。以本節為準。
 
 **Chain 連結約束**（否則 `previousBatchRef` 可指向他 task 的 batch，或自己 task 的歷史非 head batch，使 stale 的 explicit ref 仍能通過自身 digest 驗證）：
 
@@ -255,6 +261,10 @@ relatedRefs ＝ 本交易 recordsToCreate 的全部 ref
 resolutionGroupDigest ＝ sha256(canonicalJson({
   subjectRef, action, successor, sortedSemanticEvidenceRefs
 }))
+
+sortedSemanticEvidenceRefs ＝ 依 **RecordRef.kind，再依 ref**，以 Unicode code point 序
+                             排序並**去重** —— 未定義排序則同一組 refs 的不同輸入順序
+                             會算出不同 digest，coverage 檢查形同虛設
 ```
 
   作為 resolution group 治理 witness 的 review-ruling／plan-gate record **必須攜帶相同 digest**；checker 驗**完全相等** —— 少一筆 sibling evidence 即 digest 不同即 fail。本模型採此方案；**不得**同時再宣稱「由 batch 的 resolution envelope 承擔對位」，兩種擇一，不可混寫。
@@ -282,6 +292,18 @@ commit-test-provenance-batch
 post-commit consumer（checker／arbiter）
              只讀 TaskState 指向的 committed batch；scratch 僅為 proposal／cache，
              **不得成為第二個 truth source**
+```
+
+**Store carrier** —— TaskState 必須有可序列化的位置，否則 fresh clone 無處讀取：
+
+```
+canonical store ＝ { provenanceVersion, sources, clauses, transitions,
+                    records, decisionPoints, **taskStates** }
+
+taskStates      ＝ 陣列，依 taskId 之 Unicode code point 序排序；taskId **唯一**
+                  （重複 taskId → fail-closed）
+loader／CAS／init-task／resume-task／commit-test-provenance-batch
+                  一律讀寫**同一位置**，不另設副本
 ```
 
 **Head 狀態封閉**（三分，無其他合法組合）：
@@ -486,7 +508,7 @@ baseProvenance:
 ```
 
 - checker **必須**自 `treeOid` 讀出 canonical provenance store、驗 `storeDigest` 相符後，才據以判斷任何「前態存在性」。
-- 該路徑在 `treeOid` 中不存在時，採 **canonical empty store**：`{ provenanceVersion: 1, sources: [], clauses: [], transitions: [], records: [], decisionPoints: [] }`，其 digest 亦依 canonical 規則計算。
+- 該路徑在 `treeOid` 中不存在時，採 **canonical empty store**：`{ provenanceVersion: 1, sources: [], clauses: [], transitions: [], records: [], decisionPoints: [], taskStates: [] }`，其 digest 亦依 canonical 規則計算。
 - **witness 是 inline 值，不是 ref** —— 統一以 inline `baseProvenance` 傳遞；不引入 `baseProvenanceRef`（那需要另一個 record kind 承載，本版不新增）。
 - **resume 同一 task 時不得改換 base** —— `treeOid` 隨 `TaskState.baseProvenance` 於 task 起始固定且 immutable；`resume-task` 嘗試改動即**拒絕**。
 - 任何 batch 內攜帶的 witness **必須等於** tracked `TaskState.baseProvenance`；不等即 fail-closed。
@@ -586,7 +608,7 @@ INV-B2：post-state 測試存在 ⇒ binding 必為 clause binding 或 EXPL
 | 語義 | assertion 是否被 clause 蘊含、是否超出 tag 範圍 | test discipline 判斷 | 全部 |
 | Legacy | gate scope 以外的既有測試／條款 | 允許全量語義觀測；findings **observe-only**，不阻擋本次 run | scope 外 |
 
-**v1.7 驗收案例**（gate 契約層）：① inactive clause → active successor：通過；② inactive clause → `EXPL`：通過；③ 移除引用失效 clause 的 stale tagged test：通過；④ 移除未標記 legacy test（`preState = {exists:true, binding:null}`）：通過；⑤ move ＋ 改綁：前後兩相各自驗證；⑥ 過期 exception-backed REQ → 替換或移除：通過；⑦ 後態 clause 有 Source drift：fail-closed；⑧ **move-only**（綁定 A→A、僅位置變動）：identity 維持，通過；⑨ **過期 exception 的 DP 收斂**：有 applicable successor → 所有受影響 DP repoint；無 → reopen（INV-4 影響閉包）；⑩ **malformed／dangling 原始 tag**（語法不合法、或 ID 解析不到任何 clause）：**在映射為 binding 之前** fail-closed —— 不得先當成 `binding == null` 再走 existence 分支，那會把語法錯誤誤讀成「測試不存在」；⑪ **added test**（`exists:false, null` → `exists:true, clause|EXPL`）：通過，前態不做 resolution；⑫ **修改未標記 legacy**（`exists:true, null` → `exists:true, clause|EXPL`）：通過，且後態必須有綁定；⑬ **sibling 反向閉包**：兩測試同綁 `ASSUM-x`，只改其中一個並使 `ASSUM-x` 發生 Transition → 未被改動的 sibling 仍進 gate scope；⑭ **body-only 變更**：tag 不變、只改斷言 → 入 scope（不得因 binding 未變而落到 observe-only）；⑮ **oracle-only 變更**：tag 與宣告本體皆不變、只改 golden 或 helper → 入 scope；⑯ **clause 穩定時不擴散**：普通改斷言且其 clause 無生命週期事件 → **不**觸發 reverseClosure，sibling 不被拉入；⑰ **`EXPL` → deleted**：前態為 `EXPL` 的測試被移除 → 通過（前態不做 resolution，後態 `exists:false`）；⑱ **base witness 缺席／錯指／digest 不符** → 三者各自 fail-closed，不得退化為預設判斷；⑲ **canonical empty store**：`treeOid` 中無 store 檔 → 採空 store 且 digest 可驗，前態存在性一律為否；⑳ **head 規則**：零個 chain tip → fail-closed；兩個以上 tip → fail-closed（reconciliation required）；㉑ **base 不得暗換**：`resume-task` 嘗試改動 `TaskState.baseProvenance` → 拒絕；②② **TaskState 為權威**：刪除全部 scratch 後，`taskId`／`currentTaskDpIds`／committed head 仍可由 tracked TaskState 取得；②③ **chain 連結**：`previousBatchRef` 指向他 task 的 batch、或指向自己 task 的歷史非 head batch → 兩者各自 fail-closed；②④ **首筆 batch**：`previousBatchRef == null` 且 `committedRef` 由 null 原子更新為該 batch；②⑤ **witness coverage**：治理 witness 的 `resolutionGroupDigest` 與該 group 重算值不等（例如少一筆 sibling evidence）→ fail-closed。
+**v1.7 驗收案例**（gate 契約層）：① inactive clause → active successor：通過；② inactive clause → `EXPL`：通過；③ 移除引用失效 clause 的 stale tagged test：通過；④ 移除未標記 legacy test（`preState = {exists:true, binding:null}`）：通過；⑤ move ＋ 改綁：前後兩相各自驗證；⑥ 過期 exception-backed REQ → 替換或移除：通過；⑦ 後態 clause 有 Source drift：fail-closed；⑧ **move-only**（綁定 A→A、僅位置變動）：identity 維持，通過；⑨ **過期 exception 的 DP 收斂**：有 applicable successor → 所有受影響 DP repoint；無 → reopen（INV-4 影響閉包）；⑩ **malformed／dangling 原始 tag**（語法不合法、或 ID 解析不到任何 clause）：**在映射為 binding 之前** fail-closed —— 不得先當成 `binding == null` 再走 existence 分支，那會把語法錯誤誤讀成「測試不存在」；⑪ **added test**（`exists:false, null` → `exists:true, clause|EXPL`）：通過，前態不做 resolution；⑫ **修改未標記 legacy**（`exists:true, null` → `exists:true, clause|EXPL`）：通過，且後態必須有綁定；⑬ **sibling 反向閉包**：兩測試同綁 `ASSUM-x`，只改其中一個並使 `ASSUM-x` 發生 Transition → 未被改動的 sibling 仍進 gate scope；⑭ **body-only 變更**：tag 不變、只改斷言 → 入 scope（不得因 binding 未變而落到 observe-only）；⑮ **oracle-only 變更**：tag 與宣告本體皆不變、只改 golden 或 helper → 入 scope；⑯ **clause 穩定時不擴散**：普通改斷言且其 clause 無生命週期事件 → **不**觸發 reverseClosure，sibling 不被拉入；⑰ **`EXPL` → deleted**：前態為 `EXPL` 的測試被移除 → 通過（前態不做 resolution，後態 `exists:false`）；⑱ **base witness 缺席／錯指／digest 不符** → 三者各自 fail-closed，不得退化為預設判斷；⑲ **canonical empty store**：`treeOid` 中無 store 檔 → 採空 store 且 digest 可驗，前態存在性一律為否；⑳ **head 規則**：**尚無 batch 時 head=null 且 TaskState ref=null 為合法**；已有 batch 時零個 tip 或兩個以上 tip → fail-closed；㉑ **base 不得暗換**：`resume-task` 嘗試改動 `TaskState.baseProvenance` → 拒絕；②② **TaskState 為權威**：刪除全部 scratch 後，`taskId`／`currentTaskDpIds`／committed head 仍可由 tracked TaskState 取得；②③ **chain 連結**：`previousBatchRef` 指向他 task 的 batch、或指向自己 task 的歷史非 head batch → 兩者各自 fail-closed；②④ **首筆 batch**：`previousBatchRef == null` 且 `committedRef` 由 null 原子更新為該 batch；②⑤ **witness coverage**：治理 witness 的 `resolutionGroupDigest` 與該 group 重算值不等（例如少一筆 sibling evidence）→ fail-closed；②⑥ **evidence ref permutation**：同一組 `semanticEvidenceRefs` 以不同輸入順序（或含重複）提交 → 排序去重後 `resolutionGroupDigest` **相同**；②⑦ **TaskState carrier**：fresh clone 自 `taskStates` 讀回 TaskState；重複 taskId → fail-closed。
 
 **Assurance boundary（明文）**：機械檢查止於 presence／resolution／digest／status／mechanicallyApplicable／ref 一致性比對。**scopeCovers 是 intent discipline 的語義判斷**（機械層驗 ruling 存在、intent principal、及 `record.subjectRef == current DP`；不判斷 scopeCovers 的語義真實性）；語義蘊含由 test discipline 審；ownerRef 匹配驗的是模型內 ref 相等，**不驗現實身分**（non-adversarial 邊界，同 demo1 receipt 的定位）。presence 級檢查不得宣稱為完整 provenance 保證（failure memory：presence-only check 曾被當 coverage 讀）。
 
