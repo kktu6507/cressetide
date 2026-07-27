@@ -13,7 +13,7 @@ import { test } from "node:test";
 import assert from "node:assert";
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawnSync, execFile } from "node:child_process";
 import { temporary, root } from "./helpers.mjs";
 import {
   ProvenanceError, canonicalJson, canonicalText, sha256Hex, digestOf, sortTypedRefs,
@@ -85,6 +85,33 @@ function baseFixture() {
 function reviewRuling(recordId, principal, subjectRef, extra = {}) {
   return { recordId, kind: "review-ruling", by: principal, subjectRef, ruling: "ok", ...extra };
 }
+
+// A COMPLETE typed governance ruling: rulingKind + an input packet that (a) is self-consistent,
+// (b) names the principal that issued it, and (c) still matches the DP it answers. Anything less is
+// now refused, so every fixture that mints one has to build the whole thing.
+function packetFor(dpFixture, requestedPrincipal) {
+  return {
+    dpId: dpFixture.id,
+    scenario: dpFixture.scenario,
+    alternatives: dpFixture.alternatives,
+    layer: dpFixture.layer,
+    classificationBasis: dpFixture.classificationBasis,
+    requestedPrincipal,
+  };
+}
+
+function typedRuling(recordId, principal, dpFixture, rulingKind, extra = {}) {
+  const snapshot = packetFor(dpFixture, principal);
+  return {
+    ...reviewRuling(recordId, principal, dpFixture.id),
+    rulingKind, inputPacketSnapshot: snapshot, inputPacketDigest: digestOf(snapshot), ...extra,
+  };
+}
+
+// The DP fixtures as they exist in baseFixture(), so a packet can be built to match them.
+const DP1 = dp("DP-1");
+const DP2 = dp("DP-2");
+const DP3 = dp("DP-3", { layer: "intent" });
 
 function planGate(recordId, target, impact = "no consumers", disposition = "no-affected-dependents") {
   return { recordId, kind: "plan-gate", target, impact, disposition, approvedBy: "user" };
@@ -1052,21 +1079,23 @@ test("panel 5 / SM §2: batchSnapshot results and findings are canonically order
   assert.strictEqual(a.results[0].findings[0].kind, "wrong-tag", "closed kind order, and null binding first");
 });
 
-test("panel 6 / SM §9: an UNPARSEABLE exception expiry fails closed instead of reading as 'not expired'", () => {
+test("panel 6 / SM §9: an exception whose expiry has PASSED stops being applicable", () => {
   let s = withHardConstraint();
   s = apply(s, "append-source", {
     source: {
       sourceId: "S-exc", contentKind: "exception-grant", driftMode: "snapshot-only", locator: "g#1",
       excerpt: "grant", targetConstraintRef: "REQ-hc",
-      grantAuthorityRef: { kind: "source-authority", ref: "R-owner" }, scope: "eu", expiry: "not-a-date",
+      grantAuthorityRef: { kind: "source-authority", ref: "R-owner" }, scope: "eu", expiry: "2020-01-01",
     },
   });
   s = apply(s, "append-record", { record: reviewRuling("R-scope", INTENT, "DP-3") });
   const e = assertRejects(() => apply(s, "create-initial-outcome", {
     dpId: "DP-3", scopeRulingRef: { kind: "review-ruling", ref: "R-scope" },
     clause: { id: "REQ-exc", authority: "approved-requirement", kind: "specification", text: "t", sourceRef: "S-exc", taskRef: "TASK-1" },
-  }), "E_INV4_NOT_APPLICABLE", "garbage expiry");
-  assert.match(e.message, /expiry-unparseable/);
+  }), "E_INV4_NOT_APPLICABLE", "expired grant");
+  assert.match(e.message, /exception-expired/);
+  // NOTE: an UNPARSEABLE expiry never reaches this path any more — it is refused at Source level
+  // (see the panel-3 test below), which is strictly earlier and covers unreferenced grants too.
 });
 
 test("panel 6 / SM §2: a batch ref naming a real record of the WRONG kind does not resolve", () => {
@@ -1134,34 +1163,33 @@ test("panel 4 / IS AC35: a reopened DP with an active prior terminal is refused 
 
 test("panel 3 / IS annotation table: reclassify-dp REQUIRES a classification ruling bound to this DP", () => {
   const s = baseFixture();
+  const cls = (dpFixture, basis = "product policy") =>
+    typedRuling("R-cls", INTENT, dpFixture, "product-tradeoff", { basis });
+
   assertRejects(() => apply(s, "reclassify-dp", { dpId: "DP-1", layer: "intent", classificationBasis: "product policy" }),
     "E_PAYLOAD_MISSING", "reclassify with no ruling at all");
 
   // a ruling bound to ANOTHER DP cannot be borrowed
   assertRejects(() => apply(s, "reclassify-dp", {
     dpId: "DP-1", layer: "intent", classificationBasis: "product policy",
-    records: [{ ...reviewRuling("R-cls", INTENT, "DP-2"), rulingKind: "product-tradeoff", basis: "product policy" }],
-    classificationRulingRef: { kind: "review-ruling", ref: "R-cls" },
+    records: [cls(DP2)], classificationRulingRef: { kind: "review-ruling", ref: "R-cls" },
   }), "E_RULING_BORROWED", "classification ruling bound to another DP");
 
   // postcondition: a product-tradeoff ruling implies layer=intent
   assertRejects(() => apply(s, "reclassify-dp", {
     dpId: "DP-1", layer: "implementation", classificationBasis: "product policy",
-    records: [{ ...reviewRuling("R-cls", INTENT, "DP-1"), rulingKind: "product-tradeoff", basis: "product policy" }],
-    classificationRulingRef: { kind: "review-ruling", ref: "R-cls" },
+    records: [cls(DP1)], classificationRulingRef: { kind: "review-ruling", ref: "R-cls" },
   }), "E_RULING_POSTCONDITION", "product-tradeoff not landing on intent");
 
   // basis must match the ruling's
   assertRejects(() => apply(s, "reclassify-dp", {
     dpId: "DP-1", layer: "intent", classificationBasis: "something else",
-    records: [{ ...reviewRuling("R-cls", INTENT, "DP-1"), rulingKind: "product-tradeoff", basis: "product policy" }],
-    classificationRulingRef: { kind: "review-ruling", ref: "R-cls" },
+    records: [cls(DP1)], classificationRulingRef: { kind: "review-ruling", ref: "R-cls" },
   }), "E_RULING_POSTCONDITION", "classificationBasis diverging from the ruling");
 
   const ok = apply(s, "reclassify-dp", {
     dpId: "DP-1", layer: "intent", classificationBasis: "product policy",
-    records: [{ ...reviewRuling("R-cls", INTENT, "DP-1"), rulingKind: "product-tradeoff", basis: "product policy" }],
-    classificationRulingRef: { kind: "review-ruling", ref: "R-cls" },
+    records: [cls(DP1)], classificationRulingRef: { kind: "review-ruling", ref: "R-cls" },
   });
   const d = indexStore(ok).dps.get("DP-1");
   assert.strictEqual(d.layer, "intent");
@@ -1171,56 +1199,52 @@ test("panel 3 / IS annotation table: reclassify-dp REQUIRES a classification rul
 
 test("panel 3 / IS AC41: another DP's technical-decision ruling cannot be borrowed for a new DEC", () => {
   const s = baseFixture();
-  const snapshot = { alternatives: ["A", "B"] };
-  const ruling = (subjectRef) => ({
-    ...reviewRuling("R-td", CODE, subjectRef), rulingKind: "technical-decision",
-    selectedAlternative: "A", inputPacketSnapshot: snapshot, inputPacketDigest: digestOf(snapshot),
-  });
+  const ruling = (dpFixture) => typedRuling("R-td", CODE, dpFixture, "technical-decision", { selectedAlternative: "A" });
   const decFor = (dpId) => ({
     id: "DEC-x", layer: "implementation", derivedFrom: dpId, decision: "A", alternatives: ["A", "B"],
     approvedBy: CODE, basisRefs: [{ kind: "review-ruling", ref: "R-td" }],
   });
 
   assertRejects(() => apply(s, "create-initial-outcome", {
-    dpId: "DP-2", records: [ruling("DP-1")], clause: decFor("DP-2"),
+    dpId: "DP-2", records: [ruling(DP1)], clause: decFor("DP-2"),
   }), "E_RULING_BORROWED", "DP-1's ruling pinned to a DEC derived from DP-2");
 
   // and the postconditions bite even when the ruling IS this DP's
   assertRejects(() => apply(s, "create-initial-outcome", {
-    dpId: "DP-2", records: [ruling("DP-2")], clause: { ...decFor("DP-2"), decision: "B" },
+    dpId: "DP-2", records: [ruling(DP2)], clause: { ...decFor("DP-2"), decision: "B" },
   }), "E_RULING_POSTCONDITION", "DEC.decision diverging from selectedAlternative");
   assertRejects(() => apply(s, "create-initial-outcome", {
-    dpId: "DP-2", records: [ruling("DP-2")], clause: { ...decFor("DP-2"), approvedBy: SECURITY },
+    dpId: "DP-2", records: [ruling(DP2)], clause: { ...decFor("DP-2"), approvedBy: SECURITY },
   }), "E_RULING_POSTCONDITION", "DEC.approvedBy diverging from ruling.by");
   assertRejects(() => apply(s, "create-initial-outcome", {
-    dpId: "DP-2", records: [ruling("DP-2")], clause: { ...decFor("DP-2"), alternatives: ["A", "C"] },
+    dpId: "DP-2", records: [ruling(DP2)], clause: { ...decFor("DP-2"), alternatives: ["A", "C"] },
   }), "E_RULING_POSTCONDITION", "DEC.alternatives diverging from the input snapshot");
 
-  const ok = apply(s, "create-initial-outcome", { dpId: "DP-2", records: [ruling("DP-2")], clause: decFor("DP-2") });
+  const ok = apply(s, "create-initial-outcome", { dpId: "DP-2", records: [ruling(DP2)], clause: decFor("DP-2") });
   assert.strictEqual(indexStore(ok).dps.get("DP-2").decidedBy, "DEC-x");
 });
 
 test("panel 3 / IS §13: the store-script assertions bite — selection must come from the alternatives, distinct for provisional", () => {
   const s = baseFixture();
-  const snapshot = { alternatives: ["A", "B"] };
   assertRejects(() => apply(s, "create-initial-outcome", {
     dpId: "DP-2",
-    records: [{
-      ...reviewRuling("R-td", CODE, "DP-2"), rulingKind: "technical-decision",
-      selectedAlternative: "Z", inputPacketSnapshot: snapshot, inputPacketDigest: digestOf(snapshot),
-    }],
+    records: [typedRuling("R-td", CODE, DP2, "technical-decision", { selectedAlternative: "Z" })],
     clause: { id: "DEC-x", layer: "implementation", derivedFrom: "DP-2", decision: "Z", alternatives: ["A", "B"], approvedBy: CODE, basisRefs: [{ kind: "review-ruling", ref: "R-td" }] },
   }), "E_RULING_SELECTION", "selectedAlternative outside the offered alternatives");
 
   assertRejects(() => apply(s, "create-initial-outcome", {
     dpId: "DP-2",
-    records: [{
-      ...reviewRuling("R-ap", CODE, "DP-2"), rulingKind: "approved-provisional",
-      selectedAlternative: "A", rejectedAlternative: "A", basis: "b",
-      inputPacketSnapshot: snapshot, inputPacketDigest: digestOf(snapshot),
-    }],
+    records: [typedRuling("R-ap", CODE, DP2, "approved-provisional", { selectedAlternative: "A", rejectedAlternative: "A", basis: "b" })],
     clause: { id: "ASSUM-x", layer: "implementation", derivedFrom: "DP-2", text: "A", alternative: "A", basis: "b", basisRefs: [{ kind: "review-ruling", ref: "R-ap" }], governedBy: CODE },
   }), "E_RULING_SELECTION", "selected and rejected identical");
+
+  // and the positive: a well-formed approved-provisional ruling backs its ASSUM
+  const ok = apply(s, "create-initial-outcome", {
+    dpId: "DP-2",
+    records: [typedRuling("R-ap", CODE, DP2, "approved-provisional", { selectedAlternative: "A", rejectedAlternative: "B", basis: "b" })],
+    clause: { id: "ASSUM-x", layer: "implementation", derivedFrom: "DP-2", text: "A", alternative: "B", basis: "b", basisRefs: [{ kind: "review-ruling", ref: "R-ap" }], governedBy: CODE },
+  });
+  assert.strictEqual(indexStore(ok).dps.get("DP-2").assumedAs, "ASSUM-x");
 });
 
 test("panel 3 / IS AC33: a governance ruling whose inputPacketDigest disagrees with its own snapshot is refused", () => {
@@ -1282,31 +1306,131 @@ function withDecision(approvedBy = CODE) {
   let s = baseFixture();
   s = apply(s, "create-initial-outcome", {
     dpId: "DP-2",
+    records: [typedRuling("R-td", approvedBy, DP2, "technical-decision", { selectedAlternative: "A" })],
     clause: {
       id: "DEC-a", layer: "implementation", derivedFrom: "DP-2", decision: "A",
-      alternatives: ["A", "B"], approvedBy, basisRefs: [],
+      alternatives: ["A", "B"], approvedBy, basisRefs: [{ kind: "review-ruling", ref: "R-td" }],
     },
   });
   return s;
 }
 
+// A successor DEC needs its own technical-decision ruling, minted in the same transaction.
+function decSuccessor(id, dpFixture, principal, rulingId, decision = "B") {
+  return {
+    ruling: typedRuling(rulingId, principal, dpFixture, "technical-decision", { selectedAlternative: decision }),
+    clause: {
+      id, layer: "implementation", derivedFrom: dpFixture.id, decision,
+      alternatives: dpFixture.alternatives, approvedBy: principal,
+      basisRefs: [{ kind: "review-ruling", ref: rulingId }],
+    },
+  };
+}
+
 test("SM §2 DEC row: the approving discipline may supersede its own DEC; another discipline may not", () => {
-  let s = withDecision(CODE);
+  const s = withDecision(CODE);
+  const next = decSuccessor("DEC-b", DP2, CODE, "R-td2");
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-2", casMode: "current-terminal", expectedCurrentTerminalRef: "DEC-a",
-    records: [reviewRuling("R-s", SECURITY, "DP-2")],
-    successorClause: { id: "DEC-b", layer: "implementation", derivedFrom: "DP-2", decision: "B", alternatives: ["A", "B"], approvedBy: CODE, basisRefs: [] },
+    records: [reviewRuling("R-s", SECURITY, "DP-2"), next.ruling],
+    successorClause: next.clause,
     transition: { id: "T-1", subject: "DEC-a", action: "supersede", successor: "DEC-b", authorityRef: SECURITY, ackRef: { kind: "review-ruling", ref: "R-s" } },
   }), "E_MATRIX_AUTHORITY", "security superseding a code-approved DEC");
 
   const ok = apply(s, "replace-terminal", {
     dpId: "DP-2", casMode: "current-terminal", expectedCurrentTerminalRef: "DEC-a",
-    records: [reviewRuling("R-c", CODE, "DP-2")],
-    successorClause: { id: "DEC-b", layer: "implementation", derivedFrom: "DP-2", decision: "B", alternatives: ["A", "B"], approvedBy: CODE, basisRefs: [] },
+    records: [reviewRuling("R-c", CODE, "DP-2"), next.ruling],
+    successorClause: next.clause,
     transition: { id: "T-1", subject: "DEC-a", action: "supersede", successor: "DEC-b", authorityRef: CODE, ackRef: { kind: "review-ruling", ref: "R-c" } },
   });
   assert.strictEqual(statusOf(indexStore(ok), "DEC-a"), "superseded");
   assert.strictEqual(indexStore(ok).dps.get("DP-2").decidedBy, "DEC-b");
+});
+
+test("panel 1 / SM §5 row 7: a DEC cannot be minted without a technical-decision ruling", () => {
+  const s = baseFixture();
+  assertRejects(() => apply(s, "create-initial-outcome", {
+    dpId: "DP-2",
+    clause: { id: "DEC-x", layer: "implementation", derivedFrom: "DP-2", decision: "A", alternatives: ["A", "B"], approvedBy: CODE, basisRefs: [] },
+  }), "E_DEC_RULING_REQUIRED", "DEC with no ruling at all");
+
+  // an UNTYPED ruling is not a substitute either
+  assertRejects(() => apply(s, "create-initial-outcome", {
+    dpId: "DP-2",
+    records: [reviewRuling("R-plain", CODE, "DP-2")],
+    clause: { id: "DEC-x", layer: "implementation", derivedFrom: "DP-2", decision: "A", alternatives: ["A", "B"], approvedBy: CODE, basisRefs: [{ kind: "review-ruling", ref: "R-plain" }] },
+  }), "E_DEC_RULING_REQUIRED", "DEC backed only by an untyped ruling");
+});
+
+test("panel 1: an UNTYPED ruling bound to another DP cannot be borrowed either", () => {
+  const s = baseFixture();
+  assertRejects(() => apply(s, "create-initial-outcome", {
+    dpId: "DP-2",
+    records: [reviewRuling("R-plain", CODE, "DP-1")],
+    clause: {
+      id: "ASSUM-x", layer: "implementation", derivedFrom: "DP-2", text: "t", alternative: "u",
+      basis: "b", basisRefs: [{ kind: "review-ruling", ref: "R-plain" }], governedBy: CODE,
+    },
+  }), "E_RULING_BORROWED", "untyped ruling about DP-1 cited by a DP-2 clause");
+});
+
+test("panel 1 / IS §4: a typed ruling missing its packet, or answering a STALE packet, is refused", () => {
+  const s = baseFixture();
+  // (a) rulingKind but no packet
+  assertRejects(() => apply(s, "append-record", {
+    record: { ...reviewRuling("R-x", CODE, "DP-2"), rulingKind: "technical-decision", selectedAlternative: "A" },
+  }), "E_RULING_PACKET_MISSING", "typed ruling with no input packet");
+
+  // (b) requestedPrincipal disagreeing with by
+  const mismatched = { ...packetFor(DP2, SECURITY) };
+  assertRejects(() => apply(s, "append-record", {
+    record: {
+      ...reviewRuling("R-y", CODE, "DP-2"), rulingKind: "technical-decision", selectedAlternative: "A",
+      inputPacketSnapshot: mismatched, inputPacketDigest: digestOf(mismatched),
+    },
+  }), "E_RULING_PRINCIPAL", "packet requested security, ruling issued by code");
+
+  // (c) self-consistent but STALE: the packet describes alternatives the DP no longer has
+  const stale = { ...packetFor(DP2, CODE), alternatives: ["A", "B", "C"] };
+  assertRejects(() => apply(s, "append-record", {
+    record: {
+      ...reviewRuling("R-z", CODE, "DP-2"), rulingKind: "technical-decision", selectedAlternative: "A",
+      inputPacketSnapshot: stale, inputPacketDigest: digestOf(stale),
+    },
+  }), "E_RULING_PACKET_STALE", "self-consistent packet that no longer matches the DP");
+
+  // a complete, fresh ruling is accepted
+  assert.ok(apply(s, "append-record", {
+    record: typedRuling("R-ok", CODE, DP2, "technical-decision", { selectedAlternative: "A" }),
+  }));
+});
+
+test("panel 2 / SM §9: the loader re-verifies every batch witness against its TaskState", () => {
+  let s = baseFixture();
+  s = apply(s, "commit-test-provenance-batch", batchPayload());
+  // Edit the committed snapshot's witness AND recompute its digest, so the record is internally
+  // consistent — exactly the shape that previously loaded cleanly.
+  const tampered = {
+    ...s,
+    records: s.records.map((r) => {
+      if (r.recordId !== "R-b1") return r;
+      const snapshot = { ...r.batchSnapshot, baseProvenance: { ...BASE, treeOid: "f".repeat(40) } };
+      return { ...r, batchSnapshot: snapshot, batchDigest: digestOf(snapshot) };
+    }),
+  };
+  assertRejects(() => validateAll(tampered, OPTS), "E_BATCH_BASE_MISMATCH", "internally consistent but reseated witness");
+});
+
+test("panel 3 / SM §2: a malformed exception expiry is refused at Source level, even with nothing citing it", () => {
+  const s = withHardConstraint();
+  const e = assertRejects(() => apply(s, "append-source", {
+    source: {
+      sourceId: "S-bad", contentKind: "exception-grant", driftMode: "snapshot-only", locator: "g#1",
+      excerpt: "grant", targetConstraintRef: "REQ-hc",
+      grantAuthorityRef: { kind: "source-authority", ref: "R-owner" }, scope: "eu", expiry: "not-a-date",
+    },
+  }), "E_SHAPE", "unreferenced grant with a garbage expiry");
+  assert.match(e.message, /unparseable expiry/);
 });
 
 test("SM §2 DEC row: arbiter may retire a DEC, and DEC has no revise action", () => {
@@ -1319,10 +1443,11 @@ test("SM §2 DEC row: arbiter may retire a DEC, and DEC has no revise action", (
   assert.strictEqual(statusOf(indexStore(ok), "DEC-a"), "retired");
   assert.strictEqual(indexStore(ok).dps.get("DP-2").status, "open");
 
+  const next = decSuccessor("DEC-b", DP2, CODE, "R-td2");
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-2", casMode: "current-terminal", expectedCurrentTerminalRef: "DEC-a",
-    records: [reviewRuling("R-c", CODE, "DP-2")],
-    successorClause: { id: "DEC-b", layer: "implementation", derivedFrom: "DP-2", decision: "B", alternatives: ["A", "B"], approvedBy: CODE, basisRefs: [] },
+    records: [reviewRuling("R-c", CODE, "DP-2"), next.ruling],
+    successorClause: next.clause,
     transition: { id: "T-1", subject: "DEC-a", action: "revise", successor: "DEC-b", authorityRef: CODE, ackRef: { kind: "review-ruling", ref: "R-c" } },
   }), "E_MATRIX_FORBIDDEN", "DEC revise");
 });
@@ -1349,20 +1474,22 @@ test("SM §2 ASSUM row: supersede → DEC accepts a formally rerouted current re
   let s = withAssumption(CODE);
   // operability was rerouted onto this DP; its ruling must equal the new DEC's approvedBy.
   const OPERABILITY = { kind: "discipline", discipline: "operability" };
+  const next = decSuccessor("DEC-n", DP1, OPERABILITY, "R-td-op", "A");
   const ok = apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a",
-    records: [reviewRuling("R-op", OPERABILITY, "DP-1")],
-    successorClause: { id: "DEC-n", layer: "implementation", derivedFrom: "DP-1", decision: "A", alternatives: ["A", "B"], approvedBy: OPERABILITY, basisRefs: [] },
+    records: [reviewRuling("R-op", OPERABILITY, "DP-1"), next.ruling],
+    successorClause: next.clause,
     transition: { id: "T-1", subject: "ASSUM-a", action: "supersede", successor: "DEC-n", authorityRef: OPERABILITY, ackRef: { kind: "review-ruling", ref: "R-op" } },
   });
   assert.strictEqual(indexStore(ok).dps.get("DP-1").decidedBy, "DEC-n");
 
   // but a rerouted principal that does NOT match the new DEC's approvedBy falls back to the
   // governedBy rule and is refused.
+  const mismatched = decSuccessor("DEC-n", DP1, SECURITY, "R-td-sec", "A");
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a",
-    records: [reviewRuling("R-op", OPERABILITY, "DP-1")],
-    successorClause: { id: "DEC-n", layer: "implementation", derivedFrom: "DP-1", decision: "A", alternatives: ["A", "B"], approvedBy: SECURITY, basisRefs: [] },
+    records: [reviewRuling("R-op", OPERABILITY, "DP-1"), mismatched.ruling],
+    successorClause: mismatched.clause,
     transition: { id: "T-1", subject: "ASSUM-a", action: "supersede", successor: "DEC-n", authorityRef: OPERABILITY, ackRef: { kind: "review-ruling", ref: "R-op" } },
   }), "E_MATRIX_AUTHORITY", "rerouted principal not matching the new DEC's approvedBy");
 });
@@ -1627,6 +1754,53 @@ test("IS §8: minted ids are 26-char Crockford ULIDs whose time prefix is monoto
   assert.strictEqual(id.length, 26);
   assert.match(id, /^[0-9A-HJKMNP-TV-Z]{26}$/);
   assert.notStrictEqual(ulid(NOW), ulid(NOW), "randomness distinguishes ids minted in the same ms");
+});
+
+// --- real cross-process contention (panel: the lock must be exercised by actual processes) --------
+
+test("panel 1: N concurrent PROCESSES contend for the store — every success lands, none is clobbered, no lock leaks", async () => {
+  const cwd = temporary("prov-contend-");
+  runTransaction(cwd, "init-task", { taskId: "TASK-1", baseProvenance: BASE }, OPTS);
+  const script = path.join(root, "cressetide", "skills", "vigil", "scripts", "provenance-store.mjs");
+
+  const N = 12;
+  const attempt = (i) => new Promise((resolve) => {
+    const payload = JSON.stringify({
+      record: { recordId: `R-p${i}`, kind: "source-authority", authorityIdentity: `writer-${i}` },
+    });
+    execFile(process.execPath, [script, "append-record", "--cwd", cwd, "--payload", payload],
+      { encoding: "utf8" }, (err, stdout, stderr) => {
+        resolve({ i, code: err ? err.code : 0, stdout, stderr });
+      });
+  });
+
+  const results = await Promise.all(Array.from({ length: N }, (_, i) => attempt(i)));
+  const succeeded = results.filter((r) => r.code === 0);
+  const rejected = results.filter((r) => r.code !== 0);
+
+  assert.strictEqual(succeeded.length + rejected.length, N, "every process reports an outcome");
+  assert.ok(succeeded.length >= 1, "at least one writer must get through");
+
+  // Whatever the interleaving, the store must be consistent and hold EXACTLY the successful writes.
+  const store = loadStore(cwd).store;
+  assert.ok(validateAll(store, OPTS).ok, "the store is still valid after contention");
+  const present = new Set(store.records.map((r) => r.recordId));
+  for (const r of succeeded) {
+    assert.ok(present.has(`R-p${r.i}`), `writer ${r.i} reported success, so its record must be present (no clobbering)`);
+  }
+  for (const r of rejected) {
+    assert.ok(!present.has(`R-p${r.i}`), `writer ${r.i} was rejected, so its record must be absent`);
+    const err = JSON.parse(r.stderr);
+    assert.ok(["E_STORE_LOCKED", "E_CAS_MISMATCH"].includes(err.code),
+      `a losing writer must fail on the lock or the CAS, got ${err.code}`);
+  }
+  assert.strictEqual(store.records.filter((r) => r.recordId.startsWith("R-p")).length, succeeded.length,
+    "no partial or phantom writes");
+  assert.ok(!fs.existsSync(`${storePath(cwd)}.lock`), "no lock file survives the contention");
+  assert.deepStrictEqual(
+    fs.readdirSync(path.dirname(storePath(cwd))).filter((f) => f.includes(".tmp")), [],
+    "no temp file survives the contention",
+  );
 });
 
 test("clauseKindOf routes ids by prefix and rejects anything else", () => {

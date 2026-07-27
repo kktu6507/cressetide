@@ -627,6 +627,12 @@ function validateStructure(store) {
       for (const f of ["targetConstraintRef", "grantAuthorityRef", "scope", "expiry"]) {
         if (s[f] === undefined || s[f] === null) reject("E_SHAPE", `exception-grant source ${s.sourceId} missing ${f}`, s.sourceId);
       }
+      // Structural, not usage-gated: an unparseable expiry must never enter the canonical store,
+      // even on a grant nothing currently cites. Rejecting it only where a terminal happens to use
+      // it leaves an un-evaluatable grant sitting in tracked state waiting to be adopted.
+      if (!Number.isFinite(Date.parse(s.expiry))) {
+        reject("E_SHAPE", `exception-grant source ${s.sourceId} has an unparseable expiry ${JSON.stringify(s.expiry)}`, s.sourceId);
+      }
     }
   }
 
@@ -993,8 +999,22 @@ function validateTaskStatesAndHeads(index) {
     batchesByTask.set(r.taskId, list);
   }
   for (const [taskId, batches] of batchesByTask) {
-    if (!index.taskStates.get(taskId)) {
+    const owner = index.taskStates.get(taskId);
+    if (!owner) {
       reject("E_BATCH_ORPHAN_TASK", `provenance-batch records exist for unknown task ${taskId}`, taskId);
+    }
+    // SM §9: "任何 batch 內攜帶的 witness 必須等於 tracked TaskState.baseProvenance；不等即
+    // fail-closed". Checking this only when the batch is minted is not enough — an edited snapshot
+    // with a recomputed batchDigest is internally consistent and would otherwise load cleanly.
+    for (const b of batches) {
+      const witness = b.batchSnapshot && b.batchSnapshot.baseProvenance;
+      if (canonicalJson(witness) !== canonicalJson(owner.baseProvenance)) {
+        reject(
+          "E_BATCH_BASE_MISMATCH",
+          `provenance-batch ${b.recordId}: its inline baseProvenance witness does not equal task ${taskId}'s tracked baseProvenance`,
+          b.recordId,
+        );
+      }
     }
     for (const b of batches) {
       if (!b.previousBatchRef) continue;
@@ -1035,10 +1055,53 @@ export const RULING_KINDS = [
   "product-tradeoff", "scope-coverage", "layer-classification",
 ];
 
-function rulingSnapshotSelfConsistent(rec) {
-  if (rec.inputPacketSnapshot === undefined && rec.inputPacketDigest === undefined) return true;
-  if (rec.inputPacketSnapshot === undefined || rec.inputPacketDigest === undefined) return false;
-  return digestOf(rec.inputPacketSnapshot) === rec.inputPacketDigest;
+// A typed governance ruling MUST carry its immutable input packet. Without it the postconditions
+// below have nothing to compare against, so "has a rulingKind" would be decoration.
+function assertTypedRulingComplete(rec) {
+  if (rec.inputPacketSnapshot === undefined || rec.inputPacketDigest === undefined) {
+    reject(
+      "E_RULING_PACKET_MISSING",
+      `review-ruling ${rec.recordId} declares rulingKind=${rec.rulingKind} but carries no inputPacketSnapshot/inputPacketDigest — a typed ruling without its packet cannot be checked`,
+      rec.recordId,
+    );
+  }
+  if (digestOf(rec.inputPacketSnapshot) !== rec.inputPacketDigest) {
+    reject("E_RULING_SNAPSHOT", `review-ruling ${rec.recordId}: inputPacketDigest does not match its own inputPacketSnapshot`, rec.recordId);
+  }
+  // IS §4: the packet names the principal the ruling was requested from; a ruling issued by
+  // somebody else is not an answer to that packet.
+  if (!principalsEqual(rec.inputPacketSnapshot.requestedPrincipal, rec.by)) {
+    reject(
+      "E_RULING_PRINCIPAL",
+      `review-ruling ${rec.recordId}: the packet's requestedPrincipal does not equal the ruling's by`,
+      rec.recordId,
+    );
+  }
+}
+
+// IS §4 freshness, checked BEFORE the mutation lands: the packet the reviewer answered must still
+// describe the DP as it stands. Only the DP-derived fields are reconstructible here — `basisRefs`
+// lives in the orchestrator's packet, not on the DP, so it is outside this script's reach and is
+// stated as such rather than pretended.
+export const PACKET_DP_FIELDS = ["scenario", "alternatives", "layer", "classificationBasis", "materialReasons"];
+
+export function assertRulingPacketFresh(preIndex, rec) {
+  const snapshot = rec.inputPacketSnapshot;
+  const dpId = snapshot.dpId || snapshot.id || rec.subjectRef;
+  const dp = preIndex.dps.get(dpId);
+  if (!dp) {
+    reject("E_RULING_PACKET_STALE", `review-ruling ${rec.recordId}: its packet names DP ${dpId}, which does not exist`, rec.recordId);
+  }
+  for (const field of PACKET_DP_FIELDS) {
+    if (snapshot[field] === undefined) continue;
+    if (canonicalJson(snapshot[field]) !== canonicalJson(dp[field])) {
+      reject(
+        "E_RULING_PACKET_STALE",
+        `review-ruling ${rec.recordId}: the packet's ${field} no longer matches DP ${dpId} — the ruling answered an earlier state and must be re-issued`,
+        rec.recordId,
+      );
+    }
+  }
 }
 
 function validateGovernanceRulings(index) {
@@ -1047,24 +1110,47 @@ function validateGovernanceRulings(index) {
     if (!RULING_KINDS.includes(rec.rulingKind)) {
       reject("E_ENUM", `review-ruling ${rec.recordId} has unknown rulingKind ${rec.rulingKind}`, rec.recordId);
     }
-    if (!rulingSnapshotSelfConsistent(rec)) {
-      reject("E_RULING_SNAPSHOT", `review-ruling ${rec.recordId}: inputPacketDigest does not match its own inputPacketSnapshot`, rec.recordId);
-    }
+    assertTypedRulingComplete(rec);
   }
 
   for (const c of index.store.clauses) {
     const kind = clauseKindOf(c.id);
     if (kind !== "DEC" && kind !== "ASSUM") continue;
+
+    // SM §5 row 7: a DEC is a FORMAL engineering ruling. It may not exist without the typed ruling
+    // that produced it — otherwise the whole postcondition apparatus is opt-in.
+    if (kind === "DEC") {
+      const typed = (c.basisRefs || []).some((r) => {
+        if (!r || typeof r !== "object" || r.kind !== "review-ruling") return false;
+        const rec = index.records.get(r.ref);
+        return rec && rec.rulingKind === "technical-decision";
+      });
+      if (!typed) {
+        reject(
+          "E_DEC_RULING_REQUIRED",
+          `DEC ${c.id} cites no technical-decision ruling — a DEC is a formal engineering ruling (SM §5 row 7) and cannot be minted without one`,
+          c.id,
+        );
+      }
+    }
+
     for (const ref of c.basisRefs || []) {
       if (!ref || typeof ref !== "object" || ref.kind !== "review-ruling") continue;
       const rec = index.records.get(ref.ref);
-      if (!rec || rec.rulingKind === undefined) continue; // a plain ruling carries no postcondition
+      if (!rec) continue; // resolvability is validateRefs'/mechanicallyApplicable's business
+      // Anti-borrowing applies to EVERY cited ruling, typed or not: an untyped ruling about
+      // another DP is exactly as much of a forgery as a typed one.
+      if (rec.subjectRef !== c.derivedFrom && rec.subjectRef !== c.id) {
+        reject(
+          "E_RULING_BORROWED",
+          `${kind} ${c.id} cites review-ruling ${rec.recordId}, which is bound to ${rec.subjectRef} — neither this clause nor its DP`,
+          c.id,
+        );
+      }
+      if (rec.rulingKind === undefined) continue; // bound, but carries no typed postcondition
       const alternatives = rec.inputPacketSnapshot ? rec.inputPacketSnapshot.alternatives : undefined;
 
       if (kind === "DEC" && rec.rulingKind === "technical-decision") {
-        if (rec.subjectRef !== c.derivedFrom && rec.subjectRef !== c.id) {
-          reject("E_RULING_BORROWED", `DEC ${c.id} cites technical-decision ruling ${rec.recordId}, which is bound to ${rec.subjectRef} — not this DP`, c.id);
-        }
         if (c.decision !== rec.selectedAlternative) {
           reject("E_RULING_POSTCONDITION", `DEC ${c.id}.decision does not equal the ruling's selectedAlternative`, c.id);
         }
@@ -1081,9 +1167,6 @@ function validateGovernanceRulings(index) {
       }
 
       if (kind === "ASSUM" && rec.rulingKind === "approved-provisional") {
-        if (rec.subjectRef !== c.derivedFrom && rec.subjectRef !== c.id) {
-          reject("E_RULING_BORROWED", `ASSUM ${c.id} cites approved-provisional ruling ${rec.recordId}, which is bound to ${rec.subjectRef} — not this DP`, c.id);
-        }
         if (c.text !== rec.selectedAlternative) {
           reject("E_RULING_POSTCONDITION", `ASSUM ${c.id}.text does not equal the ruling's selectedAlternative`, c.id);
         }
@@ -1666,7 +1749,21 @@ export function applyTransaction(store, command, payload, options = {}) {
   const apply = TRANSACTIONS[command];
   if (!apply) reject("E_UNKNOWN_COMMAND", `unknown command "${command}"`, command);
   const ctx = { now: options.now === undefined ? Date.now() : options.now };
+  const preIndex = indexStore(store);
   const next = apply(store, payload || {}, ctx);
+
+  // IS §4: freshness is a PRE-mutation check. Every typed governance ruling minted by THIS
+  // transaction is compared against the pre-state DP it claims to answer; rulings already in the
+  // store were checked when they were minted. Runs before validateAll so a stale packet is
+  // reported as staleness rather than surfacing later as a confusing postcondition mismatch.
+  const existing = new Set(store.records.map((r) => r.recordId));
+  for (const rec of next.records) {
+    if (existing.has(rec.recordId)) continue;
+    if (rec.kind !== "review-ruling" || rec.rulingKind === undefined) continue;
+    assertTypedRulingComplete(rec);
+    assertRulingPacketFresh(preIndex, rec);
+  }
+
   validateAll(next, { now: ctx.now });
   return next;
 }
