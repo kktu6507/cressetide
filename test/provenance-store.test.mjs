@@ -45,7 +45,8 @@ const BASE = { treeOid: "a".repeat(40), storePath: CANONICAL_STORE_PATH, storeDi
 function dp(id, over = {}) {
   return {
     id, dimension: "data", scenario: `scenario for ${id}`, alternatives: ["A", "B"],
-    layer: "implementation", classificationBasis: "engineering standard", status: "open", ...over,
+    layer: "implementation", classificationBasis: "engineering standard",
+    materialReasons: [], status: "open", ...over,
   };
 }
 
@@ -96,7 +97,9 @@ function packetFor(dpFixture, requestedPrincipal) {
     alternatives: dpFixture.alternatives,
     layer: dpFixture.layer,
     classificationBasis: dpFixture.classificationBasis,
+    materialReasons: dpFixture.materialReasons ?? [],
     requestedPrincipal,
+    basisRefs: [],
   };
 }
 
@@ -104,8 +107,15 @@ function typedRuling(recordId, principal, dpFixture, rulingKind, extra = {}) {
   const snapshot = packetFor(dpFixture, principal);
   return {
     ...reviewRuling(recordId, principal, dpFixture.id),
-    rulingKind, inputPacketSnapshot: snapshot, inputPacketDigest: digestOf(snapshot), ...extra,
+    rulingKind, basis: "stated basis",
+    inputPacketSnapshot: snapshot, inputPacketDigest: digestOf(snapshot), ...extra,
   };
+}
+
+// A scope-coverage ruling is the intent discipline's explicit verdict — a plain intent ruling is
+// not a substitute (panel 4).
+function scopeRuling(recordId, dpFixture, scopeCovers = true) {
+  return typedRuling(recordId, INTENT, dpFixture, "scope-coverage", { scopeCovers });
 }
 
 // The DP fixtures as they exist in baseFixture(), so a packet can be built to match them.
@@ -772,7 +782,7 @@ test("SM §2/§9: an EXPIRED exception-backed REQ stops being applicable", () =>
       grantAuthorityRef: { kind: "source-authority", ref: "R-owner" }, scope: "eu", expiry: "2020-01-01",
     },
   });
-  s = apply(s, "append-record", { record: reviewRuling("R-scope", INTENT, "DP-3") });
+  s = apply(s, "append-record", { record: scopeRuling("R-scope", DP3) });
   assertRejects(() => apply(s, "create-initial-outcome", {
     dpId: "DP-3",
     scopeRulingRef: { kind: "review-ruling", ref: "R-scope" },
@@ -796,19 +806,19 @@ test("SM §2: an exception-backed REQ needs a DP-bound intent scope ruling — a
     "E_INV4_NOT_APPLICABLE", "exception-backed REQ with no scope ruling");
 
   // a ruling bound to ANOTHER DP
-  let s2 = apply(s, "append-record", { record: reviewRuling("R-other", INTENT, "DP-1") });
+  let s2 = apply(s, "append-record", { record: scopeRuling("R-other", DP1) });
   assertRejects(() => apply(s2, "create-initial-outcome", {
     dpId: "DP-3", scopeRulingRef: { kind: "review-ruling", ref: "R-other" }, clause,
   }), "E_INV4_NOT_APPLICABLE", "scope ruling bound to a different DP");
 
   // a ruling by the wrong discipline
-  let s3 = apply(s, "append-record", { record: reviewRuling("R-code", CODE, "DP-3") });
+  let s3 = apply(s, "append-record", { record: typedRuling("R-code", CODE, DP3, "scope-coverage", { scopeCovers: true }) });
   assertRejects(() => apply(s3, "create-initial-outcome", {
     dpId: "DP-3", scopeRulingRef: { kind: "review-ruling", ref: "R-code" }, clause,
   }), "E_INV4_NOT_APPLICABLE", "scope ruling not by intent");
 
   // the correct, DP-bound intent ruling
-  let ok = apply(s, "append-record", { record: reviewRuling("R-scope", INTENT, "DP-3") });
+  let ok = apply(s, "append-record", { record: scopeRuling("R-scope", DP3) });
   ok = apply(ok, "create-initial-outcome", {
     dpId: "DP-3", scopeRulingRef: { kind: "review-ruling", ref: "R-scope" }, clause,
   });
@@ -1088,7 +1098,7 @@ test("panel 6 / SM §9: an exception whose expiry has PASSED stops being applica
       grantAuthorityRef: { kind: "source-authority", ref: "R-owner" }, scope: "eu", expiry: "2020-01-01",
     },
   });
-  s = apply(s, "append-record", { record: reviewRuling("R-scope", INTENT, "DP-3") });
+  s = apply(s, "append-record", { record: scopeRuling("R-scope", DP3) });
   const e = assertRejects(() => apply(s, "create-initial-outcome", {
     dpId: "DP-3", scopeRulingRef: { kind: "review-ruling", ref: "R-scope" },
     clause: { id: "REQ-exc", authority: "approved-requirement", kind: "specification", text: "t", sourceRef: "S-exc", taskRef: "TASK-1" },
@@ -1156,15 +1166,16 @@ test("panel 4 / IS AC35: a reopened DP with an active prior terminal is refused 
       excerpt: "grant", targetConstraintRef: "REQ-hc2",
       grantAuthorityRef: { kind: "source-authority", ref: "R-owner" }, scope: "eu", expiry: "2099-01-01",
     },
-    scopeRuling: reviewRuling("R-scope", INTENT, "DP-1"),
+    scopeRuling: scopeRuling("R-scope", DP1),
     requirement: { id: "REQ-exc", authority: "approved-requirement", kind: "specification", text: "t", sourceRef: "S-exc", taskRef: "TASK-1" },
   }), "E_REOPENED_NEEDS_TRANSITION", "resolve-exception");
 });
 
 test("panel 3 / IS annotation table: reclassify-dp REQUIRES a classification ruling bound to this DP", () => {
   const s = baseFixture();
-  const cls = (dpFixture, basis = "product policy") =>
-    typedRuling("R-cls", INTENT, dpFixture, "product-tradeoff", { basis });
+  const cls = (dpFixture, basis = "product policy") => typedRuling("R-cls", INTENT, dpFixture, "product-tradeoff", {
+    basis, productQuestion: "soft delete or hard delete?", alternatives: dpFixture.alternatives,
+  });
 
   assertRejects(() => apply(s, "reclassify-dp", { dpId: "DP-1", layer: "intent", classificationBasis: "product policy" }),
     "E_PAYLOAD_MISSING", "reclassify with no ruling at all");
@@ -1195,6 +1206,85 @@ test("panel 3 / IS annotation table: reclassify-dp REQUIRES a classification rul
   assert.strictEqual(d.layer, "intent");
   assert.deepStrictEqual(d.classificationRulingRef, { kind: "review-ruling", ref: "R-cls" });
   assert.strictEqual(d.classificationBasis, "product policy", "upstream keeps classificationBasis human-readable");
+});
+
+test("panel 3: reclassify-dp accepts ONLY layer-classification / product-tradeoff rulings", () => {
+  const s = baseFixture();
+  // a technical-decision ruling for the SAME DP, correct principal, complete packet — and still wrong
+  assertRejects(() => apply(s, "reclassify-dp", {
+    dpId: "DP-1", layer: "intent", classificationBasis: "eng",
+    records: [typedRuling("R-td", CODE, DP1, "technical-decision", { selectedAlternative: "A" })],
+    classificationRulingRef: { kind: "review-ruling", ref: "R-td" },
+  }), "E_RULING_KIND_NOT_ALLOWED", "technical-decision used as a classification witness");
+
+  // an untyped ruling is not a classification witness either
+  assertRejects(() => apply(s, "reclassify-dp", {
+    dpId: "DP-1", layer: "intent", classificationBasis: "eng",
+    records: [reviewRuling("R-plain", INTENT, "DP-1")],
+    classificationRulingRef: { kind: "review-ruling", ref: "R-plain" },
+  }), "E_RULING_KIND_NOT_ALLOWED", "untyped ruling as a classification witness");
+
+  // layer-classification is accepted, and its classifiedLayer must match the requested layer
+  assertRejects(() => apply(s, "reclassify-dp", {
+    dpId: "DP-1", layer: "intent", classificationBasis: "eng",
+    records: [typedRuling("R-lc", INTENT, DP1, "layer-classification", { basis: "eng", classifiedLayer: "implementation" })],
+    classificationRulingRef: { kind: "review-ruling", ref: "R-lc" },
+  }), "E_RULING_POSTCONDITION", "classifiedLayer disagreeing with the applied layer");
+
+  const ok = apply(s, "reclassify-dp", {
+    dpId: "DP-1", layer: "intent", classificationBasis: "eng",
+    records: [typedRuling("R-lc", INTENT, DP1, "layer-classification", { basis: "eng", classifiedLayer: "intent" })],
+    classificationRulingRef: { kind: "review-ruling", ref: "R-lc" },
+  });
+  assert.strictEqual(indexStore(ok).dps.get("DP-1").layer, "intent");
+});
+
+test("panel 4: exception scope needs a scope-coverage ruling saying TRUE — a plain intent ruling will not do", () => {
+  let s = withHardConstraint();
+  s = apply(s, "append-source", {
+    source: {
+      sourceId: "S-exc", contentKind: "exception-grant", driftMode: "snapshot-only", locator: "g#1",
+      excerpt: "grant", targetConstraintRef: "REQ-hc",
+      grantAuthorityRef: { kind: "source-authority", ref: "R-owner" }, scope: "eu", expiry: "2099-01-01",
+    },
+  });
+  const requirement = { id: "REQ-exc", authority: "approved-requirement", kind: "specification", text: "t", sourceRef: "S-exc", taskRef: "TASK-1" };
+  const attempt = (ruling) => apply(s, "resolve-exception", {
+    dpId: "DP-3",
+    source: {
+      sourceId: "S-exc2", contentKind: "exception-grant", driftMode: "snapshot-only", locator: "g#2",
+      excerpt: "grant2", targetConstraintRef: "REQ-hc",
+      grantAuthorityRef: { kind: "source-authority", ref: "R-owner" }, scope: "eu", expiry: "2099-01-01",
+    },
+    scopeRuling: ruling,
+    requirement: { ...requirement, sourceRef: "S-exc2" },
+  });
+
+  assertRejects(() => attempt(reviewRuling("R-plain", INTENT, "DP-3")),
+    "E_NOT_APPLICABLE", "a plain intent ruling as scope coverage");
+  assertRejects(() => attempt(scopeRuling("R-neg", DP3, false)),
+    "E_NOT_APPLICABLE", "a scope-coverage ruling that says NOT covered");
+  assert.ok(attempt(scopeRuling("R-pos", DP3, true)), "an explicit scopeCovers=true is accepted");
+});
+
+test("panel 2 / IS §4: a PERSISTED ruling goes stale when its DP moves and cannot be spent later", () => {
+  let s = baseFixture();
+  // 1. persist a complete, fresh technical-decision ruling for DP-2
+  s = apply(s, "append-record", { record: typedRuling("R-td", CODE, DP2, "technical-decision", { selectedAlternative: "A" }) });
+  // 2. the DP then moves (its classificationBasis is reclassified)
+  s = apply(s, "reclassify-dp", {
+    dpId: "DP-2", layer: "implementation", classificationBasis: "revised engineering basis",
+    records: [typedRuling("R-lc", CODE, DP2, "layer-classification", { basis: "revised engineering basis", classifiedLayer: "implementation" })],
+    classificationRulingRef: { kind: "review-ruling", ref: "R-lc" },
+  });
+  // 3. spending the OLD ruling must now fail — freshness is checked at consumption, not creation
+  assertRejects(() => apply(s, "create-initial-outcome", {
+    dpId: "DP-2",
+    clause: {
+      id: "DEC-x", layer: "implementation", derivedFrom: "DP-2", decision: "A", alternatives: ["A", "B"],
+      approvedBy: CODE, basisRefs: [{ kind: "review-ruling", ref: "R-td" }],
+    },
+  }), "E_RULING_PACKET_STALE", "persisted ruling spent after its DP moved");
 });
 
 test("panel 3 / IS AC41: another DP's technical-decision ruling cannot be borrowed for a new DEC", () => {
@@ -1381,20 +1471,46 @@ test("panel 1 / IS §4: a typed ruling missing its packet, or answering a STALE 
     record: { ...reviewRuling("R-x", CODE, "DP-2"), rulingKind: "technical-decision", selectedAlternative: "A" },
   }), "E_RULING_PACKET_MISSING", "typed ruling with no input packet");
 
-  // (b) requestedPrincipal disagreeing with by
-  const mismatched = { ...packetFor(DP2, SECURITY) };
+  // (b) an INCOMPLETE packet: dropping a required canonical field must not buy an exemption
+  for (const missing of ["scenario", "alternatives", "layer", "classificationBasis", "materialReasons", "basisRefs"]) {
+    const partial = { ...packetFor(DP2, CODE) };
+    delete partial[missing];
+    assertRejects(() => apply(s, "append-record", {
+      record: {
+        ...reviewRuling(`R-p-${missing}`, CODE, "DP-2"), rulingKind: "technical-decision",
+        basis: "b", selectedAlternative: "A",
+        inputPacketSnapshot: partial, inputPacketDigest: digestOf(partial),
+      },
+    }), "E_RULING_PACKET_INCOMPLETE", `packet missing ${missing}`);
+  }
+  // a packet with essentially only requestedPrincipal — the shape the panel used to mint a DEC
+  const nearlyEmpty = { requestedPrincipal: CODE };
   assertRejects(() => apply(s, "append-record", {
     record: {
-      ...reviewRuling("R-y", CODE, "DP-2"), rulingKind: "technical-decision", selectedAlternative: "A",
+      ...reviewRuling("R-empty", CODE, "DP-2"), rulingKind: "technical-decision", basis: "b",
+      selectedAlternative: "A", inputPacketSnapshot: nearlyEmpty, inputPacketDigest: digestOf(nearlyEmpty),
+    },
+  }), "E_RULING_PACKET_INCOMPLETE", "near-empty but self-consistent packet");
+
+  // (c) a typed ruling missing its own per-kind OUTPUT field
+  assertRejects(() => apply(s, "append-record", {
+    record: { ...typedRuling("R-out", CODE, DP2, "technical-decision"), selectedAlternative: undefined },
+  }), "E_RULING_OUTPUT_INCOMPLETE", "technical-decision with no selectedAlternative");
+
+  // (d) requestedPrincipal disagreeing with by
+  const mismatched = packetFor(DP2, SECURITY);
+  assertRejects(() => apply(s, "append-record", {
+    record: {
+      ...reviewRuling("R-y", CODE, "DP-2"), rulingKind: "technical-decision", basis: "b", selectedAlternative: "A",
       inputPacketSnapshot: mismatched, inputPacketDigest: digestOf(mismatched),
     },
   }), "E_RULING_PRINCIPAL", "packet requested security, ruling issued by code");
 
-  // (c) self-consistent but STALE: the packet describes alternatives the DP no longer has
+  // (e) self-consistent but STALE: the packet describes alternatives the DP no longer has
   const stale = { ...packetFor(DP2, CODE), alternatives: ["A", "B", "C"] };
   assertRejects(() => apply(s, "append-record", {
     record: {
-      ...reviewRuling("R-z", CODE, "DP-2"), rulingKind: "technical-decision", selectedAlternative: "A",
+      ...reviewRuling("R-z", CODE, "DP-2"), rulingKind: "technical-decision", basis: "b", selectedAlternative: "A",
       inputPacketSnapshot: stale, inputPacketDigest: digestOf(stale),
     },
   }), "E_RULING_PACKET_STALE", "self-consistent packet that no longer matches the DP");
@@ -1505,7 +1621,7 @@ test("IS §8: resolve-exception mints grant + REQ + scope ruling and resolves th
       excerpt: "scoped exception", targetConstraintRef: "REQ-hc",
       grantAuthorityRef: { kind: "source-authority", ref: "R-owner" }, scope: "eu", expiry: "2099-01-01",
     },
-    scopeRuling: reviewRuling("R-scope", INTENT, "DP-3"),
+    scopeRuling: scopeRuling("R-scope", DP3),
     requirement: { id: "REQ-exc", authority: "approved-requirement", kind: "specification", text: "exception applies", sourceRef: "S-exc", taskRef: "TASK-1" },
   });
   const index = indexStore(ok);
@@ -1521,7 +1637,7 @@ test("IS §8: resolve-exception mints grant + REQ + scope ruling and resolves th
       excerpt: "scoped exception", targetConstraintRef: "REQ-hc",
       grantAuthorityRef: { kind: "source-authority", ref: "R-owner" }, scope: "eu", expiry: "2099-01-01",
     },
-    scopeRuling: reviewRuling("R-scope", CODE, "DP-3"),
+    scopeRuling: typedRuling("R-scope", CODE, DP3, "scope-coverage", { scopeCovers: true }),
     requirement: { id: "REQ-exc", authority: "approved-requirement", kind: "specification", text: "t", sourceRef: "S-exc", taskRef: "TASK-1" },
   }), "E_NOT_APPLICABLE", "scope ruling not issued by intent");
 });
@@ -1780,6 +1896,10 @@ test("panel 1: N concurrent PROCESSES contend for the store — every success la
 
   assert.strictEqual(succeeded.length + rejected.length, N, "every process reports an outcome");
   assert.ok(succeeded.length >= 1, "at least one writer must get through");
+  for (const r of rejected) {
+    assert.notStrictEqual(JSON.parse(r.stderr).code, "E_UNEXPECTED",
+      "a losing writer must never surface an unclassified error — contention outcomes are typed");
+  }
 
   // Whatever the interleaving, the store must be consistent and hold EXACTLY the successful writes.
   const store = loadStore(cwd).store;
@@ -1791,8 +1911,10 @@ test("panel 1: N concurrent PROCESSES contend for the store — every success la
   for (const r of rejected) {
     assert.ok(!present.has(`R-p${r.i}`), `writer ${r.i} was rejected, so its record must be absent`);
     const err = JSON.parse(r.stderr);
-    assert.ok(["E_STORE_LOCKED", "E_CAS_MISMATCH"].includes(err.code),
-      `a losing writer must fail on the lock or the CAS, got ${err.code}`);
+    // A closed set of contention outcomes: the lock, the last-moment CAS, or a typed I/O failure
+    // (Windows can refuse a rename over a concurrently-opened target). Never E_UNEXPECTED.
+    assert.ok(["E_STORE_LOCKED", "E_CAS_MISMATCH", "E_IO"].includes(err.code),
+      `a losing writer must fail on the lock, the CAS or a typed I/O error, got ${err.code}`);
   }
   assert.strictEqual(store.records.filter((r) => r.recordId.startsWith("R-p")).length, succeeded.length,
     "no partial or phantom writes");
@@ -1801,6 +1923,46 @@ test("panel 1: N concurrent PROCESSES contend for the store — every success la
     fs.readdirSync(path.dirname(storePath(cwd))).filter((f) => f.includes(".tmp")), [],
     "no temp file survives the contention",
   );
+});
+
+test("panel 1: the losing path is triggered DETERMINISTICALLY — a held lock rejects every concurrent process", async () => {
+  const cwd = temporary("prov-determ-");
+  runTransaction(cwd, "init-task", { taskId: "TASK-1", baseProvenance: BASE }, OPTS);
+  const script = path.join(root, "cressetide", "skills", "vigil", "scripts", "provenance-store.mjs");
+  const before = fs.readFileSync(storePath(cwd), "utf8");
+  const lock = `${storePath(cwd)}.lock`;
+  fs.writeFileSync(lock, "held-by-the-test\n", "utf8");
+
+  const N = 6;
+  const run = (i) => new Promise((resolve) => {
+    const payload = JSON.stringify({ record: { recordId: `R-d${i}`, kind: "source-authority", authorityIdentity: `w${i}` } });
+    execFile(process.execPath, [script, "append-record", "--cwd", cwd, "--payload", payload],
+      { encoding: "utf8" }, (err, stdout, stderr) => resolve({ code: err ? err.code : 0, stderr }));
+  });
+  try {
+    const results = await Promise.all(Array.from({ length: N }, (_, i) => run(i)));
+    assert.strictEqual(results.filter((r) => r.code === 0).length, 0, "no writer may pass a held lock");
+    for (const r of results) {
+      assert.strictEqual(JSON.parse(r.stderr).code, "E_STORE_LOCKED", "every loser takes the lock path");
+    }
+    assert.strictEqual(fs.readFileSync(storePath(cwd), "utf8"), before, "the store is untouched");
+  } finally {
+    fs.rmSync(lock, { force: true });
+  }
+  // the foreign lock is NOT removed by our own release path — we only unlink a lock we still own
+  assert.ok(!fs.existsSync(lock));
+});
+
+test("panel 1: a writer never deletes a lock it does not own", () => {
+  const cwd = temporary("prov-token-");
+  runTransaction(cwd, "init-task", { taskId: "TASK-1", baseProvenance: BASE }, OPTS);
+  const lock = `${storePath(cwd)}.lock`;
+  fs.writeFileSync(lock, "someone-elses-token\n", "utf8");
+  threw(() => runTransaction(cwd, "append-record",
+    { record: { recordId: "R-1", kind: "source-authority", authorityIdentity: "x" } }, OPTS));
+  assert.ok(fs.existsSync(lock), "a rejected acquisition must not clear the holder's lock");
+  assert.strictEqual(fs.readFileSync(lock, "utf8").trim(), "someone-elses-token");
+  fs.rmSync(lock, { force: true });
 });
 
 test("clauseKindOf routes ids by prefix and rejects anything else", () => {

@@ -572,6 +572,11 @@ export function scopeCovers(index, clauseId, dp) {
   const resolved = resolveRecordRef(index, ref);
   if (!resolved.ok || ref.kind !== "review-ruling") return { ok: false, reason: "scope-ruling-unresolvable" };
   const ruling = resolved.value;
+  // A plain intent ruling is NOT a scope-coverage determination. The spec's scopeCovers is the
+  // intent discipline's explicit verdict, so the ruling has to be that typed verdict and has to
+  // say true — otherwise "an intent reviewer once said something about this DP" would suffice.
+  if (ruling.rulingKind !== "scope-coverage") return { ok: false, reason: "scope-ruling-not-scope-coverage" };
+  if (ruling.scopeCovers !== true) return { ok: false, reason: "scope-ruling-says-not-covered" };
   if (!principalsEqual(ruling.by, { kind: "discipline", discipline: "intent" })) {
     return { ok: false, reason: "scope-ruling-not-intent" };
   }
@@ -1054,9 +1059,28 @@ export const RULING_KINDS = [
   "binding-policy", "technical-decision", "approved-provisional",
   "product-tradeoff", "scope-coverage", "layer-classification",
 ];
+// Closed allowlists for the two places a DP points at a ruling.
+export const CLASSIFICATION_RULING_KINDS = ["layer-classification", "product-tradeoff"];
 
-// A typed governance ruling MUST carry its immutable input packet. Without it the postconditions
-// below have nothing to compare against, so "has a rulingKind" would be decoration.
+// IS §4 canonical payload — a CLOSED required shape. Checking only digest/principal let a packet
+// carrying almost nothing but requestedPrincipal mint a DEC: the freshness comparison skipped every
+// absent field, so "fewer fields" meant "fewer checks".
+export const PACKET_REQUIRED_FIELDS = [
+  "dpId", "scenario", "alternatives", "layer", "classificationBasis",
+  "materialReasons", "requestedPrincipal", "basisRefs",
+];
+
+// IS §6 governance-ruling contract: the per-rulingKind output payload. A ruling that omits its own
+// kind's fields cannot be applied, so the omission must fail rather than skip.
+export const RULING_OUTPUT_FIELDS = {
+  "binding-policy": ["bindingClauseRef"],
+  "technical-decision": ["selectedAlternative"],
+  "approved-provisional": ["selectedAlternative", "rejectedAlternative", "basis"],
+  "product-tradeoff": ["productQuestion", "alternatives"],
+  "scope-coverage": ["scopeCovers"],
+  "layer-classification": ["classifiedLayer"],
+};
+
 function assertTypedRulingComplete(rec) {
   if (rec.inputPacketSnapshot === undefined || rec.inputPacketDigest === undefined) {
     reject(
@@ -1068,14 +1092,37 @@ function assertTypedRulingComplete(rec) {
   if (digestOf(rec.inputPacketSnapshot) !== rec.inputPacketDigest) {
     reject("E_RULING_SNAPSHOT", `review-ruling ${rec.recordId}: inputPacketDigest does not match its own inputPacketSnapshot`, rec.recordId);
   }
+  const packet = rec.inputPacketSnapshot;
+  for (const field of PACKET_REQUIRED_FIELDS) {
+    if (packet[field] === undefined || packet[field] === null) {
+      reject("E_RULING_PACKET_INCOMPLETE", `review-ruling ${rec.recordId}: its input packet is missing the required field "${field}"`, rec.recordId);
+    }
+  }
+  if (!Array.isArray(packet.alternatives) || !Array.isArray(packet.materialReasons) || !Array.isArray(packet.basisRefs)) {
+    reject("E_RULING_PACKET_INCOMPLETE", `review-ruling ${rec.recordId}: alternatives, materialReasons and basisRefs must all be arrays`, rec.recordId);
+  }
   // IS §4: the packet names the principal the ruling was requested from; a ruling issued by
   // somebody else is not an answer to that packet.
-  if (!principalsEqual(rec.inputPacketSnapshot.requestedPrincipal, rec.by)) {
+  if (!principalsEqual(packet.requestedPrincipal, rec.by)) {
     reject(
       "E_RULING_PRINCIPAL",
       `review-ruling ${rec.recordId}: the packet's requestedPrincipal does not equal the ruling's by`,
       rec.recordId,
     );
+  }
+  if (rec.basis === undefined || rec.basis === null) {
+    reject("E_RULING_OUTPUT_INCOMPLETE", `review-ruling ${rec.recordId}: a typed ruling must state its basis`, rec.recordId);
+  }
+  for (const field of RULING_OUTPUT_FIELDS[rec.rulingKind] || []) {
+    if (rec[field] === undefined || rec[field] === null) {
+      reject("E_RULING_OUTPUT_INCOMPLETE", `review-ruling ${rec.recordId} (${rec.rulingKind}) is missing its required output field "${field}"`, rec.recordId);
+    }
+  }
+  if (rec.rulingKind === "scope-coverage" && typeof rec.scopeCovers !== "boolean") {
+    reject("E_RULING_OUTPUT_INCOMPLETE", `review-ruling ${rec.recordId}: scope-coverage must state scopeCovers as a boolean`, rec.recordId);
+  }
+  if (rec.rulingKind === "layer-classification" && !DP_LAYERS.includes(rec.classifiedLayer)) {
+    reject("E_ENUM", `review-ruling ${rec.recordId}: classifiedLayer must be intent or implementation`, rec.recordId);
   }
 }
 
@@ -1087,14 +1134,16 @@ export const PACKET_DP_FIELDS = ["scenario", "alternatives", "layer", "classific
 
 export function assertRulingPacketFresh(preIndex, rec) {
   const snapshot = rec.inputPacketSnapshot;
-  const dpId = snapshot.dpId || snapshot.id || rec.subjectRef;
+  const dpId = snapshot.dpId;
   const dp = preIndex.dps.get(dpId);
   if (!dp) {
     reject("E_RULING_PACKET_STALE", `review-ruling ${rec.recordId}: its packet names DP ${dpId}, which does not exist`, rec.recordId);
   }
   for (const field of PACKET_DP_FIELDS) {
-    if (snapshot[field] === undefined) continue;
-    if (canonicalJson(snapshot[field]) !== canonicalJson(dp[field])) {
+    // The packet's shape is closed and already validated, so every field is present: a missing one
+    // can no longer buy an exemption from the comparison.
+    const current = field === "materialReasons" ? (dp[field] ?? []) : dp[field];
+    if (canonicalJson(snapshot[field]) !== canonicalJson(current)) {
       reject(
         "E_RULING_PACKET_STALE",
         `review-ruling ${rec.recordId}: the packet's ${field} no longer matches DP ${dpId} — the ruling answered an earlier state and must be re-issued`,
@@ -1102,6 +1151,40 @@ export function assertRulingPacketFresh(preIndex, rec) {
       );
     }
   }
+}
+
+// Which rulings does THIS transaction consume? Freshness is a property of the moment of use, not of
+// the moment of creation: a ruling persisted while the DP said one thing must not be spendable
+// after the DP says another. Collect every ruling newly pointed at by this transaction.
+export function newlyConsumedRulingRefs(store, next) {
+  const refs = new Set();
+  const add = (ref) => {
+    if (ref && typeof ref === "object" && ref.kind === "review-ruling" && typeof ref.ref === "string") refs.add(ref.ref);
+  };
+  const beforeClauses = new Set(store.clauses.map((c) => c.id));
+  for (const c of next.clauses) {
+    if (beforeClauses.has(c.id)) continue;
+    for (const ref of c.basisRefs || []) add(ref);
+  }
+  const beforeTransitions = new Set(store.transitions.map((t) => t.id));
+  for (const t of next.transitions) {
+    if (beforeTransitions.has(t.id)) continue;
+    add(t.ackRef);
+  }
+  const beforeDps = new Map(store.decisionPoints.map((d) => [d.id, d]));
+  for (const d of next.decisionPoints) {
+    const was = beforeDps.get(d.id);
+    for (const field of ["classificationRulingRef", "scopeRulingRef"]) {
+      if (!d[field]) continue;
+      // canonicalJson refuses `undefined` by design (it is not a JSON value), so normalise the
+      // absent pre-state to null rather than throwing on the very common "field appears for the
+      // first time" case.
+      const wasValue = was && was[field] !== undefined ? was[field] : null;
+      if (canonicalJson(wasValue) === canonicalJson(d[field])) continue; // unchanged, already vetted
+      add(d[field]);
+    }
+  }
+  return refs;
 }
 
 function validateGovernanceRulings(index) {
@@ -1205,6 +1288,15 @@ function validateGovernanceRulings(index) {
       reject("E_DANGLING_REF", `DP ${d.id} classificationRulingRef does not resolve to a review-ruling`, d.id);
     }
     const rec = resolved.value;
+    // An explicit allowlist, not an accident of "only these two kinds carry extra postconditions":
+    // a technical-decision ruling for the same DP would otherwise pass as a classification witness.
+    if (!CLASSIFICATION_RULING_KINDS.includes(rec.rulingKind)) {
+      reject(
+        "E_RULING_KIND_NOT_ALLOWED",
+        `DP ${d.id}: classificationRulingRef must name a ${CLASSIFICATION_RULING_KINDS.join(" or ")} ruling, got ${rec.rulingKind === undefined ? "an untyped ruling" : rec.rulingKind}`,
+        d.id,
+      );
+    }
     if (rec.subjectRef !== d.id) {
       reject("E_RULING_BORROWED", `DP ${d.id} cites classification ruling ${rec.recordId}, which is bound to ${rec.subjectRef}`, d.id);
     }
@@ -1752,14 +1844,20 @@ export function applyTransaction(store, command, payload, options = {}) {
   const preIndex = indexStore(store);
   const next = apply(store, payload || {}, ctx);
 
-  // IS §4: freshness is a PRE-mutation check. Every typed governance ruling minted by THIS
-  // transaction is compared against the pre-state DP it claims to answer; rulings already in the
-  // store were checked when they were minted. Runs before validateAll so a stale packet is
-  // reported as staleness rather than surfacing later as a confusing postcondition mismatch.
+  // IS §4: freshness is a PRE-mutation check applied at every CONSUMPTION, not once at creation.
+  // Checking only newly-minted records meant a ruling could be persisted, the DP could then move,
+  // and the stale ruling could still be spent later — exactly what freshness exists to stop.
+  const nextRecords = new Map(next.records.map((r) => [r.recordId, r]));
   const existing = new Set(store.records.map((r) => r.recordId));
+  const toCheck = new Set(newlyConsumedRulingRefs(store, next));
   for (const rec of next.records) {
-    if (existing.has(rec.recordId)) continue;
-    if (rec.kind !== "review-ruling" || rec.rulingKind === undefined) continue;
+    if (!existing.has(rec.recordId) && rec.kind === "review-ruling" && rec.rulingKind !== undefined) {
+      toCheck.add(rec.recordId); // newly minted: vet it even before anything cites it
+    }
+  }
+  for (const recordId of toCheck) {
+    const rec = nextRecords.get(recordId);
+    if (!rec || rec.kind !== "review-ruling" || rec.rulingKind === undefined) continue;
     assertTypedRulingComplete(rec);
     assertRulingPacketFresh(preIndex, rec);
   }
@@ -1780,11 +1878,18 @@ export function applyTransaction(store, command, payload, options = {}) {
 export function withStoreLock(file, fn) {
   const lock = `${file}.lock`;
   fs.mkdirSync(path.dirname(file), { recursive: true });
+  // A per-acquisition token: on release we only unlink a lock we still own. Without it, writer A's
+  // cleanup can delete the lock writer B just created, letting C in alongside B — the very race the
+  // lock exists to remove, reappearing at release time.
+  const token = `${process.pid}:${crypto.randomBytes(8).toString("hex")}`;
   let fd;
   try {
     fd = fs.openSync(lock, "wx");
-    fs.writeSync(fd, `${process.pid} ${new Date().toISOString()}\n`);
+    fs.writeSync(fd, `${token}\n`);
+    fs.closeSync(fd);
+    fd = undefined;
   } catch (e) {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* nothing to salvage */ } }
     if (e && e.code === "EEXIST") {
       reject(
         "E_STORE_LOCKED",
@@ -1792,13 +1897,14 @@ export function withStoreLock(file, fn) {
         lock,
       );
     }
-    throw e;
+    reject("E_IO", `could not acquire the store lock (${e && e.code}): ${e && e.message}`, lock);
   }
   try {
     return fn();
   } finally {
-    try { fs.closeSync(fd); } catch { /* already closed */ }
-    try { fs.rmSync(lock, { force: true }); } catch { /* best effort: never mask the original error */ }
+    try {
+      if (fs.existsSync(lock) && fs.readFileSync(lock, "utf8").trim() === token) fs.rmSync(lock, { force: true });
+    } catch { /* best effort: never mask the original error */ }
   }
 }
 
@@ -1821,16 +1927,23 @@ function runTransactionLocked(cwd, command, payload, options = {}) {
 
   const dir = path.dirname(loaded.file);
   fs.mkdirSync(dir, { recursive: true });
-  const temporary = path.join(dir, `.provenance.${process.pid}.${Date.now()}.tmp`);
+  const temporary = path.join(dir, `.provenance.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`);
   try {
-    fs.writeFileSync(temporary, bytes, "utf8");
     // Re-read immediately before the swap: a concurrent writer between our load and here must not
-    // be clobbered (CAS is only meaningful if it is checked at the last possible moment).
+    // be clobbered (CAS is only meaningful if it is checked at the last possible moment). The lock
+    // above should make this unreachable for cooperating writers; it stays as defence in depth.
+    fs.writeFileSync(temporary, bytes, "utf8");
     const nowOnDisk = fs.existsSync(loaded.file) ? sha256Hex(fs.readFileSync(loaded.file, "utf8")) : storeDigest(emptyStore());
     if (nowOnDisk !== loaded.digest) {
       reject("E_CAS_MISMATCH", "the provenance store changed underneath this transaction", nowOnDisk);
     }
     fs.renameSync(temporary, loaded.file);
+  } catch (e) {
+    // A bare fs failure here (EPERM/EBUSY on a concurrently-opened target, ENOENT on a vanished
+    // directory) must surface as a typed, diagnosable rejection — never as E_UNEXPECTED, which
+    // tells a caller nothing and hides real contention behaviour.
+    if (e instanceof ProvenanceError) throw e;
+    reject("E_IO", `could not commit the store (${e && e.code}): ${e && e.message}`, loaded.file);
   } finally {
     if (fs.existsSync(temporary)) {
       try { fs.rmSync(temporary, { force: true }); } catch { /* best effort: never mask the original error */ }
