@@ -1,6 +1,7 @@
 # Shared Decision & Provenance Model（共同決策與溯源模型）
 
-- 狀態：**approved v1.7**（2026-07-26 panel 放行；前一放行版本 approved v1.6）。實作以本文為準；變更需重新過 panel。本版變更：§9 gate scope 改為具名 closed set（含 body／oracle 變更）＋ `lifecycleAffectedClauses` 反向閉包；綁定拆 **pre-change／post-change 兩相**；§9 新增 **base provenance witness**（inline、storePath 固定、immutable）；§2 新增 **TaskState**（tracked canonical task membership 與 committed head）與 `provenance-batch` RecordRef kind（canonical `batchDigest` total order、derived `relatedRefs`、chain 連結約束、committed head 三分）；review-ruling／plan-gate 新增 `resolutionGroupDigest` 作為 witness coverage 的 carrier。本文件為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念，可附加實作欄位但不得改變本文欄位語義。
+- 狀態：**draft v1.8 — 修訂待 panel**（前一放行版本：approved v1.7）。本版變更兩處，皆為下游實作發現的 carrier 缺口：§2 `ASSUM` 新增三值 `routingOrigin`（authored、immutable —— row 5／6／7 的 ASSUM 在持久狀態上同形，機械層無從區分「合法無 ruling」與「該有卻沒有」）；§4 `materialReasons` 補上 closed member set 與定序（原本只有散文描述四個 conjunct，下游無法在不自行發明值的前提下驗證成員資格）。**核准前下游不得實作。**
+- 前一版狀態：**approved v1.7**（2026-07-26 panel 放行；前一放行版本 approved v1.6）。v1.7 變更：§9 gate scope 改為具名 closed set（含 body／oracle 變更）＋ `lifecycleAffectedClauses` 反向閉包；綁定拆 **pre-change／post-change 兩相**；§9 新增 **base provenance witness**（inline、storePath 固定、immutable）；§2 新增 **TaskState**（tracked canonical task membership 與 committed head）與 `provenance-batch` RecordRef kind（canonical `batchDigest` total order、derived `relatedRefs`、chain 連結約束、committed head 三分）；review-ruling／plan-gate 新增 `resolutionGroupDigest` 作為 witness coverage 的 carrier。本文件為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念，可附加實作欄位但不得改變本文欄位語義。
 - 日期：2026-07-25
 - 範圍：只定義模型 —— 物件、權威、分流、狀態、不變量。scan 觸發與流程、檢查器實作、reviewer prompt 調整、hook 接線屬於下游 spec。
 - 背景：源自 demo1 webhook-dispatcher A/B 實驗的失敗分析 —— 23 個未申報假設以測試形式被釘死（oracle 不相容 23:1）、規格沉默區被單方面填補後用綠色測試鎖死。本模型同時治理「猜錯」（intent 層）與「猜了沒說」（provenance 層）。
@@ -105,6 +106,19 @@ governedBy:  ReviewerPrincipal —— 治理此假設的權威：
              row 7 產生 → 繼承審查它的 principal（可為 arbiter）
              row 5 產生 → 固定映射：layer=intent → {discipline: intent}；
                           layer=implementation → {discipline: code}
+routingOrigin: safe-default | user-deferred | reviewed-provisional
+             ← **authored at creation、immutable 的控制狀態**（v1.8 新增）
+```
+
+**為何需要 `routingOrigin`（v1.8）** —— row 5／6／7 產出的 ASSUM 在持久狀態上完全同形，機械層因此無法區分「合法地沒有 ruling」與「該有 ruling 卻沒有」。DEC 沒有這個歧義（只由 row 7 產生），故可強制其 witness；ASSUM 不能，缺口因而無法關閉。**不得**從 `basisRefs` 或 `governedBy` 反推 —— 前者是證據欄、後者是權威欄，兩者都不是 routing 的控制狀態。
+
+| routingOrigin | 對應 | 強制條件 |
+|---|---|---|
+| `safe-default` | §5 row 5（safeToAssume） | `governedBy` 依既有固定映射（intent→intent；implementation→code）；**不要求** review ruling |
+| `user-deferred` | §5 row 6 使用者明示延後 | `basisRefs` 必含**該 DP 的** `user-answer` RecordRef；`governedBy == {kind: discipline, discipline: intent}` |
+| `reviewed-provisional` | §5 row 7「證據不足、僅核准暫定預設」 | `basisRefs` 必含 `rulingKind=approved-provisional` 的 review-ruling；`governedBy == 該 ruling 的 by` |
+
+```
 ```
 
 ### Transition（append-only event log —— 生命週期的唯一真相）
@@ -360,7 +374,17 @@ safeToAssume ＝ 低成本可回復
              ∧ 不改變核心產品承諾
 ```
 
-materiality 是衍生值：`materialReasons[]` ＝ 失敗的 conjunct 清單；不另設獨立布林。「選擇與 alternative 明文記錄」「不偽裝成 REQ」是 Record 動作本身的義務，非路由條件。
+materiality 是衍生值：`materialReasons[]` ＝ 失敗的 conjunct 清單；不另設獨立布林。**closed member set（v1.8 新增）** —— 先前只有散文描述四個 conjunct，沒有 machine-readable 值，下游因此無法在不自行發明內容的前提下驗證成員資格：
+
+```
+materialReasons[] ∈ {
+  not-low-cost-reversible      （低成本可回復 失敗）
+  protected-domain             （涉及金錢／權限／資料遺失／隱私／法規／安全／外部契約）
+  hard-to-migrate-commitment   （形成難遷移的相容承諾）
+  changes-core-product-promise （改變核心產品承諾）
+}
+去重，依 Unicode code point 序排序（否則同一組理由會算出不同 packet digest）
+```「選擇與 alternative 明文記錄」「不偽裝成 REQ」是 Record 動作本身的義務，非路由條件。
 
 ## 5. 分流表（互斥、可到達、完備；逐 persisted DP 依序判定）
 
@@ -370,8 +394,8 @@ materiality 是衍生值：`materialReasons[]` ＝ 失敗的 conjunct 清單；�
 | 2 | 衝突涉 hard-constraint，**且無涵蓋本 DP 的有效例外** | Ask「改需求／取得例外」（不給選邊） | 回答 → 新 REQ，或 exception-grant Source＋引用它的 REQ（此後同類 DP 於 scope 內走 row 1） |
 | 3 | requirement vs compatibility，**已有 plan-gate 核准的 supersede proposal**（§7：具名 target＋impact＋disposition 完整） | 執行 supersede＋揭露 | 建立新 REQ＋supersede Transition（完成後即 effective supersede）；舊 clause 轉 superseded（derived） |
 | 4 | 其他 clause 衝突（同層；或 proposal 不完整） | Ask | 回答 → proposal 核准／需求修訂 → 新 REQ |
-| 5 | 未裁決 ∧ safeToAssume | assume | ASSUM（INV-1；governedBy 依 §2 固定映射；ephemeral candidate 見 §6） |
-| 6 | 未裁決 ∧ ¬safeToAssume ∧ layer=intent | Ask | 回答 → 新 REQ；明示延後 → ASSUM（basisRefs 含 user answer snapshot） |
+| 5 | 未裁決 ∧ safeToAssume | assume | ASSUM（INV-1；governedBy 依 §2 固定映射；**`routingOrigin=safe-default`**；ephemeral candidate 見 §6） |
+| 6 | 未裁決 ∧ ¬safeToAssume ∧ layer=intent | Ask | 回答 → 新 REQ；明示延後 → ASSUM（basisRefs 含該 DP 的 user-answer；**`routingOrigin=user-deferred`**） |
 | 7 | 未裁決 ∧ ¬safeToAssume ∧ layer=implementation | 技術審查（依 domain 之 discipline 或 arbiter） | 四分，見下 |
 
 row 7 審查結果四分：
@@ -379,7 +403,8 @@ row 7 審查結果四分：
 ```
 找到既有 binding technical policy → resolved(REQ)   ← 政策固化為 Source，新 REQ cite 之
 正式工程裁決                      → decided(DEC)
-證據不足、僅核准暫定預設           → assumed(ASSUM，governedBy=審查 principal)
+證據不足、僅核准暫定預設           → assumed(ASSUM，governedBy=審查 principal，
+                                          **routingOrigin=reviewed-provisional**)
 浮現產品取捨                      → 轉 row 6（asked）
 ```
 

@@ -1,6 +1,7 @@
 # Intent-Scan Implementation Spec
 
-- 狀態：**approved v1.1**（2026-07-26 panel 放行；前一放行版本 approved v1.0，經九輪修訂）。實作以本文為準；變更需重新過 panel。本版變更範圍：**§8** store command surface —— `replace-terminal` 支援 `successor=null`（retire；v1.0 的命令面**沒有任何交易能產生 `retire` Transition**，是既有缺口）、新增 `commit-test-provenance-batch` 複合交易（`0..N` `ResolutionGroupDraft`）、`init-task`／`resume-task` 接上 tracked TaskState；**§6** —— user-authority clause transition 的 witness 一律為 plan-gate；**§13** —— AC11 更正並新增 AC43–56。其餘章節未動。
+- 狀態：**draft v1.2 — 修訂待 panel**（前一放行版本：approved v1.1）。本版變更：§8 的 clause-minting 交易 payload 必須攜帶 ASSUM 的 `routingOrigin`（上游 shared model **v1.8** 新增的 authored 控制狀態），並將 binding-policy 的 adopt 對位寫進命令契約。**核准前下游不得實作。**
+- 前一版狀態：**approved v1.1**（2026-07-26 panel 放行；前一放行版本 approved v1.0，經九輪修訂）。v1.1 變更範圍：**§8** store command surface —— `replace-terminal` 支援 `successor=null`（retire；v1.0 的命令面**沒有任何交易能產生 `retire` Transition**，是既有缺口）、新增 `commit-test-provenance-batch` 複合交易（`0..N` `ResolutionGroupDraft`）、`init-task`／`resume-task` 接上 tracked TaskState；**§6** —— user-authority clause transition 的 witness 一律為 plan-gate；**§13** —— AC11 更正並新增 AC43–56。其餘章節未動。
 - 日期：2026-07-25
 - 上游：`2026-07-25-shared-decision-provenance-model.md`（**approved v1.7**）。本 spec 只落地其 intent-scan 半邊；不重新定義任何 shared concept，附加的實作欄位一律以「annotation」標示且不改變上游欄位語義。
 - 姊妹 spec：`2026-07-25-test-provenance-spec.md`（**approved v1.0**）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
@@ -317,14 +318,21 @@ create-requirement        **DP 無關**的 REQ（plan-approved AC）。必填：
                             kind=acceptance 時另附 annotation REQ.acceptance
                           不設 DP terminal、不建 Transition ——
                           零 DP／skip-scan task 的唯一合法 AC 建立路徑
+                          （row 5／6／7 → `safe-default`／`user-deferred`／`reviewed-provisional`）
 adopt-existing-outcome    **僅限 initial-open DP**（從未有 terminal，或 priorTerminalRef 所指
                           clause 已非 active、無需再建 Transition）→ **既存** active ∧ applicable
                           clause：設 terminal ref＋status。**不建 clause、不建 Transition**。
                           exception-backed 時同交易攜帶 DP-bound scope ruling record
                           與 `scopeRulingRef`。
-                          **reopened DP 且 priorTerminalRef 仍 active → 拒寫**，改走 replace-terminal
+                          **reopened DP 且 priorTerminalRef 仍 active → 拒寫**，改走 replace-terminal。
+                          **binding-policy 對位（v1.2）**：任何 `subjectRef` 指向本 DP 的
+                          `rulingKind=binding-policy` ruling，其 `bindingClauseRef` 必須等於本次
+                          採用的 clause 與最終的 `DP.resolvedBy` —— 以**全稱量化**表述，
+                          不從 payload.records 猜哪一筆是 authority carrier
 create-initial-outcome    open DP → **新** clause＋terminal ref（**不建 Transition**）；
-                          可同一交易攜帶必要 Source／Record
+                          可同一交易攜帶必要 Source／Record。
+                          **clause 為 ASSUM 時 payload 必含 `routingOrigin`**（上游 v1.8 三值），
+                          由交易 authored 寫入 clause；不得從 basisRefs 或 governedBy 反推
 replace-terminal          successor（**新鑄或既存 clause 皆可** —— reopened DP adopt 既存 REQ 時
                           走此路；**`successor=null` 正式表示 retire**，此時
                           Transition.action=retire、無後繼，所有 dependent DP 一律 **reopen**
