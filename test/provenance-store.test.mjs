@@ -1965,6 +1965,96 @@ test("panel 1: a writer never deletes a lock it does not own", () => {
   fs.rmSync(lock, { force: true });
 });
 
+// --- direct counter-examples for the third panel round -------------------------------------------
+
+test("panel-3 blocker 1: a ruling whose subjectRef and packet.dpId name DIFFERENT DPs is refused", () => {
+  const s = baseFixture();
+  // The exact repro: record.subjectRef = DP-1, packet.dpId = DP-2, DEC.derivedFrom = DP-1.
+  // Freshness would check DP-2 while anti-borrowing checked DP-1, and both would pass.
+  const packet = packetFor(DP2, CODE);
+  const split = {
+    ...reviewRuling("R-split", CODE, "DP-1"), rulingKind: "technical-decision", basis: "b",
+    selectedAlternative: "A", inputPacketSnapshot: packet, inputPacketDigest: digestOf(packet),
+  };
+  assertRejects(() => apply(s, "create-initial-outcome", {
+    dpId: "DP-1", records: [split],
+    clause: {
+      id: "DEC-x", layer: "implementation", derivedFrom: "DP-1", decision: "A",
+      alternatives: ["A", "B"], approvedBy: CODE, basisRefs: [{ kind: "review-ruling", ref: "R-split" }],
+    },
+  }), "E_RULING_SUBJECT_PACKET_MISMATCH", "subjectRef and packet.dpId naming different DPs");
+});
+
+test("panel-3 blocker 2: the packet is CLOSED — an undeclared extra key and a malformed basisRef are both refused", () => {
+  const s = baseFixture();
+  const mk = (packet, id) => ({
+    ...reviewRuling(id, CODE, "DP-2"), rulingKind: "technical-decision", basis: "b",
+    selectedAlternative: "A", inputPacketSnapshot: packet, inputPacketDigest: digestOf(packet),
+  });
+
+  const extra = { ...packetFor(DP2, CODE), extraUndeclaredField: "smuggled" };
+  const e1 = assertRejects(() => apply(s, "append-record", { record: mk(extra, "R-extra") }),
+    "E_RULING_PACKET_INCOMPLETE", "packet carrying an undeclared key");
+  assert.match(e1.message, /undeclared: extraUndeclaredField/);
+
+  assertRejects(() => apply(s, "append-record", { record: mk({ ...packetFor(DP2, CODE), basisRefs: [null] }, "R-null") }),
+    "E_RULING_PACKET_INCOMPLETE", "basisRefs containing null");
+  assertRejects(() => apply(s, "append-record", { record: mk({ ...packetFor(DP2, CODE), basisRefs: [{ nonsense: 1 }] }, "R-junk") }),
+    "E_RULING_PACKET_INCOMPLETE", "basisRefs element matching no normalised shape");
+  assertRejects(() => apply(s, "append-record", { record: mk({ ...packetFor(DP2, CODE), materialReasons: ["b", "a"] }, "R-order") }),
+    "E_RULING_PACKET_ORDER", "materialReasons out of canonical order");
+  assertRejects(() => apply(s, "append-record", { record: mk({ ...packetFor(DP2, CODE), materialReasons: ["a", "a"] }, "R-dup") }),
+    "E_RULING_PACKET_ORDER", "materialReasons carrying a duplicate");
+  assertRejects(() => apply(s, "append-record", { record: mk({ ...packetFor(DP2, CODE), layer: "invented" }, "R-layer") }),
+    "E_ENUM", "packet layer outside the closed set");
+
+  // the well-formed shapes are still accepted — basisRefs sorted by (kind, id), materialReasons
+  // matching the DP (freshness still applies: a "tidier" packet is not a licence to differ)
+  const wellFormed = {
+    ...packetFor(DP2, CODE),
+    basisRefs: [{ kind: "review-ruling", ref: "R-1" }, { sourceId: "S-req", digest: "abc" }],
+  };
+  assert.ok(apply(s, "append-record", { record: mk(wellFormed, "R-good") }));
+
+  // a DP that genuinely carries materialReasons accepts them, deduplicated and ordered
+  const dpMat = dp("DP-mat", { materialReasons: ["money", "privacy"] });
+  let s2 = apply(s, "resume-task", { taskId: "TASK-1", decisionPoints: [dpMat], addDpIds: ["DP-mat"] });
+  const matPacket = packetFor(dpMat, CODE);
+  assert.ok(apply(s2, "append-record", {
+    record: {
+      ...reviewRuling("R-mat", CODE, "DP-mat"), rulingKind: "technical-decision", basis: "b",
+      selectedAlternative: "A", inputPacketSnapshot: matPacket, inputPacketDigest: digestOf(matPacket),
+    },
+  }));
+});
+
+test("panel-3 blocker 3: a binding-policy ruling naming clause A cannot sit beside a DP that adopted B", () => {
+  let s = baseFixture();
+  s = apply(s, "create-requirement", {
+    requirement: {
+      id: "REQ-b", authority: "approved-requirement", kind: "specification",
+      text: "the other clause", sourceRef: "S-req", taskRef: "TASK-1",
+    },
+  });
+  // The repro: the ruling names REQ-a, the transaction adopts REQ-b.
+  assertRejects(() => apply(s, "adopt-existing-outcome", {
+    dpId: "DP-2", clauseRef: "REQ-b",
+    records: [typedRuling("R-bp", CODE, DP2, "binding-policy", { bindingClauseRef: "REQ-a" })],
+  }), "E_BINDING_POLICY_MISMATCH", "ruling claims REQ-a, DP adopted REQ-b");
+
+  // naming what was actually adopted is accepted
+  const ok = apply(s, "adopt-existing-outcome", {
+    dpId: "DP-2", clauseRef: "REQ-b",
+    records: [typedRuling("R-bp", CODE, DP2, "binding-policy", { bindingClauseRef: "REQ-b" })],
+  });
+  assert.strictEqual(indexStore(ok).dps.get("DP-2").resolvedBy, "REQ-b");
+
+  // and it also bites on a ruling that was already in pre-state before the adoption
+  let s2 = apply(s, "append-record", { record: typedRuling("R-bp", CODE, DP2, "binding-policy", { bindingClauseRef: "REQ-a" }) });
+  assertRejects(() => apply(s2, "adopt-existing-outcome", { dpId: "DP-2", clauseRef: "REQ-b" }),
+    "E_BINDING_POLICY_MISMATCH", "pre-state ruling contradicted by a later adoption");
+});
+
 test("clauseKindOf routes ids by prefix and rejects anything else", () => {
   assert.strictEqual(clauseKindOf("REQ-01J"), "REQ");
   assert.strictEqual(clauseKindOf("DEC-01J"), "DEC");

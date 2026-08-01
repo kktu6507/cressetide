@@ -1081,6 +1081,59 @@ export const RULING_OUTPUT_FIELDS = {
   "layer-classification": ["classifiedLayer"],
 };
 
+// SM §4 says materialReasons is "the list of failed conjuncts" but declares no machine-readable
+// member set, so membership CANNOT be enforced here without inventing spec content downstream —
+// that gap is raised for the spec, not papered over. What is enforceable without inventing
+// anything: element type, no duplicates, and canonical ordering.
+function assertMaterialReasonsCanonical(rec, reasons) {
+  for (const r of reasons) {
+    if (typeof r !== "string" || r.length === 0) {
+      reject("E_RULING_PACKET_INCOMPLETE", `review-ruling ${rec.recordId}: every materialReasons entry must be a non-empty string`, rec.recordId);
+    }
+  }
+  const canonical = [...new Set(reasons)].sort(compareCodePoint);
+  if (canonicalJson(reasons) !== canonicalJson(canonical)) {
+    reject(
+      "E_RULING_PACKET_ORDER",
+      `review-ruling ${rec.recordId}: materialReasons must be deduplicated and in canonical order, or the same set hashes differently`,
+      rec.recordId,
+    );
+  }
+}
+
+// IS §4: basisRefs normalise to [(sourceId, digest) | RecordRef | ObservationalRef]. Anything else —
+// including a bare null — is not a basis reference.
+function basisRefSortKey(ref) {
+  if (typeof ref === "string") return ["observational", ref];
+  if (ref && typeof ref.sourceId === "string") return ["source", ref.sourceId];
+  if (ref && ref.kind === "observational") return ["observational", canonicalJson(ref)];
+  return [String(ref && ref.kind), String(ref && ref.ref)];
+}
+
+function assertPacketBasisRefsCanonical(rec, refs) {
+  for (const ref of refs) {
+    const ok = (typeof ref === "string" && ref.length > 0)
+      || (ref && typeof ref === "object" && typeof ref.sourceId === "string" && typeof ref.digest === "string")
+      || (ref && typeof ref === "object" && ref.kind === "observational")
+      || (ref && typeof ref === "object" && RECORD_KINDS.includes(ref.kind) && typeof ref.ref === "string");
+    if (!ok) {
+      reject(
+        "E_RULING_PACKET_INCOMPLETE",
+        `review-ruling ${rec.recordId}: ${JSON.stringify(ref)} is not a normalised basisRef ({sourceId,digest} | RecordRef | ObservationalRef)`,
+        rec.recordId,
+      );
+    }
+  }
+  const sorted = [...refs].sort((a, b) => {
+    const ka = basisRefSortKey(a);
+    const kb = basisRefSortKey(b);
+    return compareCodePoint(ka[0], kb[0]) || compareCodePoint(ka[1], kb[1]);
+  });
+  if (canonicalJson(refs) !== canonicalJson(sorted)) {
+    reject("E_RULING_PACKET_ORDER", `review-ruling ${rec.recordId}: basisRefs must be in canonical order (kind, then id/description)`, rec.recordId);
+  }
+}
+
 function assertTypedRulingComplete(rec) {
   if (rec.inputPacketSnapshot === undefined || rec.inputPacketDigest === undefined) {
     reject(
@@ -1093,13 +1146,51 @@ function assertTypedRulingComplete(rec) {
     reject("E_RULING_SNAPSHOT", `review-ruling ${rec.recordId}: inputPacketDigest does not match its own inputPacketSnapshot`, rec.recordId);
   }
   const packet = rec.inputPacketSnapshot;
+  // CLOSED means closed in both directions: an undeclared extra key is as illegal as a missing one,
+  // or the "canonical payload" is merely a minimum and anything may ride along inside the digest.
+  const keys = Object.keys(packet).sort(compareCodePoint);
+  const expected = [...PACKET_REQUIRED_FIELDS].sort(compareCodePoint);
+  if (canonicalJson(keys) !== canonicalJson(expected)) {
+    const extra = keys.filter((k) => !expected.includes(k));
+    const missing = expected.filter((k) => !keys.includes(k));
+    reject(
+      "E_RULING_PACKET_INCOMPLETE",
+      `review-ruling ${rec.recordId}: the input packet's key set is not the canonical closed set`
+      + `${missing.length ? ` (missing: ${missing.join(", ")})` : ""}${extra.length ? ` (undeclared: ${extra.join(", ")})` : ""}`,
+      rec.recordId,
+    );
+  }
   for (const field of PACKET_REQUIRED_FIELDS) {
     if (packet[field] === undefined || packet[field] === null) {
       reject("E_RULING_PACKET_INCOMPLETE", `review-ruling ${rec.recordId}: its input packet is missing the required field "${field}"`, rec.recordId);
     }
   }
-  if (!Array.isArray(packet.alternatives) || !Array.isArray(packet.materialReasons) || !Array.isArray(packet.basisRefs)) {
-    reject("E_RULING_PACKET_INCOMPLETE", `review-ruling ${rec.recordId}: alternatives, materialReasons and basisRefs must all be arrays`, rec.recordId);
+  // Per-field types, not merely presence.
+  if (typeof packet.dpId !== "string" || typeof packet.scenario !== "string"
+      || typeof packet.classificationBasis !== "string") {
+    reject("E_RULING_PACKET_INCOMPLETE", `review-ruling ${rec.recordId}: dpId, scenario and classificationBasis must be strings`, rec.recordId);
+  }
+  if (!DP_LAYERS.includes(packet.layer)) {
+    reject("E_ENUM", `review-ruling ${rec.recordId}: the packet's layer must be intent or implementation`, rec.recordId);
+  }
+  if (!isReviewerPrincipal(packet.requestedPrincipal)) {
+    reject("E_RULING_PACKET_INCOMPLETE", `review-ruling ${rec.recordId}: the packet's requestedPrincipal is not a ReviewerPrincipal`, rec.recordId);
+  }
+  for (const field of ["alternatives", "materialReasons", "basisRefs"]) {
+    if (!Array.isArray(packet[field])) {
+      reject("E_RULING_PACKET_INCOMPLETE", `review-ruling ${rec.recordId}: the packet's ${field} must be an array`, rec.recordId);
+    }
+  }
+  assertMaterialReasonsCanonical(rec, packet.materialReasons);
+  assertPacketBasisRefsCanonical(rec, packet.basisRefs);
+  // The ruling's subject and its packet's DP are ONE identity. Left unbound, freshness checks the
+  // packet's DP while anti-borrowing checks the subject — two different DPs, each check satisfied.
+  if (rec.subjectRef !== packet.dpId) {
+    reject(
+      "E_RULING_SUBJECT_PACKET_MISMATCH",
+      `review-ruling ${rec.recordId}: subjectRef ${rec.subjectRef} and the packet's dpId ${packet.dpId} name different DPs — a typed ruling's subject IS its packet's DP`,
+      rec.recordId,
+    );
   }
   // IS §4: the packet names the principal the ruling was requested from; a ruling issued by
   // somebody else is not an answer to that packet.
@@ -1278,6 +1369,24 @@ function validateGovernanceRulings(index) {
           reject("E_RULING_POSTCONDITION", `ASSUM ${c.id}.layer (${c.layer}) disagrees with its DP's layer (${dp.layer})`, c.id);
         }
       }
+    }
+  }
+
+  // binding-policy: the ruling names the clause the DP is supposed to adopt, so a DP that adopted
+  // something ELSE is a record claiming A while B was taken. Stated as a UNIVERSAL over every
+  // binding-policy ruling bound to the DP — no guessing which payload record was "the" carrier,
+  // and it holds for rulings already in pre-state as well as ones minted this transaction.
+  for (const rec of index.store.records) {
+    if (rec.kind !== "review-ruling" || rec.rulingKind !== "binding-policy") continue;
+    const dp = index.dps.get(rec.subjectRef);
+    if (!dp) continue; // subjectRef/packet binding is enforced where the ruling is consumed
+    if (!dp.resolvedBy) continue; // the DP has not adopted anything yet
+    if (dp.resolvedBy !== rec.bindingClauseRef) {
+      reject(
+        "E_BINDING_POLICY_MISMATCH",
+        `DP ${dp.id} adopted ${dp.resolvedBy} while binding-policy ruling ${rec.recordId} names ${rec.bindingClauseRef} — the record claims one clause and another was taken`,
+        dp.id,
+      );
     }
   }
 
