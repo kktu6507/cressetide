@@ -1,6 +1,6 @@
 # Shared Decision & Provenance Model（共同決策與溯源模型）
 
-- 狀態：**draft v1.9 — 修訂待 panel**（前一放行版本：approved v1.7）。v1.9 修 v1.8 草案自身的三個缺口：carrier 與 `status` 的關係改寫為精確蘊含（「同生同滅」是錯的 —— row 1 direct citation 允許 `resolvedBy` 非空而 carrier 為 null）；`unrelated re-adopt` 收窄為 **binding-policy 驅動**，direct citation 改為清除並保持 null；`packetBasisRef` 補上完整 **total-order tuple**（原本無 `digest` tie-break，同 `sourceId` 不同 `digest` 的兩筆無法定序）。v1.8 變更四處，皆為下游實作暴露的 carrier／契約缺口：§2 `ASSUM` 新增三值 `routingOrigin`（authored、immutable，附 loader-level 全生命週期 invariant）；§2 `DP` 新增 `resolutionRulingRef` **current application carrier**（取代對歷史 binding-policy ruling 的全稱量化 —— 那條規則會永久凍結 `resolvedBy` 並牴觸「歷史 ruling 只驗 snapshot 自洽」）；§2 補上 `ObservationalRef` 與 Governance Packet `basisRefs` 的 **exact discriminated union**；§4 `materialReasons` 補 closed member set 並宣告本文為定序的**唯一** authoritative 定義。**核准前下游不得實作任何一項。**
+- 狀態：**draft v1.10 — 修訂待 panel**（前一放行版本：approved v1.7）。v1.10 一處：§9 檢查分層新增 **`Carrier coherence`** 一列 —— v1.9 把 carrier 宣告為 loader／final-snapshot invariant，但 §9 的 `DP 完整性` 只驗 terminal／status／successor，該 invariant 從未進入正式 gate contract，繞過交易入口構造的不一致狀態不會被擋。v1.9 修 v1.8 草案自身的三個缺口：carrier 與 `status` 的關係改寫為精確蘊含（「同生同滅」是錯的 —— row 1 direct citation 允許 `resolvedBy` 非空而 carrier 為 null）；`unrelated re-adopt` 收窄為 **binding-policy 驅動**，direct citation 改為清除並保持 null；`packetBasisRef` 補上完整 **total-order tuple**（原本無 `digest` tie-break，同 `sourceId` 不同 `digest` 的兩筆無法定序）。v1.8 變更四處，皆為下游實作暴露的 carrier／契約缺口：§2 `ASSUM` 新增三值 `routingOrigin`（authored、immutable，附 loader-level 全生命週期 invariant）；§2 `DP` 新增 `resolutionRulingRef` **current application carrier**（取代對歷史 binding-policy ruling 的全稱量化 —— 那條規則會永久凍結 `resolvedBy` 並牴觸「歷史 ruling 只驗 snapshot 自洽」）；§2 補上 `ObservationalRef` 與 Governance Packet `basisRefs` 的 **exact discriminated union**；§4 `materialReasons` 補 closed member set 並宣告本文為定序的**唯一** authoritative 定義。**核准前下游不得實作任何一項。**
 - 前一版狀態：**approved v1.7**（2026-07-26 panel 放行；前一放行版本 approved v1.6）。v1.7 變更：§9 gate scope 改為具名 closed set（含 body／oracle 變更）＋ `lifecycleAffectedClauses` 反向閉包；綁定拆 **pre-change／post-change 兩相**；§9 新增 **base provenance witness**（inline、storePath 固定、immutable）；§2 新增 **TaskState**（tracked canonical task membership 與 committed head）與 `provenance-batch` RecordRef kind（canonical `batchDigest` total order、derived `relatedRefs`、chain 連結約束、committed head 三分）；review-ruling／plan-gate 新增 `resolutionGroupDigest` 作為 witness coverage 的 carrier。本文件為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念，可附加實作欄位但不得改變本文欄位語義。
 - 日期：2026-07-25
 - 範圍：只定義模型 —— 物件、權威、分流、狀態、不變量。scan 觸發與流程、檢查器實作、reviewer prompt 調整、hook 接線屬於下游 spec。
@@ -422,7 +422,7 @@ status == resolved ∧ direct citation（無 binding-policy ruling 驅動）
                              ⇒  resolutionRulingRef **可以**為 null，本節不課條件
 ```
 
-本節定義 carrier 的**語義**；承載它的**命令面**在 IS §8「carrier 更新契約」（逐 DP 的 `resolutionCarrierUpdates[]`）。缺該契約時本節的 preserve／replace／clear 三支無交易可執行，`replace-terminal`／`supersede-requirement`／`reopen-dp`／retire 的 post-state 會直接違反上式。
+本節定義 carrier 的**語義**；承載它的**命令面**在 IS §8「carrier 更新契約」（逐 DP 的 `resolutionCarrierUpdates[]`），**執行它的檢查**在 §9 檢查分層的 `Carrier coherence` 一列。三者缺一即失效：缺命令面則 preserve／replace／clear 無交易可執行；缺 §9 一列則上式只是散文，繞過交易入口直接構造的不一致狀態不會被擋。
 
 ## 3. layer 判準（decision authority）
 
@@ -705,6 +705,7 @@ INV-B2：post-state 測試存在 ⇒ binding 必為 clause binding 或 EXPL
 | 結構（Transition） | 對每筆本次新增 Transition 驗 §2 合法性表的 `subject × action × successor × authority` **全矩陣**，含 **witness binding**（§2：ackRef payload 與 authorityRef principal／subject 的綁定 —— review-ruling.by 與 subjectRef、user-answer.subjectRef == 該 DP、plan-gate target 與三欄一致 §7、constraint-revocation 與 ownerRef 相等）、ASSUM 的 governedBy／domain-transfer 治理；ackRef 依 External-record contract 解析 | fail-closed | gate scope |
 | 來源 | Source 存在、Check A（一律）；**Check B 與 exception 現時效力只課於 postChangeBinding 所引用者**：`contentKind=exception-grant` 完整鏈 —— resolve targetConstraintRef → target 必須是 `authority=hard-constraint` 的 REQ → `grantAuthorityRef == target.ownerRef` → 未過期，任一失敗 fail-closed。preChangeBinding 所引用的 Source 只課 Check A | fail-closed | gate scope |
 | DP 完整性 | 對 gate scope 內每個 DP（含 INV-4 影響閉包）：terminal refs 三者互斥、status 與 terminal ref 型別一致（resolved↔REQ、decided↔DEC、assumed↔ASSUM）、terminal ref 指向 active ∧ applicable clause、有 applicable successor 時已全部 repoint、無 applicable successor 時已全部 reopen | fail-closed | gate scope |
+| **Carrier coherence**（§2 `resolutionRulingRef`） | 對同一組 DP：① `resolutionRulingRef != null` ⇒ `status == resolved` ∧ `resolvedBy` 存在；② `status != resolved` ⇒ `resolutionRulingRef == null`；③ carrier 非 null 時，該 record 必須 `rulingKind == binding-policy` ∧ `subjectRef == 本 DP` ∧ `activeSuccessorChainEnd(bindingClauseRef) == DP.resolvedBy`。**只對 current carrier 套用**；不再被任何 carrier 引用的歷史 ruling 依 §2 僅驗 snapshot／digest 自洽 | fail-closed | gate scope |
 | 語義 | assertion 是否被 clause 蘊含、是否超出 tag 範圍 | test discipline 判斷 | 全部 |
 | Legacy | gate scope 以外的既有測試／條款 | 允許全量語義觀測；findings **observe-only**，不阻擋本次 run | scope 外 |
 

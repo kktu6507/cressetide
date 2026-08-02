@@ -1,9 +1,9 @@
 # Test-Provenance Implementation Spec
 
-- 狀態：**draft v1.1 — 修訂待 panel**（前一放行版本：approved v1.0，2026-07-26 panel 放行，自 draft v0.10 經九輪修訂）。**退回 draft 的原因**：v1.0 的 `assum-reading-change` 路徑要求「本 run 內產生 revise Transition」，而 revise 的 successor 依定義是尚不存在的新 ASSUM；姊妹 spec intent-scan v1.2 同時寫死「`commit-test-provenance-batch` 不得鑄造任何 clause」，兩者合起來使該路徑**形式上不可達**。v1.1 隨 intent-scan v1.3 的 `successorClauseDraft` 補齊 Step 5 與 AC。核准前不得實作。
+- 狀態：**draft v1.2 — 修訂待 panel**（前一放行版本：approved v1.0，2026-07-26 panel 放行，自 draft v0.10 經九輪修訂）。**退回 draft 的原因**：v1.0 的 `assum-reading-change` 路徑要求「本 run 內產生 revise Transition」，而 revise 的 successor 依定義是尚不存在的新 clause；姊妹 spec intent-scan v1.2 同時寫死「`commit-test-provenance-batch` 不得鑄造任何 clause」，兩者合起來使該路徑**形式上不可達**。v1.1 隨 intent-scan v1.3 的 `successorClauseDraft` 補齊 **ASSUM successor** 的 Step 5 與 AC。v1.2 續修兩處：(1) §6 與 Step 4b 把 `ASSUM.governedBy` 當成可以是 `user`／`plan-gate` 的分支條件 —— 它的型別是 **ReviewerPrincipal**（discipline | arbiter），該比對恆為 false，會讓 REQ 的退出重審路徑**靜默失效**；改以 **`transition.successor`** 決定是否退出，`governedBy` 只決定 reviewer-side principal；(2) 隨 intent-scan v1.4 補上 `ASSUM|DEC supersede → REQ` 的端到端 AC，與 sibling 聚合／重複 subject／carrier 覆蓋的負向 AC（AC76 改寫，新增 AC77–81）。核准前不得實作。
 - 日期：2026-07-25
-- 上游：`2026-07-25-shared-decision-provenance-model.md`（**draft v1.9 — 待 panel**；前一放行版本 approved v1.7）—— 提供 gate scope、pre／post binding 兩相、**base provenance witness**、`provenance-batch` record kind 與 chain head 規則。不重新定義任何 shared concept；附加欄位一律標為 annotation 且不改上游語義。inventory 欄位對映上游語義：`tagBefore → preChangeBinding`、`tagAfter → postChangeBinding`。
-- 姊妹 spec：`2026-07-25-intent-scan-spec.md`（**draft v1.3 — 待 panel**；前一放行版本 approved v1.1）—— 提供 provenance store、store script 命令面（含 `commit-test-provenance-batch`、`successor=null` retire）、task manifest、Review Packet 接線；本文消費而不重定義。**Gate scope 直接消費 shared model §9 的 canonical 定義**（不在本文改寫或摘要）。
+- 上游：`2026-07-25-shared-decision-provenance-model.md`（**draft v1.10 — 待 panel**；前一放行版本 approved v1.7）—— 提供 gate scope、pre／post binding 兩相、**base provenance witness**、`provenance-batch` record kind 與 chain head 規則。不重新定義任何 shared concept；附加欄位一律標為 annotation 且不改上游語義。inventory 欄位對映上游語義：`tagBefore → preChangeBinding`、`tagAfter → postChangeBinding`。
+- 姊妹 spec：`2026-07-25-intent-scan-spec.md`（**draft v1.4 — 待 panel**；前一放行版本 approved v1.1）—— 提供 provenance store、store script 命令面（含 `commit-test-provenance-batch`、`successor=null` retire）、task manifest、Review Packet 接線；本文消費而不重定義。**Gate scope 直接消費 shared model §9 的 canonical 定義**（不在本文改寫或摘要）。
 - **三份互相依賴，皆須通過各自 panel**；v0.5 曾宣稱「不改 store script 命令面」，**該宣稱撤回**。
 
 ## 1. 目的與範圍
@@ -317,7 +317,9 @@ checker／arbiter 只消費 **committed batch** 與其中的 records，**不讀 
 
 ```
 1. test-reviewer 的 assum-reading-change ruling ＝ **semantic evidence only**
-2. main thread 依該 ASSUM 的 governedBy 路由治理裁決：
+2. main thread 依 **successor**（不是 governedBy）決定授權來源；`governedBy`
+   只決定 reviewer-side principal，其型別 ReviewerPrincipal 使它**永遠不可能**
+   是 user 或 plan-gate：
      revise／retire        → governedBy principal 或 arbiter
      supersede → REQ       → user（plan 具名揭露 subject → successor，
                              核准後鑄 target == subject 的 plan-gate witness）
@@ -368,15 +370,26 @@ loop:
        a. 含 wrong-tag／missing-source／scope-violation
           → 修復（retag／拆分／刪斷言／縮範圍／走 plan-DP routing）
           → **goto 1**（inventory 與 batch 都必須重算）
-       b. 含 assum-reading-change
-          → 依 ASSUM.governedBy 路由治理裁決：
-              governedBy principal 或 arbiter → 同一 run 內取得 ruling witness
-              user／plan-gate（supersede → REQ）→ **退出本輪 review**，
-                plan 具名揭露 subject → successor → 重新核准 → resume-task
+       b. 含 assum-reading-change → **兩個獨立維度**，不可混為一軸：
+            (i) **誰是 reviewer-side principal** ← `ASSUM.governedBy`
+                （型別為 ReviewerPrincipal ＝ discipline | arbiter，
+                  **永遠不可能**是 user 或 plan-gate）
+            (ii) **是否需要 user／plan gate** ← `transition.successor` 與上游
+                 authority matrix，**與 governedBy 無關**
+          → 依 successor 分支：
+              successor = 新 ASSUM（revise）／retire
+                → governedBy principal 或 arbiter，同一 run 內取得 ruling witness
+              successor = DEC
+                → governedBy 或 arbiter，或經正式 rerouting 的 current review
+                  principal（需 DP-bound review-ruling witness）
+              successor = **REQ**
+                → **退出本輪 review**（因為 successor 是 REQ，不是因為
+                  「governedBy 是 user」—— 後者是不可能型別），
+                  plan 具名揭露 subject → successor → 重新核准 → resume-task
                 → 回到本 loop（同一 taskId，不重建既有物件）
           → 取得 witness 後 main thread 建 Transition，finding 保留並填 resolutionRef
        c. 無 finding → 續行
-  5. → main thread 呼叫 **單一** `commit-test-provenance-batch`（intent-scan v1.3）：
+  5. → main thread 呼叫 **單一** `commit-test-provenance-batch`（intent-scan v1.4）：
        batchSnapshot ＋ resolutions: **ResolutionGroupDraft**[0..N]（依 subject clause 分組）
        clean batch ＝ `resolutions=[]`，仍提交 provenance-batch record
        revise group（successor 尚不存在於 pre-state）**必須**帶 `successorClauseDraft`，
@@ -398,7 +411,7 @@ loop:
 **持久化：單筆 typed 交易，scratch 只是衍生 cache** —— v0.6 用「scratch 先寫、tracked 補 commitMarker」的散落欄位方案有四個相連的洞：`commitMarker` 不屬任何既有 schema；scratch batch 會引用下一步才鑄造的 ref；tracked 只留 digest 時內容不可復原；且**命令面根本沒有能原子處理 `ASSUM retire` 的交易**（`replace-terminal` 當時必須有 successor）。四者同源，故改為 typed 交易：
 
 ```
-main thread 呼叫 intent-scan spec v1.3 的
+main thread 呼叫 intent-scan spec v1.4 的
   commit-test-provenance-batch           ← 單筆 CAS 交易；resolutions: ResolutionGroupDraft[0..N]
                                            （`ResolutionGroup` 僅用於 committed batchSnapshot）
                                            revise group 帶 successorClauseDraft（鑄造 successor ASSUM）
@@ -616,7 +629,7 @@ testProvenance: {
 | `cressetide/skills/vigil/scripts/test-adapters.json` | **新增** —— §2 framework adapter registry |
 | `cressetide/skills/vigil/scripts/changed-test-inventory.mjs`（＋tests） | **新增** —— §6 base／head 導出、one-to-one matching、inventoryDigest |
 | `cressetide/skills/vigil/SKILL.md` | **§8 七步 fixed-point loop**；`--provenance` 的新位置（第 6 步，不沿用既有 contract-check 位置）；第 5 步的 single-writer 落檔點＝呼叫 `commit-test-provenance-batch` |
-| `cressetide/skills/vigil/scripts/provenance-store.mjs` | **（intent-scan v1.3 範圍）** `commit-test-provenance-batch`（含 `successorClauseDraft`、`resolutionCarrierUpdates[]`）、`successor=null` retire |
+| `cressetide/skills/vigil/scripts/provenance-store.mjs` | **（intent-scan v1.4 範圍）** `commit-test-provenance-batch`（含 `successorClauseDraft`、`resolutionCarrierUpdates[]`）、`successor=null` retire |
 | `cressetide/agents/test-reviewer.agent.md` | §9 四個提問；typed finding 輸出格式 |
 | `cressetide/skills/vigil/references/reviewer-selection.md` | §9 的 substitution 例外 |
 | `cressetide/skills/vigil/references/verification-gate.md` | 記載第三個 traceability 方向；紅→綠不變 |
@@ -705,11 +718,16 @@ testProvenance: {
 73. **`assum-reading-change` 端到端可達**：一個含 `assum-reading-change` finding 的 run，在**單一** `commit-test-provenance-batch` 內同時鑄造 successor ASSUM、revise Transition、DP repoint 與 batch record 後通過 Step 6；全程無第二筆交易、無中間態落盤。此 AC 為 v1.0→v1.1 退版的直接對應測試，**必須實際執行該路徑**，不得以「相關不變量已被其他測試覆蓋」替代。
 74. **revise successor 的 ASSUM 欄位全驗**：批次鑄造的 successor ASSUM 缺 `routingOrigin`、或其值的 `layer`／`governedBy`／`basisRefs` 義務未滿足 → fail-closed；`successorClauseDraft.id != transitionDraft.successor` → fail-closed。
 75. **retire 路徑不得帶 draft**：`assum-reading-change` 收斂為 retire（`successor=null`）時附 `successorClauseDraft` → fail-closed；carrier 僅接受 `clear`／`unchanged-null`。
-76. **user-authority 退出仍有效**：`governedBy` 為 user／plan-gate 時仍走 §6 的退出重審路徑，**不得**改由本批次鑄造 REQ 繞過 plan gate（批次鑄 REQ → fail-closed）。
+76. **退出條件由 successor 決定，不由 `governedBy` 決定**：`transition.successor` 為 REQ 時走 §6 退出重審路徑，即使 `governedBy` 是 `{kind: discipline, discipline: security}`；反之 successor 為新 ASSUM／DEC 時**不**退出。任何把 `governedBy` 比對成 `user`／`plan-gate` 的實作 → 視為錯誤（ReviewerPrincipal 無此構造子，該比對恆為 false，會使退出路徑靜默失效）。
+77. **`ASSUM → 新 REQ` 端到端可達**：plan gate 核准後 `resume-task` 回到同一 taskId，在**單一** `commit-test-provenance-batch` 內同時鑄造新 REQ、supersede Transition、DP 更新、semantic evidence、plan-gate witness 綁定與 batch record，並通過 Step 6。**必須實跑該路徑**，不得以「REQ 已預先存在」的窄案例替代。
+78. **REQ 鑄造的 witness 負向**：`authorityRef.kind != user`、`ackRef.kind != plan-gate`、plan-gate 的 `target`／`successor`／`impact`／`disposition` 任一與 Transition 不符、或 subject 不是 ASSUM／DEC → **整筆 no-write fail-closed**，store bytes 與 `TaskState.committedProvenanceBatchRef` 皆完全不變。
+79. **sibling 聚合**：三筆綁同一 `ASSUM-x` 的 sibling findings → **一個** group、**一個** successor、**一筆** Transition、三筆 `semanticEvidenceRefs`，且 witness 的 `resolutionGroupDigest` 涵蓋全部三筆。
+80. **重複 subject 與衝突 payload**：`resolutions[]` 出現兩筆相同 `subjectRef`（不論 payload 是否一致，含 successor／action 相同而 `text`／`routingOrigin`／`basisRefs` 不同者）→ fail-closed 且 **store bytes 完全不變**；writer 不得隱式合併或擇一。
+81. **carrier updates 覆蓋負向**：`resolutionCarrierUpdates[]` 少一個 dependent DP、或多一個未改動 terminal 的 DP → 兩者各自 fail-closed 且 **no-write**。
 
 ## 14. 邊界與非目標
 
-- 不動 intent scan、DP 分流、治理 checkpoint。**store script 命令面例外**：本 spec 需要 intent-scan v1.3 的 `commit-test-provenance-batch`（0..N ResolutionGroup、`successorClauseDraft`、`resolutionCarrierUpdates[]`）與 `successor=null` retire（v0.5 的「不改命令面」宣稱已撤回）。
+- 不動 intent scan、DP 分流、治理 checkpoint。**store script 命令面例外**：本 spec 需要 intent-scan v1.4 的 `commit-test-provenance-batch`（0..N ResolutionGroup、`successorClauseDraft`、`resolutionCarrierUpdates[]`）與 `successor=null` retire（v0.5 的「不改命令面」宣稱已撤回）。
 - **不設測試數量上限** —— demo1 實測顯示數量不是正確的打擊目標（69 vs 258，兩組 adjusted mutation 皆 10/10）；治的是來源，不是數量。
 - 不管 gate scope 外的既有測試（brownfield 邊界，範圍定義見 shared model §9）。
 - 語義判斷不宣稱機械保證（§10）；本 spec 保證的是它不被跳過、結果為 typed、機械後果被強制執行。
