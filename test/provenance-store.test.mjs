@@ -1,8 +1,8 @@
 // Phase-1 tests for cressetide/skills/vigil/scripts/provenance-store.mjs.
 //
 // Spec anchors (all three approved):
-//   SM  = docs/superpowers/specs/2026-07-25-shared-decision-provenance-model.md (approved v1.7)
-//   IS  = docs/superpowers/specs/2026-07-25-intent-scan-spec.md (approved v1.1)
+//   SM  = docs/superpowers/specs/2026-07-25-shared-decision-provenance-model.md (approved v1.11)
+//   IS  = docs/superpowers/specs/2026-07-25-intent-scan-spec.md (approved v1.6)
 // Each test names the section / acceptance-criterion it lands. This suite covers the STORE-LAYER
 // subset of the 72 acceptance criteria only — the orchestrator, inventory, adapter, reviewer,
 // contract-derivation and ledger criteria belong to later phases and are NOT claimed here.
@@ -2124,7 +2124,6 @@ test("IS AC61 regression: a historical binding-policy ruling that is NOT the car
   const out = apply(s, "adopt-existing-outcome", {
     dpId: "DP-2", clauseRef: "REQ-b",
     resolutionCarrierUpdates: nulls("DP-2"),
-    resolutionCarrierUpdates: nulls("DP-2"),
   });
   const d = indexStore(out).dps.get("DP-2");
   assert.strictEqual(d.resolvedBy, "REQ-b");
@@ -2179,7 +2178,6 @@ test("IS AC63 negative: a carrier ref that is unresolvable, untyped, or bound to
 
   const adopt = (rulingRef) => () => apply(s, "adopt-existing-outcome", {
     dpId: "DP-2", clauseRef: "REQ-a",
-    resolutionCarrierUpdates: nulls("DP-2"),
     resolutionCarrierUpdates: [{ dpId: "DP-2", action: "replace", rulingRef }],
   });
   assertRejects(adopt(carrierRef("R-ghost")), "E_CARRIER_REPLACE", "carrier ref does not resolve");
@@ -2215,13 +2213,11 @@ test("IS AC64: unchanged-null is a declaration, not a skip — it is refused whe
   assertRejects(() => apply(s, "reopen-dp", {
     dpId: "DP-2", trigger: "terminal-invalidated-no-successor", expectedCurrentTerminalRef: "REQ-a",
     resolutionCarrierUpdates: nulls("DP-2"),
-    resolutionCarrierUpdates: nulls("DP-2"),
   }), "E_CARRIER_UNCHANGED_NULL", "pre-state carrier is not null");
 
   // clear is the correct declaration here, and the carrier really goes.
   const out = apply(s, "reopen-dp", {
     dpId: "DP-2", trigger: "terminal-invalidated-no-successor", expectedCurrentTerminalRef: "REQ-a",
-    resolutionCarrierUpdates: nulls("DP-2"),
     resolutionCarrierUpdates: [{ dpId: "DP-2", action: "clear" }],
   });
   const d = indexStore(out).dps.get("DP-2");
@@ -2269,7 +2265,9 @@ test("IS AC67: clear and replace are judged PER DP — one DP's rulingRef cannot
       { dpId: "DP-2", action: "replace", rulingRef: carrierRef("R-bp-new") },
     ],
     [bindingPolicy("R-bp-new", DP2, "REQ-b")],
-  ), "E_CARRIER_CLEAR", "clear must not carry a replacement rulingRef");
+  // The closed key set is the single mechanism for this: `clear` simply has no rulingRef slot, so
+  // a DP smuggling one in is rejected as a shape violation rather than by a second, parallel rule.
+  ), "E_CARRIER_SHAPE", "clear must not carry a replacement rulingRef");
 });
 
 test("IS AC68: adopt-existing-outcome carries carrier updates and refuses preserve and clear", () => {
@@ -2289,6 +2287,181 @@ test("IS AC68: adopt-existing-outcome carries carrier updates and refuses preser
   assertRejects(adopt(undefined), "E_CARRIER_UPDATES_MISSING", "adopt is not a carrier exception");
 });
 
+// A carrier `replace` is a consumption site every time it is declared. Deriving consumption from
+// "did the stored ref change" lets a re-affirmation of the SAME ruling skip freshness entirely,
+// which is the freshness hole this suite already closed once for persisted rulings.
+function withStaleCarrier() {
+  let s = withCarrier(); // DP-2 resolved by REQ-a, carrier R-bp, packet matching DP-2
+  // Move the DP out from under the packet: classificationBasis is one of the compared fields.
+  return apply(s, "reclassify-dp", {
+    dpId: "DP-2", layer: "implementation", classificationBasis: "revised engineering standard",
+    classificationRulingRef: { kind: "review-ruling", ref: "R-lc" },
+    records: [typedRuling("R-lc", CODE, DP2, "layer-classification", {
+      classifiedLayer: "implementation", basis: "revised engineering standard",
+    })],
+  });
+}
+
+function supersedeReqAToB(resolutionCarrierUpdates, extraRecords = []) {
+  return {
+    initiatingDpIds: ["DP-2"],
+    records: [planGate("R-pg", "REQ-a"), ...extraRecords],
+    transition: {
+      id: "T-1", subject: "REQ-a", action: "supersede", successor: "REQ-b",
+      authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+    },
+    resolutionCarrierUpdates,
+  };
+}
+
+test("IS AC63: replace re-checks freshness even when it re-affirms the SAME carrier ref", () => {
+  const stale = withStaleCarrier();
+  // Same ref as the pre-state carrier, so the pre/post diff is empty — freshness must still run.
+  assertRejects(
+    () => apply(stale, "supersede-requirement", supersedeReqAToB([
+      { dpId: "DP-2", action: "replace", rulingRef: carrierRef("R-bp") },
+    ])),
+    "E_RULING_PACKET_STALE",
+    "a stale ruling re-affirmed under the same ref",
+  );
+
+  // Positive control: reusing the same ref is NOT forbidden — it passes while the packet is fresh.
+  const fresh = withCarrier();
+  const ok = apply(fresh, "supersede-requirement", supersedeReqAToB([
+    { dpId: "DP-2", action: "replace", rulingRef: carrierRef("R-bp") },
+  ]));
+  const d = indexStore(ok).dps.get("DP-2");
+  assert.strictEqual(d.resolvedBy, "REQ-b");
+  assert.deepStrictEqual(d.resolutionRulingRef, carrierRef("R-bp"), "same-ref replace is legal when fresh");
+});
+
+test("IS AC63: the stale same-ref replace writes nothing — bytes, head, lock and temp files all intact", () => {
+  const cwd = temporary("prov-carrier-stale-");
+  const stale = withStaleCarrier();
+  fs.mkdirSync(path.dirname(storePath(cwd)), { recursive: true });
+  fs.writeFileSync(storePath(cwd), canonicalStoreBytes(stale), "utf8");
+  const before = fs.readFileSync(storePath(cwd), "utf8");
+  const headBefore = indexStore(stale).taskStates.get("TASK-1").committedProvenanceBatchRef;
+
+  assertRejects(
+    () => runTransaction(cwd, "supersede-requirement", supersedeReqAToB([
+      { dpId: "DP-2", action: "replace", rulingRef: carrierRef("R-bp") },
+    ]), OPTS),
+    "E_RULING_PACKET_STALE",
+    "no-write on a stale carrier consumption",
+  );
+
+  const after = fs.readFileSync(storePath(cwd), "utf8");
+  assert.strictEqual(after, before, "canonical bytes are byte-identical");
+  assert.deepStrictEqual(
+    indexStore(parseStore(after)).taskStates.get("TASK-1").committedProvenanceBatchRef,
+    headBefore,
+    "the committed head did not move",
+  );
+  assert.ok(!fs.existsSync(`${storePath(cwd)}.lock`), "the lock is released");
+  assert.deepStrictEqual(
+    fs.readdirSync(path.dirname(storePath(cwd))).sort(),
+    ["provenance.json"],
+    "no temp file survives",
+  );
+});
+
+test("IS §8: a carrier update entry is a closed shape — undeclared keys and stray rulingRefs are refused", () => {
+  const s = withCarrier();
+  const reopen = (resolutionCarrierUpdates) => () => apply(s, "reopen-dp", {
+    dpId: "DP-2", trigger: "terminal-invalidated-no-successor", expectedCurrentTerminalRef: "REQ-a",
+    resolutionCarrierUpdates,
+  });
+  assertRejects(reopen([{ dpId: "DP-2", action: "clear", undeclared: "accepted" }]), "E_CARRIER_SHAPE", "undeclared key");
+  assertRejects(reopen([{ dpId: "DP-2", action: "clear", rulingRef: carrierRef("R-bp") }]), "E_CARRIER_SHAPE", "clear carrying a rulingRef");
+  assertRejects(reopen([{ dpId: "DP-2" }]), "E_CARRIER_ACTION", "no action at all");
+  // and the well-formed shape still passes
+  assert.ok(reopen([{ dpId: "DP-2", action: "clear" }])());
+
+  // replace's own key set: rulingRef is required, and nothing else may ride along
+  const fresh = withSecondRequirement(baseFixture());
+  const adopt = (u) => () => apply(fresh, "adopt-existing-outcome", {
+    dpId: "DP-2", clauseRef: "REQ-a", records: [bindingPolicy("R-bp", DP2, "REQ-a")],
+    resolutionCarrierUpdates: [u],
+  });
+  assertRejects(adopt({ dpId: "DP-2", action: "replace" }), "E_CARRIER_SHAPE", "replace without rulingRef");
+  assertRejects(adopt({ dpId: "DP-2", action: "replace", rulingRef: carrierRef("R-bp"), note: "x" }), "E_CARRIER_SHAPE", "replace with an extra key");
+  assertRejects(adopt({ dpId: "DP-2", action: "replace", rulingRef: "R-bp" }), "E_CARRIER_REPLACE", "malformed rulingRef (bare string)");
+  assertRejects(adopt({ dpId: "DP-2", action: "replace", rulingRef: { kind: "plan-gate", ref: "R-bp" } }), "E_CARRIER_REPLACE", "rulingRef of the wrong kind");
+});
+
+test("IS AC66: a restricted clear requires a resolved post-state", () => {
+  const s = withCarrier();
+  // preserve with nothing to preserve, and preserve whose chain end misses the new terminal, are
+  // both refused at command time rather than only by the loader.
+  const noCarrier = withSecondRequirement(baseFixture());
+  assertRejects(() => apply(noCarrier, "adopt-existing-outcome", {
+    dpId: "DP-2", clauseRef: "REQ-a", resolutionCarrierUpdates: [{ dpId: "DP-2", action: "preserve" }],
+  }), "E_CARRIER_ACTION", "adopt does not offer preserve at all");
+  assertRejects(() => apply(s, "reopen-dp", {
+    dpId: "DP-2", trigger: "terminal-invalidated-no-successor", expectedCurrentTerminalRef: "REQ-a",
+    resolutionCarrierUpdates: [{ dpId: "DP-2", action: "preserve" }],
+  }), "E_CARRIER_ACTION", "reopen-dp does not offer preserve either");
+  // a clear on a DP that never had a carrier
+  assertRejects(() => apply(noCarrier, "adopt-existing-outcome", {
+    dpId: "DP-2", clauseRef: "REQ-a", resolutionCarrierUpdates: [{ dpId: "DP-2", action: "clear" }],
+  }), "E_CARRIER_ACTION", "adopt does not offer clear");
+});
+
+// SPEC GAP, reported and deliberately left fail-closed: approved IS AC66 gives the restricted clear
+// a "post-state resolved" condition, and the action table offers a non-resolved clear only on the
+// retire and reopen-dp rows. A carrier-bearing DEPENDENT DP that is reopened because the (non-null)
+// successor is not applicable to it therefore has no legal action at all. Refusing it is the
+// fail-closed reading; inventing a fourth disposition would be writing spec in code.
+test("IS AC66: a carrier-bearing dependent DP reopened under a non-null successor has no approved action", () => {
+  let s = withHardConstraint(); // REQ-hc on DP-2, owner record R-owner
+  s = apply(s, "adopt-existing-outcome", {
+    dpId: "DP-1", clauseRef: "REQ-a",
+    records: [bindingPolicy("R-bp1", DP1, "REQ-a")],
+    resolutionCarrierUpdates: [{ dpId: "DP-1", action: "replace", rulingRef: carrierRef("R-bp1") }],
+  });
+  // REQ-x is exception-backed, so applicable() only lets a DP holding its own scope-coverage ruling
+  // take it. DP-1 has none, so the closure reopens it instead of repointing.
+  const attempt = (action) => () => apply(s, "supersede-requirement", {
+    initiatingDpIds: [],
+    records: [planGate("R-pg", "REQ-a")],
+    sources: [{
+      sourceId: "S-exc", contentKind: "exception-grant", driftMode: "snapshot-only", locator: "grant#1",
+      excerpt: "scoped exception", targetConstraintRef: "REQ-hc",
+      grantAuthorityRef: { kind: "source-authority", ref: "R-owner" }, scope: "eu-only", expiry: "2099-01-01",
+    }],
+    successorClause: {
+      id: "REQ-x", authority: "approved-requirement", kind: "specification", text: "scoped",
+      sourceRef: "S-exc", taskRef: "TASK-1",
+    },
+    transition: {
+      id: "T-1", subject: "REQ-a", action: "supersede", successor: "REQ-x",
+      authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+    },
+    resolutionCarrierUpdates: [{ dpId: "DP-1", action }],
+  });
+  // clear is refused because the post-state is open while the successor is not null
+  const e = assertRejects(attempt("clear"), "E_CARRIER_CLEAR", "clear on a reopened dependent DP");
+  assert.match(e.message, /AC66/);
+  // and the other three actions are refused for their own reasons, so the state is genuinely stuck
+  assertRejects(attempt("preserve"), "E_CARRIER_PRESERVE", "preserve has no terminal to align with");
+  assertRejects(attempt("unchanged-null"), "E_CARRIER_UNCHANGED_NULL", "the pre-state carrier is not null");
+});
+
+test("SM §9: the loader refuses a malformed or dangling resolutionRulingRef", () => {
+  const s = withCarrier();
+  for (const [carrier, code, what] of [
+    ["R-bp", "E_SHAPE", "a bare string instead of a RecordRef"],
+    [{ kind: "plan-gate", ref: "R-bp" }, "E_SHAPE", "a RecordRef of the wrong kind"],
+    [{ kind: "review-ruling" }, "E_SHAPE", "a RecordRef with no ref"],
+    [{ kind: "review-ruling", ref: "R-ghost" }, "E_DANGLING_REF", "a ref that resolves to nothing"],
+  ]) {
+    assertRejects(() => validateAll(tamper(s, "DP-2", { resolutionRulingRef: carrier }), OPTS), code, what);
+  }
+});
+
 test("IS AC61/67: a rejected carrier update leaves the store bytes and the committed head untouched", () => {
   const cwd = temporary("prov-carrier-");
   const s = withCarrier();
@@ -2297,7 +2470,6 @@ test("IS AC61/67: a rejected carrier update leaves the store bytes and the commi
   const before = fs.readFileSync(storePath(cwd), "utf8");
   assertRejects(() => runTransaction(cwd, "reopen-dp", {
     dpId: "DP-2", trigger: "terminal-invalidated-no-successor", expectedCurrentTerminalRef: "REQ-a",
-    resolutionCarrierUpdates: nulls("DP-2"),
     resolutionCarrierUpdates: nulls("DP-2"),
   }, OPTS), "E_CARRIER_UNCHANGED_NULL", "no-write on a rejected carrier declaration");
   assert.strictEqual(fs.readFileSync(storePath(cwd), "utf8"), before, "canonical bytes are byte-identical");

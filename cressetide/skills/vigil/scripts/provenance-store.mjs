@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // ctide provenance-store: the single writer for `.ctide/provenance.json`, the tracked canonical
 // semantic state defined by docs/superpowers/specs/2026-07-25-shared-decision-provenance-model.md
-// (approved v1.7) and given its command surface by 2026-07-25-intent-scan-spec.md (approved v1.1) §8.
+// (approved v1.11) and given its command surface by 2026-07-25-intent-scan-spec.md (approved v1.6) §8.
 //
 // Session-time helper (NOT a Claude Code hook, NOT CI-only): the main thread calls one domain
 // transaction per mutation. There are deliberately NO bare append-clause / append-transition /
@@ -1278,6 +1278,23 @@ export function newlyConsumedRulingRefs(store, next) {
   return refs;
 }
 
+// A carrier `replace` is a CONSUMPTION, and consumption is DECLARED by the payload — it cannot be
+// inferred from whether the stored ref changed. Re-affirming the same ruling after the DP has moved
+// spends it again, yet produces no diff, so the walk above would silently skip freshness (IS AC63).
+// This is a UNION with that walk, not a replacement: the diff still covers paths that set a carrier
+// without a carrier-update entry (a DP arriving through init-task / resume-task, say).
+export function carrierConsumedRulingRefs(payload) {
+  const refs = new Set();
+  for (const u of (payload && payload.resolutionCarrierUpdates) || []) {
+    if (!u || u.action !== "replace") continue;
+    const ref = u.rulingRef;
+    if (ref && typeof ref === "object" && ref.kind === "review-ruling" && typeof ref.ref === "string") {
+      refs.add(ref.ref);
+    }
+  }
+  return refs;
+}
+
 function validateGovernanceRulings(index) {
   for (const rec of index.store.records) {
     if (rec.kind !== "review-ruling" || rec.rulingKind === undefined) continue;
@@ -1591,6 +1608,27 @@ function terminalIdentity(dp) {
   });
 }
 
+// Closed in both directions, per action: an undeclared key is as illegal as a missing one, or the
+// entry shape is merely a minimum and anything may ride along.
+const CARRIER_UPDATE_KEYS = {
+  replace: ["action", "dpId", "rulingRef"],
+  preserve: ["action", "dpId"],
+  clear: ["action", "dpId"],
+  "unchanged-null": ["action", "dpId"],
+};
+
+// Which clauses does this transaction RETIRE? A dependent DP that ends up open because its terminal
+// was retired is the retire/reopen row of the carrier table, not the restricted-clear row.
+function retiredSubjects(payload, command) {
+  const out = new Set();
+  const add = (t) => {
+    if (t && typeof t.subject === "string" && (t.successor === null || t.successor === undefined)) out.add(t.subject);
+  };
+  if (command === "replace-terminal" || command === "supersede-requirement") add(payload.transition);
+  if (command === "commit-test-provenance-batch") for (const g of payload.resolutions || []) add(g.transitionDraft);
+  return out;
+}
+
 function carrierOf(dp) {
   return dp && dp.resolutionRulingRef !== undefined && dp.resolutionRulingRef !== null
     ? dp.resolutionRulingRef
@@ -1639,6 +1677,18 @@ function applyCarrierUpdates(store, draft, payload, command) {
     if (!allowed.includes(u.action)) {
       reject("E_CARRIER_ACTION", `${command}: carrier action "${u.action}" is not one of ${allowed.join(", ")} for this transaction`, u.dpId);
     }
+    const keys = Object.keys(u).sort(compareCodePoint);
+    const expected = [...CARRIER_UPDATE_KEYS[u.action]].sort(compareCodePoint);
+    if (canonicalJson(keys) !== canonicalJson(expected)) {
+      const extra = keys.filter((k) => !expected.includes(k));
+      const missing = expected.filter((k) => !keys.includes(k));
+      reject(
+        "E_CARRIER_SHAPE",
+        `${command}: DP ${u.dpId}: a "${u.action}" carrier update's key set is not the canonical closed set`
+        + `${missing.length ? ` (missing: ${missing.join(", ")})` : ""}${extra.length ? ` (undeclared: ${extra.join(", ")})` : ""}`,
+        u.dpId,
+      );
+    }
   }
   for (const dpId of mutated) {
     if (!seen.has(dpId)) {
@@ -1647,6 +1697,7 @@ function applyCarrierUpdates(store, draft, payload, command) {
   }
 
   const postIndex = indexStore(draft);
+  const retired = retiredSubjects(payload, command);
   for (const u of updates) {
     const dp = draft.decisionPoints.find((d) => d.id === u.dpId);
     const pre = carrierOf(before.get(u.dpId));
@@ -1660,7 +1711,6 @@ function applyCarrierUpdates(store, draft, payload, command) {
           u.dpId,
         );
       }
-      if (u.rulingRef !== undefined) reject("E_CARRIER_ACTION", `${command}: DP ${u.dpId}: unchanged-null takes no rulingRef`, u.dpId);
       delete dp.resolutionRulingRef;
       continue;
     }
@@ -1669,13 +1719,18 @@ function applyCarrierUpdates(store, draft, payload, command) {
       if (pre === null) {
         reject("E_CARRIER_CLEAR", `${command}: DP ${u.dpId} declares clear while its pre-state carrier is already null — declare unchanged-null`, u.dpId);
       }
-      // Per-DP direct-citation test. Not "does this transaction carry any rulingRef".
-      if (u.rulingRef !== undefined) {
-        reject(
-          "E_CARRIER_CLEAR",
-          `${command}: DP ${u.dpId} declares clear while carrying its own replacement rulingRef — clear means this DP's resolution is a direct citation`,
-          u.dpId,
-        );
+      // IS AC66: the RESTRICTED clear (the direct-citation re-adopt branch) requires the DP to end
+      // up resolved. The retire and reopen-dp rows are the other two places a clear is legal, and
+      // there the DP legitimately ends open. A DP left open by anything else has no approved row.
+      if (dp.status !== "resolved") {
+        const retiringThisDp = command === "reopen-dp" || retired.has(dp.priorTerminalRef);
+        if (!retiringThisDp) {
+          reject(
+            "E_CARRIER_CLEAR",
+            `${command}: DP ${u.dpId} declares clear but ends the transaction with status=${dp.status} while the successor is not null — IS AC66's restricted clear requires a resolved post-state, and no approved row covers a dependent DP reopened because the successor was not applicable to it`,
+            u.dpId,
+          );
+        }
       }
       delete dp.resolutionRulingRef;
       continue;
@@ -1683,7 +1738,6 @@ function applyCarrierUpdates(store, draft, payload, command) {
 
     if (u.action === "preserve") {
       if (pre === null) reject("E_CARRIER_PRESERVE", `${command}: DP ${u.dpId} declares preserve but has no pre-state carrier`, u.dpId);
-      if (u.rulingRef !== undefined) reject("E_CARRIER_ACTION", `${command}: DP ${u.dpId}: preserve takes no rulingRef`, u.dpId);
       const rec = postIndex.records.get(pre.ref);
       const end = rec ? activeSuccessorChainEnd(postIndex, rec.bindingClauseRef) : null;
       if (!rec || end !== post) {
@@ -2165,7 +2219,10 @@ export function applyTransaction(store, command, payload, options = {}) {
   // and the stale ruling could still be spent later — exactly what freshness exists to stop.
   const nextRecords = new Map(next.records.map((r) => [r.recordId, r]));
   const existing = new Set(store.records.map((r) => r.recordId));
-  const toCheck = new Set(newlyConsumedRulingRefs(store, next));
+  const toCheck = new Set([
+    ...newlyConsumedRulingRefs(store, next),
+    ...carrierConsumedRulingRefs(payload || {}),
+  ]);
   for (const rec of next.records) {
     if (!existing.has(rec.recordId) && rec.kind === "review-ruling" && rec.rulingKind !== undefined) {
       toCheck.add(rec.recordId); // newly minted: vet it even before anything cites it
