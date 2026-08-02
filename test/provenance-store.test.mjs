@@ -2391,22 +2391,36 @@ test("IS §8: a carrier update entry is a closed shape — undeclared keys and s
   assertRejects(adopt({ dpId: "DP-2", action: "replace", rulingRef: { kind: "plan-gate", ref: "R-bp" } }), "E_CARRIER_REPLACE", "rulingRef of the wrong kind");
 });
 
-test("IS AC66: a restricted clear requires a resolved post-state", () => {
+// This one is an ALLOWLIST test, not an AC66 semantic test: `preserve` is simply not offered by
+// reopen-dp, so the rejection happens at the per-command action table and never reaches the clear
+// or preserve branch. It was previously mislabelled as AC66 coverage; adopt's two rejections lived
+// here too and are dropped as duplicates of the AC68 test above.
+test("IS §8: the per-command action table rejects an action the transaction does not offer", () => {
   const s = withCarrier();
-  // preserve with nothing to preserve, and preserve whose chain end misses the new terminal, are
-  // both refused at command time rather than only by the loader.
-  const noCarrier = withSecondRequirement(baseFixture());
-  assertRejects(() => apply(noCarrier, "adopt-existing-outcome", {
-    dpId: "DP-2", clauseRef: "REQ-a", resolutionCarrierUpdates: [{ dpId: "DP-2", action: "preserve" }],
-  }), "E_CARRIER_ACTION", "adopt does not offer preserve at all");
   assertRejects(() => apply(s, "reopen-dp", {
     dpId: "DP-2", trigger: "terminal-invalidated-no-successor", expectedCurrentTerminalRef: "REQ-a",
     resolutionCarrierUpdates: [{ dpId: "DP-2", action: "preserve" }],
-  }), "E_CARRIER_ACTION", "reopen-dp does not offer preserve either");
-  // a clear on a DP that never had a carrier
-  assertRejects(() => apply(noCarrier, "adopt-existing-outcome", {
-    dpId: "DP-2", clauseRef: "REQ-a", resolutionCarrierUpdates: [{ dpId: "DP-2", action: "clear" }],
-  }), "E_CARRIER_ACTION", "adopt does not offer clear");
+  }), "E_CARRIER_ACTION", "reopen-dp offers only clear and unchanged-null");
+});
+
+test("IS AC66: clear on a DP whose pre-state carrier is already null is refused inside the clear branch", () => {
+  // A legitimate pre-state: DP-2 is resolved by DIRECT citation, so status=resolved with a null
+  // carrier. supersede-requirement is one of the transactions whose action table DOES offer clear,
+  // so the rejection below is the clear branch's own precondition rather than an allowlist miss.
+  let s = withSecondRequirement(baseFixture());
+  s = apply(s, "adopt-existing-outcome", {
+    dpId: "DP-2", clauseRef: "REQ-a", resolutionCarrierUpdates: nulls("DP-2"),
+  });
+  const before = indexStore(s).dps.get("DP-2");
+  assert.strictEqual(before.status, "resolved");
+  assert.strictEqual(before.resolutionRulingRef ?? null, null, "pre-state carrier really is null");
+
+  const e = assertRejects(
+    () => apply(s, "supersede-requirement", supersedeReqAToB([{ dpId: "DP-2", action: "clear" }])),
+    "E_CARRIER_CLEAR",
+    "clear with nothing to clear",
+  );
+  assert.match(e.message, /unchanged-null/, "the message names the correct declaration to use");
 });
 
 // SPEC GAP, reported and deliberately left fail-closed: approved IS AC66 gives the restricted clear
@@ -2415,7 +2429,8 @@ test("IS AC66: a restricted clear requires a resolved post-state", () => {
 // successor is not applicable to it therefore has no legal action at all. Refusing it is the
 // fail-closed reading; inventing a fourth disposition would be writing spec in code.
 test("IS AC66: a carrier-bearing dependent DP reopened under a non-null successor has no approved action", () => {
-  let s = withHardConstraint(); // REQ-hc on DP-2, owner record R-owner
+  // REQ-hc on DP-2 (owner record R-owner) plus a plain REQ-b for the positive control below.
+  let s = withSecondRequirement(withHardConstraint());
   s = apply(s, "adopt-existing-outcome", {
     dpId: "DP-1", clauseRef: "REQ-a",
     records: [bindingPolicy("R-bp1", DP1, "REQ-a")],
@@ -2423,9 +2438,11 @@ test("IS AC66: a carrier-bearing dependent DP reopened under a non-null successo
   });
   // REQ-x is exception-backed, so applicable() only lets a DP holding its own scope-coverage ruling
   // take it. DP-1 has none, so the closure reopens it instead of repointing.
-  const attempt = (action) => () => apply(s, "supersede-requirement", {
+  // The helper takes a WHOLE carrier update, not just an action string, so the replace case can
+  // supply a real rulingRef instead of being shape-rejected before it reaches the invariant.
+  const payloadFor = (update, extraRecords = []) => ({
     initiatingDpIds: [],
-    records: [planGate("R-pg", "REQ-a")],
+    records: [planGate("R-pg", "REQ-a"), ...extraRecords],
     sources: [{
       sourceId: "S-exc", contentKind: "exception-grant", driftMode: "snapshot-only", locator: "grant#1",
       excerpt: "scoped exception", targetConstraintRef: "REQ-hc",
@@ -2440,14 +2457,59 @@ test("IS AC66: a carrier-bearing dependent DP reopened under a non-null successo
       authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
       compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
     },
-    resolutionCarrierUpdates: [{ dpId: "DP-1", action }],
+    resolutionCarrierUpdates: [update],
   });
+  const attempt = (update, extraRecords = []) => () => apply(s, "supersede-requirement", payloadFor(update, extraRecords));
+
   // clear is refused because the post-state is open while the successor is not null
-  const e = assertRejects(attempt("clear"), "E_CARRIER_CLEAR", "clear on a reopened dependent DP");
+  const e = assertRejects(attempt({ dpId: "DP-1", action: "clear" }), "E_CARRIER_CLEAR", "clear on a reopened dependent DP");
   assert.match(e.message, /AC66/);
-  // and the other three actions are refused for their own reasons, so the state is genuinely stuck
-  assertRejects(attempt("preserve"), "E_CARRIER_PRESERVE", "preserve has no terminal to align with");
-  assertRejects(attempt("unchanged-null"), "E_CARRIER_UNCHANGED_NULL", "the pre-state carrier is not null");
+  assertRejects(attempt({ dpId: "DP-1", action: "preserve" }), "E_CARRIER_PRESERVE", "preserve has no terminal to align with");
+  assertRejects(attempt({ dpId: "DP-1", action: "unchanged-null" }), "E_CARRIER_UNCHANGED_NULL", "the pre-state carrier is not null");
+
+  // replace: the ruling is deliberately IMPECCABLE — well-formed RecordRef, minted in this same
+  // transaction so it resolves, rulingKind=binding-policy, subjectRef=DP-1, and a packet that still
+  // matches DP-1's pre-state so freshness passes. Every earlier guard is therefore cleared and the
+  // rejection can only come from the final carrier/status invariant.
+  const replacement = bindingPolicy("R-bp-new", DP1, "REQ-x");
+  const replaceUpdate = { dpId: "DP-1", action: "replace", rulingRef: carrierRef("R-bp-new") };
+  assertRejects(
+    attempt(replaceUpdate, [replacement]),
+    "E_CARRIER_STATUS",
+    "replace would leave a carrier on a DP that ends open",
+  );
+
+  // Positive control that the rejection above is genuinely the LAST guard and not an earlier one
+  // wearing its code: the very same ruling shape, pointed at an applicable successor so the DP
+  // stays resolved, passes shape, resolution, rulingKind, subjectRef, freshness AND the chain-end
+  // postcondition — it commits.
+  const ok = apply(s, "supersede-requirement", {
+    initiatingDpIds: ["DP-1"],
+    records: [planGate("R-pg", "REQ-a"), bindingPolicy("R-bp-ok", DP1, "REQ-b")],
+    transition: {
+      id: "T-1", subject: "REQ-a", action: "supersede", successor: "REQ-b",
+      authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+    },
+    resolutionCarrierUpdates: [{ dpId: "DP-1", action: "replace", rulingRef: carrierRef("R-bp-ok") }],
+  });
+  const settled = indexStore(ok).dps.get("DP-1");
+  assert.strictEqual(settled.status, "resolved");
+  assert.deepStrictEqual(settled.resolutionRulingRef, carrierRef("R-bp-ok"), "an identical ruling shape is accepted when the DP stays resolved");
+
+  // …and that fourth rejection writes nothing either.
+  const cwd = temporary("prov-carrier-stuck-");
+  fs.mkdirSync(path.dirname(storePath(cwd)), { recursive: true });
+  fs.writeFileSync(storePath(cwd), canonicalStoreBytes(s), "utf8");
+  const bytesBefore = fs.readFileSync(storePath(cwd), "utf8");
+  assertRejects(
+    () => runTransaction(cwd, "supersede-requirement", payloadFor(replaceUpdate, [replacement]), OPTS),
+    "E_CARRIER_STATUS",
+    "no-write on the stuck replace",
+  );
+  assert.strictEqual(fs.readFileSync(storePath(cwd), "utf8"), bytesBefore, "canonical bytes unchanged");
+  assert.ok(!fs.existsSync(`${storePath(cwd)}.lock`), "the lock is released");
+  assert.deepStrictEqual(fs.readdirSync(path.dirname(storePath(cwd))).sort(), ["provenance.json"], "no temp file survives");
 });
 
 test("SM §9: the loader refuses a malformed or dangling resolutionRulingRef", () => {
