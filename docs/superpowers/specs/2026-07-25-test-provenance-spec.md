@@ -1,9 +1,9 @@
 # Test-Provenance Implementation Spec
 
-- 狀態：**approved v1.0**（2026-07-26 panel 放行；自 draft v0.10 升版，經九輪修訂）。實作以本文為準；變更需重新過 panel。
+- 狀態：**draft v1.1 — 修訂待 panel**（前一放行版本：approved v1.0，2026-07-26 panel 放行，自 draft v0.10 經九輪修訂）。**退回 draft 的原因**：v1.0 的 `assum-reading-change` 路徑要求「本 run 內產生 revise Transition」，而 revise 的 successor 依定義是尚不存在的新 ASSUM；姊妹 spec intent-scan v1.2 同時寫死「`commit-test-provenance-batch` 不得鑄造任何 clause」，兩者合起來使該路徑**形式上不可達**。v1.1 隨 intent-scan v1.3 的 `successorClauseDraft` 補齊 Step 5 與 AC。核准前不得實作。
 - 日期：2026-07-25
-- 上游：`2026-07-25-shared-decision-provenance-model.md`（**approved v1.7**）—— 提供 gate scope、pre／post binding 兩相、**base provenance witness**、`provenance-batch` record kind 與 chain head 規則。不重新定義任何 shared concept；附加欄位一律標為 annotation 且不改上游語義。inventory 欄位對映上游語義：`tagBefore → preChangeBinding`、`tagAfter → postChangeBinding`。
-- 姊妹 spec：`2026-07-25-intent-scan-spec.md`（**approved v1.1**）—— 提供 provenance store、store script 命令面（含 `commit-test-provenance-batch`、`successor=null` retire）、task manifest、Review Packet 接線；本文消費而不重定義。**Gate scope 直接消費 shared model §9 的 canonical 定義**（不在本文改寫或摘要）。
+- 上游：`2026-07-25-shared-decision-provenance-model.md`（**draft v1.9 — 待 panel**；前一放行版本 approved v1.7）—— 提供 gate scope、pre／post binding 兩相、**base provenance witness**、`provenance-batch` record kind 與 chain head 規則。不重新定義任何 shared concept；附加欄位一律標為 annotation 且不改上游語義。inventory 欄位對映上游語義：`tagBefore → preChangeBinding`、`tagAfter → postChangeBinding`。
+- 姊妹 spec：`2026-07-25-intent-scan-spec.md`（**draft v1.3 — 待 panel**；前一放行版本 approved v1.1）—— 提供 provenance store、store script 命令面（含 `commit-test-provenance-batch`、`successor=null` retire）、task manifest、Review Packet 接線；本文消費而不重定義。**Gate scope 直接消費 shared model §9 的 canonical 定義**（不在本文改寫或摘要）。
 - **三份互相依賴，皆須通過各自 panel**；v0.5 曾宣稱「不改 store script 命令面」，**該宣稱撤回**。
 
 ## 1. 目的與範圍
@@ -376,11 +376,19 @@ loop:
                 → 回到本 loop（同一 taskId，不重建既有物件）
           → 取得 witness 後 main thread 建 Transition，finding 保留並填 resolutionRef
        c. 無 finding → 續行
-  5. → main thread 呼叫 **單一** `commit-test-provenance-batch`（intent-scan v1.1）：
+  5. → main thread 呼叫 **單一** `commit-test-provenance-batch`（intent-scan v1.3）：
        batchSnapshot ＋ resolutions: **ResolutionGroupDraft**[0..N]（依 subject clause 分組）
        clean batch ＝ `resolutions=[]`，仍提交 provenance-batch record
-       交易內完成全部 evidence／witness／Transition／dependent DP repoint-or-reopen
-       ／provenance-batch record 與 chain relation
+       revise group（successor 尚不存在於 pre-state）**必須**帶 `successorClauseDraft`，
+         其 `id == transitionDraft.successor`，且 successor 為 ASSUM 時
+         `routingOrigin` 必填並全驗 —— 不得先另起一筆交易鑄造 clause，
+         那會產生可見中間態並違反本步的原子性
+       retire（`successor=null`）與 successor 已存在於 pre-state 者**不得**帶 draft
+       ＋ `resolutionCarrierUpdates[]`：本交易改動 terminal 的每個 DP 逐一宣告
+         `preserve | replace | clear | unchanged-null`（intent-scan §8 carrier 契約）
+       交易內完成全部 evidence／witness／successor clause／Transition
+       ／dependent DP repoint-or-reopen／carrier 更新
+       ／provenance-batch record 與 chain relation／TaskState head
        scratch 僅快取本輪的 `provenanceBatchRef`（衍生 cache）
   6. → contract-check --provenance
        stale（inventory／body digest 不符）或存在未收斂 finding → **goto 1**
@@ -390,9 +398,11 @@ loop:
 **持久化：單筆 typed 交易，scratch 只是衍生 cache** —— v0.6 用「scratch 先寫、tracked 補 commitMarker」的散落欄位方案有四個相連的洞：`commitMarker` 不屬任何既有 schema；scratch batch 會引用下一步才鑄造的 ref；tracked 只留 digest 時內容不可復原；且**命令面根本沒有能原子處理 `ASSUM retire` 的交易**（`replace-terminal` 當時必須有 successor）。四者同源，故改為 typed 交易：
 
 ```
-main thread 呼叫 intent-scan spec v1.1 的
+main thread 呼叫 intent-scan spec v1.3 的
   commit-test-provenance-batch           ← 單筆 CAS 交易；resolutions: ResolutionGroupDraft[0..N]
                                            （`ResolutionGroup` 僅用於 committed batchSnapshot）
+                                           revise group 帶 successorClauseDraft（鑄造 successor ASSUM）
+                                           ＋ resolutionCarrierUpdates[]（逐 DP carrier 宣告）
     clean batch ＝ resolutions=[]（**不虛構** Transition），仍提交 provenance-batch record
     每個 group（**輸入型別** `ResolutionGroupDraft`）：subjectRef、semanticEvidenceRefs[1..N]、
       governanceWitnessRef、**transitionDraft**；提交後 batchSnapshot 內為
@@ -606,7 +616,7 @@ testProvenance: {
 | `cressetide/skills/vigil/scripts/test-adapters.json` | **新增** —— §2 framework adapter registry |
 | `cressetide/skills/vigil/scripts/changed-test-inventory.mjs`（＋tests） | **新增** —— §6 base／head 導出、one-to-one matching、inventoryDigest |
 | `cressetide/skills/vigil/SKILL.md` | **§8 七步 fixed-point loop**；`--provenance` 的新位置（第 6 步，不沿用既有 contract-check 位置）；第 5 步的 single-writer 落檔點＝呼叫 `commit-test-provenance-batch` |
-| `cressetide/skills/vigil/scripts/provenance-store.mjs` | **（intent-scan v1.1 範圍）** `commit-test-provenance-batch`、`successor=null` retire |
+| `cressetide/skills/vigil/scripts/provenance-store.mjs` | **（intent-scan v1.3 範圍）** `commit-test-provenance-batch`（含 `successorClauseDraft`、`resolutionCarrierUpdates[]`）、`successor=null` retire |
 | `cressetide/agents/test-reviewer.agent.md` | §9 四個提問；typed finding 輸出格式 |
 | `cressetide/skills/vigil/references/reviewer-selection.md` | §9 的 substitution 例外 |
 | `cressetide/skills/vigil/references/verification-gate.md` | 記載第三個 traceability 方向；紅→綠不變 |
@@ -692,10 +702,14 @@ testProvenance: {
 70. **Ledger 有明確 ref**：`testProvenance.provenanceBatchRef` 存在，事故診斷不需回頭做被禁止的 digest tuple 查找。
 71. **inventoryDigest 唯一公式**：`entries` **完全相同**但 `baseTreeOid` 不同 → `inventoryDigest` **必須不同**（證明 base-tree proof 真的進入 envelope）。
 72. **Draft／persisted 欄位同步**：本文與 intent-scan 對同一 payload 使用相同型別名 —— 輸入 `ResolutionGroupDraft.transitionDraft`、持久 `ResolutionGroup.transitionRef`。
+73. **`assum-reading-change` 端到端可達**：一個含 `assum-reading-change` finding 的 run，在**單一** `commit-test-provenance-batch` 內同時鑄造 successor ASSUM、revise Transition、DP repoint 與 batch record 後通過 Step 6；全程無第二筆交易、無中間態落盤。此 AC 為 v1.0→v1.1 退版的直接對應測試，**必須實際執行該路徑**，不得以「相關不變量已被其他測試覆蓋」替代。
+74. **revise successor 的 ASSUM 欄位全驗**：批次鑄造的 successor ASSUM 缺 `routingOrigin`、或其值的 `layer`／`governedBy`／`basisRefs` 義務未滿足 → fail-closed；`successorClauseDraft.id != transitionDraft.successor` → fail-closed。
+75. **retire 路徑不得帶 draft**：`assum-reading-change` 收斂為 retire（`successor=null`）時附 `successorClauseDraft` → fail-closed；carrier 僅接受 `clear`／`unchanged-null`。
+76. **user-authority 退出仍有效**：`governedBy` 為 user／plan-gate 時仍走 §6 的退出重審路徑，**不得**改由本批次鑄造 REQ 繞過 plan gate（批次鑄 REQ → fail-closed）。
 
 ## 14. 邊界與非目標
 
-- 不動 intent scan、DP 分流、治理 checkpoint。**store script 命令面例外**：本 spec 需要 intent-scan v1.1 的 `commit-test-provenance-batch`（0..N ResolutionGroup）與 `successor=null` retire（v0.5 的「不改命令面」宣稱已撤回）。
+- 不動 intent scan、DP 分流、治理 checkpoint。**store script 命令面例外**：本 spec 需要 intent-scan v1.3 的 `commit-test-provenance-batch`（0..N ResolutionGroup、`successorClauseDraft`、`resolutionCarrierUpdates[]`）與 `successor=null` retire（v0.5 的「不改命令面」宣稱已撤回）。
 - **不設測試數量上限** —— demo1 實測顯示數量不是正確的打擊目標（69 vs 258，兩組 adjusted mutation 皆 10/10）；治的是來源，不是數量。
 - 不管 gate scope 外的既有測試（brownfield 邊界，範圍定義見 shared model §9）。
 - 語義判斷不宣稱機械保證（§10）；本 spec 保證的是它不被跳過、結果為 typed、機械後果被強制執行。

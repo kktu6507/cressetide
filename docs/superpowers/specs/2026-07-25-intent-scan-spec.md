@@ -1,10 +1,10 @@
 # Intent-Scan Implementation Spec
 
-- 狀態：**draft v1.2 — 修訂待 panel**（前一放行版本：approved v1.1）。本版變更：§8 新增 **ASSUM-minting 路徑共同規則**（`routingOrigin` 必填，逐路徑盤點，並明文寫死 `commit-test-provenance-batch` 不得鑄造 clause）；binding-policy 的 adopt 對位改用上游的 **`resolutionRulingRef` current carrier**，**撤回**初稿的全稱量化（它會永久凍結 `resolvedBy` 並牴觸 §4 的歷史-ruling 規則）；§4 array table 的 `materialReasons`／`basisRefs` 定序改以上游 SM 為唯一 authoritative 定義。**核准前下游不得實作任何一項。**
+- 狀態：**draft v1.3 — 修訂待 panel**（前一放行版本：approved v1.1）。v1.3 修 v1.2 草案的四個缺口：(1) v1.2 寫死「`commit-test-provenance-batch` 不得鑄造 clause」，使下游 test-provenance 的 `assum-reading-change` 路徑不可達 —— 改為 §8 新增封閉的 **`successorClauseDraft`**，revise group 內可原子鑄造 successor ASSUM（REQ 仍不得）；(2) 上游 carrier 無命令承載 —— §8 新增封閉的 **carrier 更新契約**（逐 DP `resolutionCarrierUpdates[]`，五交易 × 四 action × 六不變量）；(3) §5 postcondition 表的 binding-policy 一列仍是舊的無 carrier 限定寫法（會永久凍結 `resolvedBy`）—— 改為只對 current carrier 課條件並沿 active successor chain 比對；(4) §4 array table 重述的 `basisRefs` 排序鍵缺 `digest` tie-break —— 改為只引上游。另新增 AC57–65。v1.2 變更：§8 **ASSUM-minting 路徑共同規則**（`routingOrigin` 必填，逐路徑盤點）；binding-policy 的 adopt 對位改用上游 **`resolutionRulingRef` current carrier**，**撤回**初稿的全稱量化；§4 `materialReasons`／`basisRefs` 定序改以上游 SM 為唯一 authoritative 定義。**核准前下游不得實作任何一項。**
 - 前一版狀態：**approved v1.1**（2026-07-26 panel 放行；前一放行版本 approved v1.0，經九輪修訂）。v1.1 變更範圍：**§8** store command surface —— `replace-terminal` 支援 `successor=null`（retire；v1.0 的命令面**沒有任何交易能產生 `retire` Transition**，是既有缺口）、新增 `commit-test-provenance-batch` 複合交易（`0..N` `ResolutionGroupDraft`）、`init-task`／`resume-task` 接上 tracked TaskState；**§6** —— user-authority clause transition 的 witness 一律為 plan-gate；**§13** —— AC11 更正並新增 AC43–56。其餘章節未動。
 - 日期：2026-07-25
-- 上游：`2026-07-25-shared-decision-provenance-model.md`（**draft v1.8**，前一放行版本 approved v1.7）。本 spec 只落地其 intent-scan 半邊；不重新定義任何 shared concept，附加的實作欄位一律以「annotation」標示且不改變上游欄位語義。
-- 姊妹 spec：`2026-07-25-test-provenance-spec.md`（**approved v1.0**）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
+- 上游：`2026-07-25-shared-decision-provenance-model.md`（**draft v1.9 — 待 panel**，前一放行版本 approved v1.7）。本 spec 只落地其 intent-scan 半邊；不重新定義任何 shared concept，附加的實作欄位一律以「annotation」標示且不改變上游欄位語義。
+- 姊妹 spec：`2026-07-25-test-provenance-spec.md`（**draft v1.1 — 待 panel**；前一放行版本 approved v1.0）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
 
 ## 1. 目的與範圍
 
@@ -82,7 +82,8 @@ main thread **在 mutation 之前** 比對 inputPacketDigest == 當下 canonical
 ```
 DP id、scenario、alternatives、layer、classificationBasis、
 materialReasons、requestedPrincipal（ReviewerPrincipal）、
-basisRefs 正規化為 [(sourceId, digest) | RecordRef | ObservationalRef 描述]
+basisRefs 依上游 SM §2 的 packetBasisRef exact discriminated union
+  （source | record | observational 三變體，欄位與排序皆以上游為準）
 排除：digest 欄位自身
 ```
 
@@ -92,7 +93,7 @@ basisRefs 正規化為 [(sourceId, digest) | RecordRef | ObservationalRef 描述
 |---|---|
 | `alternatives` | **保留語義順序**（讀法 A／B 的先後有意義） |
 | `materialReasons` | closed member set，去重，依 **Unicode code point 序**（上游 SM §4 為唯一 authoritative 定義；本表先前寫「enum 宣告序」，與上游不一致 —— 兩套定序會讓兩個 writer 對同一組理由算出不同 digest） |
-| `basisRefs` | 依上游 SM §2 的 **packetBasisRef exact discriminated union**：先比 variant 判別鍵（`sourceId`／`kind`），再比其 id／description，皆 code-point 序；不允許 undeclared keys、空字串、canonical-bytes 重複 |
+| `basisRefs` | 依上游 SM §2 的 **packetBasisRef exact discriminated union 與其 total-order tuple 定義**（唯一 authoritative 來源）。本表**不重述**排序鍵 —— 重述過的舊版本缺 `source` 的 `digest` tie-break，同 `sourceId` 不同 `digest` 的兩筆無法定序 |
 | 適用 binding／exception clause 集合 | 依 clause id 排序 |
 
 §4 收斂 fingerprint 直接由這份清單導出 —— **不維護第二套欄位清單**。
@@ -260,7 +261,9 @@ observational → binding 的唯一路徑仍是上游 §1：plan gate 核准的 
 | `scope-coverage`（true 且被採用） | `DP.scopeRulingRef == record` |
 | `technical-decision` | `DP.decidedBy == DEC.id`、`DEC.derivedFrom == DP.id`、`DEC.decision == ruling.selectedAlternative`、`DEC.alternatives == inputPacketSnapshot.alternatives`、`DEC.approvedBy == ruling.by`、`DEC.basisRefs` 含本 ruling record |
 | `approved-provisional` | `DP.assumedAs == ASSUM.id`、`ASSUM.derivedFrom == DP.id`、`ASSUM.text == ruling.selectedAlternative`、`ASSUM.alternative == ruling.rejectedAlternative`、`ASSUM.basis == ruling.basis`、`ASSUM.governedBy == ruling.by`、`ASSUM.basisRefs` 含本 ruling record |
-| `binding-policy` | `DP.resolvedBy == bindingClauseRef` |
+| `binding-policy` | **只對 current carrier 課條件**：`DP.resolutionRulingRef == record` ∧ `record.rulingKind == binding-policy` ∧ `record.subjectRef == DP.id` ∧ `activeSuccessorChainEnd(record.bindingClauseRef) == DP.resolvedBy` |
+
+`binding-policy` 一列**不是**對全部 binding-policy ruling 的全稱條件。舊寫法（`DP.resolvedBy == bindingClauseRef`，無 carrier 限定）會讓一筆歷史 ruling 永久凍結 `resolvedBy`：DP 採用 REQ-a 後，合法的 `REQ-a → REQ-b` supersede 會被那筆早已不再是 current 的 ruling 擋下。條件只對 `resolutionRulingRef` 指到的那一筆成立；其餘 ruling 依上游 SM §2 只驗 snapshot／digest 自洽。`activeSuccessorChainEnd` 沿 active Transition successor chain 前推（零長度即直接相等），因此 carrier 得以在 supersede 後保留。
 
 `product-tradeoff` 的 payload 不含 `classifiedLayer`，但套用時必然觸發 `reclassify-dp(layer=intent)` —— 本表把該隱含後果寫成機械可驗的條件。`scope-coverage=false` 不改動 DP terminal，僅作為 row 2 的依據留存。
 
@@ -389,6 +392,8 @@ commit-test-provenance-batch
                                 semanticEvidenceRefs[1..N]
                                 governanceWitnessRef
                                 **transitionDraft**       ← successor=null 即 retire
+                                **successorClauseDraft?** ← 見下「successor clause 鑄造」
+                            **resolutionCarrierUpdates[]** ← 見下「carrier 更新契約」
 
                           提交後 batchSnapshot 內對應為 **ResolutionGroup**（**持久型別**），
                           其欄位為 **`transitionRef`**（交易鑄造 ID 後的實體）——
@@ -433,7 +438,77 @@ reopen-dp                 **限「當下沒有 successor、確實必須持久化
 
 **移除**裸 `append-clause`／`append-transition`／`set-dp-outcome` —— 它們無法在不違反 INV-4 的前提下單獨完成 terminal replacement。
 
-### ASSUM-minting 路徑的共同規則（v1.2）
+### `commit-test-provenance-batch` 的 successor clause 鑄造（v1.3）
+
+v1.2 把本交易寫死為「不得鑄造任何 clause」，使下游 test-provenance 的 `assum-reading-change` 路徑**形式上不可達**：該路徑要求語義審查認定 ASSUM 讀法有誤時原子產生 revise Transition，而 revise 的 successor 依定義是一個尚不存在的新 ASSUM。要求「由其他交易先鑄造」等於把它拆成兩筆交易並讓中間態可見，直接牴觸 §8 的原子性契約與 AC44。因此改為：**successor clause 得在 revise group 內鑄造，但受下列封閉規則約束。**
+
+```
+successorClauseDraft 的存在條件（exact，違反即整筆 fail-closed）:
+
+  transitionDraft.successor == null（retire）
+    → **不得**提供 successorClauseDraft（清理／retire 路徑不得虛構 draft）
+
+  transitionDraft.successor 解析得到 pre-state 既存 clause
+    → **不得**提供 successorClauseDraft（既存者只指向，不重鑄）
+
+  transitionDraft.successor 不存在於 pre-state
+    → **必須**提供 successorClauseDraft
+       且 successorClauseDraft.id == transitionDraft.successor（否則 fail-closed）
+
+規則:
+  1. successorClauseDraft 是 **clause draft**，其 authority tier／必填欄位一律依上游
+     SM §2 該 tier 的完整 schema 驗證 —— 本交易不放寬任何一條。
+  2. successor 為 **ASSUM** 時 `routingOrigin` **必填**，且該值對應的
+     `layer`／`governedBy`／`basisRefs` 義務**全部驗證**（loader／final-snapshot invariant，
+     不是入口寬鬆檢查）。revise 的既有語義為「沿用被修訂 ASSUM 的 routing 授權」時
+     取原值，但仍是 authored 欄位，必須明寫。
+  3. 同一 subject 的多筆 draft 若彼此**不一致**（同 subject 不同 successor 或不同 action）
+     → **整筆 fail-closed**，不做任何合併或擇一。
+  4. 鑄造範圍在**單筆 CAS 交易**內原子完成：successor clause ＋ recordsToCreate
+     ＋ Transition ＋ DP repoint-or-reopen ＋ provenance-batch record ＋ TaskState head。
+  5. 鑄造出的 clause 同樣進入 final-snapshot 全量驗證（refs／matrix／INV-1..4）。
+  6. 本交易**不得**鑄造 REQ —— REQ 仍只能由 `create-requirement`／`supersede-requirement`
+     ／`resolve-exception` 產生（user authority 需 plan-gate witness，批次無此 witness）。
+```
+
+### Carrier 更新契約（v1.3，closed）
+
+上游 SM §2 定義 `DP.resolutionRulingRef` 的生命週期語義，但**沒有任何命令承載它** —— 未補此節則 carrier 只能在 `adopt-existing-outcome` 被設定，之後永遠無法 preserve／replace／clear，`replace-terminal`、`supersede-requirement`、`reopen-dp`、retire 全部在 post-state 違反上游條件。因此每一筆會動到 DP terminal 的交易，都必須攜帶**逐 DP 的精確 map**：
+
+```
+resolutionCarrierUpdates[]: {
+  dpId,
+  action: preserve | replace | clear | unchanged-null,
+  rulingRef?      ← 僅 action == replace 時必填，且必須是本交易可解析的 ref
+}
+```
+
+| 交易 | 允許的 action |
+|---|---|
+| `replace-terminal`（successor 非 null） | `preserve`（新 terminal 在原 carrier 的 active successor chain 上）／`replace`／`unchanged-null` |
+| `replace-terminal`（`successor=null`，retire） | `clear`／`unchanged-null` |
+| `supersede-requirement` | `preserve`／`replace`／`unchanged-null` |
+| `reopen-dp` | `clear`／`unchanged-null` |
+| `commit-test-provenance-batch` | 上列全部，逐 DP 各自適用 |
+
+不變量（全部 fail-closed）：
+
+```
+1. 覆蓋完整性：交易改動 terminal 的**每一個** DP 都必須在本陣列中恰好出現一次；
+   缺漏或重複 dpId 皆 fail-closed（含 dependent DP 的 repoint-or-reopen）。
+2. 不得出現未改動 terminal 的 dpId（防止借道本陣列改寫無關 DP 的 carrier）。
+3. `unchanged-null` 只在 pre-state carrier 已是 null 時合法；否則 fail-closed。
+   —— 它是「本 DP 本來就沒有 carrier」的明示宣告，不是「跳過」。
+4. `preserve` 只在 `activeSuccessorChainEnd(carrier.bindingClauseRef) == post-state
+   DP.resolvedBy` 時合法 —— 即新 terminal 確實是原 ruling 所指 clause 的後繼。
+5. `replace` 的 `rulingRef` 必須滿足 §「rulingKind 套用後條件」表的 binding-policy 一列
+   全部條件（含 `subjectRef == dpId`），並通過 freshness（consumption 時對 pre-state 檢查）。
+6. post-state 必須滿足上游 SM §2 的 carrier–status 蘊含：
+   `resolutionRulingRef != null ⇒ status == resolved ∧ resolvedBy 存在`，且
+   `status != resolved ⇒ resolutionRulingRef == null`。
+```
+
+### ASSUM-minting 路徑的共同規則（v1.2；末列於 v1.3 改寫）
 
 `routingOrigin`（上游 SM §2 三值）是 **authored 控制狀態**，必須由鑄造該 ASSUM 的交易寫入，**不得**從 `basisRefs`（證據欄）或 `governedBy`（權威欄）反推。適用於**每一條**能鑄造 ASSUM 的路徑 —— 只寫在 `create-initial-outcome` 會漏掉其餘兩條：
 
@@ -445,7 +520,7 @@ reopen-dp                 **限「當下沒有 successor、確實必須持久化
 | `resolve-exception` | 否 —— 產物固定為 exception-backed REQ | 不適用 |
 | `adopt-existing-outcome` | 否 —— 只指向既存 clause，不鑄造 | 不適用（既存 ASSUM 的值於其鑄造時已 authored） |
 | `create-requirement` | 否 —— **REQ-only**，`authority` 釘死 approved-requirement | 不適用 |
-| `commit-test-provenance-batch` | **否 —— 明文寫死**：本交易只鑄造 evidence／witness record、Transition 與 provenance-batch record，**不得鑄造任何 clause**（successor 必須已存在於 pre-state 或由其他交易鑄造） | 不適用 |
+| `commit-test-provenance-batch` | **可** —— 在 revise group 內經 `successorClauseDraft` 鑄造 successor ASSUM（見上節封閉規則；REQ 仍不得由本交易鑄造） | **必填**，且該值的 `layer`／`governedBy`／`basisRefs` 義務全驗 |
 
 值與 row 的對應：row 5 → `safe-default`；row 6 → `user-deferred`；row 7 → `reviewed-provisional`。三值各自的 `layer`／`governedBy`／`basisRefs` 強制條件見上游 SM §2，且為 **loader／final-snapshot invariant**，不是僅在交易入口檢查。
 
@@ -602,6 +677,15 @@ intentScan: {
 54. **user witness 一律 plan-gate**：`ASSUM／DEC supersede → REQ` 僅提供既有 `user-answer` 而無 plan-gate record → **fail-closed**；補上具名揭露與核准後的 plan-gate witness 才通過。Ask 回答直接產生的轉移仍以 `user-answer` 為 witness。
 55. **Draft／persisted 型別分離**：交易輸入為 `ResolutionGroupDraft.transitionDraft`；提交後 batchSnapshot 內為 `ResolutionGroup.transitionRef`，指向實際鑄造的 Transition。
 56. **taskStates carrier**：`init-task` 寫入 `.ctide/provenance.json` 的 `taskStates`；fresh clone 可讀回 taskId／membership／baseProvenance／committed head。
+57. **ASSUM revise 可達**：`commit-test-provenance-batch` 於 revise group 內以 `successorClauseDraft` 鑄造新 ASSUM，與 Transition／DP repoint／batch record／TaskState head 在**同一筆** CAS 交易完成；無任何中間態落盤，亦不需前置交易。
+58. **successorClauseDraft 存在條件**：successor 為 pre-state 既存 clause 或 `null`（retire）時提供 draft → fail-closed；successor 不存在於 pre-state 而未提供 draft → fail-closed；提供但 `id != transitionDraft.successor` → fail-closed。
+59. **批次鑄造 ASSUM 的 routingOrigin 全驗**：批次鑄造的 ASSUM 缺 `routingOrigin`、或其值對應的 `layer`／`governedBy`／`basisRefs` 義務未滿足 → fail-closed，且該檢查在 **final-snapshot loader** 層成立（非僅入口）。
+60. **批次不得鑄造 REQ**：`successorClauseDraft.authority` 為 user-authority tier（REQ）→ fail-closed，錯誤訊息指明缺 plan-gate witness。
+61. **carrier 覆蓋完整性**：任一改動 DP terminal 的交易，其 `resolutionCarrierUpdates[]` 若缺漏該 dpId、重複該 dpId、或含未改動 terminal 的 dpId → fail-closed。
+62. **carrier preserve 條件**：`action=preserve` 而 `activeSuccessorChainEnd(carrier.bindingClauseRef) != post-state DP.resolvedBy` → fail-closed；chain 成立時（含零長度直接相等）通過，合法 supersede 因此**不被凍結**。
+63. **carrier replace 與 clear**：`action=replace` 缺 `rulingRef`、或該 ruling 不滿足 binding-policy 套用後條件（含 `subjectRef == dpId`）、或 freshness 對 pre-state 不成立 → fail-closed；`reopen-dp` 與 retire 路徑僅接受 `clear`／`unchanged-null`，post-state carrier 必為 null。
+64. **`unchanged-null` 非跳過**：pre-state carrier 非 null 而宣告 `unchanged-null` → fail-closed。
+65. **packetBasisRef total order**：`{source, sourceId:"S-1", digest:"a…"}` 與 `{source, sourceId:"S-1", digest:"b…"}` 兩筆合法相異 ref，兩個獨立 writer 依上游 tuple 定序必得同一順序與同一 digest；canonical-bytes 重複則在排序前 fail-closed。
 
 ### Store-script 實作層 assertion（非模型規則，直接寫進 script tests）
 

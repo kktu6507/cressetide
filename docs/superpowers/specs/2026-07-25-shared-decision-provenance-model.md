@@ -1,6 +1,6 @@
 # Shared Decision & Provenance Model（共同決策與溯源模型）
 
-- 狀態：**draft v1.8 — 修訂待 panel**（前一放行版本：approved v1.7）。本版變更四處，皆為下游實作暴露的 carrier／契約缺口：§2 `ASSUM` 新增三值 `routingOrigin`（authored、immutable，附 loader-level 全生命週期 invariant）；§2 `DP` 新增 `resolutionRulingRef` **current application carrier**（取代對歷史 binding-policy ruling 的全稱量化 —— 那條規則會永久凍結 `resolvedBy` 並牴觸「歷史 ruling 只驗 snapshot 自洽」）；§2 補上 `ObservationalRef` 與 Governance Packet `basisRefs` 的 **exact discriminated union**；§4 `materialReasons` 補 closed member set 並宣告本文為定序的**唯一** authoritative 定義。**核准前下游不得實作任何一項。**
+- 狀態：**draft v1.9 — 修訂待 panel**（前一放行版本：approved v1.7）。v1.9 修 v1.8 草案自身的三個缺口：carrier 與 `status` 的關係改寫為精確蘊含（「同生同滅」是錯的 —— row 1 direct citation 允許 `resolvedBy` 非空而 carrier 為 null）；`unrelated re-adopt` 收窄為 **binding-policy 驅動**，direct citation 改為清除並保持 null；`packetBasisRef` 補上完整 **total-order tuple**（原本無 `digest` tie-break，同 `sourceId` 不同 `digest` 的兩筆無法定序）。v1.8 變更四處，皆為下游實作暴露的 carrier／契約缺口：§2 `ASSUM` 新增三值 `routingOrigin`（authored、immutable，附 loader-level 全生命週期 invariant）；§2 `DP` 新增 `resolutionRulingRef` **current application carrier**（取代對歷史 binding-policy ruling 的全稱量化 —— 那條規則會永久凍結 `resolvedBy` 並牴觸「歷史 ruling 只驗 snapshot 自洽」）；§2 補上 `ObservationalRef` 與 Governance Packet `basisRefs` 的 **exact discriminated union**；§4 `materialReasons` 補 closed member set 並宣告本文為定序的**唯一** authoritative 定義。**核准前下游不得實作任何一項。**
 - 前一版狀態：**approved v1.7**（2026-07-26 panel 放行；前一放行版本 approved v1.6）。v1.7 變更：§9 gate scope 改為具名 closed set（含 body／oracle 變更）＋ `lifecycleAffectedClauses` 反向閉包；綁定拆 **pre-change／post-change 兩相**；§9 新增 **base provenance witness**（inline、storePath 固定、immutable）；§2 新增 **TaskState**（tracked canonical task membership 與 committed head）與 `provenance-batch` RecordRef kind（canonical `batchDigest` total order、derived `relatedRefs`、chain 連結約束、committed head 三分）；review-ruling／plan-gate 新增 `resolutionGroupDigest` 作為 witness coverage 的 carrier。本文件為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念，可附加實作欄位但不得改變本文欄位語義。
 - 日期：2026-07-25
 - 範圍：只定義模型 —— 物件、權威、分流、狀態、不變量。scan 觸發與流程、檢查器實作、reviewer prompt 調整、hook 接線屬於下游 spec。
@@ -287,8 +287,18 @@ packetBasisRef ＝
 規則（全部 fail-closed）：
   **不允許 undeclared keys**（三個變體各自的 key set 必須完全相等）
   必填字串**不得為空**
-  canonical bytes 相同的 ref **不得重複**
-  依 code-point 序排序：先比 variant 判別鍵（sourceId／kind），再比其 id／description
+  canonical bytes 相同的 ref **不得重複** —— 先做這一步，再排序
+```
+
+**排序：完整 tuple，必須是 total order。**先前只寫「variant 判別鍵 ＋ id／description」，對 `{sourceId:"S-1", digest:"aaa"}` 與 `{sourceId:"S-1", digest:"bbb"}` 這兩筆合法且相異的 ref 不能定序，兩個 writer 仍會輸出不同順序：
+
+```
+source        → [0, sourceId, digest]
+record        → [1, kind, ref]
+observational → [2, description]
+
+先比 tuple[0]（數值）；其後每個字串欄位依 Unicode code point 序逐一比較。
+變體判別鍵在前，因此三類永不交錯。**下游 spec 只引用本定義，不得另寫第二套排序。**
 ```
 - **`resolutionGroupDigest`（witness coverage 的 carrier）** —— 「一個 witness 必須涵蓋某組 evidence 的全部」若沒有欄位承載，就無法機械驗證：
 
@@ -395,15 +405,24 @@ loader postcondition —— **只**對 current carrier 套用：
 retire／reopen 且無 current resolution
   → 同交易清除 resolutionRulingRef（null）
 
-unrelated re-adopt（新的採用，非既有 clause 的後繼）
-  → **必須**提供新的 current carrier；不得沿用舊 ruling
+unrelated re-adopt
+  → **binding-policy 驅動**時：必須提供新的 current carrier，不得沿用舊 ruling
+  → **direct row-1 citation**（無 policy ruling）時：清除舊 carrier 並保持 null
 
 歷史 ruling（存在於 store 但不被任何 DP 的 resolutionRulingRef 引用）
   → **只**驗 immutable snapshot／digest 自洽；不與任何 current DP 比較
 ```
 
-`resolvedBy` 未設時 `resolutionRulingRef` 必須為 null（兩者同生同滅）。非 binding-policy 驅動的採用（例如 row 1 直接 cite 一個既有 clause 而無 policy ruling）carrier 為 null，本節不課任何條件。
+**Carrier 與 status 的精確關係**（「同生同滅」是錯的措辭 —— row 1 的 direct citation 允許 `resolvedBy` 非空而 carrier 為 null）：
+
 ```
+resolutionRulingRef != null  ⇒  status == resolved ∧ resolvedBy 存在
+status != resolved           ⇒  resolutionRulingRef == null
+status == resolved ∧ direct citation（無 binding-policy ruling 驅動）
+                             ⇒  resolutionRulingRef **可以**為 null，本節不課條件
+```
+
+本節定義 carrier 的**語義**；承載它的**命令面**在 IS §8「carrier 更新契約」（逐 DP 的 `resolutionCarrierUpdates[]`）。缺該契約時本節的 preserve／replace／clear 三支無交易可執行，`replace-terminal`／`supersede-requirement`／`reopen-dp`／retire 的 post-state 會直接違反上式。
 
 ## 3. layer 判準（decision authority）
 
