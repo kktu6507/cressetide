@@ -1,6 +1,6 @@
 # Intent-Scan Implementation Spec
 
-- 狀態：**draft v1.7 — 修訂待 panel**（前一放行版本：approved v1.6）。v1.7 一處，來自 Phase 1A 實作暴露的**無合法 action 狀態**：`replace-terminal`／`supersede-requirement` 的 successor 非 null，但某個持有 carrier 的 **dependent DP** 因該 successor 對它不 applicable 而被 dependent closure reopen 時，四個 carrier action 全部落空（`preserve` 無 terminal 可對齊、`replace` 會把 carrier 留在非 resolved 的 DP、`unchanged-null` 因 pre-state carrier 非 null 不成立、`clear` 因 v1.6 要求 post-state resolved 不成立）。§8 把 `clear` 拆為三個互斥且各自封閉的來源 —— **來源 1 `resolved-direct`**（v1.6 條件逐字保留）、**來源 2 `reopened-dependent`**（新增，八項條件＋明文安全邊界）、**來源 3** 既有 retire／`reopen-dp`（原封不動）。上游 SM §2 的 `status != resolved ⇒ carrier == null` 已涵蓋新來源的 post-state，**上游不需修改**。新增 AC72–76。核准前不得實作來源 2。v1.6 一處：受限 `clear` 的條件 2 原寫「本交易未提供任何 rulingRef」，是把**逐項條件誤放到整筆交易上** —— `resolutionCarrierUpdates[]` 是逐 dpId 的 map，同一 batch 可以有 DP-A（direct citation → `clear`）與 DP-B（binding-policy → `replace`，帶 `rulingRef`）並存，原文字會讓 DP-B 的合法 `rulingRef` 錯殺 DP-A 的合法 `clear`；作用域收窄為 **per-DP**，並新增 AC67（mixed batch 正向 ＋ 自帶 `rulingRef` 卻宣告 `clear` 的反向），其後順延至 AC71。v1.5 修 v1.4 草案的兩處：(1) **AC60 與 AC65 直接互斥** —— AC60 仍寫「批次不得鑄造 REQ」，AC65 卻要求 `ASSUM|DEC supersede → REQ` 必須通過；AC60 改為依 rule 6 條件放行或拒絕，正向覆蓋 ASSUM→REQ 與 DEC→REQ 兩列，負向覆蓋四項條件各自缺漏。(2) `adopt-existing-outcome` 的 `clear` 是**死分支** —— 該交易只接受 initial-open 或舊 terminal 已失效的 DP，其 pre-state carrier 依上游 carrier–status 蘊含必為 null，而 `clear` 要求 pre-state carrier 非 null；已移除，並補上該交易的正向 carrier AC。rule 6 的 plan-gate 對位同步為上游 v1.11 的**四欄**。v1.4 修 v1.3 草案的三個缺口：(1) v1.3 的 rule 6 一律禁止批次鑄 REQ，理由「批次無 plan-gate witness」是**發明的前提** —— test-provenance 的 loop 在 `successor=REQ` 時退出走 plan gate 再 `resume-task` 回同一 taskId，witness 於 Step 5 已在 pre-state；禁令使 `ASSUM|DEC supersede → REQ` 不可達，而其餘命令都補不上（`create-requirement` 與 DP 無關且無 Transition、`supersede-requirement` 是 REQ→REQ、預建 `replace-terminal` 的 Transition 不在 Git base 故不能冒充 `historical-convergence`）。改為封閉四條件下允許；(2) carrier 契約缺 direct row-1 re-adopt 的 `clear`（`replace-terminal(successor != null)` 原本只給 `preserve|replace|unchanged-null`，上游明文要求的清除無交易可執行），並補上漏列的 `adopt-existing-outcome`；(3) same-subject 衝突只拒不同 successor／action，successor 與 action 相同而 draft payload 不同時結果未定義 —— 改為 `subjectRef` 唯一、sibling 進交易前聚合、重複一律 fail-closed。另新增 AC65–69（原 AC65 順延為 AC70）。v1.3 修 v1.2 草案的四個缺口：(1) v1.2 寫死「`commit-test-provenance-batch` 不得鑄造 clause」，使下游 test-provenance 的 `assum-reading-change` 路徑不可達 —— 改為 §8 新增封閉的 **`successorClauseDraft`**，revise group 內可原子鑄造 successor ASSUM（REQ 仍不得）；(2) 上游 carrier 無命令承載 —— §8 新增封閉的 **carrier 更新契約**（逐 DP `resolutionCarrierUpdates[]`，五交易 × 四 action × 六不變量）；(3) §5 postcondition 表的 binding-policy 一列仍是舊的無 carrier 限定寫法（會永久凍結 `resolvedBy`）—— 改為只對 current carrier 課條件並沿 active successor chain 比對；(4) §4 array table 重述的 `basisRefs` 排序鍵缺 `digest` tie-break —— 改為只引上游。另新增 AC57–65。v1.2 變更：§8 **ASSUM-minting 路徑共同規則**（`routingOrigin` 必填，逐路徑盤點）；binding-policy 的 adopt 對位改用上游 **`resolutionRulingRef` current carrier**，**撤回**初稿的全稱量化；§4 `materialReasons`／`basisRefs` 定序改以上游 SM 為唯一 authoritative 定義。草案審閱期間，本版新增契約不得由下游實作；該限制已隨 v1.6 核准解除。
+- 狀態：**draft v1.7 — 修訂待 panel**（前一放行版本：approved v1.6）。v1.7 一處，來自 Phase 1A 實作暴露的**無合法 action 狀態**：`replace-terminal`／`supersede-requirement` 的 successor 非 null，但某個持有 carrier 的 **dependent DP** 因該 successor 對它不 applicable 而被 dependent closure reopen 時，四個 carrier action 全部落空（`preserve` 無 terminal 可對齊、`replace` 會把 carrier 留在非 resolved 的 DP、`unchanged-null` 因 pre-state carrier 非 null 不成立、`clear` 因 v1.6 要求 post-state resolved 不成立）。§8 把 `clear` 拆為三個互斥且各自封閉的來源 —— **來源 1 `resolved-direct`**（v1.6 條件逐字保留）、**來源 2 `reopened-dependent`**（新增，**十項**條件＋明文安全邊界）、**來源 3** 既有 retire／`reopen-dp`（原封不動）。來源 2 適用 `replace-terminal(successor != null)`、`supersede-requirement`，以及 `commit-test-provenance-batch` 中 `successor != null` 的 ResolutionGroup —— 三者執行同一套 dependent closure，§8 另附 batch 的欄位對位。持久化的 `reopenedBy` 一律取上游既有 canonical 值 **`terminal-invalidated-no-successor`**；`successor-not-applicable` 只是 writer 在交易內推導的 **transaction-local cause**，不持久化、不是 enum 成員（初稿曾把它寫成 trigger 值，那等於在上游 closed list 之外發明成員）。上游 SM §2 的 `status != resolved ⇒ carrier == null` 已涵蓋新來源的 post-state，`terminal-invalidated-no-successor` 也已在 SM §8 的 closed list 內，**上游不需修改**。新增 AC72–80。核准前不得實作來源 2。v1.6 一處：受限 `clear` 的條件 2 原寫「本交易未提供任何 rulingRef」，是把**逐項條件誤放到整筆交易上** —— `resolutionCarrierUpdates[]` 是逐 dpId 的 map，同一 batch 可以有 DP-A（direct citation → `clear`）與 DP-B（binding-policy → `replace`，帶 `rulingRef`）並存，原文字會讓 DP-B 的合法 `rulingRef` 錯殺 DP-A 的合法 `clear`；作用域收窄為 **per-DP**，並新增 AC67（mixed batch 正向 ＋ 自帶 `rulingRef` 卻宣告 `clear` 的反向），其後順延至 AC71。v1.5 修 v1.4 草案的兩處：(1) **AC60 與 AC65 直接互斥** —— AC60 仍寫「批次不得鑄造 REQ」，AC65 卻要求 `ASSUM|DEC supersede → REQ` 必須通過；AC60 改為依 rule 6 條件放行或拒絕，正向覆蓋 ASSUM→REQ 與 DEC→REQ 兩列，負向覆蓋四項條件各自缺漏。(2) `adopt-existing-outcome` 的 `clear` 是**死分支** —— 該交易只接受 initial-open 或舊 terminal 已失效的 DP，其 pre-state carrier 依上游 carrier–status 蘊含必為 null，而 `clear` 要求 pre-state carrier 非 null；已移除，並補上該交易的正向 carrier AC。rule 6 的 plan-gate 對位同步為上游 v1.11 的**四欄**。v1.4 修 v1.3 草案的三個缺口：(1) v1.3 的 rule 6 一律禁止批次鑄 REQ，理由「批次無 plan-gate witness」是**發明的前提** —— test-provenance 的 loop 在 `successor=REQ` 時退出走 plan gate 再 `resume-task` 回同一 taskId，witness 於 Step 5 已在 pre-state；禁令使 `ASSUM|DEC supersede → REQ` 不可達，而其餘命令都補不上（`create-requirement` 與 DP 無關且無 Transition、`supersede-requirement` 是 REQ→REQ、預建 `replace-terminal` 的 Transition 不在 Git base 故不能冒充 `historical-convergence`）。改為封閉四條件下允許；(2) carrier 契約缺 direct row-1 re-adopt 的 `clear`（`replace-terminal(successor != null)` 原本只給 `preserve|replace|unchanged-null`，上游明文要求的清除無交易可執行），並補上漏列的 `adopt-existing-outcome`；(3) same-subject 衝突只拒不同 successor／action，successor 與 action 相同而 draft payload 不同時結果未定義 —— 改為 `subjectRef` 唯一、sibling 進交易前聚合、重複一律 fail-closed。另新增 AC65–69（原 AC65 順延為 AC70）。v1.3 修 v1.2 草案的四個缺口：(1) v1.2 寫死「`commit-test-provenance-batch` 不得鑄造 clause」，使下游 test-provenance 的 `assum-reading-change` 路徑不可達 —— 改為 §8 新增封閉的 **`successorClauseDraft`**，revise group 內可原子鑄造 successor ASSUM（REQ 仍不得）；(2) 上游 carrier 無命令承載 —— §8 新增封閉的 **carrier 更新契約**（逐 DP `resolutionCarrierUpdates[]`，五交易 × 四 action × 六不變量）；(3) §5 postcondition 表的 binding-policy 一列仍是舊的無 carrier 限定寫法（會永久凍結 `resolvedBy`）—— 改為只對 current carrier 課條件並沿 active successor chain 比對；(4) §4 array table 重述的 `basisRefs` 排序鍵缺 `digest` tie-break —— 改為只引上游。另新增 AC57–65。v1.2 變更：§8 **ASSUM-minting 路徑共同規則**（`routingOrigin` 必填，逐路徑盤點）；binding-policy 的 adopt 對位改用上游 **`resolutionRulingRef` current carrier**，**撤回**初稿的全稱量化；§4 `materialReasons`／`basisRefs` 定序改以上游 SM 為唯一 authoritative 定義。草案審閱期間，本版新增契約不得由下游實作；該限制已隨 v1.6 核准解除。
 - 前一版狀態：**approved v1.1**（2026-07-26 panel 放行；前一放行版本 approved v1.0，經九輪修訂）。v1.1 變更範圍：**§8** store command surface —— `replace-terminal` 支援 `successor=null`（retire；v1.0 的命令面**沒有任何交易能產生 `retire` Transition**，是既有缺口）、新增 `commit-test-provenance-batch` 複合交易（`0..N` `ResolutionGroupDraft`）、`init-task`／`resume-task` 接上 tracked TaskState；**§6** —— user-authority clause transition 的 witness 一律為 plan-gate；**§13** —— AC11 更正並新增 AC43–56。其餘章節未動。
 - 日期：2026-07-25
 - 上游：`2026-07-25-shared-decision-provenance-model.md`（**approved v1.11**）。本 spec 只落地其 intent-scan 半邊；不重新定義任何 shared concept，附加的實作欄位一律以「annotation」標示且不改變上游欄位語義。
@@ -542,23 +542,58 @@ v1.6 的 `clear` 只有**一種**受限形態（successor 非 null 且 post-stat
 
 **來源 2 — `reopened-dependent`**（v1.7 新增）
 
-僅適用 `replace-terminal(successor != null)` 與 `supersede-requirement`。**八項條件全備才合法，缺任一即 fail-closed**：
+適用三處，其共同點是都會執行同一套 dependent closure：
 
 ```
-1. 該 DP 是本交易 subject terminal 的 **dependent DP**（pre-state 的 current terminal
-   == 本交易 Transition.subject）
-2. 該 successor 對該 DP **不 applicable**（§8 applicable 判準）
-3. 該 reopen **由本交易的 dependent-closure 演算法導出**，
-   **不接受 caller 自陳**（見下「安全邊界」）
-4. pre-state carrier 非 null
-5. post-state DP.status == open
-6. post-state current terminal == null（三個 terminal 欄位皆空）
-7. post-state DP.priorTerminalRef == 本交易 Transition.subject
-8. post-state DP.reopenedBy 屬既有 closed trigger，
-   且必須對應本交易的 **successor-not-applicable** 結果
-9. post-state DP.resolutionRulingRef == null
+replace-terminal(successor != null)
+supersede-requirement
+commit-test-provenance-batch 中 successor != null 的 ResolutionGroup
+```
+
+**十項條件全備才合法，缺任一即 fail-closed。第 9、10 項與前八項同為 mandatory contract，不是前八項的註解或衍生後果**：
+
+```
+ 1. 該 DP 是本交易 subject terminal 的 **dependent DP**（pre-state 的 current terminal
+    == 本交易 Transition.subject）
+ 2. 該 successor 對該 DP **不 applicable**（§8 applicable 判準）
+ 3. 該 reopen **由本交易的 dependent-closure 演算法導出**，
+    **不接受 caller 自陳**（見下「安全邊界」）
+ 4. pre-state carrier 非 null
+ 5. post-state DP.status == open
+ 6. post-state current terminal == null（三個 terminal 欄位皆空）
+ 7. post-state DP.priorTerminalRef == 本交易 Transition.subject
+ 8. post-state DP.reopenedBy == **`terminal-invalidated-no-successor`**
+    —— 上游 SM §8 closed list 的既有 canonical 值（「terminal clause 失效且無後繼」）
+ 9. post-state DP.resolutionRulingRef == null
 10. `resolutionCarrierUpdates` 對該 DP **必須**宣告 `clear`
     （其餘三個 action 在此狀態下仍各自 fail-closed）
+```
+
+**cause 與 trigger 是兩個不同層次，不得混為一談**（初稿把 successor-not-applicable 寫成一個 trigger 值，那會在上游 closed list 之外發明 enum 成員）：
+
+```
+successor-not-applicable
+  = **transaction-local cause**，由 writer 在本交易內以 applicable(...) == false 推導。
+    它只存在於這一次交易的推導過程中，**不被持久化**，也不是 enum 成員。
+
+terminal-invalidated-no-successor
+  = **persisted canonical trigger**，寫入 `DP.reopenedBy`，取自上游既有 closed list。
+    語義相符：該 DP 的 terminal 確實失效，且對它而言確實沒有可用後繼。
+
+trigger token 本身**不構成**來源 2 的資格證明。資格一律由同交易推導出的三件事決定：
+  subject-dependent membership ∧ successor 不 applicable ∧ dependent closure 確實執行 reopen
+```
+
+**batch 的欄位對位**（`commit-test-provenance-batch` 不留給讀者推論）：
+
+```
+subject      = ResolutionGroup.transitionDraft.subject
+successor    = ResolutionGroup.transitionDraft.successor（非 null 時本來源才適用）
+affected DP  = 由**該 group 的** dependent closure 導出
+carrier action = 仍由同一筆 resolutionCarrierUpdates 逐 DP 判定
+
+只有 dependent DP 可走來源 2；任何被該流程視為 initiating／必須落到 successor 的 DP
+仍 fail-closed。atomicity、single CAS、batch head 推進與 no-write 邊界**均不變**。
 ```
 
 **來源 3 — 既有 retire／`reopen-dp` 的 `clear`**
@@ -570,9 +605,15 @@ v1.6 的 `clear` 只有**一種**受限形態（successor 非 null 且 post-stat
 ```
 `reopened-dependent` **不是**「任何 open DP 都能 clear」。
 
-writer 必須從 **pre/post terminal closure 自行導出** 受影響 DP 與其 reopen 成因；
-`priorTerminalRef` 與 `reopenedBy` 是導出結果的**紀錄**，不是輸入 —— caller 填寫
-這兩欄不能使一個非 dependent 的 DP 取得 `reopened-dependent` 資格。
+writer 必須從 **pre/post terminal closure 自行導出** 受影響 DP 與其 reopen 成因。
+`priorTerminalRef`、`status`、三個 terminal ref 與 `reopenedBy` **全部由 writer 寫出**，
+一律不採信 caller 自陳 —— 它們是導出結果的**紀錄**，不是輸入。caller 填寫這些欄位
+不能使一個非 dependent 的 DP 取得 `reopened-dependent` 資格。
+
+caller 提供的 `reopenTrigger` **不得改變**來源 2 的 eligibility。來源 2 下若 payload
+帶有 `reopenTrigger` 且其值**不等於** canonical 的 `terminal-invalidated-no-successor`
+→ **fail-closed**；不得讓另一個合法 closed trigger（例如 `new-dependent`、
+`review-evidence-overturns-basis`）冒充本次的 cause。
 
 initiating DP 的 successor 不 applicable **仍維持整筆 no-write**
 （§8 `E_INITIATING_DP_NOT_APPLICABLE`）。該規則**不得**被 `reopened-dependent` 吸收：
@@ -584,7 +625,9 @@ dependent DP 只是被連帶影響，reopen 是它的正常收斂終局。
   successor 其實對該 DP applicable（它應被 repoint，不是 reopen）
   pre-state carrier 已是 null（應宣告 `unchanged-null`）
   post-state priorTerminalRef 不等於本交易 Transition.subject
-  reopenedBy 與本交易的 successor-not-applicable 結果不對位
+  post-state reopenedBy 不等於 canonical 的 `terminal-invalidated-no-successor`
+    （含其他合法 closed trigger —— 合法不等於對位）
+  payload 的 reopenTrigger 存在且不等於該 canonical 值
 ```
 
 不變量（全部 fail-closed）：
@@ -788,11 +831,15 @@ intentScan: {
 69. **carrier coherence 在 gate 層成立**：SM §9 的三條 carrier 條件由 gate 檢查實際執行 —— 構造一個 `status=assumed` 卻帶非 null carrier 的 store → gate fail-closed，且**不是**僅由交易入口攔下（繞過入口直接構造亦須被擋）。
 70. **`subjectRef` 唯一性**：`resolutions[]` 重複 `subjectRef` → fail-closed 且 store bytes 不變，不論兩筆 payload 是否相同。
 71. **packetBasisRef total order**：`{source, sourceId:"S-1", digest:"a…"}` 與 `{source, sourceId:"S-1", digest:"b…"}` 兩筆合法相異 ref，兩個獨立 writer 依上游 tuple 定序必得同一順序與同一 digest；canonical-bytes 重複則在排序前 fail-closed。
-72. **`clear` 來源 2（`reopened-dependent`）正例**：`supersede-requirement`／`replace-terminal(successor != null)` 中，一個持有 carrier 的 dependent DP 因 successor 對它不 applicable 而被 dependent closure reopen —— 該 DP 宣告 `clear` 時，八項條件全備 → **通過**，post-state 為 `status=open`、三個 terminal 欄位皆空、`priorTerminalRef == Transition.subject`、`reopenedBy` 為 closed trigger、carrier 為 null。同一狀態下 `preserve`／`replace`／`unchanged-null` **仍各自 fail-closed**（分別因無 terminal 可對齊、carrier 會留在非 resolved 的 DP、pre-state carrier 非 null）。
+72. **`clear` 來源 2（`reopened-dependent`）正例**：`supersede-requirement`／`replace-terminal(successor != null)` 中，一個持有 carrier 的 dependent DP 因 successor 對它不 applicable 而被 dependent closure reopen —— 該 DP 宣告 `clear` 時，**十項**條件全備 → **通過**，post-state 為 `status=open`、三個 terminal 欄位皆空、`priorTerminalRef == Transition.subject`、**`reopenedBy == terminal-invalidated-no-successor`**（明確斷言該值，不是「屬 closed list 即可」）、carrier 為 null。驗收必須證明 eligibility 是由本交易的 `applicable(...) == false` 與 dependent closure 推導而來，**不得**僅因看到該 trigger token 就通過。同一狀態下 `preserve`／`replace`／`unchanged-null` **仍各自 fail-closed**（分別因無 terminal 可對齊、carrier 會留在非 resolved 的 DP、pre-state carrier 非 null）。
 73. **initiating DP 不被來源 2 吸收**：交易明示的 initiating DP 若 successor 對它不 applicable → **整筆 no-write fail-closed**，不得改以 `reopened-dependent` 收斂為 reopen。store bytes 與 `TaskState.committedProvenanceBatchRef` 皆不變。
-74. **caller 不得偽造 dependent closure**：由 caller 在 payload 中填入 `status=open`／`priorTerminalRef`／`reopenedBy` 以使一個**非** dependent 的 DP（pre-state current terminal 不是本交易 subject）取得 `reopened-dependent` 資格 → fail-closed。writer 只採信自 pre/post terminal closure 導出的結果。
+74. **非 dependent DP 不得取得來源 2 資格**：一個 pre-state current terminal **不是**本交易 subject 的 DP，即使 payload 填入 `status=open`／`priorTerminalRef`／`reopenedBy`，仍 → fail-closed。本 AC 命中的是**條件 1（dependent membership）**；條件 7、8 的 guard 由 AC77、AC78 各自獨立驗證，不得以本 AC 代替。
 75. **successor 其實 applicable 時不得宣告來源 2**：dependent DP 的 successor 對它**確實** applicable（它應被 repoint 至 successor）卻宣告 `reopened-dependent` 的 `clear` → fail-closed；該 DP 的正確宣告是 `preserve`／`replace`／`unchanged-null` 之一。
 76. **來源 2 的 pre-state carrier 不得為 null**：被 reopen 的 dependent DP 若 pre-state carrier 已是 null 卻宣告 `clear` → fail-closed（應宣告 `unchanged-null`）。此條與 AC66 的同名條件分屬兩個來源，各自獨立成立。
+77. **條件 7（`priorTerminalRef` 對位）獨立成立**：DP **確實**是 dependent、successor **確實**對它不 applicable、pre-state carrier 非 null —— 前六項全部成立，僅 post-state `priorTerminalRef != Transition.subject` → **loader／gate fail-closed**。驗收必須確認拒絕來自 prior 對位這一條，**不得**由 unrelated／shape 等更早的 guard 代替。
+78. **條件 8（canonical trigger 對位）獨立成立**：DP 確實是 dependent、subject 與 `priorTerminalRef` 均正確對位 —— 僅 `reopenedBy` **不是** `terminal-invalidated-no-successor`（含其他合法 closed trigger，例如 `new-dependent`）→ fail-closed。驗收必須確認拒絕來自 trigger 對位這一條。
+79. **caller 的 `reopenTrigger` 不得影響來源 2**：payload 帶入非 canonical 的 `reopenTrigger` 企圖改變來源 2 的 eligibility 或改寫持久化的 `reopenedBy` → **整筆 no-write**，store bytes 與 committed head 皆不變。
+80. **來源 2 在 `commit-test-provenance-batch` 內同樣成立**：一個 `successor != null` 的 ResolutionGroup，其 dependent closure 使某個持有 carrier 的 dependent DP reopen —— 該 DP 宣告 `clear` → **通過**，且 `preserve`／`replace`／`unchanged-null` 三者**仍各自 fail-closed**。欄位對位依 §8 batch mapping（subject／successor 取自 `transitionDraft`，affected DP 由該 group 的 closure 導出）。atomicity、single CAS、batch head 推進與 no-write 邊界不變；同 batch 內被視為必須落到 successor 的 DP 仍 fail-closed。
 
 ### Store-script 實作層 assertion（非模型規則，直接寫進 script tests）
 
