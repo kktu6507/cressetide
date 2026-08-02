@@ -1265,7 +1265,7 @@ export function newlyConsumedRulingRefs(store, next) {
   const beforeDps = new Map(store.decisionPoints.map((d) => [d.id, d]));
   for (const d of next.decisionPoints) {
     const was = beforeDps.get(d.id);
-    for (const field of ["classificationRulingRef", "scopeRulingRef"]) {
+    for (const field of ["classificationRulingRef", "scopeRulingRef", "resolutionRulingRef"]) {
       if (!d[field]) continue;
       // canonicalJson refuses `undefined` by design (it is not a JSON value), so normalise the
       // absent pre-state to null rather than throwing on the very common "field appears for the
@@ -1372,23 +1372,14 @@ function validateGovernanceRulings(index) {
     }
   }
 
-  // binding-policy: the ruling names the clause the DP is supposed to adopt, so a DP that adopted
-  // something ELSE is a record claiming A while B was taken. Stated as a UNIVERSAL over every
-  // binding-policy ruling bound to the DP — no guessing which payload record was "the" carrier,
-  // and it holds for rulings already in pre-state as well as ones minted this transaction.
-  for (const rec of index.store.records) {
-    if (rec.kind !== "review-ruling" || rec.rulingKind !== "binding-policy") continue;
-    const dp = index.dps.get(rec.subjectRef);
-    if (!dp) continue; // subjectRef/packet binding is enforced where the ruling is consumed
-    if (!dp.resolvedBy) continue; // the DP has not adopted anything yet
-    if (dp.resolvedBy !== rec.bindingClauseRef) {
-      reject(
-        "E_BINDING_POLICY_MISMATCH",
-        `DP ${dp.id} adopted ${dp.resolvedBy} while binding-policy ruling ${rec.recordId} names ${rec.bindingClauseRef} — the record claims one clause and another was taken`,
-        dp.id,
-      );
-    }
-  }
+  // The binding-policy postcondition used to live here as a UNIVERSAL over every binding-policy
+  // ruling bound to the DP. It has been WITHDRAWN: a universal over an append-only evidence set
+  // says "every historical record must still describe the present", which permanently froze
+  // DP.resolvedBy — a legitimate REQ-a → REQ-b supersede was refused by a ruling that had stopped
+  // being current, and it contradicted this file's own rule that a ruling no longer referenced by a
+  // current ref gets snapshot/digest self-consistency only. It is replaced by the single typed
+  // CURRENT carrier checked in validateCarrierCoherence(). Rulings reachable only as history keep
+  // the typed-shape and packet checks above and are never compared against a mutable current DP.
 
   for (const d of index.store.decisionPoints) {
     if (!d.classificationRulingRef) continue;
@@ -1421,10 +1412,61 @@ function validateGovernanceRulings(index) {
   }
 }
 
+// SM v1.11 §2/§9 "Carrier coherence". DP.resolutionRulingRef is the one CURRENT application
+// carrier, and the binding-policy postcondition applies to it ALONE. This is a gate check, not
+// merely a transaction-entry check: a state constructed around the command surface has to be
+// refused too, or the invariant is only as strong as the writers that happen to go through it.
+// It runs before validateRefs so an incoherent carrier is reported as such rather than as whatever
+// dangling ref the same tampering happens to leave behind.
+function validateCarrierCoherence(index) {
+  for (const d of index.store.decisionPoints) {
+    const carrier = d.resolutionRulingRef;
+    if (carrier === undefined || carrier === null) continue;
+    if (typeof carrier !== "object" || carrier.kind !== "review-ruling" || typeof carrier.ref !== "string") {
+      reject("E_SHAPE", `DP ${d.id} resolutionRulingRef must be a review-ruling RecordRef or null`, d.id);
+    }
+    // carrier != null ⇒ status = resolved ∧ resolvedBy exists. (Its contrapositive is the other
+    // stated direction: status != resolved ⇒ carrier = null.)
+    if (d.status !== "resolved" || !d.resolvedBy) {
+      reject(
+        "E_CARRIER_STATUS",
+        `DP ${d.id} keeps resolutionRulingRef ${carrier.ref} while status=${d.status} and resolvedBy=${d.resolvedBy || "absent"} — a carrier exists only on a resolved DP`,
+        d.id,
+      );
+    }
+    const resolved = resolveRecordRef(index, carrier);
+    if (!resolved.ok) {
+      reject("E_DANGLING_REF", `DP ${d.id} resolutionRulingRef ${carrier.ref} does not resolve to a review-ruling`, d.id);
+    }
+    const rec = resolved.value;
+    if (rec.rulingKind !== "binding-policy") {
+      reject(
+        "E_CARRIER_RULING_KIND",
+        `DP ${d.id}: resolutionRulingRef must name a binding-policy ruling, got ${rec.rulingKind === undefined ? "an untyped ruling" : rec.rulingKind}`,
+        d.id,
+      );
+    }
+    if (rec.subjectRef !== d.id) {
+      reject("E_CARRIER_BORROWED", `DP ${d.id} cites binding-policy ruling ${rec.recordId}, which is bound to ${rec.subjectRef}`, d.id);
+    }
+    // Resolved through the ACTIVE successor chain, so a legal supersede may keep its carrier;
+    // direct equality is the zero-length case of the same walk.
+    const end = activeSuccessorChainEnd(index, rec.bindingClauseRef);
+    if (end !== d.resolvedBy) {
+      reject(
+        "E_CARRIER_POSTCONDITION",
+        `DP ${d.id} holds ${d.resolvedBy} while its current carrier ${rec.recordId} names ${rec.bindingClauseRef}, whose active successor chain ends at ${end === null ? "nothing active" : end}`,
+        d.id,
+      );
+    }
+  }
+}
+
 export function validateAll(store, options = {}) {
   const now = options.now === undefined ? Date.now() : options.now;
   validateStructure(store);
   const index = indexStore(store);
+  validateCarrierCoherence(index);
   validateRefs(index);
   validateMergeReconciliation(index);
   validateTransitionMatrix(index);
@@ -1518,6 +1560,166 @@ function applyDependentClosure(draft, subjectId, successorId, options = {}) {
     }
     dp.priorTerminalRef = currentTerminalRef(dp) || dp.priorTerminalRef;
     setTerminal(dp, successorId);
+  }
+}
+
+// --- IS §8 carrier update contract ----------------------------------------------------------------
+// resolutionCarrierUpdates[] is a per-dpId MAP, and every predicate below is scoped to its own
+// entry. Writing any of them transaction-globally (for example "this transaction supplies no
+// rulingRef") breaks the legitimate mixed case: one batch may hold DP-A resolving by direct
+// citation with `clear` beside DP-B resolving under a policy ruling with `replace`, and DP-B's
+// rulingRef must not fail DP-A's clear.
+
+export const CARRIER_ACTIONS = ["preserve", "replace", "clear", "unchanged-null"];
+
+const CARRIER_ACTIONS_BY_COMMAND = {
+  "replace-terminal": ["preserve", "replace", "clear", "unchanged-null"],
+  "supersede-requirement": ["preserve", "replace", "clear", "unchanged-null"],
+  "reopen-dp": ["clear", "unchanged-null"],
+  // adopt takes an initial-open or invalidated-terminal DP, so `preserve` has nothing to preserve
+  // and `clear` is unreachable (such a DP is not resolved, hence its carrier is already null).
+  "adopt-existing-outcome": ["replace", "unchanged-null"],
+  "commit-test-provenance-batch": ["preserve", "replace", "clear", "unchanged-null"],
+};
+
+function terminalIdentity(dp) {
+  return canonicalJson({
+    status: dp.status,
+    resolvedBy: dp.resolvedBy === undefined ? null : dp.resolvedBy,
+    decidedBy: dp.decidedBy === undefined ? null : dp.decidedBy,
+    assumedAs: dp.assumedAs === undefined ? null : dp.assumedAs,
+  });
+}
+
+function carrierOf(dp) {
+  return dp && dp.resolutionRulingRef !== undefined && dp.resolutionRulingRef !== null
+    ? dp.resolutionRulingRef
+    : null;
+}
+
+// The affected set is DERIVED by diffing pre- and post-state terminals rather than taken from the
+// caller: dependent-DP closure reopens or repoints DPs the caller never named, and a contract that
+// trusted a declared list would let exactly those slip through uncovered.
+function applyCarrierUpdates(store, draft, payload, command) {
+  const before = new Map(store.decisionPoints.map((d) => [d.id, d]));
+  const mutated = new Set();
+  for (const d of draft.decisionPoints) {
+    const was = before.get(d.id);
+    if (!was || terminalIdentity(was) !== terminalIdentity(d)) mutated.add(d.id);
+  }
+  const updates = payload.resolutionCarrierUpdates;
+  if (updates === undefined || updates === null) {
+    if (mutated.size === 0) return; // nothing moved (e.g. a clean batch): nothing to declare
+    reject(
+      "E_CARRIER_UPDATES_MISSING",
+      `${command}: resolutionCarrierUpdates[] is required — ${[...mutated].join(", ")} had a terminal mutated and every such DP must declare its carrier disposition`,
+      command,
+    );
+  }
+  if (!Array.isArray(updates)) {
+    reject("E_CARRIER_UPDATES_MISSING", `${command}: resolutionCarrierUpdates must be an array`, command);
+  }
+  const allowed = CARRIER_ACTIONS_BY_COMMAND[command];
+  const seen = new Set();
+  for (const u of updates) {
+    if (!u || typeof u.dpId !== "string") {
+      reject("E_SHAPE", `${command}: every resolutionCarrierUpdates entry needs a dpId`, u);
+    }
+    if (seen.has(u.dpId)) {
+      reject("E_CARRIER_COVERAGE", `${command}: DP ${u.dpId} appears more than once in resolutionCarrierUpdates — the map is exactly one entry per DP`, u.dpId);
+    }
+    seen.add(u.dpId);
+    if (!mutated.has(u.dpId)) {
+      reject(
+        "E_CARRIER_COVERAGE",
+        `${command}: resolutionCarrierUpdates names DP ${u.dpId}, whose terminal this transaction does not mutate — the array may not be used to rewrite an unrelated DP's carrier`,
+        u.dpId,
+      );
+    }
+    if (!allowed.includes(u.action)) {
+      reject("E_CARRIER_ACTION", `${command}: carrier action "${u.action}" is not one of ${allowed.join(", ")} for this transaction`, u.dpId);
+    }
+  }
+  for (const dpId of mutated) {
+    if (!seen.has(dpId)) {
+      reject("E_CARRIER_COVERAGE", `${command}: DP ${dpId} has its terminal mutated but is absent from resolutionCarrierUpdates`, dpId);
+    }
+  }
+
+  const postIndex = indexStore(draft);
+  for (const u of updates) {
+    const dp = draft.decisionPoints.find((d) => d.id === u.dpId);
+    const pre = carrierOf(before.get(u.dpId));
+    const post = dp.resolvedBy === undefined ? null : dp.resolvedBy;
+
+    if (u.action === "unchanged-null") {
+      if (pre !== null) {
+        reject(
+          "E_CARRIER_UNCHANGED_NULL",
+          `${command}: DP ${u.dpId} declares unchanged-null while its pre-state carrier is ${pre.ref} — unchanged-null asserts "this DP never had a carrier", it does not skip one`,
+          u.dpId,
+        );
+      }
+      if (u.rulingRef !== undefined) reject("E_CARRIER_ACTION", `${command}: DP ${u.dpId}: unchanged-null takes no rulingRef`, u.dpId);
+      delete dp.resolutionRulingRef;
+      continue;
+    }
+
+    if (u.action === "clear") {
+      if (pre === null) {
+        reject("E_CARRIER_CLEAR", `${command}: DP ${u.dpId} declares clear while its pre-state carrier is already null — declare unchanged-null`, u.dpId);
+      }
+      // Per-DP direct-citation test. Not "does this transaction carry any rulingRef".
+      if (u.rulingRef !== undefined) {
+        reject(
+          "E_CARRIER_CLEAR",
+          `${command}: DP ${u.dpId} declares clear while carrying its own replacement rulingRef — clear means this DP's resolution is a direct citation`,
+          u.dpId,
+        );
+      }
+      delete dp.resolutionRulingRef;
+      continue;
+    }
+
+    if (u.action === "preserve") {
+      if (pre === null) reject("E_CARRIER_PRESERVE", `${command}: DP ${u.dpId} declares preserve but has no pre-state carrier`, u.dpId);
+      if (u.rulingRef !== undefined) reject("E_CARRIER_ACTION", `${command}: DP ${u.dpId}: preserve takes no rulingRef`, u.dpId);
+      const rec = postIndex.records.get(pre.ref);
+      const end = rec ? activeSuccessorChainEnd(postIndex, rec.bindingClauseRef) : null;
+      if (!rec || end !== post) {
+        reject(
+          "E_CARRIER_PRESERVE",
+          `${command}: DP ${u.dpId} declares preserve, but its carrier ${pre.ref} names ${rec ? rec.bindingClauseRef : "an unresolvable clause"}, whose active successor chain ends at ${end === null ? "nothing active" : end} rather than the post-state ${post === null ? "absent terminal" : post}`,
+          u.dpId,
+        );
+      }
+      dp.resolutionRulingRef = pre;
+      continue;
+    }
+
+    // replace
+    const ref = u.rulingRef;
+    if (!ref || typeof ref !== "object" || ref.kind !== "review-ruling" || typeof ref.ref !== "string") {
+      reject("E_CARRIER_REPLACE", `${command}: DP ${u.dpId} declares replace but carries no review-ruling rulingRef`, u.dpId);
+    }
+    const resolved = resolveRecordRef(postIndex, ref);
+    if (!resolved.ok) {
+      reject("E_CARRIER_REPLACE", `${command}: DP ${u.dpId}: replacement carrier ${ref.ref} does not resolve to a review-ruling`, u.dpId);
+    }
+    const rec = resolved.value;
+    if (rec.rulingKind !== "binding-policy") {
+      reject(
+        "E_CARRIER_RULING_KIND",
+        `${command}: DP ${u.dpId}: a replacement carrier must be a binding-policy ruling, got ${rec.rulingKind === undefined ? "an untyped ruling" : rec.rulingKind}`,
+        u.dpId,
+      );
+    }
+    if (rec.subjectRef !== u.dpId) {
+      reject("E_CARRIER_BORROWED", `${command}: DP ${u.dpId}: replacement carrier ${rec.recordId} is bound to ${rec.subjectRef}`, u.dpId);
+    }
+    // The chain-end postcondition and freshness are re-checked on the final snapshot
+    // (validateCarrierCoherence / the consumption-time freshness pass in applyTransaction).
+    dp.resolutionRulingRef = { kind: "review-ruling", ref: ref.ref };
   }
 }
 
@@ -1663,6 +1865,7 @@ defineTransaction("adopt-existing-outcome", (store, payload, ctx) => {
   const app = applicable(indexStore(draft), payload.clauseRef, dp, ctx.now);
   if (!app.ok) reject("E_NOT_APPLICABLE", `adopt-existing-outcome: ${payload.clauseRef} is not applicable to DP ${dp.id} (${app.reason})`, dp.id);
   setTerminal(dp, payload.clauseRef);
+  applyCarrierUpdates(store, draft, payload, "adopt-existing-outcome");
   return draft;
 });
 
@@ -1727,6 +1930,7 @@ defineTransaction("replace-terminal", (store, payload, ctx) => {
       reopenDpInPlace(dp, subject, payload.reopenTrigger || "terminal-invalidated-no-successor");
     }
   }
+  applyCarrierUpdates(store, draft, payload, "replace-terminal");
   return draft;
 });
 
@@ -1751,6 +1955,7 @@ defineTransaction("supersede-requirement", (store, payload, ctx) => {
     trigger: payload.reopenTrigger || "terminal-invalidated-no-successor",
     strictDpIds: payload.initiatingDpIds,
   });
+  applyCarrierUpdates(store, draft, payload, "supersede-requirement");
   return draft;
 });
 
@@ -1806,6 +2011,7 @@ defineTransaction("reopen-dp", (store, payload) => {
   }
   if (!actual) reject("E_DP_NO_TERMINAL", `reopen-dp: DP ${dp.id} has no terminal to reopen`, dp.id);
   reopenDpInPlace(dp, actual, payload.trigger);
+  applyCarrierUpdates(store, draft, payload, "reopen-dp");
   return draft;
 });
 
@@ -1941,6 +2147,7 @@ defineTransaction("commit-test-provenance-batch", (store, payload, ctx) => {
   draft.records.push(batchRecord);
   // 5) atomically advance the head.
   ts.committedProvenanceBatchRef = { kind: "provenance-batch", ref: batchRecord.recordId };
+  applyCarrierUpdates(store, draft, payload, "commit-test-provenance-batch");
   return draft;
 });
 

@@ -393,6 +393,7 @@ test("SM §2: ASSUM revise by its governing principal is accepted (positive row)
   s = withRequirementSuccessor(s, "ASSUM-b");
   s = apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a",
+    resolutionCarrierUpdates: nulls("DP-1"),
     records: [reviewRuling("R-rev", CODE, "ASSUM-a")],
     successorClause: {
       id: "ASSUM-b", layer: "implementation", derivedFrom: "DP-1", text: "revised reading",
@@ -412,6 +413,7 @@ test("SM §2: another discipline may NOT revise a security-governed ASSUM (autho
   const s = withAssumption(SECURITY);
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a",
+    resolutionCarrierUpdates: nulls("DP-1"),
     records: [reviewRuling("R-rev", CODE, "ASSUM-a")],
     successorClause: {
       id: "ASSUM-b", layer: "implementation", derivedFrom: "DP-1", text: "t", alternative: "u",
@@ -428,6 +430,7 @@ test("SM §2: arbiter may revise any ASSUM (cross-discipline final authority)", 
   let s = withAssumption(SECURITY);
   s = apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a",
+    resolutionCarrierUpdates: nulls("DP-1"),
     records: [reviewRuling("R-arb", ARBITER, "ASSUM-a")],
     successorClause: {
       id: "ASSUM-b", layer: "implementation", derivedFrom: "DP-1", text: "t", alternative: "u",
@@ -450,6 +453,7 @@ test("SM §2 / IS AC54: ASSUM → REQ with a bare user-answer is refused; a plan
   };
   const common = {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a", successorClause,
+    resolutionCarrierUpdates: nulls("DP-1"),
   };
   assertRejects(() => apply(s, "replace-terminal", {
     ...common,
@@ -477,6 +481,7 @@ test("SM §2: a plan-gate witness naming a DIFFERENT target is refused (no borro
   s = withRequirementSuccessor(s, "REQ-b");
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a",
+    resolutionCarrierUpdates: nulls("DP-1"),
     records: [planGate("R-pg", "REQ-a")], // legitimate record, wrong subject
     successorClause: {
       id: "REQ-b", authority: "approved-requirement", kind: "specification", text: "t",
@@ -493,6 +498,7 @@ test("SM §2: a review-ruling bound to an unrelated subject cannot authorise the
   const s = withAssumption(CODE);
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a",
+    resolutionCarrierUpdates: nulls("DP-1"),
     records: [reviewRuling("R-else", CODE, "DP-2")], // valid ruling, wrong DP
     transition: {
       id: "T-1", subject: "ASSUM-a", action: "retire", successor: null,
@@ -505,6 +511,7 @@ test("SM §2: review-ruling.by must equal the declared authority principal", () 
   const s = withAssumption(CODE);
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a",
+    resolutionCarrierUpdates: nulls("DP-1"),
     records: [reviewRuling("R-x", ARBITER, "DP-1")],
     transition: {
       id: "T-1", subject: "ASSUM-a", action: "retire", successor: null,
@@ -535,6 +542,7 @@ test("SM §2: a hard-constraint REQ can never be superseded", () => {
   s = withRequirementSuccessor(s, "REQ-new");
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-2", casMode: "current-terminal", expectedCurrentTerminalRef: "REQ-hc",
+    resolutionCarrierUpdates: nulls("DP-2"),
     records: [planGate("R-pg", "REQ-hc")],
     successorClause: {
       id: "REQ-new", authority: "approved-requirement", kind: "specification", text: "t",
@@ -553,6 +561,7 @@ test("SM §2: retiring a hard-constraint needs source-authority matching ownerRe
   // user cannot do it
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-2", casMode: "current-terminal", expectedCurrentTerminalRef: "REQ-hc",
+    resolutionCarrierUpdates: nulls("DP-2"),
     records: [planGate("R-pg", "REQ-hc")],
     transition: {
       id: "T-1", subject: "REQ-hc", action: "retire", successor: null,
@@ -564,6 +573,7 @@ test("SM §2: retiring a hard-constraint needs source-authority matching ownerRe
   let s2 = apply(s, "append-record", { record: { recordId: "R-other-owner", kind: "source-authority", authorityIdentity: "someone else" } });
   assertRejects(() => apply(s2, "replace-terminal", {
     dpId: "DP-2", casMode: "current-terminal", expectedCurrentTerminalRef: "REQ-hc",
+    resolutionCarrierUpdates: nulls("DP-2"),
     records: [{ recordId: "R-rev", kind: "constraint-revocation", targetConstraintRef: "REQ-hc", authorityRef: { kind: "source-authority", ref: "R-other-owner" }, effectiveAt: "2026-07-26" }],
     transition: {
       id: "T-1", subject: "REQ-hc", action: "retire", successor: null,
@@ -575,6 +585,7 @@ test("SM §2: retiring a hard-constraint needs source-authority matching ownerRe
   // the real owner can
   const ok = apply(s, "replace-terminal", {
     dpId: "DP-2", casMode: "current-terminal", expectedCurrentTerminalRef: "REQ-hc",
+    resolutionCarrierUpdates: nulls("DP-2"),
     records: [{ recordId: "R-rev", kind: "constraint-revocation", targetConstraintRef: "REQ-hc", authorityRef: { kind: "source-authority", ref: "R-owner" }, effectiveAt: "2026-07-26" }],
     transition: {
       id: "T-1", subject: "REQ-hc", action: "retire", successor: null,
@@ -595,6 +606,7 @@ test("SM §2: REQ has no revise action at all", () => {
   });
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-2", casMode: "current-terminal", expectedCurrentTerminalRef: "REQ-c",
+    resolutionCarrierUpdates: nulls("DP-2"),
     records: [planGate("R-pg", "REQ-c")],
     successorClause: { id: "REQ-b", authority: "approved-requirement", kind: "specification", text: "t", sourceRef: "S-REQ-b", taskRef: "TASK-1" },
     transition: {
@@ -614,6 +626,7 @@ test("SM §7: a REQ supersede whose compatibility block disagrees with the plan-
   const successorClause = { id: "REQ-b", authority: "approved-requirement", kind: "specification", text: "t2", sourceRef: "S-REQ-b", taskRef: "TASK-1" };
   assertRejects(() => apply(s, "supersede-requirement", {
     initiatingDpIds: ["DP-2"],
+    resolutionCarrierUpdates: nulls("DP-2"),
     records: [planGate("R-pg", "REQ-c", "breaks two callers", "migration")],
     successorClause,
     transition: {
@@ -658,6 +671,7 @@ test("SM §6 INV-4: a terminal ref pointing at a non-active clause fails closed"
   // Retire ASSUM-a via a transaction, then try to re-point a fresh DP at the retired clause.
   s = apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a",
+    resolutionCarrierUpdates: nulls("DP-1"),
     records: [reviewRuling("R-ret", CODE, "ASSUM-a")],
     transition: {
       id: "T-1", subject: "ASSUM-a", action: "retire", successor: null,
@@ -665,7 +679,7 @@ test("SM §6 INV-4: a terminal ref pointing at a non-active clause fails closed"
     },
   });
   assert.strictEqual(statusOf(indexStore(s), "ASSUM-a"), "retired");
-  assertRejects(() => apply(s, "adopt-existing-outcome", { dpId: "DP-2", clauseRef: "ASSUM-a" }),
+  assertRejects(() => apply(s, "adopt-existing-outcome", { dpId: "DP-2", resolutionCarrierUpdates: nulls("DP-2"), clauseRef: "ASSUM-a" }),
     "E_NOT_APPLICABLE", "adopting a retired clause");
 });
 
@@ -679,9 +693,11 @@ test("SM §8: replace-terminal repoints EVERY dependent DP in one transaction (n
     },
   });
   // A second DP adopts the same clause, so the closure has two dependents to move.
-  s = apply(s, "adopt-existing-outcome", { dpId: "DP-2", clauseRef: "ASSUM-shared" });
+  s = apply(s, "adopt-existing-outcome", { dpId: "DP-2", resolutionCarrierUpdates: nulls("DP-2"), clauseRef: "ASSUM-shared" });
   s = apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-shared",
+    // the closure moves the sibling too, so BOTH dependents have to declare their disposition
+    resolutionCarrierUpdates: nulls("DP-1", "DP-2"),
     records: [reviewRuling("R-r", CODE, "ASSUM-shared")],
     successorClause: {
       id: "ASSUM-next", layer: "implementation", derivedFrom: "DP-1", text: "t2", alternative: "u",
@@ -706,9 +722,10 @@ test("SM §8 / IS AC43: retire (successor=null) reopens every dependent DP atomi
       basis: "b", basisRefs: [], governedBy: CODE,
     },
   });
-  s = apply(s, "adopt-existing-outcome", { dpId: "DP-2", clauseRef: "ASSUM-shared" });
+  s = apply(s, "adopt-existing-outcome", { dpId: "DP-2", resolutionCarrierUpdates: nulls("DP-2"), clauseRef: "ASSUM-shared" });
   s = apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-shared",
+    resolutionCarrierUpdates: nulls("DP-1", "DP-2"),
     records: [reviewRuling("R-r", CODE, "ASSUM-shared")],
     reopenTrigger: "review-evidence-overturns-basis",
     transition: {
@@ -828,7 +845,7 @@ test("SM §2: an exception-backed REQ needs a DP-bound intent scope ruling — a
 test("IS §8 / AC27: adopt-existing-outcome cites an existing clause and creates neither clause nor Transition", () => {
   let s = baseFixture();
   const before = { clauses: s.clauses.length, transitions: s.transitions.length };
-  s = apply(s, "adopt-existing-outcome", { dpId: "DP-2", clauseRef: "REQ-a" });
+  s = apply(s, "adopt-existing-outcome", { dpId: "DP-2", resolutionCarrierUpdates: nulls("DP-2"), clauseRef: "REQ-a" });
   assert.strictEqual(s.clauses.length, before.clauses, "no new clause");
   assert.strictEqual(s.transitions.length, before.transitions, "no transition");
   assert.strictEqual(indexStore(s).dps.get("DP-2").resolvedBy, "REQ-a");
@@ -856,8 +873,8 @@ test("IS AC10: an initial outcome creates NO Transition", () => {
 
 test("IS AC35: a reopened DP whose prior terminal is still active may NOT use adopt-existing-outcome", () => {
   let s = withAssumption(CODE);
-  s = apply(s, "reopen-dp", { dpId: "DP-1", trigger: "new-dependent", expectedCurrentTerminalRef: "ASSUM-a" });
-  assertRejects(() => apply(s, "adopt-existing-outcome", { dpId: "DP-1", clauseRef: "REQ-a" }),
+  s = apply(s, "reopen-dp", { dpId: "DP-1", resolutionCarrierUpdates: nulls("DP-1"), trigger: "new-dependent", expectedCurrentTerminalRef: "ASSUM-a" });
+  assertRejects(() => apply(s, "adopt-existing-outcome", { dpId: "DP-1", resolutionCarrierUpdates: nulls("DP-1"), clauseRef: "REQ-a" }),
     "E_REOPENED_NEEDS_TRANSITION", "adopting while the prior ASSUM is still active");
 });
 
@@ -865,6 +882,7 @@ test("IS AC37/40: casMode=current-terminal completes ASSUM→REQ in ONE transact
   let s = withAssumption(CODE);
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-wrong",
+    resolutionCarrierUpdates: nulls("DP-1"),
     records: [planGate("R-pg", "ASSUM-a")],
     transition: {
       id: "T-1", subject: "ASSUM-wrong", action: "supersede", successor: "REQ-a",
@@ -874,6 +892,7 @@ test("IS AC37/40: casMode=current-terminal completes ASSUM→REQ in ONE transact
 
   const ok = apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a",
+    resolutionCarrierUpdates: nulls("DP-1"),
     records: [planGate("R-pg", "ASSUM-a")],
     transition: {
       id: "T-1", subject: "ASSUM-a", action: "supersede", successor: "REQ-a",
@@ -886,7 +905,7 @@ test("IS AC37/40: casMode=current-terminal completes ASSUM→REQ in ONE transact
 
 test("IS AC40: a persisted reopen converges via casMode=reopened-prior; current-terminal is refused there", () => {
   let s = withAssumption(CODE);
-  s = apply(s, "reopen-dp", { dpId: "DP-1", trigger: "new-applicable-binding-authority", expectedCurrentTerminalRef: "ASSUM-a" });
+  s = apply(s, "reopen-dp", { dpId: "DP-1", resolutionCarrierUpdates: nulls("DP-1"), trigger: "new-applicable-binding-authority", expectedCurrentTerminalRef: "ASSUM-a" });
   const d = indexStore(s).dps.get("DP-1");
   assert.strictEqual(d.status, "open");
   assert.strictEqual(d.priorTerminalRef, "ASSUM-a");
@@ -894,6 +913,7 @@ test("IS AC40: a persisted reopen converges via casMode=reopened-prior; current-
   // current-terminal cannot work here: the current terminal is already null.
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a",
+    resolutionCarrierUpdates: nulls("DP-1"),
     records: [planGate("R-pg", "ASSUM-a")],
     transition: {
       id: "T-1", subject: "ASSUM-a", action: "supersede", successor: "REQ-a",
@@ -904,6 +924,7 @@ test("IS AC40: a persisted reopen converges via casMode=reopened-prior; current-
   // prior-terminal CAS must also match.
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "reopened-prior", expectedPriorTerminalRef: "ASSUM-nope",
+    resolutionCarrierUpdates: nulls("DP-1"),
     records: [planGate("R-pg", "ASSUM-a")],
     transition: {
       id: "T-1", subject: "ASSUM-nope", action: "supersede", successor: "REQ-a",
@@ -913,6 +934,7 @@ test("IS AC40: a persisted reopen converges via casMode=reopened-prior; current-
 
   const ok = apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "reopened-prior", expectedPriorTerminalRef: "ASSUM-a",
+    resolutionCarrierUpdates: nulls("DP-1"),
     records: [planGate("R-pg", "ASSUM-a")],
     transition: {
       id: "T-1", subject: "ASSUM-a", action: "supersede", successor: "REQ-a",
@@ -926,9 +948,9 @@ test("IS AC40: a persisted reopen converges via casMode=reopened-prior; current-
 
 test("IS §8: reopen-dp refuses a trigger outside the closed list, and refuses a DP with no terminal", () => {
   const s = withAssumption(CODE);
-  assertRejects(() => apply(s, "reopen-dp", { dpId: "DP-1", trigger: "because-i-said-so", expectedCurrentTerminalRef: "ASSUM-a" }),
+  assertRejects(() => apply(s, "reopen-dp", { dpId: "DP-1", resolutionCarrierUpdates: nulls("DP-1"), trigger: "because-i-said-so", expectedCurrentTerminalRef: "ASSUM-a" }),
     "E_REOPEN_TRIGGER", "trigger outside the closed list");
-  assertRejects(() => apply(s, "reopen-dp", { dpId: "DP-3", trigger: "user-instruction", expectedCurrentTerminalRef: null }),
+  assertRejects(() => apply(s, "reopen-dp", { dpId: "DP-3", resolutionCarrierUpdates: nulls("DP-3"), trigger: "user-instruction", expectedCurrentTerminalRef: null }),
     "E_DP_NO_TERMINAL", "reopening an already-open DP");
 });
 
@@ -936,6 +958,7 @@ test("SM §2: a clause may carry at most ONE effective transition (merge reconci
   let s = withAssumption(CODE);
   s = apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a",
+    resolutionCarrierUpdates: nulls("DP-1"),
     records: [reviewRuling("R-1", CODE, "ASSUM-a")],
     transition: {
       id: "T-1", subject: "ASSUM-a", action: "retire", successor: null,
@@ -1126,6 +1149,7 @@ test("panel 6 / SM §7: a plan-gate record whose approvedBy is not the user, or 
   s = withRequirementSuccessor(s, "REQ-b");
   const attempt = (planGateRecord) => apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a",
+    resolutionCarrierUpdates: nulls("DP-1"),
     records: [planGateRecord],
     successorClause: { id: "REQ-b", authority: "approved-requirement", kind: "specification", text: "t", sourceRef: "S-REQ-b", taskRef: "TASK-1" },
     transition: {
@@ -1141,9 +1165,9 @@ test("panel 6 / SM §7: a plan-gate record whose approvedBy is not the user, or 
 
 test("panel 4 / IS AC35: a reopened DP with an active prior terminal is refused by EVERY no-Transition path", () => {
   let s = withAssumption(CODE);
-  s = apply(s, "reopen-dp", { dpId: "DP-1", trigger: "new-dependent", expectedCurrentTerminalRef: "ASSUM-a" });
+  s = apply(s, "reopen-dp", { dpId: "DP-1", resolutionCarrierUpdates: nulls("DP-1"), trigger: "new-dependent", expectedCurrentTerminalRef: "ASSUM-a" });
 
-  assertRejects(() => apply(s, "adopt-existing-outcome", { dpId: "DP-1", clauseRef: "REQ-a" }),
+  assertRejects(() => apply(s, "adopt-existing-outcome", { dpId: "DP-1", resolutionCarrierUpdates: nulls("DP-1"), clauseRef: "REQ-a" }),
     "E_REOPENED_NEEDS_TRANSITION", "adopt-existing-outcome");
   assertRejects(() => apply(s, "create-initial-outcome", {
     dpId: "DP-1",
@@ -1422,6 +1446,7 @@ test("SM §2 DEC row: the approving discipline may supersede its own DEC; anothe
   const next = decSuccessor("DEC-b", DP2, CODE, "R-td2");
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-2", casMode: "current-terminal", expectedCurrentTerminalRef: "DEC-a",
+    resolutionCarrierUpdates: nulls("DP-2"),
     records: [reviewRuling("R-s", SECURITY, "DP-2"), next.ruling],
     successorClause: next.clause,
     transition: { id: "T-1", subject: "DEC-a", action: "supersede", successor: "DEC-b", authorityRef: SECURITY, ackRef: { kind: "review-ruling", ref: "R-s" } },
@@ -1429,6 +1454,7 @@ test("SM §2 DEC row: the approving discipline may supersede its own DEC; anothe
 
   const ok = apply(s, "replace-terminal", {
     dpId: "DP-2", casMode: "current-terminal", expectedCurrentTerminalRef: "DEC-a",
+    resolutionCarrierUpdates: nulls("DP-2"),
     records: [reviewRuling("R-c", CODE, "DP-2"), next.ruling],
     successorClause: next.clause,
     transition: { id: "T-1", subject: "DEC-a", action: "supersede", successor: "DEC-b", authorityRef: CODE, ackRef: { kind: "review-ruling", ref: "R-c" } },
@@ -1553,6 +1579,7 @@ test("SM §2 DEC row: arbiter may retire a DEC, and DEC has no revise action", (
   const s = withDecision(CODE);
   const ok = apply(s, "replace-terminal", {
     dpId: "DP-2", casMode: "current-terminal", expectedCurrentTerminalRef: "DEC-a",
+    resolutionCarrierUpdates: nulls("DP-2"),
     records: [reviewRuling("R-a", ARBITER, "DP-2")],
     transition: { id: "T-1", subject: "DEC-a", action: "retire", successor: null, authorityRef: ARBITER, ackRef: { kind: "review-ruling", ref: "R-a" } },
   });
@@ -1562,6 +1589,7 @@ test("SM §2 DEC row: arbiter may retire a DEC, and DEC has no revise action", (
   const next = decSuccessor("DEC-b", DP2, CODE, "R-td2");
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-2", casMode: "current-terminal", expectedCurrentTerminalRef: "DEC-a",
+    resolutionCarrierUpdates: nulls("DP-2"),
     records: [reviewRuling("R-c", CODE, "DP-2"), next.ruling],
     successorClause: next.clause,
     transition: { id: "T-1", subject: "DEC-a", action: "revise", successor: "DEC-b", authorityRef: CODE, ackRef: { kind: "review-ruling", ref: "R-c" } },
@@ -1574,12 +1602,14 @@ test("SM §2 DEC row / IS AC38: DEC → REQ is a product ruling and needs a user
   const successorClause = { id: "REQ-b", authority: "approved-requirement", kind: "specification", text: "t", sourceRef: "S-REQ-b", taskRef: "TASK-1" };
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-2", casMode: "current-terminal", expectedCurrentTerminalRef: "DEC-a",
+    resolutionCarrierUpdates: nulls("DP-2"),
     records: [reviewRuling("R-c", CODE, "DP-2")], successorClause,
     transition: { id: "T-1", subject: "DEC-a", action: "supersede", successor: "REQ-b", authorityRef: CODE, ackRef: { kind: "review-ruling", ref: "R-c" } },
   }), "E_MATRIX_AUTHORITY", "a discipline promoting a DEC to a REQ");
 
   const ok = apply(s, "replace-terminal", {
     dpId: "DP-2", casMode: "current-terminal", expectedCurrentTerminalRef: "DEC-a",
+    resolutionCarrierUpdates: nulls("DP-2"),
     records: [planGate("R-pg", "DEC-a")], successorClause,
     transition: { id: "T-1", subject: "DEC-a", action: "supersede", successor: "REQ-b", authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" } },
   });
@@ -1593,6 +1623,7 @@ test("SM §2 ASSUM row: supersede → DEC accepts a formally rerouted current re
   const next = decSuccessor("DEC-n", DP1, OPERABILITY, "R-td-op", "A");
   const ok = apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a",
+    resolutionCarrierUpdates: nulls("DP-1"),
     records: [reviewRuling("R-op", OPERABILITY, "DP-1"), next.ruling],
     successorClause: next.clause,
     transition: { id: "T-1", subject: "ASSUM-a", action: "supersede", successor: "DEC-n", authorityRef: OPERABILITY, ackRef: { kind: "review-ruling", ref: "R-op" } },
@@ -1604,6 +1635,7 @@ test("SM §2 ASSUM row: supersede → DEC accepts a formally rerouted current re
   const mismatched = decSuccessor("DEC-n", DP1, SECURITY, "R-td-sec", "A");
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a",
+    resolutionCarrierUpdates: nulls("DP-1"),
     records: [reviewRuling("R-op", OPERABILITY, "DP-1"), mismatched.ruling],
     successorClause: mismatched.clause,
     transition: { id: "T-1", subject: "ASSUM-a", action: "supersede", successor: "DEC-n", authorityRef: OPERABILITY, ackRef: { kind: "review-ruling", ref: "R-op" } },
@@ -1665,6 +1697,8 @@ function siblingBatch(evidenceIds, witnessId = "R-w") {
     subjectRef: "ASSUM-a", action: "retire", successor: null, semanticEvidenceRefs: evidence,
   });
   return {
+    // retiring ASSUM-a reopens DP-1, so the batch declares that DP's carrier disposition
+    resolutionCarrierUpdates: nulls("DP-1"),
     recordsToCreate: [
       ...evidenceIds.map((id) => reviewRuling(id, { kind: "discipline", discipline: "test" }, "ASSUM-a")),
       reviewRuling(witnessId, CODE, "ASSUM-a", { resolutionGroupDigest: digest }),
@@ -1721,6 +1755,7 @@ test("IS AC46(ii): two different subjects produce two groups and two transitions
   const c = mk("ASSUM-c", "R-e2", "R-w2", "T-c");
   s = apply(s, "commit-test-provenance-batch", batchPayload({
     recordsToCreate: [...a.records, ...c.records], resolutions: [a.group, c.group],
+    resolutionCarrierUpdates: nulls("DP-1", "DP-2"),
   }));
   assert.strictEqual(s.transitions.length, 2);
   assert.strictEqual(indexStore(s).records.get("R-b1").batchSnapshot.resolutions.length, 2);
@@ -1823,6 +1858,7 @@ test("IS AC44: the whole batch lands in ONE transaction — a late validation fa
       governanceWitnessRef: { kind: "review-ruling", ref: "R-w" },
       transitionDraft: { id: "T-b", subject: "ASSUM-a", action: "retire", successor: null, authorityRef: SECURITY, ackRef: { kind: "review-ruling", ref: "R-w" } },
     }],
+    resolutionCarrierUpdates: nulls("DP-1"),
   }), OPTS), "E_MATRIX_AUTHORITY", "security retiring a code-governed ASSUM");
   assert.strictEqual(fs.readFileSync(storePath(cwd), "utf8"), before, "nothing written");
 });
@@ -2028,31 +2064,244 @@ test("panel-3 blocker 2: the packet is CLOSED — an undeclared extra key and a 
   }));
 });
 
-test("panel-3 blocker 3: a binding-policy ruling naming clause A cannot sit beside a DP that adopted B", () => {
-  let s = baseFixture();
-  s = apply(s, "create-requirement", {
+// --- Phase 1A: DP.resolutionRulingRef, the current application carrier ---------------------------
+// The rule this replaces (a UNIVERSAL over every binding-policy ruling bound to the DP, requiring
+// DP.resolvedBy == ruling.bindingClauseRef) closed the "record claims A, B was taken" hole and then
+// froze resolvedBy forever: an ordinary REQ-a → REQ-b supersede was refused by a ruling that had
+// long since stopped being current. SM v1.11 §2 replaces it with one typed CURRENT carrier, and
+// SM v1.11 §9 makes carrier coherence a gate check rather than only a transaction-entry check.
+
+function bindingPolicy(recordId, dpFixture, bindingClauseRef, principal = CODE) {
+  return typedRuling(recordId, principal, dpFixture, "binding-policy", { bindingClauseRef });
+}
+
+function carrierRef(recordId) {
+  return { kind: "review-ruling", ref: recordId };
+}
+
+// `unchanged-null` is a DECLARATION ("this DP never had a carrier"), not a way to skip a DP, so
+// every terminal-mutating transaction still has to name each affected DP explicitly.
+function nulls(...dpIds) {
+  return dpIds.map((dpId) => ({ dpId, action: "unchanged-null" }));
+}
+
+function withSecondRequirement(s, id = "REQ-b", text = "the other clause") {
+  return apply(s, "create-requirement", {
     requirement: {
-      id: "REQ-b", authority: "approved-requirement", kind: "specification",
-      text: "the other clause", sourceRef: "S-req", taskRef: "TASK-1",
+      id, authority: "approved-requirement", kind: "specification",
+      text, sourceRef: "S-req", taskRef: "TASK-1",
     },
   });
-  // The repro: the ruling names REQ-a, the transaction adopts REQ-b.
-  assertRejects(() => apply(s, "adopt-existing-outcome", {
-    dpId: "DP-2", clauseRef: "REQ-b",
-    records: [typedRuling("R-bp", CODE, DP2, "binding-policy", { bindingClauseRef: "REQ-a" })],
-  }), "E_BINDING_POLICY_MISMATCH", "ruling claims REQ-a, DP adopted REQ-b");
+}
 
-  // naming what was actually adopted is accepted
-  const ok = apply(s, "adopt-existing-outcome", {
-    dpId: "DP-2", clauseRef: "REQ-b",
-    records: [typedRuling("R-bp", CODE, DP2, "binding-policy", { bindingClauseRef: "REQ-b" })],
+// DP-2 resolved to REQ-a under a binding-policy ruling that becomes its current carrier.
+function withCarrier(recordId = "R-bp", dpId = "DP-2", dpFixture = DP2) {
+  let s = withSecondRequirement(baseFixture());
+  s = apply(s, "adopt-existing-outcome", {
+    dpId, clauseRef: "REQ-a",
+    records: [bindingPolicy(recordId, dpFixture, "REQ-a")],
+    resolutionCarrierUpdates: [{ dpId, action: "replace", rulingRef: carrierRef(recordId) }],
   });
-  assert.strictEqual(indexStore(ok).dps.get("DP-2").resolvedBy, "REQ-b");
+  return s;
+}
 
-  // and it also bites on a ruling that was already in pre-state before the adoption
-  let s2 = apply(s, "append-record", { record: typedRuling("R-bp", CODE, DP2, "binding-policy", { bindingClauseRef: "REQ-a" }) });
-  assertRejects(() => apply(s2, "adopt-existing-outcome", { dpId: "DP-2", clauseRef: "REQ-b" }),
-    "E_BINDING_POLICY_MISMATCH", "pre-state ruling contradicted by a later adoption");
+function tamper(store, dpId, over) {
+  const copy = JSON.parse(JSON.stringify(store));
+  const d = copy.decisionPoints.find((x) => x.id === dpId);
+  for (const [k, v] of Object.entries(over)) {
+    if (v === undefined) delete d[k];
+    else d[k] = v;
+  }
+  return copy;
+}
+
+test("IS AC61 regression: a historical binding-policy ruling that is NOT the carrier no longer freezes resolvedBy", () => {
+  let s = withSecondRequirement(baseFixture());
+  // The ruling exists and names REQ-a. Nothing ever adopts it as a carrier, so it is history.
+  s = apply(s, "append-record", { record: bindingPolicy("R-bp-hist", DP2, "REQ-a") });
+  // DP-2 now resolves by direct row-1 citation to REQ-b. Under the withdrawn universal this was
+  // E_BINDING_POLICY_MISMATCH; under the carrier model the historical ruling has no say.
+  const out = apply(s, "adopt-existing-outcome", {
+    dpId: "DP-2", clauseRef: "REQ-b",
+    resolutionCarrierUpdates: nulls("DP-2"),
+    resolutionCarrierUpdates: nulls("DP-2"),
+  });
+  const d = indexStore(out).dps.get("DP-2");
+  assert.strictEqual(d.resolvedBy, "REQ-b");
+  assert.ok(!d.resolutionRulingRef, "a direct citation leaves the carrier null");
+  assert.ok(out.records.some((r) => r.recordId === "R-bp-hist"), "the historical ruling stays on record");
+});
+
+test("IS AC62: a carrier is preserved across a legal supersede when its clause's chain reaches the new terminal", () => {
+  const s = withCarrier();
+  assert.deepStrictEqual(indexStore(s).dps.get("DP-2").resolutionRulingRef, carrierRef("R-bp"));
+  // REQ-a → REQ-b under a plan gate. The carrier still names REQ-a; activeSuccessorChainEnd(REQ-a)
+  // is now REQ-b, which is exactly what the DP holds — so the carrier survives.
+  const out = apply(s, "supersede-requirement", {
+    initiatingDpIds: ["DP-2"],
+    records: [planGate("R-pg", "REQ-a")],
+    transition: {
+      id: "T-1", subject: "REQ-a", action: "supersede", successor: "REQ-b",
+      authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+    },
+    resolutionCarrierUpdates: [{ dpId: "DP-2", action: "preserve" }],
+  });
+  const d = indexStore(out).dps.get("DP-2");
+  assert.strictEqual(d.resolvedBy, "REQ-b", "the supersede lands");
+  assert.deepStrictEqual(d.resolutionRulingRef, carrierRef("R-bp"), "and the carrier is retained");
+});
+
+test("IS AC62 negative: preserve is refused when the carrier's clause chain does not reach the new terminal", () => {
+  const s = withCarrier();
+  // Direct equality is the zero-length case of the chain walk; here the DP is moved off REQ-a's
+  // chain entirely, so retaining a carrier that still names REQ-a is a lie about what is in force.
+  const tampered = tamper(s, "DP-2", { resolvedBy: "REQ-b" });
+  assertRejects(() => validateAll(tampered, OPTS), "E_CARRIER_POSTCONDITION", "carrier names REQ-a, DP holds REQ-b");
+});
+
+test("IS AC69: carrier coherence is a LOADER check — a state constructed around the transaction entry is still refused", () => {
+  const s = withCarrier();
+  // status leaves resolved while the carrier stays set. All three non-resolved shapes fail closed.
+  for (const [over, what] of [
+    [{ status: "open", resolvedBy: undefined }, "open"],
+    [{ status: "assumed", resolvedBy: undefined, assumedAs: "ASSUM-x" }, "assumed"],
+    [{ status: "decided", resolvedBy: undefined, decidedBy: "DEC-x" }, "decided"],
+  ]) {
+    assertRejects(() => validateAll(tamper(s, "DP-2", over), OPTS), "E_CARRIER_STATUS", `carrier retained while ${what}`);
+  }
+});
+
+test("IS AC63 negative: a carrier ref that is unresolvable, untyped, or bound to another DP is refused", () => {
+  let s = withSecondRequirement(baseFixture());
+  s = apply(s, "append-record", { record: typedRuling("R-td", CODE, DP2, "technical-decision", { selectedAlternative: "A" }) });
+  s = apply(s, "append-record", { record: bindingPolicy("R-bp3", DP3, "REQ-a") }); // bound to DP-3
+
+  const adopt = (rulingRef) => () => apply(s, "adopt-existing-outcome", {
+    dpId: "DP-2", clauseRef: "REQ-a",
+    resolutionCarrierUpdates: nulls("DP-2"),
+    resolutionCarrierUpdates: [{ dpId: "DP-2", action: "replace", rulingRef }],
+  });
+  assertRejects(adopt(carrierRef("R-ghost")), "E_CARRIER_REPLACE", "carrier ref does not resolve");
+  assertRejects(adopt(carrierRef("R-td")), "E_CARRIER_RULING_KIND", "carrier names a technical-decision ruling");
+  assertRejects(adopt(carrierRef("R-bp3")), "E_CARRIER_BORROWED", "carrier ruling is bound to DP-3");
+});
+
+test("IS AC61: carrier updates must cover exactly the DPs whose terminal this transaction mutates", () => {
+  let s = withSecondRequirement(baseFixture());
+  // DP-1 and DP-2 both hold REQ-a, so superseding it mutates BOTH terminals.
+  for (const dpId of ["DP-1", "DP-2"]) {
+    s = apply(s, "adopt-existing-outcome", { dpId, clauseRef: "REQ-a", resolutionCarrierUpdates: nulls(dpId) });
+  }
+  const supersede = (resolutionCarrierUpdates) => () => apply(s, "supersede-requirement", {
+    initiatingDpIds: ["DP-1", "DP-2"],
+    records: [planGate("R-pg", "REQ-a")],
+    transition: {
+      id: "T-1", subject: "REQ-a", action: "supersede", successor: "REQ-b",
+      authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+    },
+    resolutionCarrierUpdates,
+  });
+  assert.ok(supersede(nulls("DP-1", "DP-2"))(), "exact coverage is accepted");
+  assertRejects(supersede(nulls("DP-1")), "E_CARRIER_COVERAGE", "dependent DP-2 missing");
+  assertRejects(supersede(nulls("DP-1", "DP-2", "DP-3")), "E_CARRIER_COVERAGE", "DP-3's terminal was not mutated");
+  assertRejects(supersede(nulls("DP-1", "DP-2", "DP-2")), "E_CARRIER_COVERAGE", "duplicate dpId");
+  assertRejects(supersede(undefined), "E_CARRIER_UPDATES_MISSING", "no updates array at all");
+});
+
+test("IS AC64: unchanged-null is a declaration, not a skip — it is refused when a carrier is actually set", () => {
+  const s = withCarrier();
+  assertRejects(() => apply(s, "reopen-dp", {
+    dpId: "DP-2", trigger: "terminal-invalidated-no-successor", expectedCurrentTerminalRef: "REQ-a",
+    resolutionCarrierUpdates: nulls("DP-2"),
+    resolutionCarrierUpdates: nulls("DP-2"),
+  }), "E_CARRIER_UNCHANGED_NULL", "pre-state carrier is not null");
+
+  // clear is the correct declaration here, and the carrier really goes.
+  const out = apply(s, "reopen-dp", {
+    dpId: "DP-2", trigger: "terminal-invalidated-no-successor", expectedCurrentTerminalRef: "REQ-a",
+    resolutionCarrierUpdates: nulls("DP-2"),
+    resolutionCarrierUpdates: [{ dpId: "DP-2", action: "clear" }],
+  });
+  const d = indexStore(out).dps.get("DP-2");
+  assert.strictEqual(d.status, "open");
+  assert.strictEqual(d.resolutionRulingRef ?? null, null);
+});
+
+test("IS AC67: clear and replace are judged PER DP — one DP's rulingRef cannot fail another DP's clear", () => {
+  let s = withSecondRequirement(baseFixture());
+  for (const [dpId, fixture, rid] of [["DP-1", DP1, "R-bp1"], ["DP-2", DP2, "R-bp2"]]) {
+    s = apply(s, "adopt-existing-outcome", {
+      dpId, clauseRef: "REQ-a",
+      records: [bindingPolicy(rid, fixture, "REQ-a")],
+      resolutionCarrierUpdates: [{ dpId, action: "replace", rulingRef: carrierRef(rid) }],
+    });
+  }
+  const supersede = (resolutionCarrierUpdates, extraRecords = []) => () => apply(s, "supersede-requirement", {
+    initiatingDpIds: ["DP-1", "DP-2"],
+    records: [planGate("R-pg", "REQ-a"), ...extraRecords],
+    transition: {
+      id: "T-1", subject: "REQ-a", action: "supersede", successor: "REQ-b",
+      authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+    },
+    resolutionCarrierUpdates,
+  });
+
+  // DP-1 takes REQ-b by direct citation (carrier cleared); DP-2 takes it under a NEW policy ruling.
+  const mixed = supersede(
+    [
+      { dpId: "DP-1", action: "clear" },
+      { dpId: "DP-2", action: "replace", rulingRef: carrierRef("R-bp-new") },
+    ],
+    [bindingPolicy("R-bp-new", DP2, "REQ-b")],
+  )();
+  const index = indexStore(mixed);
+  assert.strictEqual(index.dps.get("DP-1").resolutionRulingRef ?? null, null, "DP-1's clear survives DP-2's rulingRef");
+  assert.strictEqual(index.dps.get("DP-1").resolvedBy, "REQ-b");
+  assert.deepStrictEqual(index.dps.get("DP-2").resolutionRulingRef, carrierRef("R-bp-new"));
+
+  // and a DP that declares clear while carrying its OWN replacement ruling is refused
+  assertRejects(supersede(
+    [
+      { dpId: "DP-1", action: "clear", rulingRef: carrierRef("R-bp-new") },
+      { dpId: "DP-2", action: "replace", rulingRef: carrierRef("R-bp-new") },
+    ],
+    [bindingPolicy("R-bp-new", DP2, "REQ-b")],
+  ), "E_CARRIER_CLEAR", "clear must not carry a replacement rulingRef");
+});
+
+test("IS AC68: adopt-existing-outcome carries carrier updates and refuses preserve and clear", () => {
+  const s = withSecondRequirement(baseFixture());
+  const adopt = (resolutionCarrierUpdates, records = []) => () => apply(s, "adopt-existing-outcome", {
+    dpId: "DP-2", clauseRef: "REQ-a", records, resolutionCarrierUpdates,
+  });
+  // positive: binding-policy driven adoption sets the carrier; direct citation leaves it null
+  const replaced = adopt([{ dpId: "DP-2", action: "replace", rulingRef: carrierRef("R-bp") }], [bindingPolicy("R-bp", DP2, "REQ-a")])();
+  assert.deepStrictEqual(indexStore(replaced).dps.get("DP-2").resolutionRulingRef, carrierRef("R-bp"));
+  const direct = adopt(nulls("DP-2"))();
+  assert.strictEqual(indexStore(direct).dps.get("DP-2").resolutionRulingRef ?? null, null);
+  // negative: neither preserve (the new terminal is not the old carrier's successor) nor clear
+  // (the pre-state carrier of a DP with no terminal is necessarily null) is reachable here.
+  assertRejects(adopt([{ dpId: "DP-2", action: "preserve" }]), "E_CARRIER_ACTION", "preserve on adopt");
+  assertRejects(adopt([{ dpId: "DP-2", action: "clear" }]), "E_CARRIER_ACTION", "clear on adopt");
+  assertRejects(adopt(undefined), "E_CARRIER_UPDATES_MISSING", "adopt is not a carrier exception");
+});
+
+test("IS AC61/67: a rejected carrier update leaves the store bytes and the committed head untouched", () => {
+  const cwd = temporary("prov-carrier-");
+  const s = withCarrier();
+  fs.mkdirSync(path.join(cwd, ".ctide"), { recursive: true });
+  fs.writeFileSync(storePath(cwd), canonicalStoreBytes(s), "utf8");
+  const before = fs.readFileSync(storePath(cwd), "utf8");
+  assertRejects(() => runTransaction(cwd, "reopen-dp", {
+    dpId: "DP-2", trigger: "terminal-invalidated-no-successor", expectedCurrentTerminalRef: "REQ-a",
+    resolutionCarrierUpdates: nulls("DP-2"),
+    resolutionCarrierUpdates: nulls("DP-2"),
+  }, OPTS), "E_CARRIER_UNCHANGED_NULL", "no-write on a rejected carrier declaration");
+  assert.strictEqual(fs.readFileSync(storePath(cwd), "utf8"), before, "canonical bytes are byte-identical");
+  assert.ok(!fs.existsSync(`${storePath(cwd)}.lock`), "the lock is released");
 });
 
 test("clauseKindOf routes ids by prefix and rejects anything else", () => {
