@@ -1,6 +1,6 @@
 # Shared Decision & Provenance Model（共同決策與溯源模型）
 
-- 狀態：**draft v1.10 — 修訂待 panel**（前一放行版本：approved v1.7）。v1.10 一處：§9 檢查分層新增 **`Carrier coherence`** 一列 —— v1.9 把 carrier 宣告為 loader／final-snapshot invariant，但 §9 的 `DP 完整性` 只驗 terminal／status／successor，該 invariant 從未進入正式 gate contract，繞過交易入口構造的不一致狀態不會被擋。v1.9 修 v1.8 草案自身的三個缺口：carrier 與 `status` 的關係改寫為精確蘊含（「同生同滅」是錯的 —— row 1 direct citation 允許 `resolvedBy` 非空而 carrier 為 null）；`unrelated re-adopt` 收窄為 **binding-policy 驅動**，direct citation 改為清除並保持 null；`packetBasisRef` 補上完整 **total-order tuple**（原本無 `digest` tie-break，同 `sourceId` 不同 `digest` 的兩筆無法定序）。v1.8 變更四處，皆為下游實作暴露的 carrier／契約缺口：§2 `ASSUM` 新增三值 `routingOrigin`（authored、immutable，附 loader-level 全生命週期 invariant）；§2 `DP` 新增 `resolutionRulingRef` **current application carrier**（取代對歷史 binding-policy ruling 的全稱量化 —— 那條規則會永久凍結 `resolvedBy` 並牴觸「歷史 ruling 只驗 snapshot 自洽」）；§2 補上 `ObservationalRef` 與 Governance Packet `basisRefs` 的 **exact discriminated union**；§4 `materialReasons` 補 closed member set 並宣告本文為定序的**唯一** authoritative 定義。**核准前下游不得實作任何一項。**
+- 狀態：**draft v1.11 — 修訂待 panel**（前一放行版本：approved v1.7）。v1.11 關閉兩個**型別缺口** —— 下游已被要求驗證的東西，上游 schema 卻無法表示（下游不得自行補欄位，故一律回上游）：(1) `Transition.compatibility` 原限定 `僅 subject=REQ ∧ action=supersede`，但 matrix 早已允許 `ASSUM|DEC supersede → REQ` 走 kind=user，該路徑的 impact／disposition **無處存放**；適用條件改綁 **successor**（`action=supersede ∧ successor 為 REQ`），相容性義務來自「一條 REQ 開始生效」而非「被取代的是不是 REQ」。(2) plan-gate payload 無 `successor`，故一筆核准「取代 ASSUM-x」的 record 可授權換成**任何** REQ；新增 typed `successor: ClauseRef | null` 並定義必填條件，§7 proposal 的 target 放寬為 clause ref、新增具名 successor，witness binding 與 §9 機械比對由三欄擴為**四欄**。v1.10 一處：§9 檢查分層新增 **`Carrier coherence`** 一列 —— v1.9 把 carrier 宣告為 loader／final-snapshot invariant，但 §9 的 `DP 完整性` 只驗 terminal／status／successor，該 invariant 從未進入正式 gate contract，繞過交易入口構造的不一致狀態不會被擋。v1.9 修 v1.8 草案自身的三個缺口：carrier 與 `status` 的關係改寫為精確蘊含（「同生同滅」是錯的 —— row 1 direct citation 允許 `resolvedBy` 非空而 carrier 為 null）；`unrelated re-adopt` 收窄為 **binding-policy 驅動**，direct citation 改為清除並保持 null；`packetBasisRef` 補上完整 **total-order tuple**（原本無 `digest` tie-break，同 `sourceId` 不同 `digest` 的兩筆無法定序）。v1.8 變更四處，皆為下游實作暴露的 carrier／契約缺口：§2 `ASSUM` 新增三值 `routingOrigin`（authored、immutable，附 loader-level 全生命週期 invariant）；§2 `DP` 新增 `resolutionRulingRef` **current application carrier**（取代對歷史 binding-policy ruling 的全稱量化 —— 那條規則會永久凍結 `resolvedBy` 並牴觸「歷史 ruling 只驗 snapshot 自洽」）；§2 補上 `ObservationalRef` 與 Governance Packet `basisRefs` 的 **exact discriminated union**；§4 `materialReasons` 補 closed member set 並宣告本文為定序的**唯一** authoritative 定義。**核准前下游不得實作任何一項。**
 - 前一版狀態：**approved v1.7**（2026-07-26 panel 放行；前一放行版本 approved v1.6）。v1.7 變更：§9 gate scope 改為具名 closed set（含 body／oracle 變更）＋ `lifecycleAffectedClauses` 反向閉包；綁定拆 **pre-change／post-change 兩相**；§9 新增 **base provenance witness**（inline、storePath 固定、immutable）；§2 新增 **TaskState**（tracked canonical task membership 與 committed head）與 `provenance-batch` RecordRef kind（canonical `batchDigest` total order、derived `relatedRefs`、chain 連結約束、committed head 三分）；review-ruling／plan-gate 新增 `resolutionGroupDigest` 作為 witness coverage 的 carrier。本文件為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念，可附加實作欄位但不得改變本文欄位語義。
 - 日期：2026-07-25
 - 範圍：只定義模型 —— 物件、權威、分流、狀態、不變量。scan 觸發與流程、檢查器實作、reviewer prompt 調整、hook 接線屬於下游 spec。
@@ -138,7 +138,12 @@ authorityRef:（宣告的權威 principal —— 本身不是獨立 witness，�
 ackRef:     RecordRef（kind: user-answer | review-ruling | plan-gate | exception-grant |
             constraint-revocation；依 External-record contract 解析）——
             授權本 Transition 的 witness
-compatibility:（僅 subject=REQ ∧ action=supersede，必填）impact 陳述 ＋ disposition（§7）
+compatibility:（**`action=supersede ∧ successor 為 REQ`** 時必填；其餘一律不得出現）
+            impact 陳述 ＋ disposition（§7）
+            ← 適用條件綁 **successor**，不綁 subject（v1.11）：downstream 相容性義務
+              來自「一條 REQ 開始生效」，而不是「被取代的是不是 REQ」。原本寫
+              `僅 subject=REQ` 使 matrix 已允許的 `ASSUM|DEC supersede → REQ`
+              無處存放 impact／disposition，該路徑因此在型別層不可表示
 ```
 
 有效性規則：
@@ -162,7 +167,14 @@ kind=discipline|arbiter → ackRef.kind=review-ruling
                           ∧ review-ruling.by == authorityRef principal
                           ∧ review-ruling.subjectRef 綁定本 Transition 的 subject 或其 DP
 kind=user             → 依 action：supersede／retire → plan-gate record，
-                          target == subject（supersede 另含 §7 三欄一致）；
+                          target == subject；
+                          supersede 另含 §7 **四欄**一致（v1.11 由三欄擴充）：
+                            plan-gate.target      == Transition.subject
+                            plan-gate.successor   == Transition.successor
+                            plan-gate.impact      == Transition.compatibility.impact
+                            plan-gate.disposition == Transition.compatibility.disposition
+                          —— 少了 successor 對位時，一筆核准「取代 ASSUM-x」的 record
+                          可授權把 ASSUM-x 換成**任何** REQ；
                           ask 回答產生的轉移 → user-answer record，subjectRef == 該 DP
 kind=source-authority → ackRef.kind=constraint-revocation
                           ∧ ack.authorityRef == target REQ.ownerRef == authorityRef.ref
@@ -206,7 +218,19 @@ user-answer:           recordId, subjectRef（DP-n）, answer
 review-ruling:         recordId, by: ReviewerPrincipal, subjectRef（DP-n | clause ref）, ruling,
                        resolutionGroupDigest?（見下 —— 作為 resolution group 的治理 witness 時必填）
 plan-gate:             recordId, target, impact, disposition, approvedBy（user）,
+                       **successor**: ClauseRef | null（v1.11 —— 見下必填條件）,
                        resolutionGroupDigest?（同上）
+
+  `plan-gate.successor` 的必填條件（typed，非自由欄）:
+    授權的是 clause transition ∧ action=supersede
+      → **必填**，且必須是 clause ref；為 null 即該 record 不構成 supersede proposal
+    授權的是 retire（successor 依定義不存在）
+      → **必須**為 null
+    非 clause transition 的 plan gate（例如純 routing 揭露）
+      → **必須**為 null
+  舊 record 只有 target／impact／disposition 三欄，無法區分「核准 target 被取代」
+  與「核准 target 被某一條**具名** clause 取代」—— 下游因此無從機械驗證
+  successor 對位，只能自行發明欄位。本欄關閉該缺口
 constraint-revocation: recordId, targetConstraintRef, authorityRef（source-authority，
                        匹配 ownerRef）, effectiveAt
 exception-grant:       ＝ Source（contentKind=exception-grant；payload 見 Source schema）
@@ -467,7 +491,7 @@ materialReasons[] ∈ {
 |---|---|---|---|
 | 1 | 有適用 active 且 **applicable** binding clause 且無衝突（含字面規則；exception-backed REQ 需 scopeCovers ruling，記入 DP.scopeRulingRef） | resolved | cite REQ-n |
 | 2 | 衝突涉 hard-constraint，**且無涵蓋本 DP 的有效例外** | Ask「改需求／取得例外」（不給選邊） | 回答 → 新 REQ，或 exception-grant Source＋引用它的 REQ（此後同類 DP 於 scope 內走 row 1） |
-| 3 | requirement vs compatibility，**已有 plan-gate 核准的 supersede proposal**（§7：具名 target＋impact＋disposition 完整） | 執行 supersede＋揭露 | 建立新 REQ＋supersede Transition（完成後即 effective supersede）；舊 clause 轉 superseded（derived） |
+| 3 | requirement vs compatibility，**已有 plan-gate 核准的 supersede proposal**（§7：具名 target＋具名 successor＋impact＋disposition 完整） | 執行 supersede＋揭露 | 建立新 REQ＋supersede Transition（完成後即 effective supersede）；舊 clause 轉 superseded（derived） |
 | 4 | 其他 clause 衝突（同層；或 proposal 不完整） | Ask | 回答 → proposal 核准／需求修訂 → 新 REQ |
 | 5 | 未裁決 ∧ safeToAssume | assume | ASSUM（INV-1；governedBy 依 §2 固定映射；**`routingOrigin=safe-default`**；ephemeral candidate 見 §6） |
 | 6 | 未裁決 ∧ ¬safeToAssume ∧ layer=intent | Ask | 回答 → 新 REQ；明示延後 → ASSUM（basisRefs 含該 DP 的 user-answer；**`routingOrigin=user-deferred`**） |
@@ -498,7 +522,10 @@ material implementation fork 不自動丟使用者；只有浮現產品取捨或
 
 ```
 supersede proposal（pre-state；以 plan-gate 核准紀錄存在，ackRef.kind=plan-gate 指向之）＝
-    具名 target: REQ-n
+    具名 target: **clause ref**（REQ | DEC | ASSUM —— v1.11 放寬；
+      matrix 早已允許 `DEC supersede → REQ` 與 `ASSUM supersede → REQ` 走 kind=user，
+      原本寫死 `REQ-n` 使該兩列無合法 proposal 可用）
+  ∧ 具名 successor: **REQ ref**（v1.11 新增，必填）
   ∧ 明示 compatibility impact
   ∧ 核准的 disposition ∈ {
       migration | version-boundary | deprecation-window |
@@ -510,7 +537,7 @@ effective supersede（post-state）＝ 依 proposal 執行的 Transition(action=
     compatibility block 抄錄 proposal 內容
 ```
 
-- **Proposal record 是 typed external interface**（不新增模型物件）：`ackRef(kind=plan-gate)` 指向的紀錄必須可解析出 target／impact／disposition 三欄，且與 Transition 的 `subject`／`compatibility` block **完全一致**（§9 機械比對）。只驗「存在」不足 —— 否則任何不相關的 plan-gate 核准都能被拿來當授權。
+- **Proposal record 是 typed external interface**（不新增模型物件）：`ackRef(kind=plan-gate)` 指向的紀錄必須可解析出 **target／successor／impact／disposition 四欄**，且與 Transition 的 `subject`／`successor`／`compatibility` block **完全一致**（§9 機械比對）。只驗「存在」不足 —— 否則任何不相關的 plan-gate 核准都能被拿來當授權；只驗三欄亦不足 —— 核准「取代 ASSUM-x」的 record 會授權把它換成任何 REQ。
 
 - 不存在「較新所以自動覆蓋」。
 - disposition 全覆蓋且必填 —— 沉默永不代表無影響：零 dependents → `no-affected-dependents`；有 dependents 但不破壞 → `backward-compatible`；major 版本 → `version-boundary`；破壞且明示接受 → `accepted-breaking`。
@@ -702,7 +729,7 @@ INV-B2：post-state 測試存在 ⇒ binding 必為 clause binding 或 EXPL
 |---|---|---|---|
 | 結構（**postChangeBinding**） | binding 非 null 且非 EXPL 時：tag 存在、ID 可解析、clause **active ∧ mechanicallyApplicable**（per-kind，§2）；exception-backed 另驗 `scopeRulingRef` 可解析 ∧ `record.by == {discipline: intent}` ∧ **`record.subjectRef == current DP`**（否則 retag 至後繼或重新裁決）。binding 為 `null`（測試已移除）→ 本列不適用；`EXPL` → 不做 clause resolution | fail-closed | gate scope |
 | 結構（**preChangeBinding**） | binding 為 **clause** 時：僅驗 clause／Source **可解析** ＋ snapshot integrity（Check A）；**不課** active／applicable／live-current／未過期 —— 前態是歷史事實，合法修復正是從失效綁定移走。binding 為 **null**（本次新增／未標記 legacy）或 **EXPL** 時：**不做 clause／Source resolution**，本列僅驗該前態符合 `preState` 型別 | fail-closed（僅可解析性／型別合法性） | gate scope |
-| 結構（Transition） | 對每筆本次新增 Transition 驗 §2 合法性表的 `subject × action × successor × authority` **全矩陣**，含 **witness binding**（§2：ackRef payload 與 authorityRef principal／subject 的綁定 —— review-ruling.by 與 subjectRef、user-answer.subjectRef == 該 DP、plan-gate target 與三欄一致 §7、constraint-revocation 與 ownerRef 相等）、ASSUM 的 governedBy／domain-transfer 治理；ackRef 依 External-record contract 解析 | fail-closed | gate scope |
+| 結構（Transition） | 對每筆本次新增 Transition 驗 §2 合法性表的 `subject × action × successor × authority` **全矩陣**，含 **witness binding**（§2：ackRef payload 與 authorityRef principal／subject 的綁定 —— review-ruling.by 與 subjectRef、user-answer.subjectRef == 該 DP、plan-gate 與 §7 **四欄**一致（target／successor／impact／disposition）、constraint-revocation 與 ownerRef 相等）、ASSUM 的 governedBy／domain-transfer 治理；ackRef 依 External-record contract 解析 | fail-closed | gate scope |
 | 來源 | Source 存在、Check A（一律）；**Check B 與 exception 現時效力只課於 postChangeBinding 所引用者**：`contentKind=exception-grant` 完整鏈 —— resolve targetConstraintRef → target 必須是 `authority=hard-constraint` 的 REQ → `grantAuthorityRef == target.ownerRef` → 未過期，任一失敗 fail-closed。preChangeBinding 所引用的 Source 只課 Check A | fail-closed | gate scope |
 | DP 完整性 | 對 gate scope 內每個 DP（含 INV-4 影響閉包）：terminal refs 三者互斥、status 與 terminal ref 型別一致（resolved↔REQ、decided↔DEC、assumed↔ASSUM）、terminal ref 指向 active ∧ applicable clause、有 applicable successor 時已全部 repoint、無 applicable successor 時已全部 reopen | fail-closed | gate scope |
 | **Carrier coherence**（§2 `resolutionRulingRef`） | 對同一組 DP：① `resolutionRulingRef != null` ⇒ `status == resolved` ∧ `resolvedBy` 存在；② `status != resolved` ⇒ `resolutionRulingRef == null`；③ carrier 非 null 時，該 record 必須 `rulingKind == binding-policy` ∧ `subjectRef == 本 DP` ∧ `activeSuccessorChainEnd(bindingClauseRef) == DP.resolvedBy`。**只對 current carrier 套用**；不再被任何 carrier 引用的歷史 ruling 依 §2 僅驗 snapshot／digest 自洽 | fail-closed | gate scope |
