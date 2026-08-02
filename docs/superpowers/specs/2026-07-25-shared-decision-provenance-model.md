@@ -1,6 +1,6 @@
 # Shared Decision & Provenance Model（共同決策與溯源模型）
 
-- 狀態：**draft v1.8 — 修訂待 panel**（前一放行版本：approved v1.7）。本版變更兩處，皆為下游實作發現的 carrier 缺口：§2 `ASSUM` 新增三值 `routingOrigin`（authored、immutable —— row 5／6／7 的 ASSUM 在持久狀態上同形，機械層無從區分「合法無 ruling」與「該有卻沒有」）；§4 `materialReasons` 補上 closed member set 與定序（原本只有散文描述四個 conjunct，下游無法在不自行發明值的前提下驗證成員資格）。**核准前下游不得實作。**
+- 狀態：**draft v1.8 — 修訂待 panel**（前一放行版本：approved v1.7）。本版變更四處，皆為下游實作暴露的 carrier／契約缺口：§2 `ASSUM` 新增三值 `routingOrigin`（authored、immutable，附 loader-level 全生命週期 invariant）；§2 `DP` 新增 `resolutionRulingRef` **current application carrier**（取代對歷史 binding-policy ruling 的全稱量化 —— 那條規則會永久凍結 `resolvedBy` 並牴觸「歷史 ruling 只驗 snapshot 自洽」）；§2 補上 `ObservationalRef` 與 Governance Packet `basisRefs` 的 **exact discriminated union**；§4 `materialReasons` 補 closed member set 並宣告本文為定序的**唯一** authoritative 定義。**核准前下游不得實作任何一項。**
 - 前一版狀態：**approved v1.7**（2026-07-26 panel 放行；前一放行版本 approved v1.6）。v1.7 變更：§9 gate scope 改為具名 closed set（含 body／oracle 變更）＋ `lifecycleAffectedClauses` 反向閉包；綁定拆 **pre-change／post-change 兩相**；§9 新增 **base provenance witness**（inline、storePath 固定、immutable）；§2 新增 **TaskState**（tracked canonical task membership 與 committed head）與 `provenance-batch` RecordRef kind（canonical `batchDigest` total order、derived `relatedRefs`、chain 連結約束、committed head 三分）；review-ruling／plan-gate 新增 `resolutionGroupDigest` 作為 witness coverage 的 carrier。本文件為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念，可附加實作欄位但不得改變本文欄位語義。
 - 日期：2026-07-25
 - 範圍：只定義模型 —— 物件、權威、分流、狀態、不變量。scan 觸發與流程、檢查器實作、reviewer prompt 調整、hook 接線屬於下游 spec。
@@ -112,14 +112,15 @@ routingOrigin: safe-default | user-deferred | reviewed-provisional
 
 **為何需要 `routingOrigin`（v1.8）** —— row 5／6／7 產出的 ASSUM 在持久狀態上完全同形，機械層因此無法區分「合法地沒有 ruling」與「該有 ruling 卻沒有」。DEC 沒有這個歧義（只由 row 7 產生），故可強制其 witness；ASSUM 不能，缺口因而無法關閉。**不得**從 `basisRefs` 或 `governedBy` 反推 —— 前者是證據欄、後者是權威欄，兩者都不是 routing 的控制狀態。
 
-| routingOrigin | 對應 | 強制條件 |
-|---|---|---|
-| `safe-default` | §5 row 5（safeToAssume） | `governedBy` 依既有固定映射（intent→intent；implementation→code）；**不要求** review ruling |
-| `user-deferred` | §5 row 6 使用者明示延後 | `basisRefs` 必含**該 DP 的** `user-answer` RecordRef；`governedBy == {kind: discipline, discipline: intent}` |
-| `reviewed-provisional` | §5 row 7「證據不足、僅核准暫定預設」 | `basisRefs` 必含 `rulingKind=approved-provisional` 的 review-ruling；`governedBy == 該 ruling 的 by` |
+**這些是 loader／final-snapshot invariant，不是 constructor 說明** —— 每次載入都必須成立，否則一個繞過交易入口寫進去的 ASSUM 就永遠不會被複驗：
 
-```
-```
+| routingOrigin | 只允許來自 | `layer` | `governedBy` | `basisRefs` |
+|---|---|---|---|---|
+| `safe-default` | §5 row 5（safeToAssume） | `intent` 或 `implementation` 皆可 | 依固定映射：intent→`{discipline:intent}`；implementation→`{discipline:code}` | **不要求** review ruling |
+| `user-deferred` | §5 row 6 使用者明示延後 | **必須 `intent`**（row 6 前提即 layer=intent） | **必須** `{kind: discipline, discipline: intent}` | **必含**綁定同一 DP（`subjectRef == ASSUM.derivedFrom`）的 `user-answer` RecordRef |
+| `reviewed-provisional` | §5 row 7「證據不足、僅核准暫定預設」 | **必須 `implementation`**（row 7 前提即 layer=implementation） | **必須等於**該 ruling 的 `by` | **必含** `rulingKind=approved-provisional` 且綁定同一 DP 的 review-ruling |
+
+任一條不成立 → fail-closed。三值互斥且窮盡：ASSUM 只由 row 5／6／7 產生。
 
 ### Transition（append-only event log —— 生命週期的唯一真相）
 
@@ -268,7 +269,27 @@ relatedRefs ＝ 本交易 recordsToCreate 的全部 ref
 依 (kind, ref) 排序並去重；與上述集合不符 → fail-closed
 ```
 
-- **ObservationalRef**：對觀察性證據（code path、caller、資料現況）的描述性指標 —— **明文不解析**，disclosure-only；不屬 RecordRef，不參與機械 resolution。
+- **ObservationalRef（exact shape，v1.8）**：對觀察性證據（code path、caller、資料現況）的描述性指標 —— **明文不解析**，disclosure-only；不屬 RecordRef，不參與機械 resolution。先前只有這句散文而無 schema，下游因此無從驗證其形狀：
+
+```
+ObservationalRef ＝ { kind: "observational", description: string }
+                    description 非空；**不允許 undeclared keys**
+```
+
+- **Governance Packet 的 `basisRefs` normalization（exact discriminated union，v1.8）** —— 這是 **packet** 的正規化表示，與 `clause.basisRefs` 的既有寬鬆表示**不是同一個東西**，不得混用：
+
+```
+packetBasisRef ＝
+  | { sourceId: string, digest: string }                    ← Source snapshot ref
+  | { kind: <RecordRef kind>, ref: string }                 ← RecordRef，沿用其 exact shape
+  | { kind: "observational", description: string }          ← ObservationalRef
+
+規則（全部 fail-closed）：
+  **不允許 undeclared keys**（三個變體各自的 key set 必須完全相等）
+  必填字串**不得為空**
+  canonical bytes 相同的 ref **不得重複**
+  依 code-point 序排序：先比 variant 判別鍵（sourceId／kind），再比其 id／description
+```
 - **`resolutionGroupDigest`（witness coverage 的 carrier）** —— 「一個 witness 必須涵蓋某組 evidence 的全部」若沒有欄位承載，就無法機械驗證：
 
 ```
@@ -349,6 +370,39 @@ scopeRulingRef:      RecordRef(kind=review-ruling)
                      ∧ record.by == {kind: discipline, discipline: intent}
                      ∧ record.subjectRef == 本 DP（他 DP 的合法 intent ruling 不可借用）
                      （resolvedBy 為 exception-backed REQ 時必填 —— scopeCovers 的可追溯憑據）
+resolutionRulingRef: RecordRef(kind=review-ruling) | null   ← **current application carrier**（v1.8）
+                     指向「授權本 DP **當前** resolution 的那一筆 ruling」，唯一且 typed
+```
+
+**為何需要 `resolutionRulingRef`（v1.8）** —— 沒有 current carrier 時，唯一能表達「這筆 binding-policy ruling 說了算」的方式是對**所有** `subjectRef` 指向該 DP 的 binding-policy ruling 做全稱量化，要求 `DP.resolvedBy == ruling.bindingClauseRef` 恆成立。那條規則會把 `resolvedBy` **永久凍結**：一旦 REQ-a 經合法 binding-policy 被採用，之後任何合法的 `REQ-a → REQ-b` supersede 都會與那筆**歷史** ruling 衝突而被拒。它同時牴觸 §9／IS §4 的既定契約 —— 不再被 current ref 引用的歷史 ruling **只驗 immutable snapshot／digest 自洽，不得與 mutable current DP 比較**。全稱量化因此撤回；current carrier 取而代之。
+
+**生命週期（closed）**：
+
+```
+initial adopt（由 binding-policy ruling 驅動）
+  → 同一交易原子設定 resolutionRulingRef
+
+loader postcondition —— **只**對 current carrier 套用：
+  carrier.rulingKind == binding-policy
+  ∧ carrier.subjectRef == 本 DP
+  ∧ carrier.bindingClauseRef 經**有效 Transition successor chain** 解析後 == DP.resolvedBy
+    （直接相等是 chain 長度為 0 的特例，因此合法 supersede 後 carrier 可沿用）
+
+合法 supersede／repoint —— 二擇一，交易必須明示走哪一支：
+  (a) 沿用 carrier：上式的 successor-chain 條件必須成立
+  (b) 同交易原子替換 carrier 為新的 binding-policy ruling
+
+retire／reopen 且無 current resolution
+  → 同交易清除 resolutionRulingRef（null）
+
+unrelated re-adopt（新的採用，非既有 clause 的後繼）
+  → **必須**提供新的 current carrier；不得沿用舊 ruling
+
+歷史 ruling（存在於 store 但不被任何 DP 的 resolutionRulingRef 引用）
+  → **只**驗 immutable snapshot／digest 自洽；不與任何 current DP 比較
+```
+
+`resolvedBy` 未設時 `resolutionRulingRef` 必須為 null（兩者同生同滅）。非 binding-policy 驅動的採用（例如 row 1 直接 cite 一個既有 clause 而無 policy ruling）carrier 為 null，本節不課任何條件。
 ```
 
 ## 3. layer 判準（decision authority）
@@ -384,7 +438,9 @@ materialReasons[] ∈ {
   changes-core-product-promise （改變核心產品承諾）
 }
 去重，依 Unicode code point 序排序（否則同一組理由會算出不同 packet digest）
-```「選擇與 alternative 明文記錄」「不偽裝成 REQ」是 Record 動作本身的義務，非路由條件。
+```
+
+**本文是 `materialReasons` 定序的唯一 authoritative 定義。**下游 spec 不得另立版本 —— 兩處若各寫一套（例如一邊 code-point 序、一邊 enum 宣告序），兩個 writer 就會對同一組理由算出不同 digest，而 digest 正是用來證明兩者看到同一份 packet 的東西。「選擇與 alternative 明文記錄」「不偽裝成 REQ」是 Record 動作本身的義務，非路由條件。
 
 ## 5. 分流表（互斥、可到達、完備；逐 persisted DP 依序判定）
 
