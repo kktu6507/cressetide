@@ -443,6 +443,31 @@ reopen-dp                 **限「當下沒有 successor、確實必須持久化
                           deferred reopen 因此可收斂
 ```
 
+### `migrate-store-v1-to-v2`（v1.8 新增 domain transaction）
+
+上游 SM §2 把 `provenanceVersion` 升為 2 並定義 legacy 補值規則，但那只是語義；**沒有命令面就沒有可執行的 migration**，AC 也無從實跑。本交易補上，並沿用與其他交易**完全相同**的原子協定：
+
+```
+作用對象  **只有** current mutable canonical store（不碰任何 historical base-tree store）
+payload   { }  —— 不接受 caller 提供任何 DP cause 值或版本值
+前置條件  pre-state provenanceVersion == 1，否則見下「version 2 再呼叫」
+          pre-state 不得存在任何 TaskState（含 TaskState 的 v1 store 本版 unsupported，
+            理由見上游 SM §2：resume-task 禁改 baseProvenance 且本版無 re-baseline command）
+動作      對**每個** DP 補上 explicit `reopenCauseRef: null`
+          —— **不得**由 current graph 回填成因（那是本版正在消滅的錯誤）
+          原子將 provenanceVersion 改為 2
+後置條件  final v2 snapshot 跑**完整** loader invariants（refs／matrix／INV-1..4／
+            carrier coherence／reopen cause coherence／head 三分）
+原子協定  沿用既有 single-writer：load＋validate → 記錄原檔 digest → 記憶體套用
+          → 驗 final snapshot → CAS → 同目錄 temp write ＋ atomic replace ＋ lock
+失敗行為  任一步失敗 → 原始 bytes **位元不變**、lock 釋放、無 temp 殘留
+crash／retry  中途狀態永不落盤，因此重跑是安全的：要嘛看到未遷移的 v1，要嘛看到完整的 v2
+version 2 再呼叫  **fail-closed**（二選一，本版選 fail-closed 而非 no-op：
+                 no-op 會讓「已遷移」與「不需遷移」在回傳上無法區分）
+```
+
+**其他所有 domain command 對 current v1 store 一律 fail-closed** —— 只有本交易能進。historical immutable base-tree store 不受此限，checker 依上游 SM §9 以 read-only 方式讀取。
+
 **移除**裸 `append-clause`／`append-transition`／`set-dp-outcome` —— 它們無法在不違反 INV-4 的前提下單獨完成 terminal replacement。
 
 ### `commit-test-provenance-batch` 的 successor clause 鑄造（v1.3）
@@ -903,7 +928,13 @@ intentScan: {
 86. **repoint／resolve 時清除**：帶 witness 的 open DP 之後被 repoint 或落定為任一 terminal → post-state `reopenCauseRef` 必為 null。
 87. **explicit reopen／retire 時清除**：帶 witness 的 DP 之後經 `reopen-dp` 或 retire 造成的 reopen → post-state `reopenCauseRef` 必為 null（成因已改變，舊 witness 不得殘留）。
 88. **第二次 source-2 reopen 時替換**：同一 DP 再次因 source-2 而 reopen → `reopenCauseRef` 必**替換**為新交易的 TransitionRef，且不得殘留舊值。
-89. **版本邊界可觀測**：驗收必須使用**持久化的 `provenanceVersion`**，不得靠兩份形狀相同的手工 snapshot 加測試名稱區分。(i) `provenanceVersion: 1` 且 DP 缺 `reopenCauseRef` 的 fixture → 經 **migration** 後每個 DP 帶 **explicit null**，且 store 升為 version 2；(ii) `provenanceVersion: 2` 且 DP 缺 `reopenCauseRef` 的 fixture → **fail-closed**（writer defect）；(iii) 存在 TaskState 的 version 1 store 進行 migration → **fail-closed**，要求顯式 re-baseline（其 `baseProvenance.storeDigest` 是對 pre-migration bytes 計算的，migration 後必然 stale）。
+89. **版本邊界為可執行矩陣**：驗收必須驅動**持久化的 `provenanceVersion`** 與**真實的** `migrate-store-v1-to-v2` 交易，不得靠兩份形狀相同的手工 snapshot 加測試名稱區分。六格全覆蓋：
+    (i) **v1 current store、無 TaskState、DP 缺欄位** → migration **成功**：post-state 為 version 2，且**每個** DP 帶 explicit `reopenCauseRef: null`；
+    (ii) **v2 current store、DP 缺欄位** → **fail-closed**（writer defect）；
+    (iii) **v1 current store 含 TaskState** → 依本版明訂的 unsupported policy **fail-closed／no-write**（理由是無 re-baseline command，**不得**再引用「base digest 必然 stale」）；
+    (iv) **正常 domain command 直接操作 current v1 store** → **fail-closed**，只有 migration 交易可進；
+    (v) **current store 已是 v2，但 `baseProvenance.treeOid` 指向歷史 v1 store** → read-only checker 能驗該歷史 tree 的**原始** v1 `storeDigest` 並通過，**不遷移**該 tree、不回寫、不拿 normalized bytes 比對 raw digest；
+    (vi) **migration 失敗／中途 crash** → store bytes 位元不變、`TaskState.committedProvenanceBatchRef` 未變、lock 釋放、無 temp 殘留。另驗 version 2 再次呼叫 migration → **fail-closed**。
 90. **拒絕即 no-write**：AC82–89 的**每一個**拒絕案例都必須驗 store bytes 位元相同、`TaskState.committedProvenanceBatchRef` 未變、lock 已釋放且無 temp 檔殘留。
 91. **未受影響 DP 的 witness 必須原封不動（preserve 正例）**：pre-state 放一個持有合法 non-null `reopenCauseRef` 的 DP-X；執行任一只影響 DP-Y 的交易或 batch → post-state DP-X 的 `reopenCauseRef` 必須維持**同一筆** TransitionRef，不得被清除、替換或重寫，且 DP-X 的其餘 causal 欄位（`status`、三個 terminal ref、`priorTerminalRef`、`reopenedBy`、`resolutionRulingRef`）亦不得被順手改動。
 

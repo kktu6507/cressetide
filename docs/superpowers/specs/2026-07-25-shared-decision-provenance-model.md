@@ -536,14 +536,29 @@ provenanceVersion: 2   （current）
   **每個 DP 必須顯式含有 reopenCauseRef: null | TransitionRef**
   缺席 → **fail-closed**（writer defect，不是 legacy）
 
-canonical empty store        provenanceVersion = 2
 writer final-snapshot 驗證    產出必為 version 2 且每個 DP 顯式帶該欄位
-base provenance digest        digest 計算於 canonical bytes，version 欄位在其中；
-                              因此 v1 bytes 與 migration 後的 v2 bytes digest 必然不同
-migration 的 TaskState 邊界    若 store 內存在任何 TaskState，其 baseProvenance.storeDigest
-                              是對 pre-migration bytes 計算的，migration 後必然 stale →
-                              **fail-closed**，要求顯式 re-baseline，不得靜默改寫 witness
 ```
+
+**Canonical empty store（本文件唯一 authoritative 定義，v1.12）** —— 任何其他章節一律**引用**本定義，**不得重寫 literal**：
+
+```
+{ provenanceVersion: 2, sources: [], clauses: [], transitions: [],
+  records: [], decisionPoints: [], taskStates: [] }
+```
+
+其 digest 依 §2 canonical 規則計算。舊版曾在 §9 base-witness 段另寫一份 `provenanceVersion: 1` 的 literal，兩份互斥並使 base digest 沒有唯一 canonical bytes；該 literal 已刪除並改為引用。
+
+**三種 store 必須分開，不得混為一談**（v1.12）：
+
+| 物件 | 版本 | 可做什麼 |
+|---|---|---|
+| **current mutable canonical store** | 1 | **只有** migration transaction 能讀取／轉換；其他 operational command 一律 **fail-closed** |
+| **current mutable canonical store** | 2 | 正常讀寫；每個 DP 顯式含 `reopenCauseRef` |
+| **historical immutable base-tree store**（`baseProvenance.treeOid` 內） | 1 或 2 | checker **可**以 read-only legacy decoder 讀取，驗其**原始** canonical bytes 與 `storeDigest`；**不遷移、不回寫、不得拿 normalized bytes 去比對 raw digest** |
+
+Git base tree 是 immutable 的，`TaskState.baseProvenance.storeDigest` 綁的是**該 tree 內**的 store bytes，**不是** current working store 的 digest。因此把 current store 從 v1 遷成 v2 **不會**改寫 base tree，也**不會**使該 witness stale —— 初稿的「migration 後必然 stale」推導是錯的，已撤回。
+
+**含 TaskState 的 current v1 store：本版明文 unsupported。** migration 對它 **fail-closed**。理由是誠實的能力邊界而非 digest 推導：`resume-task` 明文禁止改動 `baseProvenance`，而本版**沒有** re-baseline command，因此該情形沒有可達的合法處置路徑。re-baseline 留給另立 spec。依上述 rollout evidence，不存在 observed durable v1 TaskState，故此邊界不阻擋本版發布。
 
 支持「migration 實際上沒有 subject」的 rollout evidence（**這是 migration assumption 的依據，不是 discriminator**）：
 
@@ -750,7 +765,8 @@ baseProvenance:
 ```
 
 - checker **必須**自 `treeOid` 讀出 canonical provenance store、驗 `storeDigest` 相符後，才據以判斷任何「前態存在性」。
-- 該路徑在 `treeOid` 中不存在時，採 **canonical empty store**：`{ provenanceVersion: 1, sources: [], clauses: [], transitions: [], records: [], decisionPoints: [], taskStates: [] }`，其 digest 亦依 canonical 規則計算。
+- 該路徑在 `treeOid` 中不存在時，採 §2 的**唯一** canonical empty store 定義（本節**不重寫 literal**），其 digest 亦依 canonical 規則計算。
+- `treeOid` 內的 store 是 **historical immutable** 物件：其 `provenanceVersion` 可能是 1 也可能是 2，checker 以 read-only legacy decoder 讀取並驗**原始** bytes 的 `storeDigest`；**不遷移、不回寫**，也不得把 normalized 後的 bytes 拿去和 raw digest 比對。current store 的版本與它無關。
 - **witness 是 inline 值，不是 ref** —— 統一以 inline `baseProvenance` 傳遞；不引入 `baseProvenanceRef`（那需要另一個 record kind 承載，本版不新增）。
 - **resume 同一 task 時不得改換 base** —— `treeOid` 隨 `TaskState.baseProvenance` 於 task 起始固定且 immutable；`resume-task` 嘗試改動即**拒絕**。
 - 任何 batch 內攜帶的 witness **必須等於** tracked `TaskState.baseProvenance`；不等即 fail-closed。
