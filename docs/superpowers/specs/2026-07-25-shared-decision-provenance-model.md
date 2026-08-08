@@ -1,6 +1,6 @@
 # Shared Decision & Provenance Model（共同決策與溯源模型）
 
-- 狀態：**approved v1.11**（2026-08-02 panel 放行；前一放行版本 approved v1.7）。實作以本文為準；變更需重新過 panel。v1.11 關閉兩個**型別缺口** —— 下游已被要求驗證的東西，上游 schema 卻無法表示（下游不得自行補欄位，故一律回上游）：(1) `Transition.compatibility` 原限定 `僅 subject=REQ ∧ action=supersede`，但 matrix 早已允許 `ASSUM|DEC supersede → REQ` 走 kind=user，該路徑的 impact／disposition **無處存放**；適用條件改綁 **successor**（`action=supersede ∧ successor 為 REQ`），相容性義務來自「一條 REQ 開始生效」而非「被取代的是不是 REQ」。(2) plan-gate payload 無 `successor`，故一筆核准「取代 ASSUM-x」的 record 可授權換成**任何** REQ；新增 typed `successor: ClauseRef | null` 並定義必填條件，§7 proposal 的 target 放寬為 clause ref、新增具名 successor，witness binding 與 §9 機械比對由三欄擴為**四欄**。v1.10 一處：§9 檢查分層新增 **`Carrier coherence`** 一列 —— v1.9 把 carrier 宣告為 loader／final-snapshot invariant，但 §9 的 `DP 完整性` 只驗 terminal／status／successor，該 invariant 從未進入正式 gate contract，繞過交易入口構造的不一致狀態不會被擋。v1.9 修 v1.8 草案自身的三個缺口：carrier 與 `status` 的關係改寫為精確蘊含（「同生同滅」是錯的 —— row 1 direct citation 允許 `resolvedBy` 非空而 carrier 為 null）；`unrelated re-adopt` 收窄為 **binding-policy 驅動**，direct citation 改為清除並保持 null；`packetBasisRef` 補上完整 **total-order tuple**（原本無 `digest` tie-break，同 `sourceId` 不同 `digest` 的兩筆無法定序）。v1.8 變更四處，皆為下游實作暴露的 carrier／契約缺口：§2 `ASSUM` 新增三值 `routingOrigin`（authored、immutable，附 loader-level 全生命週期 invariant）；§2 `DP` 新增 `resolutionRulingRef` **current application carrier**（取代對歷史 binding-policy ruling 的全稱量化 —— 那條規則會永久凍結 `resolvedBy` 並牴觸「歷史 ruling 只驗 snapshot 自洽」）；§2 補上 `ObservationalRef` 與 Governance Packet `basisRefs` 的 **exact discriminated union**；§4 `materialReasons` 補 closed member set 並宣告本文為定序的**唯一** authoritative 定義。草案審閱期間，本版新增契約不得由下游實作；該限制已隨 v1.11 核准解除。
+- 狀態：**draft v1.12 — 修訂待 panel**（前一放行版本：approved v1.11）。v1.12 一處：§2 DP 新增 **`reopenCauseRef`**（TransitionRef | null）作為 reopen 成因的 **persisted causal witness**，並在 §9 新增 `Reopen cause coherence` 一列。下游 IS v1.7 曾以 `status=open ∧ prior 有 effective Transition ∧ successor != null` 從 snapshot **反推**來源 2 的成因；該推斷不成立，且擋掉兩條合法收斂（明示 `reopen-dp` 後 prior 日後才被 supersede；兩個 DP 對同一 prior deferred reopen）。成因是歷史事實，只能讀持久化 witness，不得由 current graph 形狀反推。v1.11 內容不變：實作以本文為準；變更需重新過 panel。v1.11 關閉兩個**型別缺口** —— 下游已被要求驗證的東西，上游 schema 卻無法表示（下游不得自行補欄位，故一律回上游）：(1) `Transition.compatibility` 原限定 `僅 subject=REQ ∧ action=supersede`，但 matrix 早已允許 `ASSUM|DEC supersede → REQ` 走 kind=user，該路徑的 impact／disposition **無處存放**；適用條件改綁 **successor**（`action=supersede ∧ successor 為 REQ`），相容性義務來自「一條 REQ 開始生效」而非「被取代的是不是 REQ」。(2) plan-gate payload 無 `successor`，故一筆核准「取代 ASSUM-x」的 record 可授權換成**任何** REQ；新增 typed `successor: ClauseRef | null` 並定義必填條件，§7 proposal 的 target 放寬為 clause ref、新增具名 successor，witness binding 與 §9 機械比對由三欄擴為**四欄**。v1.10 一處：§9 檢查分層新增 **`Carrier coherence`** 一列 —— v1.9 把 carrier 宣告為 loader／final-snapshot invariant，但 §9 的 `DP 完整性` 只驗 terminal／status／successor，該 invariant 從未進入正式 gate contract，繞過交易入口構造的不一致狀態不會被擋。v1.9 修 v1.8 草案自身的三個缺口：carrier 與 `status` 的關係改寫為精確蘊含（「同生同滅」是錯的 —— row 1 direct citation 允許 `resolvedBy` 非空而 carrier 為 null）；`unrelated re-adopt` 收窄為 **binding-policy 驅動**，direct citation 改為清除並保持 null；`packetBasisRef` 補上完整 **total-order tuple**（原本無 `digest` tie-break，同 `sourceId` 不同 `digest` 的兩筆無法定序）。v1.8 變更四處，皆為下游實作暴露的 carrier／契約缺口：§2 `ASSUM` 新增三值 `routingOrigin`（authored、immutable，附 loader-level 全生命週期 invariant）；§2 `DP` 新增 `resolutionRulingRef` **current application carrier**（取代對歷史 binding-policy ruling 的全稱量化 —— 那條規則會永久凍結 `resolvedBy` 並牴觸「歷史 ruling 只驗 snapshot 自洽」）；§2 補上 `ObservationalRef` 與 Governance Packet `basisRefs` 的 **exact discriminated union**；§4 `materialReasons` 補 closed member set 並宣告本文為定序的**唯一** authoritative 定義。草案審閱期間，本版新增契約不得由下游實作；該限制已隨 v1.11 核准解除。
 - 前一版狀態：**approved v1.7**（2026-07-26 panel 放行；前一放行版本 approved v1.6）。v1.7 變更：§9 gate scope 改為具名 closed set（含 body／oracle 變更）＋ `lifecycleAffectedClauses` 反向閉包；綁定拆 **pre-change／post-change 兩相**；§9 新增 **base provenance witness**（inline、storePath 固定、immutable）；§2 新增 **TaskState**（tracked canonical task membership 與 committed head）與 `provenance-batch` RecordRef kind（canonical `batchDigest` total order、derived `relatedRefs`、chain 連結約束、committed head 三分）；review-ruling／plan-gate 新增 `resolutionGroupDigest` 作為 witness coverage 的 carrier。本文件為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念，可附加實作欄位但不得改變本文欄位語義。
 - 日期：2026-07-25
 - 範圍：只定義模型 —— 物件、權威、分流、狀態、不變量。scan 觸發與流程、檢查器實作、reviewer prompt 調整、hook 接線屬於下游 spec。
@@ -396,6 +396,10 @@ classificationBasis: 為何此決定屬產品／工程權限（必填）
 materialReasons[]:   safeToAssume 失敗 conjunct 的衍生清單
 discoveredAt:        plan-scan | test-time | review（純遙測，不參與路由）
 reopenedBy:          reopen trigger（§8 closed list；重入時必填）
+reopenCauseRef:      TransitionRef ＝ { kind: "transition", ref: <transition id> } | null
+                     ← **persisted causal witness**（v1.12 新增）。只在「本次 dependent
+                       closure 因 successor 對本 DP 不 applicable 而 reopen」時由 writer
+                       設定，指向造成該 reopen 的 Transition；其餘一切 reopen 成因為 null。
 status:              open | asked | resolved | decided | assumed
 resolvedBy:          REQ-n（status=resolved 必填，INV-2）
 decidedBy:           DEC-n（status=decided 必填，INV-2）
@@ -445,6 +449,42 @@ status != resolved           ⇒  resolutionRulingRef == null
 status == resolved ∧ direct citation（無 binding-policy ruling 驅動）
                              ⇒  resolutionRulingRef **可以**為 null，本節不課條件
 ```
+
+### `reopenCauseRef` —— reopen 成因的持久化 witness（v1.12）
+
+**為何需要它** —— 「這次 reopen 是由某筆 Transition 的 dependent closure 造成的」是**歷史因果**，不是 final snapshot 的結構屬性。下游曾嘗試從 snapshot 反推：`status=open ∧ priorTerminalRef 有 effective Transition ∧ successor != null`。該推斷不成立，且會**擋掉合法收斂**：
+
+```
+反例 1  DP 先以 reopen-dp(trigger=new-dependent) 明示重入；
+        prior clause 日後才被合法 supersede → 該 DP 被誤判為 source-2 reopen。
+反例 2  兩個 DP 對同一 prior 各自 deferred reopen；其一以 reopened-prior 建立
+        Transition 後，另一個尚待 adopt-existing-outcome 收斂的 DP 被誤判。
+```
+
+兩者的共同點：舊 reopen 發生時 prior 還沒有 successor，snapshot 事後無法分辨兩種歷史。因此**因果必須被持久化**，不得由圖形反推。
+
+**Closed lifecycle**：
+
+```
+設定  只由 writer 在 dependent closure 因 successor 對本 DP 不 applicable 而 reopen 時寫入，
+      且必須指向**本次交易**的該筆 Transition。caller 不得提供。
+禁止  明示 reopen-dp、retire 造成的 reopen，以及任何其他 reopen 成因 → 必須為 null。
+清除  DP 被 repoint、resolve（任一 terminal 落定），或因**其他**成因再次 reopen → 清為 null。
+替換  再次發生 source-2 reopen → 換成新的 TransitionRef。
+```
+
+**Loader／gate invariant —— 只對 `reopenCauseRef != null` 的 DP 執行**：
+
+```
+ref 可解析為 Transition T
+∧ T.subject == DP.priorTerminalRef
+∧ T.successor != null
+∧ applicable(T.successor, DP) == false      ← 現時重新求值
+∧ DP.reopenedBy == 「terminal clause 失效且無後繼（INV-4）」的下游序列化
+∧ DP.status == open ∧ 三個 terminal ref 皆 null ∧ resolutionRulingRef == null
+```
+
+**`reopenCauseRef == null` 的 DP 一律不被歸類為該情形**，且**不因 prior clause 日後取得 Transition 而被重新分類** —— 這正是上述兩個反例得以合法的原因。
 
 本節定義 carrier 的**語義**；承載它的**命令面**在 IS §8「carrier 更新契約」（逐 DP 的 `resolutionCarrierUpdates[]`），**執行它的檢查**在 §9 檢查分層的 `Carrier coherence` 一列。三者缺一即失效：缺命令面則 preserve／replace／clear 無交易可執行；缺 §9 一列則上式只是散文，繞過交易入口直接構造的不一致狀態不會被擋。
 
@@ -733,6 +773,7 @@ INV-B2：post-state 測試存在 ⇒ binding 必為 clause binding 或 EXPL
 | 來源 | Source 存在、Check A（一律）；**Check B 與 exception 現時效力只課於 postChangeBinding 所引用者**：`contentKind=exception-grant` 完整鏈 —— resolve targetConstraintRef → target 必須是 `authority=hard-constraint` 的 REQ → `grantAuthorityRef == target.ownerRef` → 未過期，任一失敗 fail-closed。preChangeBinding 所引用的 Source 只課 Check A | fail-closed | gate scope |
 | DP 完整性 | 對 gate scope 內每個 DP（含 INV-4 影響閉包）：terminal refs 三者互斥、status 與 terminal ref 型別一致（resolved↔REQ、decided↔DEC、assumed↔ASSUM）、terminal ref 指向 active ∧ applicable clause、有 applicable successor 時已全部 repoint、無 applicable successor 時已全部 reopen | fail-closed | gate scope |
 | **Carrier coherence**（§2 `resolutionRulingRef`） | 對同一組 DP：① `resolutionRulingRef != null` ⇒ `status == resolved` ∧ `resolvedBy` 存在；② `status != resolved` ⇒ `resolutionRulingRef == null`；③ carrier 非 null 時，該 record 必須 `rulingKind == binding-policy` ∧ `subjectRef == 本 DP` ∧ `activeSuccessorChainEnd(bindingClauseRef) == DP.resolvedBy`。**只對 current carrier 套用**；不再被任何 carrier 引用的歷史 ruling 依 §2 僅驗 snapshot／digest 自洽 | fail-closed | gate scope |
+| **Reopen cause coherence**（§2 `reopenCauseRef`） | **只對 `reopenCauseRef != null` 的 DP 執行**：ref 可解析為 Transition T ∧ `T.subject == DP.priorTerminalRef` ∧ `T.successor != null` ∧ `applicable(T.successor, DP) == false`（現時重新求值）∧ `reopenedBy` 為「terminal clause 失效且無後繼」的下游序列化 ∧ `status == open` ∧ 三個 terminal ref 皆 null ∧ `resolutionRulingRef == null`。**`reopenCauseRef == null` 者不在本列範圍內**，且不得因 prior clause 日後取得 Transition 而被重新分類 —— 成因是歷史事實，只能讀持久化的 witness，不得由 current graph 形狀反推 | fail-closed | gate scope |
 | 語義 | assertion 是否被 clause 蘊含、是否超出 tag 範圍 | test discipline 判斷 | 全部 |
 | Legacy | gate scope 以外的既有測試／條款 | 允許全量語義觀測；findings **observe-only**，不阻擋本次 run | scope 外 |
 
