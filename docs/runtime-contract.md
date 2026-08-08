@@ -73,8 +73,22 @@ self-gitignored via its own nested `.gitignore`, survives across runs, never
 overwritten or truncated), and untracked per-run scratch (`output/` —
 self-gitignored, overwritten each run).
 
+Two canonical paths the provenance layer owns:
+
+- `.ctide/provenance.json` — tracked committed canonical semantic state, holding Sources, Clauses,
+  Transitions, Records, DecisionPoints and TaskStates. It is committed alongside the code and tests
+  that reference it, so a fresh clone or CI run can resolve the whole chain. Only
+  `provenance-store.mjs`'s single-writer domain transactions may modify it; it is not per-run
+  scratch, and no checker ever writes to it. "Tracked" describes the CONSUMING project — this tool
+  repository ignores its own `/.ctide/` when dogfooding, which is not an exception to the rule but a
+  statement about whose state root is whose.
+- `.ctide/output/changed-test-inventory.json` — per-run derived scratch, produced by the
+  ChangedTestInventory producer from the Git base and head. It is rebuildable, never a semantic
+  truth source, consumed read-only by the checker, and not committed.
+
 ```text
 .ctide/
+  provenance.json
   map/
     SYSTEM_MAP.md
   memory/
@@ -89,6 +103,7 @@ self-gitignored, overwritten each run).
   ledger/
     runs.jsonl
   output/
+    changed-test-inventory.json
     contract.md
     progress.md
     baseline-before.txt
