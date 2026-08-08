@@ -4,7 +4,7 @@
 - 前一版狀態：**approved v1.1**（2026-07-26 panel 放行；前一放行版本 approved v1.0，經九輪修訂）。v1.1 變更範圍：**§8** store command surface —— `replace-terminal` 支援 `successor=null`（retire；v1.0 的命令面**沒有任何交易能產生 `retire` Transition**，是既有缺口）、新增 `commit-test-provenance-batch` 複合交易（`0..N` `ResolutionGroupDraft`）、`init-task`／`resume-task` 接上 tracked TaskState；**§6** —— user-authority clause transition 的 witness 一律為 plan-gate；**§13** —— AC11 更正並新增 AC43–56。其餘章節未動。
 - 日期：2026-07-25
 - 上游：`2026-07-25-shared-decision-provenance-model.md`（**現行生效契約：approved v1.11**；另有 **draft v1.12 — 待 panel**，新增 `reopenCauseRef`，本文 v1.8 的來源 2 條件 3 倚賴之）。本 spec 只落地其 intent-scan 半邊；不重新定義任何 shared concept，附加的實作欄位一律以「annotation」標示且不改變上游欄位語義。
-- 姊妹 spec：`2026-07-25-test-provenance-spec.md`（**approved v1.4**）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
+- 姊妹 spec：`2026-07-25-test-provenance-spec.md`（**現行生效契約：approved v1.4**；另有 **draft v1.5 — 待 panel**，因上游 `provenanceVersion` 升版而標回 draft，本身語義未改）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
 
 ## 1. 目的與範圍
 
@@ -604,6 +604,7 @@ successor-not-applicable
 | `supersede-requirement`（成功 repoint） | **clear** |
 | `reopen-dp`（explicit reopen） | **clear** —— explicit 是另一種成因 |
 | `commit-test-provenance-batch`（group 使 DP repoint 或落定） | **clear** |
+| `commit-test-provenance-batch`（group 的 `transitionDraft.successor == null`，retire 使 dependent DP reopen） | **clear** —— retire 是另一種成因；原本有 witness 者一律清除，不得沿用 |
 | **dependent closure：successor 對該 DP 不 applicable 而 reopen** | **set／replace 為本交易的 TransitionRef**（三條 successor != null 路徑皆同） |
 | 本交易**未改動** terminal／status 的 DP | **preserve**（不得順手改寫） |
 
@@ -898,12 +899,13 @@ intentScan: {
 82. **caller 不得取得 `reopenCauseRef` 的 normative effect**：payload 提供或偽造 `reopenCauseRef`（或任何等效未宣告欄位）→ 兩種結果皆合法，與 AC79 同一 compatibility boundary：closed-shape validation 拒絕並**整筆 no-write**，或實作忽略之而由 writer 確定性寫入正確值。**絕對禁止**：caller 值成為 witness、改寫 writer 導出的值、或使非 source-2 DP 取得 witness。
 83. **TransitionRef 形狀負向**：`reopenCauseRef` 為 malformed（key set 非恰為 {kind, ref}、`ref` 為空字串或非字串）、wrong kind（`kind != "transition"`，即使 id 存在）、或 dangling（解析不到 Transition）→ 各自 fail-closed，依上游 SM typed refs 區的 TransitionRef 定義。
 84. **borrowed Transition**：`reopenCauseRef` 指向一筆真實存在但 `subject != DP.priorTerminalRef` 的 Transition（他 DP 的收斂、或 subject 不對位）→ fail-closed。
-85. **non-source-2 DP 不得帶 witness**：DP 為 resolved／decided／assumed，或為 explicit `reopen-dp`／retire 造成的 open，卻帶 non-null `reopenCauseRef` → **loader／gate fail-closed**（繞過交易入口直接構造亦須被擋）。
+85. **witness coherence 是 loader 的職權上限**：**正向拒絕** —— DP 為 resolved／decided／assumed 卻帶 non-null `reopenCauseRef`，或其 subject／successor／applicability／trigger／status／terminal／carrier 任一不一致 → **loader／gate fail-closed**（繞過交易入口直接構造亦須被擋）。**明文不宣稱** —— 一筆結構完全自洽的 witness（subject == priorTerminalRef ∧ successor != null ∧ applicable == false ∧ trigger 序列化正確 ∧ status=open ∧ terminal 與 resolution carrier 皆 null）**無法**被 loader 分類回 explicit reopen／retire；模型沒有第二份歷史來源，這屬上游 SM §2 的 non-adversarial assurance boundary。非 source-2 路徑輸出 null 由 **command-time lifecycle** 保證，實測見 AC87。
 86. **repoint／resolve 時清除**：帶 witness 的 open DP 之後被 repoint 或落定為任一 terminal → post-state `reopenCauseRef` 必為 null。
 87. **explicit reopen／retire 時清除**：帶 witness 的 DP 之後經 `reopen-dp` 或 retire 造成的 reopen → post-state `reopenCauseRef` 必為 null（成因已改變，舊 witness 不得殘留）。
 88. **第二次 source-2 reopen 時替換**：同一 DP 再次因 source-2 而 reopen → `reopenCauseRef` 必**替換**為新交易的 TransitionRef，且不得殘留舊值。
-89. **legacy absence 的正規化**：pre-v1.12 snapshot 缺 `reopenCauseRef` → 依上游 SM 的 upgrade boundary 正規化為 null（該正規化附有「不存在 durable pre-v1.12 source-2 state」的證據與適用範圍）；v1.12 之後的 writer 產出仍缺欄位 → 視為實作錯誤而非 legacy，fail-closed。
+89. **版本邊界可觀測**：驗收必須使用**持久化的 `provenanceVersion`**，不得靠兩份形狀相同的手工 snapshot 加測試名稱區分。(i) `provenanceVersion: 1` 且 DP 缺 `reopenCauseRef` 的 fixture → 經 **migration** 後每個 DP 帶 **explicit null**，且 store 升為 version 2；(ii) `provenanceVersion: 2` 且 DP 缺 `reopenCauseRef` 的 fixture → **fail-closed**（writer defect）；(iii) 存在 TaskState 的 version 1 store 進行 migration → **fail-closed**，要求顯式 re-baseline（其 `baseProvenance.storeDigest` 是對 pre-migration bytes 計算的，migration 後必然 stale）。
 90. **拒絕即 no-write**：AC82–89 的**每一個**拒絕案例都必須驗 store bytes 位元相同、`TaskState.committedProvenanceBatchRef` 未變、lock 已釋放且無 temp 檔殘留。
+91. **未受影響 DP 的 witness 必須原封不動（preserve 正例）**：pre-state 放一個持有合法 non-null `reopenCauseRef` 的 DP-X；執行任一只影響 DP-Y 的交易或 batch → post-state DP-X 的 `reopenCauseRef` 必須維持**同一筆** TransitionRef，不得被清除、替換或重寫，且 DP-X 的其餘 causal 欄位（`status`、三個 terminal ref、`priorTerminalRef`、`reopenedBy`、`resolutionRulingRef`）亦不得被順手改動。
 
 ### Store-script 實作層 assertion（非模型規則，直接寫進 script tests）
 

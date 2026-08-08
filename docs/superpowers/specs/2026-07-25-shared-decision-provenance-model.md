@@ -499,6 +499,20 @@ ref 可解析為 Transition T
 
 **`reopenCauseRef == null` 的 DP 一律不被歸類為該情形**，且**不因 prior clause 日後取得 Transition 而被重新分類** —— 這正是上述兩個反例得以合法的原因。
 
+**Assurance boundary（明文，non-adversarial）** —— `reopenCauseRef` 是該因果的**唯一** authoritative 來源，模型沒有第二份歷史紀錄可以拿來對質：
+
+```
+loader／gate 驗的是 **witness coherence**：ref 結構合法、subject／successor／applicability
+／trigger／status／terminal／carrier 六者互相一致。
+
+loader **不**證明 writer 所宣稱的歷史事件真的發生過。一筆「結構完全自洽但歷史上偽造」
+的 witness 無法被 loader 分類回 explicit reopen 或 retire —— 要做到那件事，模型必須另外
+新增獨立、不可偽裝的 DP event log，本版**不擴充**。
+
+非 source-2 路徑（explicit reopen-dp、retire、其他成因）輸出 null 這件事，因此由
+**command-time lifecycle** 保證並由驗收實測，不是由 loader 事後推斷。
+```
+
 **Ownership** —— `reopenCauseRef` 是 **writer-owned** 的 persisted causal witness，與 `resolutionRulingRef` 的 caller-declared 模型**不同**，兩者不共用命令面：
 
 ```
@@ -509,23 +523,42 @@ loader／gate 由 §9 的 **Reopen cause coherence** 一列驗證 —— **不�
 後者只管 resolutionRulingRef。
 ```
 
-**Legacy absence 與 upgrade boundary（v1.12）** —— 新增 persisted 欄位必須定義舊 snapshot 缺欄位時的行為，否則三種狀態會被壓成同一種：合法的非 source-2 reopen、舊實作產生但無 witness 的 source-2 reopen、以及新 writer 漏寫欄位的實作錯誤。本模型採 **normalize-absent-to-null**，並附證據：
+**Legacy absence 與 upgrade boundary（v1.12）** —— 新增 persisted 欄位必須定義舊 snapshot 缺欄位時的行為，否則三種狀態會被壓成同一種：合法的非 source-2 reopen、舊實作產生但無 witness 的 source-2 reopen、以及新 writer 漏寫欄位的實作錯誤。
+
+**rollout evidence 只能支撐 migration assumption，不能取代 discriminator。** 「缺欄位」在 legacy 與 writer defect 兩種情形下是**同一串 bytes**；沒有持久化的版本標記，loader 無論如何都分辨不出。因此 **`provenanceVersion` 升為 2**：
 
 ```
-主張    不存在任何 durable pre-v1.12 source-2 state。
-證據    (1) 能產生該狀態的唯一程式路徑是 clear 來源 2，首次實作於 cressetide
-            commit 6c743e7；
-        (2) 該 commit 與其整條開發線**從未 push／釋出**，因此沒有任何 consumer
-            能執行到它；
-        (3) 本 repo 內不存在任何 tracked 或 on-disk 的 `.ctide/provenance.json`；
-        (4) 規格在 v1.7 核准前明文禁止實作來源 2，核准與實作皆發生於同一日且未釋出。
-適用範圍 僅限上述證據成立的情形。若日後有任何已釋出 writer 曾產生 source-2 state，
-        本正規化即不適用，必須改走 migration／store-version 路徑：ambiguous open DP
-        **不得**由 current graph 回填成因（那正是本版在修的錯誤），必須 fail-closed
-        並重新 routing／固化，之後才轉為顯式 null 或有效 TransitionRef。
-規則    pre-v1.12 snapshot 缺欄位 → 正規化為 null；
-        **所有 v1.12 writer 一律顯式寫入 null 或 TransitionRef**，
-        因此「缺欄位」在 v1.12 之後即為實作錯誤，而非 legacy。
+provenanceVersion: 1   （legacy）
+  DP 缺 reopenCauseRef → 由 **migration** 補為 explicit null，不得由 current graph 回填成因
+  migration 之外的任何路徑不得讀寫 version 1 store
+
+provenanceVersion: 2   （current）
+  **每個 DP 必須顯式含有 reopenCauseRef: null | TransitionRef**
+  缺席 → **fail-closed**（writer defect，不是 legacy）
+
+canonical empty store        provenanceVersion = 2
+writer final-snapshot 驗證    產出必為 version 2 且每個 DP 顯式帶該欄位
+base provenance digest        digest 計算於 canonical bytes，version 欄位在其中；
+                              因此 v1 bytes 與 migration 後的 v2 bytes digest 必然不同
+migration 的 TaskState 邊界    若 store 內存在任何 TaskState，其 baseProvenance.storeDigest
+                              是對 pre-migration bytes 計算的，migration 後必然 stale →
+                              **fail-closed**，要求顯式 re-baseline，不得靜默改寫 witness
+```
+
+支持「migration 實際上沒有 subject」的 rollout evidence（**這是 migration assumption 的依據，不是 discriminator**）：
+
+```
+已確認   (1) 能產生 source-2 state 的唯一程式路徑首次實作於 cressetide commit 6c743e7；
+        (2) 該 commit 不在任何 remote branch／tag 上，因此**沒有 released／remote consumer**
+            能取得該 writer —— 但**本地 tests／probes 可能執行過未推送的程式**，
+            這不等於「任何 consumer 都不可能執行」；
+        (3) repo 的 canonical path 上不存在 durable `.ctide/provenance.json`，
+            亦無任何 tracked snapshot；
+        (4) 規格在 v1.7 核准前明文禁止實作來源 2。
+結論     沒有 **observed durable** pre-v1.12 source-2 state。
+適用範圍 若日後發現任何已釋出 writer 曾產生 source-2 state，migration 仍走上列 version 路徑；
+        ambiguous open DP **一律不得**由 current graph 回填成因（那正是本版在修的錯誤），
+        必須 fail-closed 並重新 routing／固化。
 ```
 
 `resolutionRulingRef`（**與本節無關的另一個 carrier**）的語義定義於上一節；承載它的**命令面**在 IS §8「carrier 更新契約」（逐 DP 的 `resolutionCarrierUpdates[]`），**執行它的檢查**在 §9 的 `Carrier coherence` 一列。三者缺一即失效：缺命令面則 preserve／replace／clear 無交易可執行；缺 §9 一列則該式只是散文，繞過交易入口直接構造的不一致狀態不會被擋。
