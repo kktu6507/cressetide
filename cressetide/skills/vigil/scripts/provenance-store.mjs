@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // ctide provenance-store: the single writer for `.ctide/provenance.json`, the tracked canonical
 // semantic state defined by docs/superpowers/specs/2026-07-25-shared-decision-provenance-model.md
-// (approved v1.11) and given its command surface by 2026-07-25-intent-scan-spec.md (approved v1.6) §8.
+// (approved v1.12) and given its command surface by 2026-07-25-intent-scan-spec.md (approved v1.8) §8.
 //
 // Session-time helper (NOT a Claude Code hook, NOT CI-only): the main thread calls one domain
 // transaction per mutation. There are deliberately NO bare append-clause / append-transition /
@@ -17,7 +17,9 @@
 // Dependency-free (Node built-ins only). Layering, innermost first: canonical encoding/digest →
 // store schema + loader → immutable model index + derived fields → invariants → Transition matrix +
 // witness binding → pure domain transactions (store → store, no I/O) → CAS/atomic-replace runner →
-// CLI. Every mutation path funnels through the SAME validateAll(); no command, loader or CLI keeps
+// CLI. Every mutation path funnels through validateAll() on its RESULT — with one stated exception:
+// the v1→v2 migration lane validates its PRE-state with validateLegacyV1() instead, because a
+// version 1 store cannot satisfy the v2 invariants by definition. No command, loader or CLI keeps
 // its own copy of an invariant. All layers are exported for the test suite; main() wraps the CLI
 // under the import.meta.url guard.
 //
@@ -215,7 +217,12 @@ export function makeIdFactory(options = {}) {
 
 // --- store schema, empty store, canonical bytes --------------------------------------------------
 
-export const PROVENANCE_VERSION = 1;
+export const PROVENANCE_VERSION = 2;
+// SM v1.12: version 1 is legacy. Only migrate-store-v1-to-v2 may read a current v1 store; a
+// historical immutable base-tree store may still be v1 and is decoded read-only.
+export const LEGACY_PROVENANCE_VERSION = 1;
+export const SUPPORTED_PROVENANCE_VERSIONS = [1, 2];
+export const MIGRATION_COMMAND = "migrate-store-v1-to-v2";
 export const STORE_SECTIONS = ["sources", "clauses", "transitions", "records", "decisionPoints", "taskStates"];
 
 // shared §9: the canonical empty store, used verbatim when baseProvenance.treeOid has no store file.
@@ -273,10 +280,12 @@ export function parseStore(text) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     reject("E_STORE_MALFORMED", "provenance store must be a JSON object");
   }
-  if (raw.provenanceVersion !== PROVENANCE_VERSION) {
+  // Step 1 of the version dispatch (IS §8): parse root + section shape + provenanceVersion ONLY.
+  // Which versions may then be USED is the dispatcher's business, not the parser's.
+  if (!SUPPORTED_PROVENANCE_VERSIONS.includes(raw.provenanceVersion)) {
     reject("E_STORE_VERSION", `unsupported provenanceVersion ${JSON.stringify(raw.provenanceVersion)}`);
   }
-  const store = { provenanceVersion: PROVENANCE_VERSION };
+  const store = { provenanceVersion: raw.provenanceVersion };
   for (const section of STORE_SECTIONS) {
     const v = raw[section];
     if (v === undefined) reject("E_STORE_MALFORMED", `provenance store is missing section "${section}"`);
@@ -477,6 +486,19 @@ function basisRefsResolvable(index, basisRefs) {
     return { ok: false, reason: "malformed basisRef" };
   }
   return { ok: true };
+}
+
+// SM v1.12 typed refs: TransitionRef. Cited by reopenCauseRef and every later consumer; no one
+// restates it. Returns a reason rather than throwing so callers can phrase their own error.
+export function checkTransitionRef(index, ref) {
+  if (!ref || typeof ref !== "object" || Array.isArray(ref)) return { ok: false, reason: "not-an-object" };
+  const keys = Object.keys(ref).sort(compareCodePoint);
+  if (canonicalJson(keys) !== canonicalJson(["kind", "ref"])) return { ok: false, reason: "key-set-not-exact" };
+  if (ref.kind !== "transition") return { ok: false, reason: `kind is ${JSON.stringify(ref.kind)}, not "transition"` };
+  if (typeof ref.ref !== "string" || ref.ref.length === 0) return { ok: false, reason: "ref must be a non-empty string" };
+  const t = index.transitions.get(ref.ref);
+  if (!t) return { ok: false, reason: "does not resolve to a transition" };
+  return { ok: true, value: t };
 }
 
 export function isReviewerPrincipal(p) {
@@ -715,6 +737,16 @@ function validateStructure(store) {
     if (!d.classificationBasis) reject("E_SHAPE", `DP ${d.id} needs classificationBasis`, d.id);
     if (d.reopenedBy !== undefined && d.reopenedBy !== null && !REOPEN_TRIGGERS.includes(d.reopenedBy)) {
       reject("E_ENUM", `DP ${d.id} has reopenedBy outside the closed trigger list: ${d.reopenedBy}`, d.id);
+    }
+    // SM v1.12: in a version 2 store every DP carries the field EXPLICITLY. After the upgrade an
+    // absent field is a writer defect, never legacy — that is the whole point of the discriminator.
+    if (store.provenanceVersion === PROVENANCE_VERSION
+        && !Object.prototype.hasOwnProperty.call(d, "reopenCauseRef")) {
+      reject(
+        "E_DP_CAUSE_MISSING",
+        `DP ${d.id} has no reopenCauseRef — a version ${PROVENANCE_VERSION} store must state it explicitly as null or a TransitionRef`,
+        d.id,
+      );
     }
   }
 
@@ -1479,30 +1511,68 @@ function validateCarrierCoherence(index) {
   }
 }
 
-// IS v1.7 source 2 post-state coherence, checked on the SNAPSHOT so a state built around the
-// command surface is refused too. The source-2 shape is identifiable without any transaction
-// context: a DP left open whose priorTerminalRef has an effective Transition WITH a successor. The
-// retire row (successor null) and reopen-dp on a still-active terminal (no effective Transition)
-// fall outside this branch and keep their existing behaviour untouched.
-function validateReopenCoherence(index, now) {
+// SM v1.12 §9 "Reopen cause coherence". The v1.7 predecessor inferred the CAUSE of a reopen from
+// the current graph — open DP whose priorTerminalRef now has a Transition with a successor — which
+// misread every DP reopened for its own reason whose prior clause was superseded later, because an
+// append-only graph keeps growing around records that never changed. Cause is now read from the
+// persisted witness alone. A DP without one is never classified, no matter what its neighbours
+// later acquire.
+//
+// Assurance boundary (SM §2): this verifies witness COHERENCE. The model holds no second record of
+// the same history, so a structurally self-consistent witness cannot be shown to be fabricated;
+// the non-source-2 paths writing null is guaranteed at command time, not re-derived here.
+function validateReopenCauseCoherence(index, now) {
   for (const d of index.store.decisionPoints) {
-    if (d.status !== "open" || !d.priorTerminalRef) continue;
-    const t = effectiveTransition(index, d.priorTerminalRef);
-    if (!t || !t.successor) continue;
-    if (d.reopenedBy !== REOPEN_TRIGGER_SERIALIZATION) {
+    const cause = d.reopenCauseRef;
+    if (cause === undefined || cause === null) continue;
+
+    const shape = checkTransitionRef(index, cause);
+    if (!shape.ok) {
+      reject("E_CAUSE_REF_SHAPE", `DP ${d.id} reopenCauseRef is not a valid TransitionRef: ${shape.reason}`, d.id);
+    }
+    const t = shape.value;
+
+    if (d.status !== "open") {
       reject(
-        "E_REOPEN_TRIGGER_MISMATCH",
-        `DP ${d.id} was reopened while ${d.priorTerminalRef} was replaced by ${t.successor}, so its reopenedBy must be the v1 serialization "${REOPEN_TRIGGER_SERIALIZATION}" of "terminal clause invalidated with no successor" — found "${d.reopenedBy}", which is a different cause`,
+        "E_CAUSE_STATUS",
+        `DP ${d.id} carries reopenCauseRef ${t.id} while status=${d.status} — the witness only exists on a DP the closure left open`,
+        d.id,
+      );
+    }
+    if (currentTerminalRef(d) !== null) {
+      reject("E_CAUSE_STATUS", `DP ${d.id} carries reopenCauseRef ${t.id} while still holding a terminal ref`, d.id);
+    }
+    if (t.subject !== d.priorTerminalRef) {
+      reject(
+        "E_CAUSE_BORROWED",
+        `DP ${d.id} names transition ${t.id}, whose subject is ${t.subject}, but its priorTerminalRef is ${d.priorTerminalRef}`,
+        d.id,
+      );
+    }
+    if (t.successor === null || t.successor === undefined) {
+      reject(
+        "E_CAUSE_POSTCONDITION",
+        `DP ${d.id} names transition ${t.id}, which retires ${t.subject} — a retire-caused reopen carries no cause witness`,
         d.id,
       );
     }
     const app = applicable(index, t.successor, d, now);
     if (app.ok) {
       reject(
-        "E_REOPEN_PRIOR_INCOHERENT",
-        `DP ${d.id} records a reopen against ${d.priorTerminalRef}, but that clause's successor ${t.successor} IS applicable to this DP — such a DP is repointed, so the recorded prior does not evidence the reopen`,
+        "E_CAUSE_POSTCONDITION",
+        `DP ${d.id} records a source-2 reopen against ${t.id}, but its successor ${t.successor} IS applicable to this DP — such a DP is repointed, not reopened`,
         d.id,
       );
+    }
+    if (d.reopenedBy !== REOPEN_TRIGGER_SERIALIZATION) {
+      reject(
+        "E_CAUSE_TRIGGER",
+        `DP ${d.id} carries a source-2 cause witness but reopenedBy is "${d.reopenedBy}" — it must be the v1 serialization "${REOPEN_TRIGGER_SERIALIZATION}"`,
+        d.id,
+      );
+    }
+    if (d.resolutionRulingRef !== undefined && d.resolutionRulingRef !== null) {
+      reject("E_CAUSE_POSTCONDITION", `DP ${d.id} carries a source-2 cause witness alongside a non-null resolutionRulingRef`, d.id);
     }
   }
 }
@@ -1512,7 +1582,7 @@ export function validateAll(store, options = {}) {
   validateStructure(store);
   const index = indexStore(store);
   validateCarrierCoherence(index);
-  validateReopenCoherence(index, now);
+  validateReopenCauseCoherence(index, now);
   validateRefs(index);
   validateMergeReconciliation(index);
   validateTransitionMatrix(index);
@@ -1538,6 +1608,7 @@ function findDp(draft, dpId, command) {
 
 function setTerminal(dp, clauseId) {
   for (const f of TERMINAL_FIELDS) delete dp[f];
+  dp.reopenCauseRef = null; // IS §8 lifecycle: any terminal landing clears the reopen cause
   const kind = clauseKindOf(clauseId);
   if (!kind) reject("E_ID_PREFIX", `cannot set a terminal to ${clauseId}: unrecognised clause prefix`, clauseId);
   dp[TERMINAL_FIELD_BY_KIND[kind]] = clauseId;
@@ -1557,17 +1628,21 @@ function refuseReopenedWithActivePrior(draft, dp, command) {
   );
 }
 
+// Baseline reopen: explicit reopen-dp, retire-caused reopen, and every other cause. The witness is
+// cleared here and re-set ONLY by the source-2 branch of the dependent closure, so a stale cause can
+// never survive a reopen for a different reason.
 function reopenDpInPlace(dp, priorTerminalRef, trigger) {
   for (const f of TERMINAL_FIELDS) delete dp[f];
   dp.status = "open";
   dp.priorTerminalRef = priorTerminalRef;
   dp.reopenedBy = trigger;
+  dp.reopenCauseRef = null;
 }
 
 // shared §8 "Terminal clause 替換 … 一律原子執行" step 4: every DP whose current terminal is the
 // subject is repointed (successor applicable) or reopened, in the SAME transaction.
 function applyDependentClosure(draft, subjectId, successorId, options = {}) {
-  const { now, trigger = "terminal-invalidated-no-successor", strictDpIds = [] } = options;
+  const { now, trigger = "terminal-invalidated-no-successor", strictDpIds = [], transitionId = null } = options;
   const index = indexStore(draft);
   const affected = draft.decisionPoints.filter((d) => currentTerminalRef(d) === subjectId);
   const strict = new Set(strictDpIds);
@@ -1591,6 +1666,14 @@ function applyDependentClosure(draft, subjectId, successorId, options = {}) {
       setTerminal(dp, successorId);
     } else {
       reopenDpInPlace(dp, subjectId, trigger);
+      // IS v1.8 source 2: a NON-NULL successor that this DP could not take. The cause is derived
+      // here — from membership plus applicable() being false plus the closure actually reopening —
+      // and persisted, because no later reader can recover it from the graph. Whatever trigger the
+      // caller passed is overwritten: the witness and its serialization are writer-owned.
+      if (successorId && transitionId) {
+        dp.reopenedBy = REOPEN_TRIGGER_SERIALIZATION;
+        dp.reopenCauseRef = { kind: "transition", ref: transitionId };
+      }
     }
   }
   // Initiating DPs that were NOT pointing at the subject still have to land on the successor
@@ -1904,13 +1987,53 @@ function defineTransaction(name, apply) {
 
 defineTransaction("validate", (store) => store);
 
+// IS §8: the ONE transaction that may touch a current version 1 store. Its permitted change set is
+// exact — the version field and an added null per DP — and it is not a repair tool: a v1 store that
+// does not pass the legacy pre-validator fails closed rather than being cleaned up on the way past.
+defineTransaction(MIGRATION_COMMAND, (store, payload, ctx) => {
+  if (store.provenanceVersion === PROVENANCE_VERSION) {
+    reject(
+      "E_MIGRATION_NOT_NEEDED",
+      `${MIGRATION_COMMAND}: this store is already provenanceVersion ${PROVENANCE_VERSION}`,
+      MIGRATION_COMMAND,
+    );
+  }
+  for (const k of Object.keys(payload || {})) {
+    reject("E_PAYLOAD_SHAPE", `${MIGRATION_COMMAND}: takes no payload, got "${k}"`, k);
+  }
+  // pre-validator: upstream approved v1.11 rules, without v1.12's reopenCauseRef requirement
+  validateLegacyV1(store, { now: ctx.now });
+  if (store.taskStates.length > 0) {
+    reject(
+      "E_MIGRATION_UNSUPPORTED",
+      `${MIGRATION_COMMAND}: this store holds ${store.taskStates.length} TaskState(s). A v1 store with tasks is unsupported in this version — resume-task may not reseat baseProvenance and no re-baseline command exists`,
+      MIGRATION_COMMAND,
+    );
+  }
+  for (const d of store.decisionPoints) {
+    if (Object.prototype.hasOwnProperty.call(d, "reopenCauseRef")) {
+      reject(
+        "E_MIXED_VERSION",
+        `${MIGRATION_COMMAND}: DP ${d.id} already carries reopenCauseRef in a store declaring version ${LEGACY_PROVENANCE_VERSION} — mixed-version/writer defect. The existing value is neither overwritten nor removed`,
+        d.id,
+      );
+    }
+  }
+  const draft = clone(store);
+  draft.provenanceVersion = PROVENANCE_VERSION;
+  for (const d of draft.decisionPoints) d.reopenCauseRef = null;
+  return draft;
+});
+
 defineTransaction("init-task", (store, payload) => {
   requireFields(payload, ["taskId", "baseProvenance"], "init-task");
   const draft = clone(store);
   if (draft.taskStates.some((t) => t.taskId === payload.taskId)) {
     reject("E_TASK_EXISTS", `init-task: task ${payload.taskId} already exists (use resume-task)`, payload.taskId);
   }
-  for (const dp of payload.decisionPoints || []) draft.decisionPoints.push(dp);
+  // reopenCauseRef is writer-owned: a freshly declared DP has no reopen cause, and whatever the
+  // caller sent is discarded rather than honoured (AC82 result B).
+  for (const dp of payload.decisionPoints || []) draft.decisionPoints.push({ ...dp, reopenCauseRef: null });
   draft.taskStates.push({
     taskId: payload.taskId,
     baseProvenance: payload.baseProvenance,
@@ -1929,7 +2052,7 @@ defineTransaction("resume-task", (store, payload) => {
       && canonicalJson(payload.baseProvenance) !== canonicalJson(ts.baseProvenance)) {
     reject("E_BASE_IMMUTABLE", `resume-task: baseProvenance is immutable for the life of a task — reseating the base is refused`, payload.taskId);
   }
-  for (const dp of payload.decisionPoints || []) draft.decisionPoints.push(dp);
+  for (const dp of payload.decisionPoints || []) draft.decisionPoints.push({ ...dp, reopenCauseRef: null });
   const before = new Set(ts.currentTaskDpIds);
   for (const id of payload.addDpIds || []) if (!before.has(id)) ts.currentTaskDpIds.push(id);
   if (payload.currentTaskDpIds !== undefined) {
@@ -2069,6 +2192,7 @@ defineTransaction("replace-terminal", (store, payload, ctx) => {
   applyDependentClosure(draft, subject, successorId, {
     now: ctx.now,
     trigger: payload.reopenTrigger || "terminal-invalidated-no-successor",
+    transitionId: payload.transition.id,
   });
   // A reopened-prior DP is not "currently pointing at" the subject, so the generic closure above
   // does not touch it; land it explicitly.
@@ -2106,6 +2230,7 @@ defineTransaction("supersede-requirement", (store, payload, ctx) => {
     now: ctx.now,
     trigger: payload.reopenTrigger || "terminal-invalidated-no-successor",
     strictDpIds: payload.initiatingDpIds,
+    transitionId: t.id,
   });
   applyCarrierUpdates(store, draft, payload, "supersede-requirement", ctx.now);
   return draft;
@@ -2256,6 +2381,7 @@ defineTransaction("commit-test-provenance-batch", (store, payload, ctx) => {
     applyDependentClosure(draft, subjectRef, group.transition.successor || null, {
       now: ctx.now,
       trigger: payload.reopenTrigger || "terminal-invalidated-no-successor",
+      transitionId: group.transition.id,
     });
     persistedGroups.push({
       subjectRef,
@@ -2305,12 +2431,39 @@ defineTransaction("commit-test-provenance-batch", (store, payload, ctx) => {
 
 // --- CAS, temp write, atomic replace ---------------------------------------------------------------
 
+// IS §8 version dispatch (step 2-4; parseStore did step 1). A loader that validated by the current
+// version alone would reject a v1 store before dispatch, so the migration command could never be
+// reached — which is why the looser path has to be named rather than implied.
+export function dispatchVersion(store, command) {
+  const v = store && store.provenanceVersion;
+  if (v === PROVENANCE_VERSION) return "current";
+  if (v === LEGACY_PROVENANCE_VERSION) {
+    if (command !== MIGRATION_COMMAND) {
+      reject(
+        "E_STORE_VERSION",
+        `this store is provenanceVersion ${LEGACY_PROVENANCE_VERSION}; only ${MIGRATION_COMMAND} may operate on it (got "${command}")`,
+        command,
+      );
+    }
+    return "legacy-migration";
+  }
+  reject("E_STORE_VERSION", `unsupported provenanceVersion ${JSON.stringify(v)}`, command);
+}
+
 export function applyTransaction(store, command, payload, options = {}) {
   const apply = TRANSACTIONS[command];
   if (!apply) reject("E_UNKNOWN_COMMAND", `unknown command "${command}"`, command);
+  const lane = dispatchVersion(store, command);
   const ctx = { now: options.now === undefined ? Date.now() : options.now };
   const preIndex = indexStore(store);
   const next = apply(store, payload || {}, ctx);
+
+  if (lane === "legacy-migration") {
+    // The pre-validator already ran inside the transaction against v1.11 rules; the RESULT is a v2
+    // store and gets the full current invariant set.
+    validateAll(next, { now: ctx.now });
+    return next;
+  }
 
   // IS §4: freshness is a PRE-mutation check applied at every CONSUMPTION, not once at creation.
   // Checking only newly-minted records meant a ruling could be persisted, the DP could then move,
@@ -2335,6 +2488,30 @@ export function applyTransaction(store, command, payload, options = {}) {
 
   validateAll(next, { now: ctx.now });
   return next;
+}
+
+// The migration-only v1 decoder / pre-validator: upstream approved v1.11 rules, deliberately
+// without v1.12's reopenCauseRef requirement, which a v1 store cannot satisfy.
+//
+// Boundary: in the PRODUCTION lane it is reached only from the migration transaction, which
+// dispatchVersion gates. It is exported and therefore callable directly by helpers and tests —
+// that is a decoder entry point, not a second operational path, and calling it does not make a
+// version 1 store usable by any other command.
+export function validateLegacyV1(store, options = {}) {
+  const now = options.now === undefined ? Date.now() : options.now;
+  if (store.provenanceVersion !== LEGACY_PROVENANCE_VERSION) {
+    reject("E_STORE_VERSION", `legacy validation expects provenanceVersion ${LEGACY_PROVENANCE_VERSION}`);
+  }
+  validateStructure(store); // the v2-only reopenCauseRef rule is keyed on provenanceVersion
+  const index = indexStore(store);
+  validateCarrierCoherence(index);
+  validateRefs(index);
+  validateMergeReconciliation(index);
+  validateTransitionMatrix(index);
+  validateGovernanceRulings(index);
+  validateInvariants(index, now);
+  validateTaskStatesAndHeads(index);
+  return { ok: true, index };
 }
 
 // The full protocol: load+validate pre-state → CAS → apply in memory → validate FINAL snapshot →
@@ -2388,10 +2565,21 @@ function runTransactionLocked(cwd, command, payload, options = {}) {
   if (options.expectedStoreDigest !== undefined && options.expectedStoreDigest !== loaded.digest) {
     reject("E_CAS_MISMATCH", `store digest is ${loaded.digest}, expected ${options.expectedStoreDigest}`, loaded.digest);
   }
-  validateAll(loaded.store, { now: options.now });
-  if (command === "validate") {
-    return { command, changed: false, storeDigest: loaded.digest, path: loaded.file };
+  // IS §8: dispatch on the persisted version BEFORE any version-specific validation. Running
+  // validateAll first meant a current v1 store reached the v2 invariants — `validate` exited 0 on
+  // one, and a malformed or mixed-version v1 surfaced an E_CAUSE_* instead of the lane's own
+  // E_STORE_VERSION / E_MIXED_VERSION.
+  const lane = dispatchVersion(loaded.store, command);
+
+  if (lane === "current") {
+    validateAll(loaded.store, { now: options.now });
+    if (command === "validate") {
+      return { command, changed: false, storeDigest: loaded.digest, path: loaded.file };
+    }
   }
+  // legacy-migration lane: the pre-state is NOT put through the v2 invariants. The migration
+  // transaction owns it — validateLegacyV1 plus the TaskState and mixed-version guards — and the
+  // full v2 validateAll runs on the resulting snapshot.
 
   const next = applyTransaction(loaded.store, command, payload, options);
   const bytes = canonicalStoreBytes(next);

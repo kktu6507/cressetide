@@ -1,10 +1,11 @@
 // Phase-1 tests for cressetide/skills/vigil/scripts/provenance-store.mjs.
 //
 // Spec anchors (all three approved):
-//   SM  = docs/superpowers/specs/2026-07-25-shared-decision-provenance-model.md (approved v1.11)
-//   IS  = docs/superpowers/specs/2026-07-25-intent-scan-spec.md (approved v1.6)
+//   SM  = docs/superpowers/specs/2026-07-25-shared-decision-provenance-model.md (approved v1.12)
+//   IS  = docs/superpowers/specs/2026-07-25-intent-scan-spec.md (approved v1.8)
+//   TP  = docs/superpowers/specs/2026-07-25-test-provenance-spec.md (approved v1.5)
 // Each test names the section / acceptance-criterion it lands. This suite covers the STORE-LAYER
-// subset of the 72 acceptance criteria only — the orchestrator, inventory, adapter, reviewer,
+// subset of the approved criteria only — the orchestrator, inventory, adapter, reviewer,
 // contract-derivation and ledger criteria belong to later phases and are NOT claimed here.
 //
 // Fixtures are built by chaining the REAL domain transactions, never by injecting a hand-built
@@ -20,6 +21,7 @@ import {
   resolutionGroupDigest, emptyStore, canonicalStoreBytes, storeDigest, parseStore, loadStore,
   storePath, CANONICAL_STORE_PATH, indexStore, statusOf, compareCodePoint, canonicalizeBatchSnapshot,
   validateAll, applyTransaction, runTransaction, clauseKindOf, ulid, encodeUlidTime,
+  validateLegacyV1, PROVENANCE_VERSION,
 } from "../cressetide/skills/vigil/scripts/provenance-store.mjs";
 
 const NOW = Date.UTC(2026, 6, 26);
@@ -2428,6 +2430,93 @@ test("IS AC66: clear on a DP whose pre-state carrier is already null is refused 
 // retire and reopen-dp rows. A carrier-bearing DEPENDENT DP that is reopened because the (non-null)
 // successor is not applicable to it therefore has no legal action at all. Refusing it is the
 // fail-closed reading; inventing a fourth disposition would be writing spec in code.
+// --- IS v1.8 AC80: a reopen's CAUSE is persisted, never inferred from the current graph -----------
+// Both histories below acquire the "open DP whose priorTerminalRef now has a Transition with a
+// successor" shape only because an UNRELATED clause was superseded later. The cause is a fact about
+// the moment the reopen happened; the append-only graph around it keeps growing, so any predicate
+// read at load time will eventually misread these as source-2 reopens.
+
+// DP-1 resolved by REQ-a with no carrier, then explicitly reopened for its own reason.
+function withExplicitReopen(trigger = "new-dependent") {
+  let s = withSecondRequirement(baseFixture());
+  s = apply(s, "adopt-existing-outcome", {
+    dpId: "DP-1", clauseRef: "REQ-a", resolutionCarrierUpdates: nulls("DP-1"),
+  });
+  s = apply(s, "reopen-dp", {
+    dpId: "DP-1", trigger, expectedCurrentTerminalRef: "REQ-a",
+    resolutionCarrierUpdates: nulls("DP-1"),
+  });
+  return s;
+}
+
+function supersedeReqAToBNoDeps(over = {}) {
+  return {
+    initiatingDpIds: [],
+    records: [planGate("R-pg", "REQ-a")],
+    transition: {
+      id: "T-1", subject: "REQ-a", action: "supersede", successor: "REQ-b",
+      authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+    },
+    resolutionCarrierUpdates: [],
+    ...over,
+  };
+}
+
+test("IS AC80(i): an explicitly reopened DP is not reclassified when its prior clause is superseded later", () => {
+  const s = withExplicitReopen("new-dependent");
+  const before = indexStore(s).dps.get("DP-1");
+  assert.strictEqual(before.status, "open");
+  assert.strictEqual(before.reopenedBy, "new-dependent");
+  assert.strictEqual(before.priorTerminalRef, "REQ-a");
+
+  // REQ-a is superseded for reasons of its own. DP-1 holds no terminal, so it is not a dependent of
+  // this transaction and its closure never touches it.
+  const out = apply(s, "supersede-requirement", supersedeReqAToBNoDeps());
+  const after = indexStore(out).dps.get("DP-1");
+  assert.strictEqual(after.status, "open", "the DP stays open");
+  assert.strictEqual(after.reopenedBy, "new-dependent", "its recorded cause is untouched");
+  assert.strictEqual(after.priorTerminalRef, "REQ-a");
+
+  // and it can still converge afterwards
+  const settled = apply(out, "adopt-existing-outcome", {
+    dpId: "DP-1", clauseRef: "REQ-b", resolutionCarrierUpdates: nulls("DP-1"),
+  });
+  assert.strictEqual(indexStore(settled).dps.get("DP-1").resolvedBy, "REQ-b");
+});
+
+test("IS AC80(ii): two DPs deferred-reopened on one prior — the first converging does not seal off the second", () => {
+  let s = withSecondRequirement(baseFixture());
+  for (const dpId of ["DP-1", "DP-2"]) {
+    s = apply(s, "adopt-existing-outcome", { dpId, clauseRef: "REQ-a", resolutionCarrierUpdates: nulls(dpId) });
+    s = apply(s, "reopen-dp", {
+      dpId, trigger: "new-dependent", expectedCurrentTerminalRef: "REQ-a",
+      resolutionCarrierUpdates: nulls(dpId),
+    });
+  }
+  // DP-1 converges through the deferred-reopen path, minting REQ-a → REQ-b.
+  const out = apply(s, "replace-terminal", {
+    dpId: "DP-1", casMode: "reopened-prior", expectedPriorTerminalRef: "REQ-a",
+    records: [planGate("R-pg", "REQ-a")],
+    transition: {
+      id: "T-1", subject: "REQ-a", action: "supersede", successor: "REQ-b",
+      authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+    },
+    resolutionCarrierUpdates: nulls("DP-1"),
+  });
+  assert.strictEqual(indexStore(out).dps.get("DP-1").resolvedBy, "REQ-b");
+  const stranded = indexStore(out).dps.get("DP-2");
+  assert.strictEqual(stranded.status, "open", "DP-2 is still waiting");
+  assert.strictEqual(stranded.reopenedBy, "new-dependent", "with its own recorded cause");
+
+  // DP-2's convergence must remain reachable.
+  const settled = apply(out, "adopt-existing-outcome", {
+    dpId: "DP-2", clauseRef: "REQ-b", resolutionCarrierUpdates: nulls("DP-2"),
+  });
+  assert.strictEqual(indexStore(settled).dps.get("DP-2").resolvedBy, "REQ-b");
+});
+
 // --- IS v1.7 clear source 2: reopened-dependent ---------------------------------------------------
 // A carrier-bearing DEPENDENT DP reopened because a non-null successor is not applicable to it.
 // Under v1.6 this state had no legal carrier action at all; v1.7 makes `clear` the one legal
@@ -2581,7 +2670,7 @@ test("IS AC75: with every other condition aligned, a successor that IS applicabl
   // exactly as the honest transaction wrote it. Only applicability flips.
   const covered = apply(good, "append-record", { record: scopeRuling("R-sc", DP1, true) });
   const withScope = tamper(covered, "DP-1", { scopeRulingRef: { kind: "review-ruling", ref: "R-sc" } });
-  const e = assertRejects(() => validateAll(withScope, OPTS), "E_REOPEN_PRIOR_INCOHERENT", "successor is applicable after all");
+  const e = assertRejects(() => validateAll(withScope, OPTS), "E_CAUSE_POSTCONDITION", "successor is applicable after all");
   assert.match(e.message, /REQ-x IS applicable/);
 });
 
@@ -2607,8 +2696,8 @@ test("IS AC77/78: the loader re-checks a reopened dependent DP's prior and trigg
   // AC78: only reopenedBy is changed, to another legal closed trigger. Legal is not aligned.
   assertRejects(
     () => validateAll(tamper(good, "DP-1", { reopenedBy: "new-dependent" }), OPTS),
-    "E_REOPEN_TRIGGER_MISMATCH",
-    "a reopen caused by an invalidated terminal with a successor must carry the v1 serialization",
+    "E_CAUSE_TRIGGER",
+    "a DP carrying a source-2 cause witness must carry the v1 serialization",
   );
   // AC77: only priorTerminalRef is changed, to a DIFFERENT superseded clause whose successor IS
   // applicable to DP-1 — a DP in that position is repointed, so the recorded prior does not
@@ -2629,8 +2718,8 @@ test("IS AC77/78: the loader re-checks a reopened dependent DP's prior and trigg
   });
   assertRejects(
     () => validateAll(tamper(alsoSuperseded, "DP-1", { priorTerminalRef: "REQ-b" }), OPTS),
-    "E_REOPEN_PRIOR_INCOHERENT",
-    "priorTerminalRef does not evidence the reopen the DP records",
+    "E_CAUSE_BORROWED",
+    "the witness names a transition whose subject is not this DP prior terminal",
   );
 });
 
@@ -2665,7 +2754,7 @@ test("IS AC79: a non-canonical caller reopenTrigger cannot steer source 2 on any
   );
 });
 
-test("IS AC80: source 2 inside commit-test-provenance-batch — one CAS, head advances, clear is the only legal action", () => {
+test("IS AC81: source 2 inside commit-test-provenance-batch — one CAS, head advances, clear is the only legal action", () => {
   // The batch supersedes REQ-a → REQ-x exactly as the two single-DP paths do. REQ-x is created
   // beforehand: minting a successor clause inside a batch is successorClauseDraft, which is
   // Phase 1B and deliberately not implemented here.
@@ -2728,6 +2817,398 @@ test("IS AC61/67: a rejected carrier update leaves the store bytes and the commi
   }, OPTS), "E_CARRIER_UNCHANGED_NULL", "no-write on a rejected carrier declaration");
   assert.strictEqual(fs.readFileSync(storePath(cwd), "utf8"), before, "canonical bytes are byte-identical");
   assert.ok(!fs.existsSync(`${storePath(cwd)}.lock`), "the lock is released");
+});
+
+// --- IS v1.8 AC82-91: the causal witness as an executable contract --------------------------------
+
+const CAUSE = (ref) => ({ kind: "transition", ref });
+
+// The canonical source-2 post-state: DP-1 reopened because REQ-x was not applicable to it.
+function sourceTwoState() {
+  const s = withDependentReopenFixture();
+  return apply(s, "supersede-requirement", supersedeToScoped([{ dpId: "DP-1", action: "clear" }]));
+}
+
+test("IS AC72/91: the witness names this transaction's Transition, and an untouched DP keeps its own", () => {
+  const out = sourceTwoState();
+  const d = indexStore(out).dps.get("DP-1");
+  assert.deepStrictEqual(d.reopenCauseRef, CAUSE("T-1"), "the witness is the transition just minted");
+  assert.strictEqual(d.reopenedBy, REOPEN_SERIALIZATION);
+  assert.strictEqual(d.priorTerminalRef, "REQ-a");
+
+  // AC91: a transaction touching only DP-2 leaves DP-1's witness and causal fields byte-identical.
+  const before = canonicalJson(indexStore(out).dps.get("DP-1"));
+  const after = apply(out, "adopt-existing-outcome", {
+    dpId: "DP-3", clauseRef: "REQ-b", resolutionCarrierUpdates: nulls("DP-3"),
+  });
+  assert.strictEqual(canonicalJson(indexStore(after).dps.get("DP-1")), before, "DP-1 untouched");
+});
+
+test("IS AC86/87: the witness is cleared by a repoint, a resolve, and an explicit reopen", () => {
+  const s = sourceTwoState();
+  // AC86 — the DP converges onto a clause; the cause is gone.
+  const settled = apply(s, "adopt-existing-outcome", {
+    dpId: "DP-1", clauseRef: "REQ-b", resolutionCarrierUpdates: nulls("DP-1"),
+  });
+  const r = indexStore(settled).dps.get("DP-1");
+  assert.strictEqual(r.resolvedBy, "REQ-b");
+  assert.strictEqual(r.reopenCauseRef, null, "resolving clears the witness");
+
+  // AC87 — an explicit reopen is a DIFFERENT cause, so the old witness must not survive it.
+  const reopened = apply(settled, "reopen-dp", {
+    dpId: "DP-1", trigger: "new-dependent", expectedCurrentTerminalRef: "REQ-b",
+    resolutionCarrierUpdates: nulls("DP-1"),
+  });
+  const o = indexStore(reopened).dps.get("DP-1");
+  assert.strictEqual(o.status, "open");
+  assert.strictEqual(o.reopenedBy, "new-dependent");
+  assert.strictEqual(o.reopenCauseRef, null, "explicit reopen carries no cause witness");
+});
+
+test("IS AC88: a second source-2 reopen replaces the witness rather than keeping the old one", () => {
+  let s = sourceTwoState();
+  assert.deepStrictEqual(indexStore(s).dps.get("DP-1").reopenCauseRef, CAUSE("T-1"));
+  // converge, then drive a SECOND source-2 reopen against the new terminal
+  s = apply(s, "adopt-existing-outcome", { dpId: "DP-1", clauseRef: "REQ-b", resolutionCarrierUpdates: nulls("DP-1") });
+  s = apply(s, "append-source", {
+    source: { ...EXCEPTION_SOURCE, sourceId: "S-exc2", locator: "grant#2" },
+  });
+  const out = apply(s, "supersede-requirement", {
+    initiatingDpIds: [],
+    records: [planGate("R-pg2", "REQ-b")],
+    successorClause: {
+      id: "REQ-y", authority: "approved-requirement", kind: "specification", text: "scoped 2",
+      sourceRef: "S-exc2", taskRef: "TASK-1",
+    },
+    transition: {
+      id: "T-2", subject: "REQ-b", action: "supersede", successor: "REQ-y",
+      authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg2" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+    },
+    resolutionCarrierUpdates: nulls("DP-1"),
+  });
+  const d = indexStore(out).dps.get("DP-1");
+  assert.deepStrictEqual(d.reopenCauseRef, CAUSE("T-2"), "replaced by the new transition");
+  assert.strictEqual(d.priorTerminalRef, "REQ-b");
+});
+
+test("IS AC82: a caller-supplied reopenCauseRef or reopenTrigger acquires no normative effect", () => {
+  const s = withDependentReopenFixture();
+  const out = apply(s, "supersede-requirement", supersedeToScoped(
+    [{ dpId: "DP-1", action: "clear" }],
+    { reopenTrigger: "user-instruction" },
+  ));
+  const d = indexStore(out).dps.get("DP-1");
+  assert.deepStrictEqual(d.reopenCauseRef, CAUSE("T-1"), "writer-derived, not caller-supplied");
+  assert.strictEqual(d.reopenedBy, REOPEN_SERIALIZATION, "the caller trigger did not survive");
+
+  // a caller-declared DP cause on init-task is discarded, not honoured
+  const seeded = apply(emptyStore(), "init-task", {
+    taskId: "T-x", baseProvenance: BASE,
+    decisionPoints: [{ ...dp("DP-x"), reopenCauseRef: CAUSE("T-ghost") }],
+  });
+  assert.strictEqual(indexStore(seeded).dps.get("DP-x").reopenCauseRef, null, "caller value discarded");
+});
+
+test("IS AC83/84/85: witness shape, borrowing and settled-DP negatives are loader checks", () => {
+  const s = sourceTwoState();
+  for (const [cause, code, what] of [
+    ["T-1", "E_CAUSE_REF_SHAPE", "a bare string"],
+    [{ kind: "review-ruling", ref: "T-1" }, "E_CAUSE_REF_SHAPE", "the wrong kind"],
+    [{ kind: "transition" }, "E_CAUSE_REF_SHAPE", "no ref"],
+    [{ kind: "transition", ref: "" }, "E_CAUSE_REF_SHAPE", "an empty ref"],
+    [{ kind: "transition", ref: "T-1", note: "x" }, "E_CAUSE_REF_SHAPE", "an undeclared key"],
+    [{ kind: "transition", ref: "T-ghost" }, "E_CAUSE_REF_SHAPE", "a dangling ref"],
+  ]) {
+    assertRejects(() => validateAll(tamper(s, "DP-1", { reopenCauseRef: cause }), OPTS), code, what);
+  }
+  // AC84: a real transition whose subject is not this DP's prior terminal
+  const other = apply(s, "supersede-requirement", {
+    initiatingDpIds: [],
+    records: [planGate("R-pg2", "REQ-b")],
+    successorClause: {
+      id: "REQ-b2", authority: "approved-requirement", kind: "specification", text: "t",
+      sourceRef: "S-req", taskRef: "TASK-1",
+    },
+    transition: {
+      id: "T-2", subject: "REQ-b", action: "supersede", successor: "REQ-b2",
+      authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg2" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+    },
+    resolutionCarrierUpdates: [],
+  });
+  assertRejects(() => validateAll(tamper(other, "DP-1", { reopenCauseRef: CAUSE("T-2") }), OPTS),
+    "E_CAUSE_BORROWED", "a transition belonging to another subject");
+
+  // AC85: a settled DP may not carry one
+  const settled = apply(s, "adopt-existing-outcome", {
+    dpId: "DP-1", clauseRef: "REQ-b", resolutionCarrierUpdates: nulls("DP-1"),
+  });
+  assertRejects(() => validateAll(tamper(settled, "DP-1", { reopenCauseRef: CAUSE("T-1") }), OPTS),
+    "E_CAUSE_STATUS", "a resolved DP carrying a cause witness");
+});
+
+test("IS AC81: source 2 inside a batch persists the group's transition as the witness", () => {
+  let s = withDependentReopenFixture();
+  s = apply(s, "append-source", { source: EXCEPTION_SOURCE });
+  s = apply(s, "create-requirement", { requirement: SCOPED_SUCCESSOR });
+  const evidence = [{ kind: "review-ruling", ref: "R-e1" }];
+  const digest = resolutionGroupDigest({
+    subjectRef: "REQ-a", action: "supersede", successor: "REQ-x", semanticEvidenceRefs: evidence,
+  });
+  const out = apply(s, "commit-test-provenance-batch", batchPayload({
+    recordsToCreate: [
+      reviewRuling("R-e1", { kind: "discipline", discipline: "test" }, "REQ-a"),
+      { ...planGate("R-pg", "REQ-a"), resolutionGroupDigest: digest },
+    ],
+    resolutions: [{
+      subjectRef: "REQ-a", semanticEvidenceRefs: evidence,
+      governanceWitnessRef: { kind: "plan-gate", ref: "R-pg" },
+      transitionDraft: {
+        id: "T-b", subject: "REQ-a", action: "supersede", successor: "REQ-x",
+        authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
+        compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+      },
+    }],
+    resolutionCarrierUpdates: [{ dpId: "DP-1", action: "clear" }],
+  }));
+  assert.deepStrictEqual(indexStore(out).dps.get("DP-1").reopenCauseRef, CAUSE("T-b"),
+    "the witness is the group's own transition");
+  assert.deepStrictEqual(
+    indexStore(out).taskStates.get("TASK-1").committedProvenanceBatchRef,
+    { kind: "provenance-batch", ref: "R-b1" }, "head advanced in the same transaction");
+});
+
+test("IS §8 lifecycle: a batch retire clears the witness rather than carrying it forward", () => {
+  const s = sourceTwoState();
+  // DP-1 is open with a witness; converge it onto ASSUM-shared so a retire can reopen it again.
+  const t = apply(s, "create-initial-outcome", {
+    dpId: "DP-1",
+    clause: {
+      id: "ASSUM-shared", layer: "implementation", derivedFrom: "DP-1", text: "t", alternative: "u",
+      basis: "b", basisRefs: [], governedBy: CODE,
+    },
+  });
+  assert.strictEqual(indexStore(t).dps.get("DP-1").reopenCauseRef, null, "landing a terminal cleared it");
+
+  const evidence = [{ kind: "review-ruling", ref: "R-e1" }];
+  const digest = resolutionGroupDigest({
+    subjectRef: "ASSUM-shared", action: "retire", successor: null, semanticEvidenceRefs: evidence,
+  });
+  const out = apply(t, "commit-test-provenance-batch", batchPayload({
+    recordsToCreate: [
+      reviewRuling("R-e1", { kind: "discipline", discipline: "test" }, "ASSUM-shared"),
+      reviewRuling("R-w", CODE, "ASSUM-shared", { resolutionGroupDigest: digest }),
+    ],
+    resolutions: [{
+      subjectRef: "ASSUM-shared", semanticEvidenceRefs: evidence,
+      governanceWitnessRef: { kind: "review-ruling", ref: "R-w" },
+      transitionDraft: {
+        id: "T-r", subject: "ASSUM-shared", action: "retire", successor: null,
+        authorityRef: CODE, ackRef: { kind: "review-ruling", ref: "R-w" },
+      },
+    }],
+    resolutionCarrierUpdates: nulls("DP-1"),
+  }));
+  for (const id of ["DP-1"]) {
+    const d = indexStore(out).dps.get(id);
+    assert.strictEqual(d.status, "open", `${id} reopened`);
+    assert.strictEqual(d.reopenCauseRef, null, `${id}: a retire-caused reopen carries no witness`);
+  }
+});
+
+// --- IS v1.8 AC89: the version boundary, driven by the persisted discriminator ---------------------
+
+function legacyStore() {
+  // A version 1 store, built by taking a real v2 store and stripping the field the upgrade added.
+  const v2 = withSecondRequirement(baseFixture());
+  const raw = JSON.parse(JSON.stringify(v2));
+  raw.provenanceVersion = 1;
+  raw.taskStates = [];
+  for (const d of raw.decisionPoints) delete d.reopenCauseRef;
+  return raw;
+}
+
+test("IS AC89(i)/(vi): migration fills explicit nulls, bumps the version, and writes nothing on failure", () => {
+  const legacy = legacyStore();
+  assert.ok(legacy.decisionPoints.every((d) => !("reopenCauseRef" in d)), "fixture really lacks the field");
+
+  const out = apply(legacy, "migrate-store-v1-to-v2", {});
+  assert.strictEqual(out.provenanceVersion, 2);
+  for (const d of out.decisionPoints) {
+    assert.ok(Object.prototype.hasOwnProperty.call(d, "reopenCauseRef"), `${d.id} has the field`);
+    assert.strictEqual(d.reopenCauseRef, null);
+  }
+  // everything else is untouched
+  assert.strictEqual(canonicalJson(out.clauses), canonicalJson(legacy.clauses));
+  assert.strictEqual(canonicalJson(out.records), canonicalJson(legacy.records));
+
+  // calling it again on the migrated store fails closed rather than no-opping
+  assertRejects(() => apply(out, "migrate-store-v1-to-v2", {}), "E_MIGRATION_NOT_NEEDED", "already migrated");
+
+  // no-write on a rejected migration
+  const cwd = temporary("prov-migrate-");
+  const broken = legacyStore();
+  broken.decisionPoints[0].reopenCauseRef = null; // mixed-version defect
+  fs.mkdirSync(path.dirname(storePath(cwd)), { recursive: true });
+  fs.writeFileSync(storePath(cwd), canonicalStoreBytes(broken), "utf8");
+  const before = fs.readFileSync(storePath(cwd), "utf8");
+  assertRejects(() => runTransaction(cwd, "migrate-store-v1-to-v2", {}, OPTS), "E_MIXED_VERSION", "no-write");
+  assert.strictEqual(fs.readFileSync(storePath(cwd), "utf8"), before, "bytes unchanged");
+  assert.ok(!fs.existsSync(`${storePath(cwd)}.lock`), "lock released");
+  assert.deepStrictEqual(fs.readdirSync(path.dirname(storePath(cwd))).sort(), ["provenance.json"], "no temp file");
+});
+
+test("IS AC89(ii)/(iv)/(vii): the version discriminator gates every lane", () => {
+  // (ii) a v2 store whose DP lacks the field is a writer defect
+  const v2 = withSecondRequirement(baseFixture());
+  const stripped = JSON.parse(JSON.stringify(v2));
+  delete stripped.decisionPoints[0].reopenCauseRef;
+  assertRejects(() => validateAll(stripped, OPTS), "E_DP_CAUSE_MISSING", "v2 DP missing the field");
+
+  // (iv) a normal command may not touch a current v1 store
+  const legacy = legacyStore();
+  assertRejects(() => apply(legacy, "append-record", {
+    record: { recordId: "R-x", kind: "source-authority", authorityIdentity: "x" },
+  }), "E_STORE_VERSION", "normal command on v1");
+
+  // (vii) absent / unknown / non-integer versions never reach a version-specific loader
+  for (const v of [undefined, 0, 3, "2", 2.5, null]) {
+    const bad = { ...legacy, provenanceVersion: v };
+    assertRejects(() => apply(bad, "migrate-store-v1-to-v2", {}), "E_STORE_VERSION", `version ${JSON.stringify(v)}`);
+  }
+});
+
+test("IS AC89(iii)/(viii): a v1 store with TaskStates, or one already carrying the field, is refused", () => {
+  // (iii) unsupported because no re-baseline command exists
+  const withTask = legacyStore();
+  withTask.taskStates = [{
+    taskId: "TASK-1", baseProvenance: BASE, currentTaskDpIds: [], committedProvenanceBatchRef: null,
+  }];
+  assertRejects(() => apply(withTask, "migrate-store-v1-to-v2", {}), "E_MIGRATION_UNSUPPORTED", "v1 with TaskStates");
+
+  // (viii) both an explicit null and a well-formed TransitionRef are refused, and neither is touched
+  for (const [value, what] of [[null, "explicit null"], [CAUSE("T-1"), "a typed ref"]]) {
+    const mixed = legacyStore();
+    mixed.decisionPoints[0].reopenCauseRef = value;
+    const e = assertRejects(() => apply(mixed, "migrate-store-v1-to-v2", {}), "E_MIXED_VERSION", what);
+    assert.match(e.message, /neither overwritten nor removed/);
+  }
+
+  // migration takes no payload
+  assertRejects(() => apply(legacyStore(), "migrate-store-v1-to-v2", { force: true }), "E_PAYLOAD_SHAPE", "payload");
+});
+
+// --- the REAL disk entry point: runTransaction, not the apply() helper ---------------------------
+// apply() skips loadStore and the lock/CAS/temp machinery, so a dispatch-ordering bug is invisible
+// to it. These drive the on-disk path.
+
+function onDisk(store, prefix) {
+  const cwd = temporary(prefix);
+  fs.mkdirSync(path.dirname(storePath(cwd)), { recursive: true });
+  fs.writeFileSync(storePath(cwd), canonicalStoreBytes(store), "utf8");
+  return cwd;
+}
+
+function assertNoWrite(cwd, before, what) {
+  assert.strictEqual(fs.readFileSync(storePath(cwd), "utf8"), before, `${what}: store bytes unchanged`);
+  assert.ok(!fs.existsSync(`${storePath(cwd)}.lock`), `${what}: lock released`);
+  assert.deepStrictEqual(
+    fs.readdirSync(path.dirname(storePath(cwd))).sort(), ["provenance.json"], `${what}: no temp file`);
+}
+
+test("IS AC89: an on-disk v1 store migrates through runTransaction and is refused by every other command", () => {
+  const cwd = onDisk(legacyStore(), "prov-disk-v1-");
+  const before = fs.readFileSync(storePath(cwd), "utf8");
+
+  // validate must NOT succeed on a current v1 store — it is a command like any other.
+  assertRejects(() => runTransaction(cwd, "validate", {}, OPTS), "E_STORE_VERSION", "validate on v1");
+  assertNoWrite(cwd, before, "validate on v1");
+
+  // migration is the one way in, and it lands a complete v2 store on disk.
+  const res = runTransaction(cwd, "migrate-store-v1-to-v2", {}, OPTS);
+  assert.strictEqual(res.changed, true);
+  const after = parseStore(fs.readFileSync(storePath(cwd), "utf8"));
+  assert.strictEqual(after.provenanceVersion, 2);
+  for (const d of after.decisionPoints) {
+    assert.ok(Object.prototype.hasOwnProperty.call(d, "reopenCauseRef"), `${d.id} carries the field`);
+    assert.strictEqual(d.reopenCauseRef, null);
+  }
+  // and the migrated store is now usable by ordinary commands
+  assert.ok(runTransaction(cwd, "validate", {}, OPTS));
+});
+
+test("IS AC89(viii): a mixed-version v1 store on disk fails on its LANE, never on a v2 invariant", () => {
+  for (const [value, what] of [
+    [null, "explicit null"],
+    [{ kind: "transition", ref: "T-ghost" }, "a typed TransitionRef"],
+    ["T-1", "a malformed value"],
+  ]) {
+    const mixed = legacyStore();
+    mixed.decisionPoints[0].reopenCauseRef = value;
+    const cwd = onDisk(mixed, "prov-disk-mixed-");
+    const before = fs.readFileSync(storePath(cwd), "utf8");
+    const headBefore = indexStore(parseStore(before)).taskStates.size;
+
+    // a non-migration command is refused by the version lane, NOT by a cause invariant
+    const e1 = assertRejects(() => runTransaction(cwd, "validate", {}, OPTS), "E_STORE_VERSION", `validate, ${what}`);
+    assert.doesNotMatch(e1.message, /reopenCauseRef|E_CAUSE/, "the v2 invariants never ran");
+    assertNoWrite(cwd, before, `validate, ${what}`);
+
+    // migration refuses it as mixed-version and leaves the existing value alone
+    assertRejects(() => runTransaction(cwd, "migrate-store-v1-to-v2", {}, OPTS), "E_MIXED_VERSION", `migrate, ${what}`);
+    assertNoWrite(cwd, before, `migrate, ${what}`);
+    assert.strictEqual(
+      canonicalJson(parseStore(fs.readFileSync(storePath(cwd), "utf8")).decisionPoints[0].reopenCauseRef),
+      canonicalJson(value), `${what}: the existing value is neither overwritten nor removed`);
+    assert.strictEqual(indexStore(parseStore(fs.readFileSync(storePath(cwd), "utf8"))).taskStates.size, headBefore,
+      `${what}: task state untouched`);
+  }
+});
+
+test("IS §8: the CLI refuses a current v1 store non-zero with the version code", () => {
+  const cwd = onDisk(legacyStore(), "prov-cli-v1-");
+  const script = path.join(root, "cressetide", "skills", "vigil", "scripts", "provenance-store.mjs");
+  const before = fs.readFileSync(storePath(cwd), "utf8");
+
+  const bad = spawnSync(process.execPath, [script, "validate", "--cwd", cwd], { encoding: "utf8" });
+  assert.notStrictEqual(bad.status, 0, "a v1 store must not exit 0");
+  assert.match(`${bad.stdout}${bad.stderr}`, /E_STORE_VERSION/, "the version code reaches the CLI surface");
+  assert.doesNotMatch(`${bad.stdout}${bad.stderr}`, /E_CAUSE/, "no v2 invariant ran");
+  assertNoWrite(cwd, before, "CLI validate on v1");
+
+  const ok = spawnSync(process.execPath, [script, "migrate-store-v1-to-v2", "--cwd", cwd], { encoding: "utf8" });
+  assert.strictEqual(ok.status, 0, `migration should exit 0: ${ok.stdout}${ok.stderr}`);
+  assert.strictEqual(parseStore(fs.readFileSync(storePath(cwd), "utf8")).provenanceVersion, 2);
+});
+
+test("SM §9: the canonical empty store is version 2 and its digest is reproducible", () => {
+  const e = emptyStore();
+  assert.strictEqual(e.provenanceVersion, 2);
+  assert.strictEqual(storeDigest(e), storeDigest(emptyStore()));
+});
+
+// HELPER-LEVEL decoder test, NOT AC60 and NOT historical product-path coverage. It exercises
+// parseStore + validateLegacyV1 + a local digest round trip on bytes constructed in memory. It does
+// NOT read a Git base tree by treeOid, compare against an expected storeDigest carried in a witness,
+// or go through any TaskState / batch baseProvenance consumer. TP AC60(vii)-(xi) needs that product
+// path, which lives in the not-yet-authorised Phase 2 inventory/checker modules and is PENDING.
+test("legacy decoder (helper level): a version 1 store decodes and validates without being normalized", () => {
+  const legacy = legacyStore();
+  const raw = canonicalStoreBytes(legacy);
+  const rawDigest = sha256Hex(raw);
+
+  // the historical store is decoded and validated against v1.11 rules, and is NOT migrated
+  const parsed = parseStore(raw);
+  assert.strictEqual(parsed.provenanceVersion, 1, "the historical version is preserved, not upgraded");
+  assert.ok(validateLegacyV1(parsed, OPTS).ok, "read-only legacy validation passes");
+  assert.ok(parsed.decisionPoints.every((d) => !("reopenCauseRef" in d)), "no write-back, no normalization");
+  assert.strictEqual(sha256Hex(canonicalStoreBytes(parsed)), rawDigest, "raw bytes round-trip unchanged");
+
+  // a store whose digest only matches AFTER normalization must not be accepted on that basis
+  const normalized = { ...parsed, provenanceVersion: 2, decisionPoints: parsed.decisionPoints.map((d) => ({ ...d, reopenCauseRef: null })) };
+  assert.notStrictEqual(sha256Hex(canonicalStoreBytes(normalized)), rawDigest,
+    "normalized bytes have a different digest, so they can never stand in for the raw comparison");
 });
 
 test("clauseKindOf routes ids by prefix and rejects anything else", () => {
