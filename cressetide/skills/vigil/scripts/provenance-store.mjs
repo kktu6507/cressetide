@@ -1479,11 +1479,40 @@ function validateCarrierCoherence(index) {
   }
 }
 
+// IS v1.7 source 2 post-state coherence, checked on the SNAPSHOT so a state built around the
+// command surface is refused too. The source-2 shape is identifiable without any transaction
+// context: a DP left open whose priorTerminalRef has an effective Transition WITH a successor. The
+// retire row (successor null) and reopen-dp on a still-active terminal (no effective Transition)
+// fall outside this branch and keep their existing behaviour untouched.
+function validateReopenCoherence(index, now) {
+  for (const d of index.store.decisionPoints) {
+    if (d.status !== "open" || !d.priorTerminalRef) continue;
+    const t = effectiveTransition(index, d.priorTerminalRef);
+    if (!t || !t.successor) continue;
+    if (d.reopenedBy !== REOPEN_TRIGGER_SERIALIZATION) {
+      reject(
+        "E_REOPEN_TRIGGER_MISMATCH",
+        `DP ${d.id} was reopened while ${d.priorTerminalRef} was replaced by ${t.successor}, so its reopenedBy must be the v1 serialization "${REOPEN_TRIGGER_SERIALIZATION}" of "terminal clause invalidated with no successor" — found "${d.reopenedBy}", which is a different cause`,
+        d.id,
+      );
+    }
+    const app = applicable(index, t.successor, d, now);
+    if (app.ok) {
+      reject(
+        "E_REOPEN_PRIOR_INCOHERENT",
+        `DP ${d.id} records a reopen against ${d.priorTerminalRef}, but that clause's successor ${t.successor} IS applicable to this DP — such a DP is repointed, so the recorded prior does not evidence the reopen`,
+        d.id,
+      );
+    }
+  }
+}
+
 export function validateAll(store, options = {}) {
   const now = options.now === undefined ? Date.now() : options.now;
   validateStructure(store);
   const index = indexStore(store);
   validateCarrierCoherence(index);
+  validateReopenCoherence(index, now);
   validateRefs(index);
   validateMergeReconciliation(index);
   validateTransitionMatrix(index);
@@ -1617,15 +1646,40 @@ const CARRIER_UPDATE_KEYS = {
   "unchanged-null": ["action", "dpId"],
 };
 
+// IS v1.7 §8 clear source 2. Upstream SM §8's closed list defines the SEMANTIC MEMBER "terminal
+// clause invalidated with no successor (INV-4)"; the string below is intent-scan v1's SERIALIZATION
+// of that member, whose authority is the intent-scan spec. It is not a new trigger member, and
+// shared model does not define the literal.
+export const REOPEN_TRIGGER_SERIALIZATION = "terminal-invalidated-no-successor";
+
+// Every clause transition this command carries, whichever shape it arrives in.
+function transitionsOf(payload, command) {
+  const out = [];
+  if (command === "replace-terminal" || command === "supersede-requirement") {
+    if (payload.transition) out.push(payload.transition);
+  }
+  if (command === "commit-test-provenance-batch") {
+    for (const g of payload.resolutions || []) if (g && g.transitionDraft) out.push(g.transitionDraft);
+  }
+  return out;
+}
+
 // Which clauses does this transaction RETIRE? A dependent DP that ends up open because its terminal
-// was retired is the retire/reopen row of the carrier table, not the restricted-clear row.
+// was retired is the retire/reopen row of the carrier table, not either restricted-clear row.
 function retiredSubjects(payload, command) {
   const out = new Set();
-  const add = (t) => {
-    if (t && typeof t.subject === "string" && (t.successor === null || t.successor === undefined)) out.add(t.subject);
-  };
-  if (command === "replace-terminal" || command === "supersede-requirement") add(payload.transition);
-  if (command === "commit-test-provenance-batch") for (const g of payload.resolutions || []) add(g.transitionDraft);
+  for (const t of transitionsOf(payload, command)) {
+    if (typeof t.subject === "string" && (t.successor === null || t.successor === undefined)) out.add(t.subject);
+  }
+  return out;
+}
+
+// subject → successor, for the transitions that DO carry one. Source 2 only applies to these.
+function supersedingSubjects(payload, command) {
+  const out = new Map();
+  for (const t of transitionsOf(payload, command)) {
+    if (typeof t.subject === "string" && typeof t.successor === "string") out.set(t.subject, t.successor);
+  }
   return out;
 }
 
@@ -1635,10 +1689,51 @@ function carrierOf(dp) {
     : null;
 }
 
+// IS v1.7 source 2, conditions 1-3 and 5-8. Conditions 1 and 2 are the security boundary: the
+// caller can neither assert membership nor assert that a successor did not fit. Conditions 5-7 are
+// the closure's own output, asserted here so a writer bug cannot pass silently, and condition 8 is
+// WRITTEN by us — a caller-supplied reopenTrigger never survives on a source-2 DP.
+function assertReopenedDependent({ command, dpId, dp, preDp, preTerminal, superseding, postIndex, now }) {
+  const where = `${command}: DP ${dpId} declares clear with status=${dp.status}`;
+  // 1. subject-dependent membership, from the PRE-state terminal — not from anything declared.
+  if (preTerminal === null || !superseding.has(preTerminal)) {
+    reject(
+      "E_CARRIER_CLEAR",
+      `${where}, but its pre-state terminal ${preTerminal || "(none)"} is not a subject this transaction supersedes — source 2 requires subject-dependent membership, and a non-resolved post-state has no other approved row`,
+      dpId,
+    );
+  }
+  const successor = superseding.get(preTerminal);
+  // 2. the successor must genuinely not fit this DP; re-derived, never taken on trust.
+  const app = applicable(postIndex, successor, preDp, now);
+  if (app.ok) {
+    reject(
+      "E_CARRIER_CLEAR",
+      `${where}, but successor ${successor} IS applicable to it — the closure repoints such a DP rather than reopening it, so source 2 does not apply`,
+      dpId,
+    );
+  }
+  // 3/5/6/7: what the dependent closure actually produced.
+  if (dp.status !== "open") reject("E_CARRIER_CLEAR", `${where}: source 2 requires an open post-state`, dpId);
+  if (currentTerminalRef(dp) !== null) {
+    reject("E_CARRIER_CLEAR", `${where}: source 2 requires every terminal ref to be null`, dpId);
+  }
+  if (dp.priorTerminalRef !== preTerminal) {
+    reject(
+      "E_CARRIER_CLEAR",
+      `${where}: priorTerminalRef is ${dp.priorTerminalRef} but this transaction's subject for it is ${preTerminal}`,
+      dpId,
+    );
+  }
+  // 8. Deterministic write. Whatever reopenTrigger the caller passed, the persisted value is the
+  // v1 serialization of "terminal clause invalidated with no successor".
+  dp.reopenedBy = REOPEN_TRIGGER_SERIALIZATION;
+}
+
 // The affected set is DERIVED by diffing pre- and post-state terminals rather than taken from the
 // caller: dependent-DP closure reopens or repoints DPs the caller never named, and a contract that
 // trusted a declared list would let exactly those slip through uncovered.
-function applyCarrierUpdates(store, draft, payload, command) {
+function applyCarrierUpdates(store, draft, payload, command, now) {
   const before = new Map(store.decisionPoints.map((d) => [d.id, d]));
   const mutated = new Set();
   for (const d of draft.decisionPoints) {
@@ -1698,6 +1793,7 @@ function applyCarrierUpdates(store, draft, payload, command) {
 
   const postIndex = indexStore(draft);
   const retired = retiredSubjects(payload, command);
+  const superseding = supersedingSubjects(payload, command);
   for (const u of updates) {
     const dp = draft.decisionPoints.find((d) => d.id === u.dpId);
     const pre = carrierOf(before.get(u.dpId));
@@ -1719,18 +1815,20 @@ function applyCarrierUpdates(store, draft, payload, command) {
       if (pre === null) {
         reject("E_CARRIER_CLEAR", `${command}: DP ${u.dpId} declares clear while its pre-state carrier is already null — declare unchanged-null`, u.dpId);
       }
-      // IS AC66: the RESTRICTED clear (the direct-citation re-adopt branch) requires the DP to end
-      // up resolved. The retire and reopen-dp rows are the other two places a clear is legal, and
-      // there the DP legitimately ends open. A DP left open by anything else has no approved row.
-      if (dp.status !== "resolved") {
-        const retiringThisDp = command === "reopen-dp" || retired.has(dp.priorTerminalRef);
-        if (!retiringThisDp) {
-          reject(
-            "E_CARRIER_CLEAR",
-            `${command}: DP ${u.dpId} declares clear but ends the transaction with status=${dp.status} while the successor is not null — IS AC66's restricted clear requires a resolved post-state, and no approved row covers a dependent DP reopened because the successor was not applicable to it`,
-            u.dpId,
-          );
-        }
+      const preDp = before.get(u.dpId);
+      const preTerminal = preDp ? currentTerminalRef(preDp) : null;
+
+      if (dp.status === "resolved") {
+        // Source 1 (resolved-direct), unchanged by v1.7. A repointed DP taking the successor by
+        // direct citation is exactly AC67's positive case, so this branch adds no condition.
+      } else if (command === "reopen-dp" || retired.has(dp.priorTerminalRef)) {
+        // Source 3: retire / reopen-dp. Untouched by v1.7.
+      } else {
+        // Source 2 (reopened-dependent). Every condition below is DERIVED here; nothing the caller
+        // sent is consulted, and the persisted trigger is written by us, not accepted from them.
+        assertReopenedDependent({
+          command, dpId: u.dpId, dp, preDp, preTerminal, superseding, postIndex, now,
+        });
       }
       delete dp.resolutionRulingRef;
       continue;
@@ -1919,7 +2017,7 @@ defineTransaction("adopt-existing-outcome", (store, payload, ctx) => {
   const app = applicable(indexStore(draft), payload.clauseRef, dp, ctx.now);
   if (!app.ok) reject("E_NOT_APPLICABLE", `adopt-existing-outcome: ${payload.clauseRef} is not applicable to DP ${dp.id} (${app.reason})`, dp.id);
   setTerminal(dp, payload.clauseRef);
-  applyCarrierUpdates(store, draft, payload, "adopt-existing-outcome");
+  applyCarrierUpdates(store, draft, payload, "adopt-existing-outcome", ctx.now);
   return draft;
 });
 
@@ -1984,7 +2082,7 @@ defineTransaction("replace-terminal", (store, payload, ctx) => {
       reopenDpInPlace(dp, subject, payload.reopenTrigger || "terminal-invalidated-no-successor");
     }
   }
-  applyCarrierUpdates(store, draft, payload, "replace-terminal");
+  applyCarrierUpdates(store, draft, payload, "replace-terminal", ctx.now);
   return draft;
 });
 
@@ -2009,7 +2107,7 @@ defineTransaction("supersede-requirement", (store, payload, ctx) => {
     trigger: payload.reopenTrigger || "terminal-invalidated-no-successor",
     strictDpIds: payload.initiatingDpIds,
   });
-  applyCarrierUpdates(store, draft, payload, "supersede-requirement");
+  applyCarrierUpdates(store, draft, payload, "supersede-requirement", ctx.now);
   return draft;
 });
 
@@ -2052,7 +2150,7 @@ defineTransaction("reclassify-dp", (store, payload) => {
 // intent-scan §8: only when there is no successor to hand and the open state must genuinely
 // persist (possibly across runs). With a successor in hand, go straight to replace-terminal —
 // reopening first would be two transactions and a visible intermediate state.
-defineTransaction("reopen-dp", (store, payload) => {
+defineTransaction("reopen-dp", (store, payload, ctx) => {
   requireFields(payload, ["dpId", "trigger", "expectedCurrentTerminalRef"], "reopen-dp");
   if (!REOPEN_TRIGGERS.includes(payload.trigger)) {
     reject("E_REOPEN_TRIGGER", `reopen-dp: ${payload.trigger} is not in the closed reopen-trigger list`, payload.trigger);
@@ -2065,7 +2163,7 @@ defineTransaction("reopen-dp", (store, payload) => {
   }
   if (!actual) reject("E_DP_NO_TERMINAL", `reopen-dp: DP ${dp.id} has no terminal to reopen`, dp.id);
   reopenDpInPlace(dp, actual, payload.trigger);
-  applyCarrierUpdates(store, draft, payload, "reopen-dp");
+  applyCarrierUpdates(store, draft, payload, "reopen-dp", ctx.now);
   return draft;
 });
 
@@ -2201,7 +2299,7 @@ defineTransaction("commit-test-provenance-batch", (store, payload, ctx) => {
   draft.records.push(batchRecord);
   // 5) atomically advance the head.
   ts.committedProvenanceBatchRef = { kind: "provenance-batch", ref: batchRecord.recordId };
-  applyCarrierUpdates(store, draft, payload, "commit-test-provenance-batch");
+  applyCarrierUpdates(store, draft, payload, "commit-test-provenance-batch", ctx.now);
   return draft;
 });
 

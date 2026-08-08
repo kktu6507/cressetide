@@ -2428,88 +2428,280 @@ test("IS AC66: clear on a DP whose pre-state carrier is already null is refused 
 // retire and reopen-dp rows. A carrier-bearing DEPENDENT DP that is reopened because the (non-null)
 // successor is not applicable to it therefore has no legal action at all. Refusing it is the
 // fail-closed reading; inventing a fourth disposition would be writing spec in code.
-test("IS AC66: a carrier-bearing dependent DP reopened under a non-null successor has no approved action", () => {
-  // REQ-hc on DP-2 (owner record R-owner) plus a plain REQ-b for the positive control below.
-  let s = withSecondRequirement(withHardConstraint());
+// --- IS v1.7 clear source 2: reopened-dependent ---------------------------------------------------
+// A carrier-bearing DEPENDENT DP reopened because a non-null successor is not applicable to it.
+// Under v1.6 this state had no legal carrier action at all; v1.7 makes `clear` the one legal
+// declaration, under ten conditions the WRITER derives — the caller cannot assert its way in.
+
+const REOPEN_SERIALIZATION = "terminal-invalidated-no-successor";
+
+// REQ-a is DP-1's terminal under a binding-policy carrier. REQ-x, the successor, is
+// exception-backed, so applicable() only lets a DP holding its OWN scope-coverage ruling take it —
+// DP-1 has none, so the closure reopens it instead of repointing.
+function withDependentReopenFixture() {
+  let s = withSecondRequirement(withHardConstraint()); // REQ-hc + R-owner, plus a plain REQ-b
   s = apply(s, "adopt-existing-outcome", {
     dpId: "DP-1", clauseRef: "REQ-a",
     records: [bindingPolicy("R-bp1", DP1, "REQ-a")],
     resolutionCarrierUpdates: [{ dpId: "DP-1", action: "replace", rulingRef: carrierRef("R-bp1") }],
   });
-  // REQ-x is exception-backed, so applicable() only lets a DP holding its own scope-coverage ruling
-  // take it. DP-1 has none, so the closure reopens it instead of repointing.
-  // The helper takes a WHOLE carrier update, not just an action string, so the replace case can
-  // supply a real rulingRef instead of being shape-rejected before it reaches the invariant.
-  const payloadFor = (update, extraRecords = []) => ({
+  return s;
+}
+
+const EXCEPTION_SOURCE = {
+  sourceId: "S-exc", contentKind: "exception-grant", driftMode: "snapshot-only", locator: "grant#1",
+  excerpt: "scoped exception", targetConstraintRef: "REQ-hc",
+  grantAuthorityRef: { kind: "source-authority", ref: "R-owner" }, scope: "eu-only", expiry: "2099-01-01",
+};
+const SCOPED_SUCCESSOR = {
+  id: "REQ-x", authority: "approved-requirement", kind: "specification", text: "scoped",
+  sourceRef: "S-exc", taskRef: "TASK-1",
+};
+
+// supersede REQ-a → REQ-x (not applicable to DP-1). `over` lets a test add records or a trigger.
+function supersedeToScoped(updates, over = {}) {
+  const { extraRecords = [], ...rest } = over;
+  return {
     initiatingDpIds: [],
     records: [planGate("R-pg", "REQ-a"), ...extraRecords],
-    sources: [{
-      sourceId: "S-exc", contentKind: "exception-grant", driftMode: "snapshot-only", locator: "grant#1",
-      excerpt: "scoped exception", targetConstraintRef: "REQ-hc",
-      grantAuthorityRef: { kind: "source-authority", ref: "R-owner" }, scope: "eu-only", expiry: "2099-01-01",
-    }],
-    successorClause: {
-      id: "REQ-x", authority: "approved-requirement", kind: "specification", text: "scoped",
-      sourceRef: "S-exc", taskRef: "TASK-1",
-    },
+    sources: [EXCEPTION_SOURCE],
+    successorClause: SCOPED_SUCCESSOR,
     transition: {
       id: "T-1", subject: "REQ-a", action: "supersede", successor: "REQ-x",
       authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
       compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
     },
-    resolutionCarrierUpdates: [update],
-  });
-  const attempt = (update, extraRecords = []) => () => apply(s, "supersede-requirement", payloadFor(update, extraRecords));
+    resolutionCarrierUpdates: updates,
+    ...rest,
+  };
+}
 
-  // clear is refused because the post-state is open while the successor is not null
-  const e = assertRejects(attempt({ dpId: "DP-1", action: "clear" }), "E_CARRIER_CLEAR", "clear on a reopened dependent DP");
-  assert.match(e.message, /AC66/);
-  assertRejects(attempt({ dpId: "DP-1", action: "preserve" }), "E_CARRIER_PRESERVE", "preserve has no terminal to align with");
-  assertRejects(attempt({ dpId: "DP-1", action: "unchanged-null" }), "E_CARRIER_UNCHANGED_NULL", "the pre-state carrier is not null");
+function assertReopenedByClosure(store, dpId, subject) {
+  const d = indexStore(store).dps.get(dpId);
+  assert.strictEqual(d.status, "open", "post-state status is open");
+  for (const f of ["resolvedBy", "assumedAs", "decidedBy"]) {
+    assert.strictEqual(d[f] ?? null, null, `post-state ${f} is null`);
+  }
+  assert.strictEqual(d.priorTerminalRef, subject, "priorTerminalRef is the transaction's subject");
+  assert.strictEqual(d.reopenedBy, REOPEN_SERIALIZATION, "reopenedBy is the writer-derived v1 serialization");
+  assert.strictEqual(d.resolutionRulingRef ?? null, null, "post-state carrier is null");
+  return d;
+}
 
-  // replace: the ruling is deliberately IMPECCABLE — well-formed RecordRef, minted in this same
-  // transaction so it resolves, rulingKind=binding-policy, subjectRef=DP-1, and a packet that still
-  // matches DP-1's pre-state so freshness passes. Every earlier guard is therefore cleared and the
-  // rejection can only come from the final carrier/status invariant.
-  const replacement = bindingPolicy("R-bp-new", DP1, "REQ-x");
-  const replaceUpdate = { dpId: "DP-1", action: "replace", rulingRef: carrierRef("R-bp-new") };
+test("IS AC72: source 2 accepts clear on a reopened dependent DP via supersede-requirement; the other three actions are refused", () => {
+  const s = withDependentReopenFixture();
+  const out = apply(s, "supersede-requirement", supersedeToScoped([{ dpId: "DP-1", action: "clear" }]));
+  assertReopenedByClosure(out, "DP-1", "REQ-a");
+
+  const attempt = (action) => () => apply(s, "supersede-requirement", supersedeToScoped([{ dpId: "DP-1", action }]));
+  assertRejects(attempt("preserve"), "E_CARRIER_PRESERVE", "preserve has no terminal to align with");
+  assertRejects(attempt("unchanged-null"), "E_CARRIER_UNCHANGED_NULL", "pre-state carrier is not null");
   assertRejects(
-    attempt(replaceUpdate, [replacement]),
+    () => apply(s, "supersede-requirement", supersedeToScoped(
+      [{ dpId: "DP-1", action: "replace", rulingRef: carrierRef("R-bp-new") }],
+      { extraRecords: [bindingPolicy("R-bp-new", DP1, "REQ-x")] },
+    )),
     "E_CARRIER_STATUS",
     "replace would leave a carrier on a DP that ends open",
   );
+});
 
-  // Positive control that the rejection above is genuinely the LAST guard and not an earlier one
-  // wearing its code: the very same ruling shape, pointed at an applicable successor so the DP
-  // stays resolved, passes shape, resolution, rulingKind, subjectRef, freshness AND the chain-end
-  // postcondition — it commits.
-  const ok = apply(s, "supersede-requirement", {
-    initiatingDpIds: ["DP-1"],
-    records: [planGate("R-pg", "REQ-a"), bindingPolicy("R-bp-ok", DP1, "REQ-b")],
+test("IS AC72: source 2 works the same way through replace-terminal", () => {
+  const s = withDependentReopenFixture();
+  const out = apply(s, "replace-terminal", {
+    dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "REQ-a",
+    records: [planGate("R-pg", "REQ-a")],
+    sources: [EXCEPTION_SOURCE],
+    successorClause: SCOPED_SUCCESSOR,
     transition: {
-      id: "T-1", subject: "REQ-a", action: "supersede", successor: "REQ-b",
+      id: "T-1", subject: "REQ-a", action: "supersede", successor: "REQ-x",
       authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
       compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
     },
-    resolutionCarrierUpdates: [{ dpId: "DP-1", action: "replace", rulingRef: carrierRef("R-bp-ok") }],
+    resolutionCarrierUpdates: [{ dpId: "DP-1", action: "clear" }],
   });
-  const settled = indexStore(ok).dps.get("DP-1");
-  assert.strictEqual(settled.status, "resolved");
-  assert.deepStrictEqual(settled.resolutionRulingRef, carrierRef("R-bp-ok"), "an identical ruling shape is accepted when the DP stays resolved");
+  assertReopenedByClosure(out, "DP-1", "REQ-a");
+});
 
-  // …and that fourth rejection writes nothing either.
-  const cwd = temporary("prov-carrier-stuck-");
+test("IS AC73: an initiating DP the successor cannot cover is NOT absorbed by source 2 — whole batch no-write", () => {
+  const cwd = temporary("prov-s2-initiating-");
+  const s = withDependentReopenFixture();
   fs.mkdirSync(path.dirname(storePath(cwd)), { recursive: true });
   fs.writeFileSync(storePath(cwd), canonicalStoreBytes(s), "utf8");
-  const bytesBefore = fs.readFileSync(storePath(cwd), "utf8");
+  const before = fs.readFileSync(storePath(cwd), "utf8");
+  const headBefore = indexStore(s).taskStates.get("TASK-1").committedProvenanceBatchRef;
+
+  // naming DP-1 as INITIATING flips it from "dependent, may reopen" to "must land on the successor"
   assertRejects(
-    () => runTransaction(cwd, "supersede-requirement", payloadFor(replaceUpdate, [replacement]), OPTS),
-    "E_CARRIER_STATUS",
-    "no-write on the stuck replace",
+    () => runTransaction(cwd, "supersede-requirement",
+      supersedeToScoped([{ dpId: "DP-1", action: "clear" }], { initiatingDpIds: ["DP-1"] }), OPTS),
+    "E_INITIATING_DP_NOT_APPLICABLE",
+    "initiating DP the successor cannot cover",
   );
-  assert.strictEqual(fs.readFileSync(storePath(cwd), "utf8"), bytesBefore, "canonical bytes unchanged");
-  assert.ok(!fs.existsSync(`${storePath(cwd)}.lock`), "the lock is released");
-  assert.deepStrictEqual(fs.readdirSync(path.dirname(storePath(cwd))).sort(), ["provenance.json"], "no temp file survives");
+  assert.strictEqual(fs.readFileSync(storePath(cwd), "utf8"), before, "store bytes unchanged");
+  assert.deepStrictEqual(
+    indexStore(parseStore(fs.readFileSync(storePath(cwd), "utf8"))).taskStates.get("TASK-1").committedProvenanceBatchRef,
+    headBefore, "committed head unchanged",
+  );
+});
+
+test("IS AC74: a non-dependent DP's clear lands on AC61 exact coverage, not on any source-2 guard", () => {
+  const cwd = temporary("prov-s2-nondep-");
+  const s = withDependentReopenFixture();
+  fs.mkdirSync(path.dirname(storePath(cwd)), { recursive: true });
+  fs.writeFileSync(storePath(cwd), canonicalStoreBytes(s), "utf8");
+  const before = fs.readFileSync(storePath(cwd), "utf8");
+  const headBefore = indexStore(s).taskStates.get("TASK-1").committedProvenanceBatchRef;
+
+  // DP-2 holds REQ-hc, not REQ-a, so it is not in this transaction's affected set at all.
+  const e = assertRejects(
+    () => runTransaction(cwd, "supersede-requirement", supersedeToScoped([
+      { dpId: "DP-1", action: "clear" }, { dpId: "DP-2", action: "clear" },
+    ]), OPTS),
+    "E_CARRIER_COVERAGE",
+    "a DP whose terminal this transaction does not mutate",
+  );
+  assert.match(e.message, /DP-2/);
+  assert.strictEqual(fs.readFileSync(storePath(cwd), "utf8"), before, "store bytes unchanged");
+  assert.deepStrictEqual(
+    indexStore(parseStore(fs.readFileSync(storePath(cwd), "utf8"))).taskStates.get("TASK-1").committedProvenanceBatchRef,
+    headBefore, "committed head unchanged",
+  );
+});
+
+test("IS AC75: with every other condition aligned, a successor that IS applicable refuses the source-2 shape (loader)", () => {
+  // Condition 2 cannot be flipped inside a transaction: an applicable successor makes the closure
+  // REPOINT, so the DP never reaches the open post-state source 2 describes — and a repointed DP
+  // declaring clear is AC67's positive case, not a rejection. The criterion is therefore a loader
+  // check on the constructed shape, exactly like AC77/78.
+  const s = withDependentReopenFixture();
+  const good = apply(s, "supersede-requirement", supersedeToScoped([{ dpId: "DP-1", action: "clear" }]));
+  // Give DP-1 the scope-coverage ruling REQ-x needed. Everything else — dependent membership,
+  // open post-state, empty terminals, priorTerminalRef, the v1 serialization, null carrier — stays
+  // exactly as the honest transaction wrote it. Only applicability flips.
+  const covered = apply(good, "append-record", { record: scopeRuling("R-sc", DP1, true) });
+  const withScope = tamper(covered, "DP-1", { scopeRulingRef: { kind: "review-ruling", ref: "R-sc" } });
+  const e = assertRejects(() => validateAll(withScope, OPTS), "E_REOPEN_PRIOR_INCOHERENT", "successor is applicable after all");
+  assert.match(e.message, /REQ-x IS applicable/);
+});
+
+test("IS AC76: source 2 still requires a non-null pre-state carrier", () => {
+  // DP-1 resolves REQ-a by direct citation this time, so its carrier is null.
+  let s = withSecondRequirement(withHardConstraint());
+  s = apply(s, "adopt-existing-outcome", {
+    dpId: "DP-1", clauseRef: "REQ-a", resolutionCarrierUpdates: nulls("DP-1"),
+  });
+  const e = assertRejects(
+    () => apply(s, "supersede-requirement", supersedeToScoped([{ dpId: "DP-1", action: "clear" }])),
+    "E_CARRIER_CLEAR",
+    "nothing to clear",
+  );
+  assert.match(e.message, /unchanged-null/);
+});
+
+test("IS AC77/78: the loader re-checks a reopened dependent DP's prior and trigger on a constructed snapshot", () => {
+  const s = withDependentReopenFixture();
+  const good = apply(s, "supersede-requirement", supersedeToScoped([{ dpId: "DP-1", action: "clear" }]));
+  assert.ok(validateAll(good, OPTS).ok, "the honest post-state validates");
+
+  // AC78: only reopenedBy is changed, to another legal closed trigger. Legal is not aligned.
+  assertRejects(
+    () => validateAll(tamper(good, "DP-1", { reopenedBy: "new-dependent" }), OPTS),
+    "E_REOPEN_TRIGGER_MISMATCH",
+    "a reopen caused by an invalidated terminal with a successor must carry the v1 serialization",
+  );
+  // AC77: only priorTerminalRef is changed, to a DIFFERENT superseded clause whose successor IS
+  // applicable to DP-1 — a DP in that position is repointed, so the recorded prior does not
+  // evidence the reopen the DP claims.
+  const alsoSuperseded = apply(good, "supersede-requirement", {
+    initiatingDpIds: [],
+    records: [planGate("R-pg2", "REQ-b")],
+    successorClause: {
+      id: "REQ-b2", authority: "approved-requirement", kind: "specification", text: "plain successor",
+      sourceRef: "S-req", taskRef: "TASK-1",
+    },
+    transition: {
+      id: "T-2", subject: "REQ-b", action: "supersede", successor: "REQ-b2",
+      authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg2" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+    },
+    resolutionCarrierUpdates: [],
+  });
+  assertRejects(
+    () => validateAll(tamper(alsoSuperseded, "DP-1", { priorTerminalRef: "REQ-b" }), OPTS),
+    "E_REOPEN_PRIOR_INCOHERENT",
+    "priorTerminalRef does not evidence the reopen the DP records",
+  );
+});
+
+test("IS AC79: a non-canonical caller reopenTrigger cannot steer source 2 on any of the three paths", () => {
+  const s = withDependentReopenFixture();
+  const steer = { reopenTrigger: "user-instruction" };
+
+  // supersede-requirement
+  const a = apply(s, "supersede-requirement", supersedeToScoped([{ dpId: "DP-1", action: "clear" }], steer));
+  assertReopenedByClosure(a, "DP-1", "REQ-a");
+
+  // replace-terminal
+  const b = apply(s, "replace-terminal", {
+    dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "REQ-a",
+    records: [planGate("R-pg", "REQ-a")], sources: [EXCEPTION_SOURCE], successorClause: SCOPED_SUCCESSOR,
+    transition: {
+      id: "T-1", subject: "REQ-a", action: "supersede", successor: "REQ-x",
+      authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+    },
+    reopenTrigger: "user-instruction",
+    resolutionCarrierUpdates: [{ dpId: "DP-1", action: "clear" }],
+  });
+  assertReopenedByClosure(b, "DP-1", "REQ-a");
+
+  // and it cannot grant a non-dependent DP standing either
+  assertRejects(
+    () => apply(s, "supersede-requirement", supersedeToScoped(
+      [{ dpId: "DP-1", action: "clear" }, { dpId: "DP-2", action: "clear" }], steer)),
+    "E_CARRIER_COVERAGE",
+    "a caller trigger does not make DP-2 a dependent",
+  );
+});
+
+test("IS AC80: source 2 inside commit-test-provenance-batch — one CAS, head advances, clear is the only legal action", () => {
+  // The batch supersedes REQ-a → REQ-x exactly as the two single-DP paths do. REQ-x is created
+  // beforehand: minting a successor clause inside a batch is successorClauseDraft, which is
+  // Phase 1B and deliberately not implemented here.
+  let s = withDependentReopenFixture();
+  s = apply(s, "append-source", { source: EXCEPTION_SOURCE });
+  s = apply(s, "create-requirement", { requirement: SCOPED_SUCCESSOR });
+  const evidence = [{ kind: "review-ruling", ref: "R-e1" }];
+  const digest = resolutionGroupDigest({
+    subjectRef: "REQ-a", action: "supersede", successor: "REQ-x", semanticEvidenceRefs: evidence,
+  });
+  const batch = (updates) => batchPayload({
+    recordsToCreate: [
+      reviewRuling("R-e1", { kind: "discipline", discipline: "test" }, "REQ-a"),
+      { ...planGate("R-pg", "REQ-a"), resolutionGroupDigest: digest },
+    ],
+    resolutions: [{
+      subjectRef: "REQ-a", semanticEvidenceRefs: evidence,
+      governanceWitnessRef: { kind: "plan-gate", ref: "R-pg" },
+      transitionDraft: {
+        id: "T-b", subject: "REQ-a", action: "supersede", successor: "REQ-x",
+        authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
+        compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+      },
+    }],
+    resolutionCarrierUpdates: updates,
+  });
+
+  const out = apply(s, "commit-test-provenance-batch", batch([{ dpId: "DP-1", action: "clear" }]));
+  assertReopenedByClosure(out, "DP-1", "REQ-a");
+  const head = indexStore(out).taskStates.get("TASK-1").committedProvenanceBatchRef;
+  assert.deepStrictEqual(head, { kind: "provenance-batch", ref: "R-b1" }, "the head advanced in the same transaction");
+  assert.strictEqual(out.transitions.length, 1, "one transition, one CAS");
+
+  for (const [action, code] of [["preserve", "E_CARRIER_PRESERVE"], ["unchanged-null", "E_CARRIER_UNCHANGED_NULL"]]) {
+    assertRejects(() => apply(s, "commit-test-provenance-batch", batch([{ dpId: "DP-1", action }])), code, `batch ${action}`);
+  }
 });
 
 test("SM §9: the loader refuses a malformed or dangling resolutionRulingRef", () => {
