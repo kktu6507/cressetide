@@ -1,9 +1,9 @@
 # Test-Provenance Implementation Spec
 
-- 狀態：**approved v1.5**（2026-08-08 panel 放行；前一放行版本 approved v1.4）。實作以本文為準；變更需重新過 panel。v1.5 **確有語義變更**（初稿宣稱「不改任何語義或 AC」，那已不誠實）：(1) 本文消費的 **canonical empty store** 改為上游 SM §2 的唯一定義，其 `provenanceVersion` 為 **2**；(2) `baseProvenance` checker 對 **historical immutable base-tree store** 新增明確的 read-only 版本行為 —— 該 tree 的 store 可能是 v1 或 v2，checker 驗其**原始** bytes 的 `storeDigest`，**不遷移、不回寫**，也不得拿 normalized bytes 比對 raw digest；current store 的版本與它無關；(3) **AC60 已改寫**，新增 historical v1／v2 的版本分支（原始 bytes digest 優先、normalize 不得充當比對依據、historical v1 不遷移不回寫、無 store 檔時引用上游唯一的 v2 canonical empty store）；current v1 的 migration 仍由 intent-scan AC89 負責，兩條路徑不得混用。上游 v1.12 已於同輪核准，本文連同該版本邊界一併放行。前一放行版本說明：approved v1.4（2026-08-02 panel 放行；前一放行版本 approved v1.0，2026-07-26 panel 放行，自 draft v0.10 經九輪修訂）。實作以本文為準；變更需重新過 panel。**曾退回 draft 的原因**：v1.0 的 `assum-reading-change` 路徑要求「本 run 內產生 revise Transition」，而 revise 的 successor 依定義是尚不存在的新 clause；姊妹 spec intent-scan v1.2 同時寫死「`commit-test-provenance-batch` 不得鑄造任何 clause」，兩者合起來使該路徑**形式上不可達**。v1.1 隨 intent-scan v1.3 的 `successorClauseDraft` 補齊 **ASSUM successor** 的 Step 5 與 AC。v1.2 續修兩處：(1) §6 與 Step 4b 把 `ASSUM.governedBy` 當成可以是 `user`／`plan-gate` 的分支條件 —— 它的型別是 **ReviewerPrincipal**（discipline | arbiter），該比對恆為 false，會讓 REQ 的退出重審路徑**靜默失效**；改以 **`transition.successor`** 決定是否退出，`governedBy` 只決定 reviewer-side principal；(2) 隨當時的 intent-scan v1.4 補上 `ASSUM|DEC supersede → REQ` 的端到端 AC，與 sibling 聚合／重複 subject／carrier 覆蓋的負向 AC（AC76 改寫，新增 AC77 起）。v1.3 修 v1.2 草案一處：Step 5 正文仍把 `successorClauseDraft` 敘述成只鑄造 successor ASSUM，與已放寬的 REQ 契約不符；改寫為**通則**（不在 pre-state 即必須帶 draft；ASSUM 驗 `routingOrigin` 等義務；REQ 驗 rule 6 的 user／plan-gate／四欄／tier 義務；其他 clause 類型未授權即 fail-closed），並補 `DEC → 新 REQ` 的完整成功 AC 與 adopt 的正向 carrier AC（新增 AC78、AC80，其後順延至 AC83）。v1.4 修 v1.3 草案一處：§8 的 typed transaction summary 仍寫「revise group 帶 `successorClauseDraft`（鑄造 successor ASSUM）」，位置在契約摘要而非歷史註解，會把已放寬的合法 REQ successor 重新說窄；改為與 Step 5 完全一致的通則。草案審閱期間，本版新增契約不得實作；該限制已隨 v1.4 核准解除。
+- 狀態：**approved v1.6**（2026-08-09 panel 放行；前一放行版本 approved v1.5）。實作以本文為準；變更需重新過 panel。本版與 **shared-decision-provenance-model v1.13**、**intent-scan v1.9** 為 **coupled set**，2026-08-09 panel 同輪一併放行；三者不得分開採用。 **本次放行只核准規格本身**，不代表 implementation、populated inventory、migration、push 或 Phase 2 已就緒；AC138 的限制持續有效 —— AC128 的 legacy boundary 尚未實作並通過前，不得宣稱 Phase 1／2A 完全不受影響。 v1.6 **只補 authority，不授權任何 dependency，也不宣告任何實作就緒**：Phase 2B1 的 direct inspect 證實 §2 的 adapter 契約在形式上無法落地 —— `structuralId(decl)` 是函式卻被要求序列化進 `test-adapters.json`，`testDeclarationPatterns`／`containerPatterns` 只有欄位名而無語言，`attachmentRule` 只有四個字詞而非 closed enum，明示穩定 ID 被整個委派給一個不存在的 adapter，effective-oracle 只有例子而無 closed edge contract，base/head content view 從未定義。新增 **§11b**（registry exact schema 與 closed pattern-ID table、`implementationId` 綁定表、discovery precedence 與 explicit-config carrier、`attachmentRule` closed enum 與 tag cardinality、node:test v1 profile 含 `node:assert`／hook import form、stable-ID `@tid` 實際語法、`structuralId` 演算法、`@tid` canonical-byte 排除、兩類 oracle edge 的 closed table、`implementationIdentity` per-entry carrier、HeadViewSnapshot S1／S2 協定與 ignore authority、parser 能力契約與 rollout boundary）與 **AC84–138**。**第二輪修訂（panel REVISE 後）**再閉合七處：tag cardinality 改為恰好一筆 `@src`（與 §2 一致，不再允許多筆並正規化）；pattern ID 由欄位名補成有 predicate 的 closed table 並綁定 `node-test-v1`；`implementationIdentity` 由散文落成 inventory entry 欄位並經 `inventoryDigest` 進 freshness；移除詞法序號消歧（前插同名 test 會靜默錯配 identity），duplicate name 一律要求 `@tid` 且 uniqueness scope 擴至 matching universe；oracle edge 拆成 traversal 與 oracle dependency 兩類，SUT import 不再進 closure；head 讀取改為 S1／S2 原子 snapshot 並明定 ignore authority；`@tid` 的 digest 排除補上 exact bytes 演算法。**第三輪修訂（panel REVISE 後）**再閉合七處：`implementationIdentity` 補上 **registry 側** carrier，並撤回「已可完整寫出正式 registry」的宣稱；新增 **v2 versioned inventory envelope**（`inventoryVersion`／`registryDigest`／`headViewDigest`）與 consumer 的 **S3** 完整-universe freshness 協定，legacy v1 以顯式 discriminator 拒絕、`entries: []` 不得成為 populated coverage bypass；`node-test-v1` 的 mapping 收斂為唯一組合，`.test.mjs` 降為 eligibility filter 而非 framework evidence；assertion 名稱與 snapshot-golden 的 fs API／path 形式各補 closed allowlist，並誠實寫明結構分類會把任何含 assertion 的 reachable callable 保守視為 oracle contributor；stable-ID uniqueness 改為 base／head **分別**檢查；canonical bytes 在建立 range **之前**先正規化行終止符；gitignore 語義列為與 AST parser 同一次 dependency authorization 的能力。**第四輪修訂（panel REVISE 後）**再閉合五處：以 direct inspect 上游 store 的 CAS 為據，把 **source freshness** 與 **provenance-store freshness** 分離 —— `headViewDigest` 取得 closed 的 exclusion／inclusion 規則並排除 `.ctide/provenance.json`，store 的新鮮度改由新欄位 `inputProvenanceStoreDigest` 承載並進入 `inventoryDigest`，其上游 precondition 為 intent-scan draft v1.9 的必填 payload 欄位 `expectedInputProvenanceStoreDigest`（該輪同時宣稱「shared model 不需修改」，**已於第五輪撤回**，見下）；assertion binding 分為 assertion-object 與 assertion-function 兩類，strict alias 明列；死 token `mjs-test-suffix` 與 `filePatternIds` 欄位一併刪除；半開的 `external-expected-data` edge 與未授權的 re-export capability 各自移除；version dispatch 改為誠實表述（v2 有 explicit discriminator，v1 只能以 exact absence shape 辨識），`registryDigest` 亦改為涵蓋整份 registry root 與 head-view config 的唯一公式。**第五輪修訂（panel REVISE 後）**閉合最後一個綁定缺口：前一稿宣稱 `expectedInputProvenanceStoreDigest` 已由 `inventoryDigest` 遞移持久化、Step 6 可事後證明 pre-state、shared model 不需修改 —— **三項宣稱全數撤回**。`inventoryDigest` 是 opaque 值，caller 可讓 payload 追上實際 pre-state（D1）卻仍送出以 D0 為 preimage 的舊 digest，writer 兩段等式都驗得過而事後查不出。修正是把 **preimage 本身持久化**：`batchSnapshot` 新增完整 typed **`inventorySnapshot: ChangedTestInventoryV2`**（唯一 authority），`record.inventoryDigest` 由它派生，writer 在同一筆交易內重算並強制三段等式，Step 6 改讀該 snapshot 重播綁定。持久化欄位屬上游 record 形狀，因此 **shared model 一併退回 draft v1.13**、intent-scan 續為 **draft v1.9**。**第六輪修訂（panel REVISE 後）**收尾五處：intent-scan 仍是 live normative text 的舊宣稱（opaque digest 足以證明 pre-state、shared 不需 persisted field）**刪除**；§6 的 freshness 明定為 **Step 5 前 proposal-time**，checker 分層表改為分階段，**禁止**把 current-inventory 重算引入 post-commit（正常 D0→D1 提交會被誤判 stale）；上游新增 **`batchRecordVersion` discriminator** 與 legacy boundary（legacy 可讀範圍、不得冒充 Phase 2 proof、v2 缺 snapshot／未知版本／malformed 一律 fail-closed、chain 版本單調不減）；Step 6 的事後證明改為**誠實劃界** —— 可重算 snapshot digest 與 derived equality、可視 snapshot 為 committed witness，但**不能**獨立重新觀察歷史 `loadedStoreDigest`／payload，也不能只憑 digest 判斷其記法；`inventorySnapshot` 的最小 authoritative envelope **上提至 shared**，本文只保留計算語義。§11b.11 的 dependency 段落為 **non-normative 且未核准**。**核准後 `parseInventory()` 的 populated gate 仍不得移除**（解除條件見 §11b.12 的六項）；本版亦不改動 Phase 1 與 Phase 2A 既有的 READY 狀態。前一放行版本說明：approved v1.5（2026-08-08 panel 放行；前一放行版本 approved v1.4）。實作以本文為準；變更需重新過 panel。v1.5 **確有語義變更**（初稿宣稱「不改任何語義或 AC」，那已不誠實）：(1) 本文消費的 **canonical empty store** 改為上游 SM §2 的唯一定義，其 `provenanceVersion` 為 **2**；(2) `baseProvenance` checker 對 **historical immutable base-tree store** 新增明確的 read-only 版本行為 —— 該 tree 的 store 可能是 v1 或 v2，checker 驗其**原始** bytes 的 `storeDigest`，**不遷移、不回寫**，也不得拿 normalized bytes 比對 raw digest；current store 的版本與它無關；(3) **AC60 已改寫**，新增 historical v1／v2 的版本分支（原始 bytes digest 優先、normalize 不得充當比對依據、historical v1 不遷移不回寫、無 store 檔時引用上游唯一的 v2 canonical empty store）；current v1 的 migration 仍由 intent-scan AC89 負責，兩條路徑不得混用。上游 v1.12 已於同輪核准，本文連同該版本邊界一併放行。前一放行版本說明：approved v1.4（2026-08-02 panel 放行；前一放行版本 approved v1.0，2026-07-26 panel 放行，自 draft v0.10 經九輪修訂）。實作以本文為準；變更需重新過 panel。**曾退回 draft 的原因**：v1.0 的 `assum-reading-change` 路徑要求「本 run 內產生 revise Transition」，而 revise 的 successor 依定義是尚不存在的新 clause；姊妹 spec intent-scan v1.2 同時寫死「`commit-test-provenance-batch` 不得鑄造任何 clause」，兩者合起來使該路徑**形式上不可達**。v1.1 隨 intent-scan v1.3 的 `successorClauseDraft` 補齊 **ASSUM successor** 的 Step 5 與 AC。v1.2 續修兩處：(1) §6 與 Step 4b 把 `ASSUM.governedBy` 當成可以是 `user`／`plan-gate` 的分支條件 —— 它的型別是 **ReviewerPrincipal**（discipline | arbiter），該比對恆為 false，會讓 REQ 的退出重審路徑**靜默失效**；改以 **`transition.successor`** 決定是否退出，`governedBy` 只決定 reviewer-side principal；(2) 隨當時的 intent-scan v1.4 補上 `ASSUM|DEC supersede → REQ` 的端到端 AC，與 sibling 聚合／重複 subject／carrier 覆蓋的負向 AC（AC76 改寫，新增 AC77 起）。v1.3 修 v1.2 草案一處：Step 5 正文仍把 `successorClauseDraft` 敘述成只鑄造 successor ASSUM，與已放寬的 REQ 契約不符；改寫為**通則**（不在 pre-state 即必須帶 draft；ASSUM 驗 `routingOrigin` 等義務；REQ 驗 rule 6 的 user／plan-gate／四欄／tier 義務；其他 clause 類型未授權即 fail-closed），並補 `DEC → 新 REQ` 的完整成功 AC 與 adopt 的正向 carrier AC（新增 AC78、AC80，其後順延至 AC83）。v1.4 修 v1.3 草案一處：§8 的 typed transaction summary 仍寫「revise group 帶 `successorClauseDraft`（鑄造 successor ASSUM）」，位置在契約摘要而非歷史註解，會把已放寬的合法 REQ successor 重新說窄；改為與 Step 5 完全一致的通則。草案審閱期間，本版新增契約不得實作；該限制已隨 v1.4 核准解除。
 - 日期：2026-07-25
-- 上游：`2026-07-25-shared-decision-provenance-model.md`（**approved v1.12**）—— 提供 gate scope、pre／post binding 兩相、**base provenance witness**、`provenance-batch` record kind 與 chain head 規則。不重新定義任何 shared concept；附加欄位一律標為 annotation 且不改上游語義。inventory 欄位對映上游語義：`tagBefore → preChangeBinding`、`tagAfter → postChangeBinding`。
-- 姊妹 spec：`2026-07-25-intent-scan-spec.md`（**approved v1.8**）—— 提供 provenance store、store script 命令面（含 `commit-test-provenance-batch`、`successor=null` retire）、task manifest、Review Packet 接線；本文消費而不重定義。**Gate scope 直接消費 shared model §9 的 canonical 定義**（不在本文改寫或摘要）。
+- 上游：`2026-07-25-shared-decision-provenance-model.md`（**approved v1.13**，與本文同輪放行）—— 提供 gate scope、pre／post binding 兩相、**base provenance witness**、`provenance-batch` record kind 與 chain head 規則。不重新定義任何 shared concept；附加欄位一律標為 annotation 且不改上游語義。inventory 欄位對映上游語義：`tagBefore → preChangeBinding`、`tagAfter → postChangeBinding`。
+- 姊妹 spec：`2026-07-25-intent-scan-spec.md`（**approved v1.9**，與本文同輪放行；前一放行版本 approved v1.8）—— 提供 provenance store、store script 命令面（含 `commit-test-provenance-batch`、`successor=null` retire）、task manifest、Review Packet 接線；本文消費而不重定義。**Gate scope 直接消費 shared model §9 的 canonical 定義**（不在本文改寫或摘要）。
 - **三份互相依賴，皆須通過各自 panel**；v0.5 曾宣稱「不改 store script 命令面」，**該宣稱撤回**。
 
 ## 1. 目的與範圍
@@ -53,6 +53,11 @@ adapter = { adapterId, language, framework,
             structuralId(decl)  ← 見下方 identity }
 ```
 
+> **v1.6 起本區塊由 §11b 取代為可落地的形式。**上式把 `structuralId(decl)` 寫成 adapter 的一個欄位，
+> 但它是函式，JSON registry 承載不了；`testDeclarationPatterns`／`containerPatterns` 也只有欄位名而
+> 無語言。§11b.2–11b.3 把資料與能力分開：registry 只承載 data 與 algorithm IDs，三項 capability 由
+> closed `implementationId` → implementation module 的映射提供。本區塊保留為沿革，**不再是 authority**。
+
 - `describe(`／`context(`／`suite(` 等是 **container**，不承載 tag，也不因未標而報錯。
 - decorator／attribute 型（`@Test`、`#[test]`、`@pytest.mark.parametrize`）由 `attachmentRule` 指定 tag 註解相對於 decorator 的位置。
 - 註冊單位是 **framework**：`js/ts` 已註冊不代表 Jest／Vitest／Playwright 都被涵蓋。
@@ -73,20 +78,29 @@ adapter = { adapterId, language, framework,
 
 `structuralId` 由 adapter 定義為 **path-independent** 的檔內結構鍵（container chain ＋正規化宣告名稱），**不得只用 declarationName** —— 同檔同名、generated／dynamic name 都會碰撞。path 不入 `structuralId`，因此**單純搬檔仍保持 identity**（`status=moved`）。
 
+> **v1.6 起**：node:test v1 的實際演算法見 §11b.8。同一 container chain 內的**重複名稱不以位置消歧** ——
+> 該 duplicate group 的每一筆都必須帶唯一 `@tid`，否則 fail-closed（理由與反例見 §11b.8）。
+
 檔內結構重整（container 改名／嵌套改變）會使 `structuralId` 變動，此時：
 
 ```
 matching 必須 one-to-one；任何一對多或多對一 → fail-closed
 無法唯一配對時，作者可在宣告上加明示穩定 ID（adapter 定義之 annotation）
   → 該 ID 優先於推導的 structuralId
+  → **v1.6 起**：node:test v1 的該 annotation 由 §11b.7 實際定義為 `// @tid <ID>`；
+    「由 adapter 定義」不再是可接受的 authority，優先權規則本身不變
 仍無法唯一配對 → fail-closed（不得猜測，也不得降級成 added＋deleted）
 ```
 
 **`inventoryDigest` 的 canonical encoding（唯一公式，不可只寫「同上游」）**：
 
 ```
-inventoryDigest ＝ sha256(canonicalJson({ baseTreeOid, entries }))
-  ← **唯一正式公式**。舊版一處寫「只 hash entries[]」、另一處說「envelope 含 baseTreeOid」，
+inventoryDigest ＝ 依 envelope 版本分派（**每個版本各恰一條公式，不並存**）:
+  v1（legacy）: sha256(canonicalJson({ baseTreeOid, entries }))
+  v2          : sha256(canonicalJson({ inventoryVersion, baseTreeOid, registryDigest,
+                                       headViewDigest, inputProvenanceStoreDigest, entries }))
+                ← v1.6 新增；完整公式與理由見 §11b.9c
+  ← **每個版本的公式唯一**。舊版一處寫「只 hash entries[]」、另一處說「envelope 含 baseTreeOid」，
     兩式並存會讓「同一批 entries、不同 base tree 是否同 digest」沒有答案，
     base-tree proof 因而不可機械驗證
 
@@ -95,6 +109,7 @@ entries 依 (path, adapterId, structuralId) 的 Unicode code point 序排序
 bodyDigest 的 body span ＝ adapter 定義的宣告完整範圍
   （含 decorator／attribute／attachmentRule 所涵蓋的前置區塊，不含前後空白行）
 body 正規化：UTF-8 無 BOM、LF、不 trim 內部空白
+  ← v1.6：hashing 前對合法附著之 @tid 行的移除，唯一演算法見 §11b.8b
 ```
 
 ## 3. 沉默即不斷言（減法規則）
@@ -182,10 +197,49 @@ head 側存在 tag 指向該 criterion 的測試
 
 ### `ChangedTestInventory`（per-run scratch，由 base／head 兩側內容導出）
 
+**Envelope 版本邊界（v1.6 新增）** —— 本 artifact 有兩個 shape，以**顯式 discriminator** 區分，
+**不以欄位有無猜測**：
+
+```
+v2 文件         : 帶 explicit discriminator `inventoryVersion: 2`
+legacy v1 文件  : **沒有** discriminator —— 只能以 **exact absence shape** 辨識：
+                  root key set 恰為 { baseTreeOid, inventoryDigest, entries }，
+                  且不含 inventoryVersion。這是誠實的表述：v1 從未帶版本欄位，
+                  它的辨識靠的是「恰好缺這一欄且整體形狀完全吻合」，
+                  **不是**一個 v1 自己宣告的 discriminator。
+其他情形        : 缺 inventoryVersion 但形狀不吻合 v1 exact shape → fail-closed
+                  inventoryVersion 為 2 以外的值或非整數           → fail-closed
+```
+
+**v1（legacy，Phase 2A clean-only）**
+
 ```
 baseTreeOid:      本次盤點所用的 Git base tree，供 checker 機械驗證
                   `baseProvenance.treeOid == baseTreeOid`
-inventoryDigest:  依 **§2 的唯一公式** `sha256(canonicalJson({ baseTreeOid, entries }))`
+inventoryDigest:  sha256(canonicalJson({ baseTreeOid, entries }))
+entries:          必為 []（populated 者由 unsupported-populated-inventory 擋下）
+```
+
+v1 **只在 §11b.12 的 populated gate 仍在位時有效**。**v2 rollout 啟用後，v1 一律拒絕並要求重產** ——
+**`entries: []` 的 legacy 文件不得被當成「已涵蓋、無變更」而成為 populated coverage 的 bypass**：
+它缺 `registryDigest` 與 `headViewDigest`，根本無法證明自己涵蓋了什麼。
+
+**v2 envelope（closed，exact key set）**
+
+```
+inventoryVersion: 2
+baseTreeOid:      同上
+registryDigest:   sha256(canonicalJson({ registry, explicitConfig }))  ← §11b.9c
+headViewDigest:   由 S1 完整 canonical map 計算（**不含** provenance store）← §11b.10
+inputProvenanceStoreDigest:
+                  inventory 產生當下 current `.ctide/provenance.json` 的 digest ← §11b.9c
+                  —— provenance-store freshness 的**唯一** carrier
+inventoryDigest:  **唯一公式** ＝ sha256(canonicalJson({
+                    inventoryVersion, baseTreeOid, registryDigest, headViewDigest,
+                    inputProvenanceStoreDigest, entries }))
+                  —— 涵蓋 version、base、registry、完整 head universe、
+                     產生當下的 store 狀態，與 entries；
+                     per-entry identity **不足以**構成 freshness proof
 entries[]:
   testRef:        { path, adapterId, structuralId }（deleted 者取 base 側，§2 identity）
   status:         added | modified | deleted | retagged | moved | governance-affected
@@ -198,6 +252,11 @@ entries[]:
   baseBodyDigest: §2 bodyDigest（status ≠ added 時必填）
   headBodyDigest: 同上（status ≠ deleted 時必填）
   framework:      adapter 回報
+  implementationIdentity:                                        ← v1.6 新增，必填
+                  { implementationId, parserId, parserVersion }
+                  exact key set，三欄皆非空字串；必須等於當次 registry 中
+                  該 adapterId 綁定的 identity。完整規則見 §11b.9b。
+                  因 entry 進 inventoryDigest，identity 變動必然使舊 batch stale。
 
 schema 不變量（**鏡射上游 INV-B1／B2，寫死在 schema，不靠 AC 補救**）：
   status == deleted  ⇔  tagAfter == null
@@ -266,7 +325,14 @@ taskId
 baseProvenance              ← 上游 §9 **inline** witness（treeOid／storePath／storeDigest）；
                               必須等於 tracked TaskState.baseProvenance，且
                               treeOid == inventory.baseTreeOid
-inventoryDigest             ← 綁定當下 inventory 全文
+inventorySnapshot           ← **v1.6 新增，必填**：完整 typed ChangedTestInventoryV2
+                              （exact v2 envelope 全文，非 digest）。這是 inventory 的
+                              **唯一** authority；提交後隨 batchSnapshot 持久化，
+                              scratch 刪除後，仍可驗 persisted witness、derived equalities、
+                              batchDigest coverage 與 S3 freshness（可驗範圍見 §11b.9c 證明邊界）。
+inventoryDigest             ← **derived**：必須等於 inventorySnapshot.inventoryDigest，
+                              且等於由 inventorySnapshot 重算所得的值。
+                              **不得**由 caller 獨立提供成為第二份 authority
 results[]:                  ← 對 inventory entry 一對一
   testRef
   clauseRef?                ← EXPL entry **省略此欄**（上游：EXPL 無 clause）
@@ -286,9 +352,10 @@ results[]:                  ← 對 inventory entry 一對一
 
 **不變量**：`results` 與 inventory `entries` **一對一且完全覆蓋**。缺任一 entry → 視同語義審查未完成 → **fail-closed**（reviewer 跑了但漏審四個測試，不得被讀成 reviewed-clean）。
 
-**Freshness（intent-scan 用 `inputPacketDigest` 解過的同一問題）** —— checker 消費前重算比對：
+**Freshness —— 本節是 Step 5 之前的 proposal-time validation，不是 post-commit 檢查（v1.6 修正）**
 
 ```
+適用時機: **Step 5 提交之前**，對尚未 commit 的 batch proposal 求值
 batch.taskId          == current taskId
 batch.inventoryDigest == 重算的 current inventoryDigest
 每筆 observedBase/HeadBodyDigest == 重算的 current body digest
@@ -297,6 +364,8 @@ tagBefore／tagAfter    == current inventory
 ```
 
 因此：測試在 review 後又被修改、沿用同一 test 的**舊 run** ruling、或借用**其他 test** 的 ruling，全部擋下。
+
+> **本節不得被引入 post-commit（Step 6）。** `batch.inventoryDigest == 重算的 current inventoryDigest` 只在 store 尚未被 Step 5 改動時成立：正常提交會把 store 由 D0 推進到 D1，於是「當下重算」的 inventory digest 必然不同於 H0，**每一筆正常 batch 都會被誤判 stale**。post-commit 的對位規則**唯一**來源是 §11b.9c 的 Step 6 snapshot 協定 —— 讀 committed `batchSnapshot.inventorySnapshot`、重算其自身 digest、驗 derived equality，S3 只重算 `headViewDigest`／`registryDigest`。
 
 **Proposal 與 persisted shape 分離** —— reviewer 的 proposal **不含 `rulingRef`**（那是 main thread 尚未鑄造的東西）：
 
@@ -495,7 +564,7 @@ scratch 的 batch proposal **僅供 Step 3–4 的迴圈使用**；Step 6 之後
 | 層 | 內容 | 失敗 |
 |---|---|---|
 | 結構（`REQ`／`DEC`／`ASSUM`） | tag 存在、grammar 合法（§2）、可解析到 clause、clause `active ∧ mechanicallyApplicable`（per-kind，上游 §2）；exception-backed 依 §7 綁定 DP 並驗五項；§5 的 ASSUM Transition 存在性 | **fail-closed** |
-| Batch 完整性與新鮮度 | `results` ↔ inventory entries 一對一完全覆蓋；`taskId`／`inventoryDigest`／各 body digest／tag 前後值重算相符（§6） | **fail-closed** |
+| Batch 完整性與新鮮度 | `results` ↔ inventory entries 一對一完全覆蓋（兩階段皆驗）。**分階段**：**Step 5 之前（proposal-time）**依 §6 重算 `taskId`／`inventoryDigest`／各 body digest／tag 前後值；**Step 6（post-commit）**改依 §11b.9c 的 snapshot 協定 —— 讀 committed `batchSnapshot.inventorySnapshot`、重算其 `inventoryDigest`、驗 record 的 derived equality，並以 S3 重算 `headViewDigest`／`registryDigest`。**post-commit 不得引入 §6 的 current-inventory 重算**（Step 5 的合法 store 推進會使它必然不符） | **fail-closed** |
 | **Finding 終局** | fresh batch 中不得存在 `wrong-tag`／`missing-source`／`scope-violation`；`assum-reading-change` 須有通過驗證的 `resolutionRef`（見下表） | **fail-closed** |
 | 結構（`EXPL`） | **不做 clause／Source resolution** —— 只驗 tag 語法與必要-suite policy | fail-closed（僅語法／policy） |
 | 來源 | Source 存在、Check A、Check B（`driftMode=repo-file`）；`contentKind=exception-grant` **完整鏈**：resolve `targetConstraintRef` → target 必須是 `authority=hard-constraint` 的 REQ → `grantAuthorityRef == target.ownerRef` → 未過期 | **fail-closed** |
@@ -637,6 +706,659 @@ testProvenance: {
 }
 ```
 
+## 11b. Adapter registry、node:test v1 profile 與 oracle edge contract（v1.6 新增）
+
+本章關閉 Phase 2B1 的 direct inspect 所證實的六個 authority／carrier 缺口，以及 panel 於第一輪 REVISE 指出的七處（tag cardinality、pattern-ID closed set、`implementationIdentity` carrier、duplicate-name identity、oracle edge 分類、head snapshot 原子性、`@tid` 的 digest 排除演算法），與第二輪 REVISE 指出的七處（registry 側 identity carrier、versioned envelope 與完整-universe freshness、`node-test-v1` 唯一 mapping、assertion／fs allowlist 閉合、per-view stable-ID uniqueness、行終止符正規化順序、gitignore engine 的授權範圍），以及第三輪 REVISE 指出的五處（兩種 freshness 的分離與上游 pre-state precondition、head universe 的 closed 範圍、assertion binding 分類、死 token 與半開 edge 的移除、version dispatch 與 `registryDigest` 的誠實公式）。**它只補契約，不授權任何 dependency，也不宣告任何實作就緒。**
+
+### 11b.1 為何需要本章
+
+v1.5 的 §2 把 adapter 寫成
+
+```
+adapter = { adapterId, language, framework, testDeclarationPatterns,
+            containerPatterns, attachmentRule, structuralId(decl) }
+```
+
+而 §12 又要求把它落成 `test-adapters.json`。兩者形式上互斥：**`structuralId(decl)` 是一個函式**，JSON 承載不了。同樣地 `testDeclarationPatterns`／`containerPatterns` 只有欄位名而無語言（regex？AST matcher？哪種方言？），`attachmentRule` 只有括號內四個字詞而非 closed enum，而「明示穩定 ID（**adapter 定義之** annotation）」把語法整個委派給一個不存在的 adapter。實作者要動手，只能自行發明 —— 那正是本模型反覆拒絕的東西。
+
+### 11b.2 Registry 是資料，能力在 shipped code
+
+**分工（normative）**：
+
+```
+test-adapters.json  只承載 DATA 與 ALGORITHM IDs
+shipped code        以 closed implementationId → implementation module 的映射
+                    提供三項 capability：
+                      structuralId(decl)
+                      tag attachment
+                      effectiveOracleDeps(node, tree)
+```
+
+**registry 一律不得**以任意 module path、`eval`、function source、caller-provided code 或自由格式 regex 取得可執行行為。實作模組的集合是**編譯期閉合**的：一個未列於 closed mapping 的 `implementationId` 是 fail-closed，不是動態載入的機會。
+
+### 11b.3 `test-adapters.json` exact schema
+
+```
+root（exact key set）:
+  registryVersion : 整數，本版為 1
+  adapters        : 陣列，長度 >= 1
+
+adapters[]（exact key set；每個字串欄位必填且非空）:
+  adapterId                 : ID token
+  language                  : language enum
+  framework                 : framework enum
+  implementationId          : implementation enum（closed）
+  implementationIdentity    : { implementationId, parserId, parserVersion }
+                              exact key set，三欄皆必填非空字串；
+                              implementationIdentity.implementationId
+                                **必須等於** adapter.implementationId（不等 → fail-closed）
+                              parserId／parserVersion 的實際值由後續 dependency
+                                authorization 提供（11b.11），本 spec 不指定
+  testDeclarationPatternIds : ID token 陣列，長度 >= 1
+  containerPatternIds       : ID token 陣列，長度 >= 1
+  attachmentRule            : attachment enum（closed，見 11b.5）
+  stableIdRule              : stableId enum（closed，見 11b.7）
+  discovery                 : discovery 物件（見 11b.4）
+
+ID token 文法（所有 ID 共用）: ^[a-z][a-z0-9]*(-[a-z0-9]+)*$
+
+closed enums（v1）:
+  language         : "javascript"
+  framework        : "node:test"
+  implementationId : "node-test-v1"
+  attachmentRule   : "leading-line-comments"
+  stableIdRule     : "line-comment-tid-v1"
+
+陣列 canonical form（三個 pattern array 與 discovery 的字串陣列共用）:
+  去重後依 Unicode code point 序遞增排列。
+  未排序、含重複、含未知 ID → 各自 fail-closed（不得由 writer 就地排序後放行）。
+
+唯一性:
+  adapterId 在 registry 內唯一 —— 重複 → fail-closed
+  (implementationId, framework) 唯一 —— 重複 → fail-closed
+```
+
+**`implementationId` 綁定表（closed；v1 只有一列）** —— 這張表閉合的是 **semantic algorithm tokens**，**不是**一份可落檔的 registry：`implementationIdentity.parserId`／`parserVersion` 的值尚待 dependency authorization（§11b.11、§11b.12）。各欄皆為 `adapters[]` 的頂層欄位：
+
+| `implementationId` | `framework` | `language` | `testDeclarationPatternIds` | `containerPatternIds` | `attachmentRule` | `stableIdRule` |
+|---|---|---|---|---|---|---|
+| `node-test-v1` | `node:test` | `javascript` | 恰為 `["node-test-call"]` | 恰為 `["node-test-describe"]` | `leading-line-comments` | `line-comment-tid-v1` |
+
+**任何其他 `framework` 搭配 `node-test-v1` → fail-closed**；表中未列的欄位組合亦 fail-closed。每一欄都是**恰為**，不是「子集」或「可為空」—— v1 只有一個合法組合，registry 沒有自由度。
+
+**`discovery.filePatternIds` 與 `mjs-test-suffix` 均已刪除（v1.6 第三輪修正）** —— 初稿允許 `["mjs-test-suffix"]`，那讓副檔名單獨構成 framework evidence。**`.test.mjs` 不是 framework 證據**：Playwright、Vitest 及其他 runner 同樣使用該副檔名。第二輪把它降為 eligibility filter，但**沒有任何欄位可以選用它** —— 那是一個死 token；本輪**從 pattern table、registry schema、discovery 與 AC 全部移除**，且**不新增另一個欄位只為保留它**。**node:test 只由 explicit config 或 static import `"node:test"` 選定。**
+
+**`implementationIdentity` 亦是 registry 欄位（v1.6 修正）** —— 只放在 inventory entry 不夠：沒有 registry 側的宣告，entry 的 identity 就無可比對的權威。兩處必須逐欄相等（§11b.9b）。
+
+**Closed pattern-ID table（v1；恰兩個 AST predicate，無 path predicate）** —— 每個 ID 都有完整語義，不是留待實作填空的名字：
+
+| Pattern ID | 類別 | 語義（predicate） |
+|---|---|---|
+| `node-test-call` | test declaration | AST `CallExpression`，callee 解析到 §11b.6 所定義的 `node:test` **test binding**（含 `.only`／`.skip`／`.todo` 成員），且第一引數為字串字面值或無插值模板字串 |
+| `node-test-describe` | container | AST `CallExpression`，callee 解析到 `node:test` 的 **describe binding**（含同組 modifier），第一引數同上 |
+
+未列於本表的 pattern ID → fail-closed。**registry 一律不接受自由格式 regex 作為 authority。**
+
+**registry 不得**以任意 module path、`eval`、function source、caller-provided code 取得可執行行為；實作模組集合為編譯期閉合，未列於 closed mapping 的 `implementationId` 是 fail-closed，不是動態載入的機會。
+
+### 11b.4 Discovery：exact input／output 與 precedence
+
+```
+discovery（exact key set）:
+  explicitConfigPath   : canonical repo-relative path | null
+  manifestDependencies : 字串陣列（canonical form；node-test-v1 綁定為 []）
+  importSpecifiers     : 字串陣列（canonical form）
+
+node-test-v1 的綁定值（closed）:
+  manifestDependencies 恰為 []          —— node:test 是 Node 內建，沒有 manifest 依賴證據
+  importSpecifiers     恰為 ["node:test"] —— 不得以任意非空字串冒充
+
+輸入: { view, path, sourceText, manifest }
+      view ＝ base | head（見 11b.10；兩側各自求值，不得混用）
+輸出: adapterId | fail-closed
+```
+
+**Precedence（依序，先命中者勝；v1 只有三級）**：explicit config → manifest 依賴 → import specifier。
+
+**沒有 file-pattern 這一級（v1.6 第三輪修正）** —— discovery 只有上列三級，**副檔名不參與 adapter 選定**。反例：一個 `.test.mjs` 檔只 import Playwright／Vitest 風格的 API 而**沒有** `node:test` 的 static import → 三級全部零命中 → **fail-closed**，**不得**因副檔名而被選成 `node-test-v1`。
+
+**`manifest` 的解析（每個 view 各自）** —— 由測試檔所在目錄向 repo root 逐層尋找**最近祖先**的 `package.json`，取第一個命中者；base 與 head **各自解析**，不得混用（head 新增或刪除 `package.json` 會改變 head 的最近祖先，那正是要偵測的變化）。找不到任何 `package.json` → 該級零命中（非錯誤），續評下一級。
+
+**Explicit config carrier**：路徑固定 `.ctide/test-adapters-config.json`，exact shape
+
+```
+{ "configVersion": 1, "assignments": [ { "path": <canonical path>, "adapterId": <ID token> } ] }
+```
+
+`assignments[].path` 唯一；重複、未知 `adapterId`、未宣告 key、`configVersion != 1` → 各自 fail-closed。
+
+此檔是 **tracked committed project configuration**，屬 consuming project 所有，隨 base／head 兩個 view 各自取值；**producer 對它 read-only**，任何情況下都不得建立、改寫或補齊它。它同時是 §11b.9c 的 `registryDigest` 輸入之一。
+
+**Fail-closed**：三級全部零命中；同級命中兩個**不相等**的 `adapterId`；較高級已唯一命中則不再評估較低級。Evidence 必須可重現 —— 只讀該 view 內的內容與路徑，不依賴 process 環境、時間、網路或已安裝的 node_modules。
+
+**跨 view framework migration 是 v1 的刻意邊界**：同一 path 在 base 與 head 導出**不同** `adapterId` → fail-closed。這**不是**「identity 漂移」的泛稱，而是明確拒絕把 framework 遷移猜成 `moved`／`retagged` —— 兩個 adapter 的 `structuralId` 演算法不同，跨 adapter 比較沒有共同定義域。日後若要支援，必須另立 **typed cross-adapter identity contract**（明確定義兩個 adapter 之間的 identity 對映與其 witness），v1 不提供。
+
+### 11b.5 `attachmentRule` closed enum 與 tag cardinality
+
+v1 唯一值 `leading-line-comments`：
+
+```
+位置      : tag 位於 declaration 起始 token 之前，其間只允許連續單行註解 (//)、空白與縮排
+中介註解  : 允許 —— 連續單行註解構成一個 attachment block，tag 可在其中任一行
+空白行    : **不允許** —— block 與 declaration 之間出現任何空白行即未附著
+container : container declaration **永不**承載 tag —— 附著於 container 的 tag → fail-closed
+malformed : block 內語法不合法的 tag、或同一 block 歧義地附著於兩個 declaration → fail-closed
+```
+
+**Tag cardinality（承 §2:41「每個測試恰好一個 tag」，不得放寬）**：
+
+```
+一個 declaration 的 attachment block 內 **最多且最終恰好一筆 @src**。
+第二筆 @src → fail-closed，**不論內容是否與第一筆相同**（相同不是「無害重複」，
+  它同樣違反「恰好一個 tag」，且會讓正規化悄悄吞掉作者的錯誤）。
+@tid **不計入** tag cardinality —— 它是 identity hint，不是 tag。
+head 中仍存在的 test 若零 @src → 依既有 INV-B2 fail-closed。
+pre-state legacy 的零 tag 合法性仍由既有 preState 規則處理，**不得反向放寬 head**。
+```
+
+decorator／attribute／annotation 三種 attachmentRule 在 v1 **未定義**，登記即 fail-closed。
+
+### 11b.6 node:test v1 adapter profile
+
+本 profile 是**本 spec 自行選定的穩定子集**，不是「本機 Node 恰好 export 什麼」。未列舉語法一律 `unsupported-syntax` fail-closed，**禁止以 regex 猜測**。
+
+```
+implementationId : "node-test-v1"
+module format    : ESM only（.mjs，或 package type=module 下的 .js）。CommonJS → unsupported
+
+合法 node:test import（top-level static import；specifier 必須恰為 "node:test"）:
+  import test from "node:test";
+  import { test } from "node:test";
+  import { test, describe } from "node:test";
+  import { before, after, beforeEach, afterEach } from "node:test";
+  import test, { before, after, beforeEach, afterEach } from "node:test";
+  —— default 與 named 可於同一 import 併用；允許 `as` 別名
+     （例：import { test as it } from "node:test"）。
+  —— adapter 依 **import binding** 解析實際識別字，不比對字面名稱。
+  —— 裸 "test" specifier（無 node: 前綴）→ unsupported
+
+binding 分類:
+  test binding      : default import，或 named "test"（含別名）
+  describe binding  : named "describe"（含別名）
+  hook binding      : named "before" / "after" / "beforeEach" / "afterEach"（含別名）
+
+合法 assertion import（specifier 恰為 "node:assert" 或 "node:assert/strict"）:
+  import assert from "node:assert";              ← default binding
+  import assert from "node:assert/strict";       ← default binding
+  import * as assert from "node:assert";         ← namespace binding
+  import { strict as assert } from "node:assert";← named binding（別名）
+  import { ok, deepStrictEqual } from "node:assert";
+  import { ok, deepStrictEqual } from "node:assert/strict";
+  —— 兩個 specifier 皆支援 default／namespace／named binding，允許 `as` 別名。
+
+binding 分類（決定合法呼叫形式，兩類不可互換）:
+  assertion-object binding   : default binding（import assert from "node:assert"）
+                               namespace binding（import * as assert from "node:assert"）
+                               named strict binding（import { strict as assert } from "node:assert"）
+                               —— 三者都綁定「assert 物件」，**可做 allowlisted member call**
+  assertion-function binding : 直接具名匯入的單一 assertion 函式
+                               （import { ok, deepStrictEqual } from "node:assert"）
+                               —— 只能**直接呼叫**；對它做 member call（ok.strict(...)）→ unsupported
+
+assertion 名稱 allowlist（closed；v1 恰為下列 17 個，不使用省略號）:
+  ok                     equal              notEqual
+  strictEqual            notStrictEqual     deepEqual
+  notDeepEqual           deepStrictEqual    notDeepStrictEqual
+  throws                 doesNotThrow       rejects
+  doesNotReject          match              doesNotMatch
+  fail                   ifError
+  —— 不在此表的名稱（含未來 Node 版本新增者）→ unsupported fail-closed，
+     不得以「看起來像 assertion」放行。
+
+assertion call 的精確定義:
+  (a) 對 **assertion-object binding** 的成員呼叫，成員名 ∈ allowlist   → assert.ok(...)
+      —— 三種 object binding 皆適用，含 strict alias：
+         import { strict as assert } from "node:assert";  assert.ok(...)
+  (b) 對 **assertion-function binding** 的直接呼叫，原名 ∈ allowlist   → ok(...)
+  (c) 對 default binding 的直接呼叫                                   → assert(...)
+      —— node:assert 的 default export 本身可呼叫，等義於 ok
+      —— namespace binding **不可**直接呼叫（namespace object 非 callable）→ unsupported
+  callee 都必須解析回上列 import binding；computed member（assert[expr]）→ unsupported
+
+test declaration      : test binding 的直接呼叫，第一引數為字串字面值
+container declaration : describe binding 的直接呼叫，第一引數為字串字面值
+modifier              : .only / .skip / .todo 支援（同一 declaration，modifier 不進 identity）；
+                        其他成員存取 → unsupported
+nested container      : 支援任意深度；container chain 依詞法巢狀由外而內
+hooks                 : hook binding 的直接呼叫即 fixture declaration —— **只有**經上列合法
+                        static binding 取得者才算；不承載 tag，但參與 oracle closure（11b.9）
+```
+
+**明文 unsupported（全部 fail-closed）**：第一引數非字串字面值（變數、含插值模板、串接、函式回傳）；迴圈／map／工廠產生的 parameterized 或 generated declaration；computed member；經物件屬性的間接別名；CommonJS `require`；`import()`；reflection 或執行期組出的 declaration。無插值的模板字串（`` `name` ``）視同字串字面值，允許。
+
+**其他 assertion library**（chai、expect…）在本 profile 維持 unsupported fail-closed，除非另立 adapter／profile。
+
+### 11b.7 Stable test ID（node:test v1）
+
+```
+stableIdRule    : "line-comment-tid-v1"
+exact syntax    : 單行註解中一整行恰為   @tid <ID>
+                  前導空白與 `//` 之後的單一空格允許；行內不得有其他內容
+ID grammar      : ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$
+位置            : 與 @src 同一 attachment block（11b.5），block 與 declaration 間無空白行
+與 @src 的順序  : 不拘（digest 不受影響，由 11b.8b 的 byte 演算法實際保證）
+uniqueness scope: **在 base view 內唯一，且在 head view 內唯一 —— 兩個 view 分別檢查**。
+                  範圍是該 adapter 在該 view 涵蓋的所有檔案，不只是單一檔案。
+                  同一個 @tid 在 base 恰一次、在 head 恰一次，是**合法的 matching pair**
+                  （unchanged 與 moved 的常態），**不得**判為 duplicate ——
+                  duplicate 的判準是「單一 view 內出現兩次以上」。
+                  跨檔重複必須在 **matching 之前** fail-closed，
+                  否則 move-only 無法可靠使用 path-independent ID。
+```
+
+**fail-closed**：同一 declaration 兩筆 `@tid`；**同一個 view 內**兩個 declaration 使用相同 `@tid`（duplicate，含跨檔）；`@tid` 附著於 container（borrowed）；ID 不符 grammar 或該行含額外內容；`@tid` 與 declaration 之間有空白行。
+
+**定位**：stable ID 存在時優先於推導的 `structuralId`。它是 **identity hint，不是 provenance binding** —— 不表示任何 clause 綁定、**不得取代 `@src`**、不計入 tag cardinality，且依 11b.8b 不進入 `declarationDigest`／`bodyDigest`。
+
+### 11b.8 `structuralId` 演算法（node:test v1）
+
+```
+輸入 : 一個 test declaration 的 AST 節點與其詞法 container chain
+輸出 : path-independent 的檔內結構鍵
+
+  1. 帶合法 @tid → structuralId ＝ "tid:" + <ID>，結束
+  2. 否則取 container chain（由外而內）與該 declaration 的宣告名，
+     名稱原樣取用（不 trim、不 case-fold），以 canonicalJson 編碼
+  3. structuralId ＝ "s:" + canonicalJson([...chainNames, declName])
+  4. **同一 container chain 內若有兩個以上 declaration 產生相同的 step-3 鍵，
+     該 duplicate group 的每一筆都必須帶唯一合法 @tid；缺任一筆 → fail-closed。**
+```
+
+**為何不用詞法序號（v1.6 修正）** —— 初稿以 `#n`（詞法出現順序）為 duplicate 消歧，那會**靜默錯配 identity**：
+
+```
+base:  test("same", A) → #0        head:  test("same", NEW) → #0
+       test("same", B) → #1               test("same", A)   → #1
+                                          test("same", B)   → #2
+```
+
+前插一筆同名 test 後，base 的 A 被配給 head 的 NEW、base 的 B 被配給 head 的 A，**全程 one-to-one、沒有任何 collision 可觸發 fail-closed**，於是兩筆 provenance 被無聲借用。序號是位置，不是身分。因此 duplicate name 一律要求 `@tid`，且**不得**以位置、body digest 或降級成 added＋deleted 來猜測。
+
+**其餘性質**：path 不入 `structuralId` ⇒ 純搬檔保持 identity（`status=moved`）；reorder 不改 identity（`s:` 鍵不含位置，`tid:` 鍵不含位置）；container 改名／巢狀改變使 `structuralId` 變動，走 §6 既有 matching 規則。**Matching 必須 one-to-one**；collision、一對多、多對一全部 fail-closed，不得降級成 added＋deleted。排序與編碼依上游 SM §2 canonical JSON 與 Unicode code point 序。
+
+### 11b.8b Canonical declaration bytes 與 `@tid` 排除（exact）
+
+§2 的 body span 含 attachment block，而 11b.7 要求 `@tid` 不進 digest。兩者只能有**一個** byte 演算法：
+
+```
+步驟 0（前置）  : **先**把該 view 的 sourceText 正規化為 UTF-8 無 BOM、行終止符一律 LF，
+                 **再**交給 parser 建立 range。range、行號、span 皆定義在正規化後的 bytes 上。
+                 —— 順序不可顛倒：先切 range 再逐行移除，CRLF 檔案會留下孤立 CR。
+source range   : 仍包含完整 attachment block（供 tag／stable-ID parser 使用）
+hashing 之前   : 自該 range 逐行掃描，移除**合法且已附著**的 @tid 行，
+                 連同其（已為 LF 的）行終止符；檔尾最後一行則無終止符可移。
+                 移除後**不得留下任何 CR**。
+其餘           : 其他註解、@src 行、declaration bytes 一律保留，
+                 之後套用 §2 既有 canonical 規則（不 trim 內部空白）
+不得移除       : malformed @tid（不符 grammar／行內有其他內容）
+                 unattached @tid（與 declaration 之間有空白行）
+                 —— 兩者本來就已 fail-closed，不會走到 hashing
+```
+
+由此**推導**（非散文宣稱）：同一份邏輯內容分別以 LF 與 CRLF 存檔，經步驟 0 後 bytes 完全相同 ⇒ 兩者所有 digest 相同（見 CRLF／LF 等價 AC）。`@tid` 與 `@src` 換序後，被移除的恰是同一組 `@tid` 行，剩餘 bytes 逐字相同 ⇒ `declarationDigest` 相同。`@tid` 的值或位置改變會改變 identity，但**不改** `declarationDigest`；任何一般註解的改動仍會改變 digest。
+
+### 11b.9 Effective-oracle edge contract（closed）
+
+**兩類 edge，只有一類進 digest** —— 初稿把 static-local-import 無條件計入，那會把「被測程式改了」偷換成「oracle 改了」：幾乎每個測試都 import SUT，於是任何實作變更都把測試標成 `modified`，反向閉包失去鑑別力。
+
+```
+traversal / resolution edge  : 供解析 binding 與 call target 之用。
+                               **本身不產生 depRef，不進 effectiveOracleDigest。**
+oracle dependency edge       : 產生 depRef 並進 digest。
+```
+
+**Oracle dependency edge（closed；恰三列，其餘一律不進 closure）**：
+
+> **`external-expected-data` 已從 node:test v1 移除（v1.6 第三輪）** —— 它原本只說「`import` 一個以 `.json` 結尾的 specifier」，缺 import form、import attribute（`with { type: "json" }`）、specifier 解析與 repo boundary，是一條**半開的 edge**。要嘛補完整的 static JSON import 契約，要嘛移除；本版選擇**移除**，因為 expected data 的可重現讀法已由 **snapshot-golden** 完整承載（它有 exact specifier、API allowlist、引數位置、模組相對解析根與 repo boundary）。因此 JSON import 落入 unsupported edge，**fail-closed**，不會被靜默略過。
+
+| # | Edge kind | 產生條件 | depRef.path | depRef.span |
+|---|---|---|---|---|
+| 1 | local-assertion-helper | 呼叫一個同 view 內可靜態解析的函式，其遞迴展開含 11b.6 定義的 assertion call | 被呼叫函式所在檔 | `{ kind: "whole-file" }` |
+| 2 | fixture-hook | 同 container chain 上經合法 hook binding 取得的 before／after／beforeEach／afterEach | 宣告所在檔 | 該 hook 的 body span |
+| 3 | snapshot-golden | 下方 snapshot-golden 契約所定義的 fs 讀取 | 解析出的 canonical repo-relative path | `{ kind: "whole-file" }` |
+
+
+**snapshot-golden 的 exact 契約（closed）**：
+
+```
+module specifier : 恰為 "node:fs" 或 "node:fs/promises"
+合法 import form : default binding、namespace binding（import * as fs）、
+                   named binding（含 as 別名）；三者皆須解析回上述 specifier
+API allowlist    : readFileSync（來自 node:fs）
+                   readFile    （來自 node:fs 或 node:fs/promises）
+                   —— 恰為此二者；其餘 fs API 一律 unsupported
+path 引數位置    : index 0，且必須是下列**唯一**合法形式：
+                     new URL(<字串字面值>, import.meta.url)
+                   —— 選 URL 形式是因為它相對於**模組自身**解析，結果與 process cwd 無關；
+                      裸的 cwd-relative 字面值（readFileSync("fixtures/a.json")）
+                      **unsupported**，它的意義取決於呼叫者的工作目錄，不可重現。
+相對解析根       : 該 import.meta.url 所屬模組在**同一 view** 內的 canonical path
+repo boundary    : 解析結果必須落在 repo root 之內；任何逃逸（../ 越界、絕對路徑、
+                   symlink 指出 repo）→ fail-closed
+未列 API、computed path、變數 path、模板插值 path → 一律 unsupported fail-closed
+```
+
+**assertion-root 不再產生 depRef** —— declaration 本體內的 assertion call 是**分類證據**（用來判定某個 helper 是否 assertion-bearing），root bytes 已由 `declarationDigest` 承載，再放一次 depRef 是重複計入。
+
+**static / local import 只有在**該 imported binding 位於上表某條 oracle contributor 路徑上時才進 closure。**單純 import 或呼叫被測 production module 不進 oracle closure。**
+
+**關於「assertion-bearing production callable」的誠實邊界** —— v1 採**結構分類**：判準是「該 callable 的遞迴展開內是否出現 11b.6 allowlist 的 assertion call」，**不是**它在專案裡的真實角色。因此，任何**可達且含 supported assertion 的 callable 都會被保守地視為 oracle contributor**，即使作者認為它是 production code（例如以 `node:assert` 寫 invariant 檢查的 production 模組）。這是刻意選擇的保守側：漏標 oracle 會讓 provenance 失效，多標只會讓該測試多進一次 review。**機械層不知道、也不宣稱知道**某個 callable 真實的 helper／SUT 身分；任何相反的敘述都是過度宣稱。要排除這類 callable，只能靠它不含 allowlist 內的 assertion，或日後另立 typed 標註契約 —— v1 不提供後者。
+
+**Unsupported edge（全部 fail-closed，不得以空 closure 代替）**：`import()`／`require()`；未列於 allowlist 的 fs API；computed、變數化或模板插值的 fs 路徑；裸 cwd-relative 路徑字面值；reflection、執行期組出的 assertion；無法唯一解析的 import binding；指向該 view 外或不存在的 specifier。
+
+**「看不到 assertion」不得自動解讀成空 closure** —— 只有「每條 edge 都成功解析且集合確實為空」才是空 closure。
+
+**遞迴與去重**：非 root 節點沿用**同一**展開規則；`cycle` 以已訪問集合終止，不重複計入、不報錯；結果依 canonical `depRef`（先 `path` 後 `span`）以 code point 序排序去重，**插入順序不影響 digest**。
+
+**base／head 各自展開**，絕不混用。
+
+### 11b.9b `implementationIdentity`：registry 與 entry 兩側 carrier
+
+初稿只在散文寫下這個值，registry 與 inventory 都不承載它 —— parser 換版後 checker 無從得知 artifact 是哪個 parser 產生的。v1.6 把它同時落成 **registry `adapters[]` 欄位**與 **inventory entry 欄位**：
+
+```
+adapter.implementationIdentity（§11b.3）:
+  { implementationId, parserId, parserVersion }
+  implementationIdentity.implementationId == adapter.implementationId  （不等 → fail-closed）
+
+entry.implementationIdentity（exact key set，三欄皆必填非空字串）:
+  { implementationId, parserId, parserVersion }
+  必須**逐欄等於**該 entry 之 adapterId 所對應 adapter 的 implementationIdentity
+  不等、未宣告 key、缺 key、空字串 → 各自 fail-closed
+```
+
+只放 entry 側是不夠的：沒有 registry 側的宣告，entry 的 identity 就沒有可比對的權威，任何值都能自洽。
+
+**Consumer 有三處**：(i) registry binding —— adapter 自身的 `implementationId` 一致性；(ii) inventory entry —— 上述 exact shape 與逐欄相等；(iii) freshness —— entry 進 `inventoryDigest`（§11b.9c 公式），identity 改變**必然**改變 digest，於是既有的 batch↔inventory 對位（AC60／§8）自動使舊 batch 變 stale。
+
+**TestSemanticReviewBatch 不另複製這三欄** —— 它已由 `inventoryDigest` 綁定；複製會製造第二個 authority。**clean `entries=[]` 的既有 Phase 2A（v1 envelope）artifact 不受影響**（沒有 entry 就沒有這個欄位）。
+
+`parserId`／`parserVersion` 的**實際值**由後續 dependency authorization 提供（§11b.11）；本 spec 閉合的是 carrier 與相等性義務，不是值。
+
+### 11b.9c Envelope digests 與 consumer freshness（完整 universe）
+
+**per-entry identity 不足以構成 freshness proof** —— 它只證明「已列出的 entry 是誰產生的」，不證明「該列出的都列了」。v2 envelope 因此另立兩個涵蓋完整 universe 的 digest：
+
+```
+registryDigest  = sha256(canonicalJson({
+                    registry       : <完整 exact test-adapters.json root，含 registryVersion>,
+                    explicitConfig : <head-view exact config object> | null
+                  }))
+  —— registry 取整份 root（不是只有 adapters），因為 registryVersion 同樣影響解讀。
+  —— explicitConfig 指 **head view** 的 .ctide/test-adapters-config.json 完整物件；
+     檔案不存在時為 null。**base view 的 config 由 baseTreeOid 綁定**，
+     已含於 base tree 的 immutability 內，不重複進本 digest。
+
+headViewDigest  = sha256(canonicalJson(<S1 canonical map>))        ← S1 見 §11b.10
+
+inputProvenanceStoreDigest
+                = inventory 產生當下 current .ctide/provenance.json 的 digest
+  —— digest 記法必須與 store 自身的 CAS 記法相同（direct-inspect 結論，見下）。
+
+inventoryDigest = sha256(canonicalJson({
+                    inventoryVersion, baseTreeOid, registryDigest,
+                    headViewDigest, inputProvenanceStoreDigest, entries }))
+  —— 這是 v2 的**唯一**公式；任何只涵蓋 { baseTreeOid, entries } 的算法都是 v1 legacy。
+```
+
+**`inputProvenanceStoreDigest` 的 digest 記法（direct-inspect 結論）** —— 本欄的用途是與上游交易的 pre-state 比對，因此它**必須與 store 自身 CAS 使用同一種記法**，否則兩個值永遠不可能相等：
+
+```
+記法         : sha256(canonicalText(檔案文字))
+               canonicalText ＝ 去 BOM、CRLF/CR → LF
+               —— 即上游 store 載入時所得的 digest，也正是其 CAS 的比對對象
+store 不存在 : 取上游 canonical empty store 的 digest（**不是** null、不是空字串）
+               —— 上游對缺檔已有明確定義，下游不得另立第三種語義
+不得混用     : baseProvenance.storeDigest（historical immutable base tree 的 store）
+               驗的是 **raw bytes** digest —— 不同對象、不同記法的另一個檢查。
+               把 raw-bytes 記法套到 current store 上，會在任何帶 BOM 或非 LF 的
+               檔案上與上游 CAS 永久不一致，且失敗看起來像 race 而非記法錯誤。
+```
+
+**Preimage 必須被持久化（v1.6 第四輪修正）** —— `inventoryDigest` 是 opaque 值。只持久化它，**證明不了它的 preimage 用的是哪一個 store pre-state**：
+
+```
+1. inventory I0 記錄 inputProvenanceStoreDigest = D0，inventoryDigest = H0 = hash(… D0 …)
+2. Step 5 之前 store 變為 D1
+3. caller 只把 payload.expectedInputProvenanceStoreDigest 改成 D1，batch／record 仍送 H0
+4. writer 驗得過「expected == 實際 pre-state == D1」，但 H0 是不透明的 ——
+   它沒有 typed preimage 可驗 H0 裡用的是 D0
+5. committed record 沒有保存實際使用的 D1
+6. Step 6 只看到 batch.H0 == inventory.H0，**永遠發現不了 D1 != D0**
+```
+
+因此以下三項都不成立，全部撤回：「`expectedInputProvenanceStoreDigest` 已由 `inventoryDigest` 遞移持久化」、「Step 6 可事後證明交易確實以該 inventory pre-state 提交」、「shared model 完全不需修改」。
+
+修正方式是**把 preimage 本身持久化**：
+
+```
+batchSnapshot.inventorySnapshot : ChangedTestInventoryV2（完整 exact v2 envelope）
+  —— 唯一 authority；record.inventoryDigest 由它派生。
+  —— **exact key set 與 inventoryDigest 唯一公式的 authority 在上游 SM v1.13**
+     （本文是 downstream，不得自持進入 persisted record 的形狀）；
+     本節定義的是四個 digest 各自的**計算語義**。
+  —— 它必須通過：exact key set、inventoryDigest 唯一公式重算、
+     inputProvenanceStoreDigest 的 digest 記法、entries canonicalization。
+  —— record 另必須帶 SM v1.13 的 batchRecordVersion: 2；legacy 記錄的
+     可讀範圍、禁止用途與 chain 行為見 SM 的 legacy boundary。
+
+交易內強制等式（intent-scan §8；任一不符 → 整筆 no-write）:
+  loadedStoreDigest
+    == payload.expectedInputProvenanceStoreDigest
+    == batchSnapshot.inventorySnapshot.inputProvenanceStoreDigest
+  provenanceBatch.inventoryDigest
+    == batchSnapshot.inventorySnapshot.inventoryDigest
+    == 由 inventorySnapshot 重算所得的 inventoryDigest
+  invocation option --expect-digest 若存在，也必須等於同一值。
+```
+
+**不得**改以「把 pre-state digest 複製到 record top-level」代替 —— 那仍證明不了它參與過 preimage，且會製造**第三個** authority。上游因此連同修訂並與本文同輪放行：**shared model v1.13**（`inventorySnapshot` 的持久化、最小 authoritative envelope 與 `inventoryDigest` 的 derived 語義）、**intent-scan v1.9**（payload 欄位與交易內等式鏈）。三者為 coupled set，不得分開採用。
+
+### 11b.9d 兩種 freshness 必須分離
+
+`headViewDigest` 與 `inputProvenanceStoreDigest` 檢查的是**不同對象，時間語義也不同**：
+
+```
+source freshness  : head 的 source／config／oracle universe ＋ registry
+                    —— consumer 以**當下**狀態（S3）重算並要求相等。
+                       它們在 Step 5 不應改變；改變即代表世界動了。
+provenance-store
+freshness         : inventory 產生當下的 store 狀態
+                    —— **Step 5 自己就會合法改寫 store**，因此
+                       **絕不能**拿當下 store 與它比對。
+                       它只作為交易的 pre-state precondition，
+                       以及事後「該 batch 由哪個 pre-state 產生」的證明。
+```
+
+兩者混為一談會二選一地壞掉：把 store 併入 `headViewDigest`，Step 5 自己的合法寫入就讓 Step 6 必然 stale；兩者都不查，則 `governance-affected` entry（由 clause → test 反向閉包產生，其唯一輸入就是 store）完全失去 freshness。**因此 store 被排除於 `headViewDigest` 之外，但由 `inputProvenanceStoreDigest` 獨立承載 —— 排除不等於放棄。**
+
+**上游對位（direct inspect，非發明）** —— 本欄不是只在 test-provenance 這一側新增的跨交易欄位：
+
+```
+上游現況 : provenance-store 已有 transaction 層 CAS，但它是 **invocation option**
+           （expectedStoreDigest / --expect-digest）：可省略、caller 給定、且**不落盤**。
+           它能擋住 race，卻**無法在事後證明**某個成功 batch 是由哪個 pre-state 產生的。
+本輪變更 : intent-scan 的 commit-test-provenance-batch **payload** 新增 typed
+           expectedInputProvenanceStoreDigest（必填），語義見 intent-scan §8。
+           它必須同時等於 (i) 交易的 pre-state canonical store digest，
+           與 (ii) 本 inventory 的 inputProvenanceStoreDigest。
+持久化   : **前一稿宣稱「已由 inventoryDigest 遞移持久化、shared model 不需修改」——
+           該宣稱撤回，它不成立。** 見下「preimage 必須被持久化」。
+```
+
+**Consumer freshness 協定（Step 6）**：consumer（`--provenance` checker 與 batch 消費端）在接受任何 inventory／batch **之前**，必須：
+
+```
+1. 以**當下** repo 狀態建立第三份 snapshot S3，重算 headViewDigest 與 registryDigest，
+   與 envelope 內的值比對 —— 任一不符 → stale fail-closed。
+2. 讀 **committed batchSnapshot.inventorySnapshot**（不是 opaque digest），並：
+     a. 重算其 inventoryDigest，與 inventorySnapshot.inventoryDigest 比對；
+     b. 驗 record top-level 的 derived equality：
+        record.inventoryDigest == inventorySnapshot.inventoryDigest；
+     c. 確認 inputProvenanceStoreDigest 位於 committed snapshot 之內，
+        且該 snapshot 受 batchDigest 承諾（因而不可事後竄改）。
+        —— 歷史三段等式（loadedStoreDigest == payload == snapshot）是
+           **writer 的 transaction-time invariant**，**不由 Step 6 重新求值**：
+           historical loadedStoreDigest 與 payload 都不是 persisted state。
+3. **不得**把當下 store digest 與 inputProvenanceStoreDigest 比對 ——
+   Step 5 對 provenance.json 的合法 mutation **必然**使兩者不同，
+   拿它當 staleness 判準會讓每一筆正常 batch 都被誤判。
+   S3 只重算 current headViewDigest／registryDigest，不觸碰 store。
+```
+
+S1／S2 保證 producer 讀到的是同一瞬間，S3 保證 consumer 消費的仍是同一世界。
+
+**Step 6 的證明邊界（誠實表述；v1.6 修正）** —— 前一稿說「刪除 scratch 後可重播整條等式鏈」，那說得過強。實際可分兩類：
+
+```
+Step 6 事後**可以**做的:
+  重算 committed inventorySnapshot 自身的 inventoryDigest，並與其宣告值比對
+  驗 record.inventoryDigest 與 snapshot.inventoryDigest 的 derived equality
+  驗 batchDigest 涵蓋 batchSnapshot（因而涵蓋 inventorySnapshot）
+  把 snapshot 視為 **writer 交易當下完成驗證後留下的 committed witness**
+  以 S3 重算 current headViewDigest／registryDigest（source freshness）
+
+Step 6 事後**不能**做的（不得宣稱）:
+  獨立重新觀察歷史的 loadedStoreDigest 或當時的 payload
+    —— 兩者都不是 persisted state，交易結束即不可觀察
+  只憑一個 digest 字串判斷它當初是以 canonicalText 還是 raw bytes 算出
+    —— digest 不自帶記法標記
+```
+
+因此三段等式中，`loadedStoreDigest == payload == snapshot` 這一段是 **writer 在交易當下的義務**，其可信度來自 writer 實作通過對應 AC，而非事後可重新推導；Step 6 承接的是**已持久化的 witness 與由它導出的等式**。AC122／AC126 逐字對齊此界線。
+
+**必須被擋下的三個反例（entries 本身完全不變）**：
+
+```
+(a) S2 之後新增一個測試檔          → S3 的 headViewDigest 改變 → stale
+(b) S2 之後修改 explicit config    → S3 的 registryDigest 改變 → stale
+(c) S2 之後修改 test-adapters.json → S3 的 registryDigest 改變 → stale
+(d) inventory 之後、Step 5 之前，**其他 writer** 改動 provenance store
+    → 交易的 pre-state digest != expectedInputProvenanceStoreDigest
+    → 上游 CAS／precondition fail-closed、**整筆 no-write**
+       （這條**不**由 S3 擋 —— 它是 Step 5 的 precondition，見 11b.9d）
+```
+
+三者若只靠 per-entry identity 或只靠 `{ baseTreeOid, entries }`，**全部會靜默通過** —— 既有 entry 沒變，digest 就沒變，而新增的測試從未被審。這正是本節存在的理由。
+
+**Legacy v1 的處置**：v2 rollout 啟用後，凡符合 v1 exact absence shape 的文件一律**拒絕並要求重產**，不遷移、不推斷。**`entries: []` 的 v1 文件尤其不得被當成「已涵蓋、無變更」** —— 它沒有 `headViewDigest` 也沒有 `inputProvenanceStoreDigest`，無法證明 universe 為空，接受它等於為 populated coverage 開一個 bypass。判別方式依 §2 envelope 版本邊界：**v2 有 explicit discriminator，v1 只能以 exact absence shape 辨識**；形狀不吻合者一律 fail-closed，**不以 optional field 猜測**。
+
+### 11b.10 Base／head content view 與 snapshot 協定
+
+```
+base view ＝ baseProvenance.treeOid 指向的 EXACT immutable Git tree
+            （型別必須精確為 tree；可 peel 成 tree 的 commit／tag 不等價）
+```
+
+**Head view 以不可變 snapshot 承載（v1.6 修正）** —— 初稿只要求「前後各取一次指紋」，卻沒說中間讀的是什麼；parsing 與 digest 仍可能各自去讀 live worktree。協定改為：
+
+```
+1. 建立 immutable in-memory HeadViewSnapshot S1:
+     一次列舉全部 canonical paths；
+     一次讀取每個 entry 的 mode / type / bytes；
+     fingerprint（＝ headViewDigest）由這份 map 本身計算，不另外 stat。
+
+   S1 canonical map 的唯一形狀與公式:
+     map ＝ path → { mode, type, contentDigest }
+       path          : canonical repo-relative，POSIX 分隔符，Git literal case
+       mode           : Git 檔案模式字串（"100644" / "100755" / "120000"）
+       type           : "blob" | "symlink"
+       contentDigest  : sha256Hex(raw bytes)  —— symlink 取 link target 的 raw bytes，
+                        **不跟隨**；raw bytes 指未經任何行終止符或 BOM 轉換的原始位元組
+     排序             : 依 path 的 Unicode code point 序遞增；object key 亦然
+     headViewDigest   = sha256(canonicalJson(map))
+     —— 涵蓋**完整 universe**：新增、刪除、改名、模式變更、內容變更皆改變此值。
+     —— 注意與 §11b.8b 的分工：contentDigest 用 raw bytes（偵測任何實體變動），
+        declaration digest 用步驟 0 正規化後的 bytes（LF/CRLF 等價）。兩者刻意不同。
+2. declaration parsing、dependency resolution、所有 digest 與 inventory emission
+   **只能讀 S1**，不得再讀 live worktree。
+3. 完成前建立第二份 snapshot S2 並計算其 fingerprint。
+4. S1.fingerprint != S2.fingerprint → head-view-unstable，**不產生任何 artifact**。
+5. 相等 → artifact 使用的 bytes 必須逐項等於 S1。
+```
+
+**Head view 成分**：staged／unstaged／untracked 且未被忽略者**納入**；工作區已刪除者視為該 path 不存在；被忽略者**排除**；path／case 取 **Git literal**；symlink **不跟隨**，只讀 link entry 本身的 bytes。
+
+**Head view universe 的 closed 範圍（v1.6 第三輪）** —— `headViewDigest` 涵蓋的是 **head 的 source／config／oracle universe**，不是整個工作目錄。範圍以**封閉規則**界定，**不得**以「必要檔案」之類的模糊集合代替：
+
+```
+必須排除（closed exclusion）:
+  .git/**                         —— Git 內部狀態，非 source；每次操作都在變
+  .ctide/provenance.json          —— 交易語義狀態；其 freshness 由
+                                     inputProvenanceStoreDigest 獨立承載（11b.9d）。
+                                     若納入，Step 5 自己的合法寫入必然使 Step 6 stale。
+  .ctide/output/**                —— per-run derived scratch（含 inventory 自身）；
+                                     納入會讓 digest 自我指涉
+  被 tracked .gitignore 忽略者     —— 依 11b.10 的 ignore authority
+
+必須涵蓋（closed inclusion；不得因不在 exclusion 清單就漏掉）:
+  測試檔與其 helper 模組
+  被 oracle closure 觸及的 golden／expected-data 檔案
+  .ctide/test-adapters-config.json
+  任何層級的 package.json（影響 manifest 解析）
+  tracked .gitignore（其變動改變 universe 邊界）
+  上述以外、未被 exclusion 命中的一切 repo 內 path
+
+判定順序: exclusion 先於 inclusion；兩者皆為封閉列舉。
+         新增第三類（例如「其他工具的 scratch」）必須先在本節明文增列，
+         **不得**由實作端就地判斷。
+```
+
+**排除 `.ctide/provenance.json` 不等於放棄它的 freshness** —— `governance-affected` entry 的唯一輸入正是該 store，其新鮮度改由 `inputProvenanceStoreDigest` 承載並進入 `inventoryDigest`（見 11b.9d）。兩者缺一，該類 entry 就會失去 freshness 證明。
+
+**Ignore authority（closed）**：只採 **repo-controlled** 的 ignore surface —— repo 內受版控的 `.gitignore` 檔案。使用者 global excludes（`core.excludesFile`）與 process environment **不得**影響輸出；`.git/info/exclude` **不屬** authority，因此**不得**偷偷影響輸出。所採用的 `.gitignore` 檔案本身**納入 S1 與 fingerprint**，使 ignore 規則的變動同樣被 TOCTOU 協定涵蓋。
+
+**Ignore matching 的 engine boundary（唯一語義）**：pattern 語義為 **gitignore 語義**（前綴 `/`、後綴 `/`、`*`／`?`／`**`、字元類、`!` 反否定、較後規則勝、巢狀 `.gitignore` 以其所在目錄為根）。求值只以 S1 內的 `.gitignore` bytes 與候選 path 為輸入。**本 spec 不指定實作此語義的手段** —— 自行實作與採用既有 library 都可能；若採後者，該 library **與 AST parser 一併列入同一次 dependency authorization**（§11b.11）。**不得**宣稱「只差一個 AST package」：ignore 語義同樣是尚未取得的能力，把它藏在 fs 呼叫背後或以近似的 glob 冒充，都會讓 head universe 的邊界失去定義。**untracked path 的 case 取實際 directory entry 字面值**，不得由 Windows case-folding 重寫。
+
+**不新增 `headTreeOid` carrier**：head view 是 invocation-local 的一次讀取，穩定性由 S1/S2 保證；head universe 的完整性改由 `headViewDigest` 承載（§11b.9c），它進入 `inventoryDigest` 且由 consumer 以 S3 重算。日後若確有需要 `headTreeOid` 的 consumer，必須先在 spec 明文建模並指名該 consumer。
+
+### 11b.11 Parser engine boundary（能力契約，非套件選擇）
+
+```
+支援 11b.6 的 node:test v1 profile（ESM、static import binding 解析、node:assert 兩個 specifier）
+提供 source range（供 declaration／hook 的 body span 與 canonical bytes 切分）
+提供 AST 節點 identity 與 import binding 解析（同檔內的 `as` 別名）
+  —— **不含 re-export**：跨模組 re-export 的解析在 v1 profile 與 discovery 皆未授權，
+     列為 capability 只會製造沒有規則支撐的期待；遇到經 re-export 取得的 binding → unsupported
+對 syntax error、unsupported syntax、ambiguous binding 一律 fail-closed
+**不允許** regex-only fallback 冒充 AST
+```
+
+`implementationIdentity ＝ { implementationId, parserId, parserVersion }`，其 carrier 為 registry 與 inventory entry 兩側，見 11b.9b。**`parserId`／`parserVersion` 的實際值必須在 dependency authorization 時一併決定並寫入 registry** —— 在此之前，正式的 `test-adapters.json` 不得落檔（§11b.12）。**兩個合規 writer 對同一 source 與同一 view，必須得到相同的 `structuralId`、dep closure 與所有 digest。**
+
+> **Non-normative implementation note（未核准）** —— 本 repo 目前**沒有**任何 AST dependency（零 dependencies、無 lockfile、無 node_modules，Node 亦不公開 AST parser API）。實作前必須**另行授權**，且該次授權必須**同時涵蓋兩項能力**：**AST parser** 與 **gitignore matching engine**（§11b.10）—— 後者同樣不是 Node 內建，把它當成「順手就有」會低估授權範圍。兩者各自可選 **(a) 新增外部 dependency ＋ lockfile**，或 **(b) vendored 實作**。取捨：(a) lockfile 可審計、升級路徑清楚，但這是 **shipped skill script** 的依賴 —— consuming project 執行時同樣需要它，對一個至今零 runtime dependency 的 plugin 是架構層改變；(b) 無 npm 解析與 supply-chain 攻擊面，但把第三方原始碼與其 license 帶進本 repo，升級須人工。兩案都需確認 license 相容與 Node >= 20 相容。傾向 **(a)**，因為 vendored 副本會重蹈本檔案已記錄多次的「複本漂移」問題。
+> **本段不構成採用決策；正式授權前，任何 package 名稱都不得寫入 §12 或任何 normative 章節。**
+
+### 11b.12 Rollout boundary
+
+```
+v1.6 核准前 : parseInventory() 對 populated entries 的
+              unsupported-populated-inventory gate **不得移除**。
+v1.6 核准後 : 仍不等於 dependency 已授權，也不等於 implementation READY。
+正式 registry  : `test-adapters.json` 的 **semantic algorithm tokens 已閉合**
+              （framework、pattern IDs、attachmentRule、stableIdRule 皆由 §11b.3 唯一決定），
+              但 `implementationIdentity.parserId`／`parserVersion` 的值尚未存在，
+              因此**正式 registry 在 parser identity 被核准前不得落檔**。
+              —— v1.6 第一輪曾宣稱「現在已可完整寫出正式 registry」，該宣稱**撤回**：
+                 可完整寫出的是語義 token，不是整份可落檔的 registry。
+接受 populated inventory 的條件（全部滿足）:
+              adapter registry（含已核准的 parser identity）、parser、
+              gitignore engine、producer、canonical parser、
+              consumer freshness（S3 重算）六者皆已實作並通過其對應 AC。
+不受影響    : clean historical consumer（v1 envelope）與 Phase 1 的既有 READY 狀態。
+v2 rollout   : 啟用後 v1 envelope 一律拒絕並重產；entries=[] 的 v1 文件
+              **不得**成為 populated coverage 的 bypass（§11b.9c）。
+```
 ## 12. 修改檔案清單
 
 | 檔案 | 變更 |
@@ -644,6 +1366,7 @@ testProvenance: {
 | `cressetide/skills/vigil/references/test-provenance.md` | **新增** —— §2–§7、§9 協定本體（plugin 慣用英文） |
 | `cressetide/skills/vigil/scripts/contract-check.mjs` | 新增 `--provenance` 模式與結構／來源兩層（§8）；預設模式 exit-0 契約不變 |
 | `cressetide/skills/vigil/scripts/test-adapters.json` | **新增** —— §2 framework adapter registry |
+| `.ctide/test-adapters-config.json`（consuming project） | **新增（§11b.4）** —— tracked committed project configuration，explicit adapter 指派；**producer read-only**，任何情況下都不得建立或改寫；為 `registryDigest` 的第二個輸入 |
 | `cressetide/skills/vigil/scripts/changed-test-inventory.mjs`（＋tests） | **新增** —— §6 base／head 導出、one-to-one matching、inventoryDigest |
 | `cressetide/skills/vigil/SKILL.md` | **§8 七步 fixed-point loop**；`--provenance` 的新位置（第 6 步，不沿用既有 contract-check 位置）；第 5 步的 single-writer 落檔點＝呼叫 `commit-test-provenance-batch` |
 | `cressetide/skills/vigil/scripts/provenance-store.mjs` | **（intent-scan v1.7 範圍）** `commit-test-provenance-batch`（含 `successorClauseDraft`、`resolutionCarrierUpdates[]`）、`successor=null` retire |
@@ -653,7 +1376,7 @@ testProvenance: {
 | `cressetide/agents/arbiter.agent.md` | `test → source` 方向；執行並讀 `--provenance` 機械結果 |
 | `cressetide/skills/vigil/references/review-packet.md` | packet 帶 inventory 摘要與變更測試的 tag／clause |
 | `cressetide/skills/vigil/references/test-layer-boundaries.md` | 澄清：本 spec 管 tag 與來源，不改「哪一層」的判斷 |
-| `docs/runtime-contract.md` | tracked store 與 per-run scratch（inventory、batch）的 state-class 正式登記 |
+| `docs/runtime-contract.md` | tracked store 與 per-run scratch（inventory、batch）的 state-class 正式登記 | **後續最小接線 touchpoint（v1.6 登記，本輪不修改）**：`.ctide/test-adapters-config.json` 需登記為 tracked committed project configuration；`ChangedTestInventory` 的 v2 envelope 取代 v1 clean-only shape 時需更新其 state-class 說明。
 | `cressetide/skills/vigil/references/runtime-policy.md` | single-writer 邊界：reviewer propose／main thread persist，涵蓋 batch 與治理 witness |
 | `cressetide/skills/vigil/scripts/run-ledger.mjs` ＋ `references/run-ledger.md` | `testProvenance` 欄位 |
 
@@ -743,6 +1466,69 @@ testProvenance: {
 81. **sibling 聚合**：三筆綁同一 `ASSUM-x` 的 sibling findings → **一個** group、**一個** successor、**一筆** Transition、三筆 `semanticEvidenceRefs`，且 witness 的 `resolutionGroupDigest` 涵蓋全部三筆。
 82. **重複 subject 與衝突 payload**：`resolutions[]` 出現兩筆相同 `subjectRef`（不論 payload 是否一致，含 successor／action 相同而 `text`／`routingOrigin`／`basisRefs` 不同者）→ fail-closed 且 **store bytes 完全不變**；writer 不得隱式合併或擇一。
 83. **carrier updates 覆蓋負向**：`resolutionCarrierUpdates[]` 少一個 dependent DP、或多一個未改動 terminal 的 DP → 兩者各自 fail-closed 且 **no-write**。
+> **AC84–138 的證據形式**：全部是**可執行** AC —— 每條都需要真實 fixture 與斷言。**文字搜尋（grep）、fence 檢查、`npm run validate` 綠燈，都不構成任何一條的證據**；它們只證明文件形狀，不證明行為。每個 blocker 至少有一個正例與一個**單變數**負例（除了被驗的那一項，其餘輸入完全相同）。
+
+84. **Registry exact shape、未知 implementation ID 與缺 identity carrier**（carrier：§11b.3）：root 或 `adapters[]` 出現未宣告 key、缺 key、`registryVersion != 1`、空字串欄位、ID token 不符文法 → 各自 fail-closed；`implementationId` 不在 closed 集合內 → fail-closed，且**不得**退化為動態載入某個 module path。**單變數負例：一份其餘完全合法、只缺 `adapters[].implementationIdentity` 的 registry → fail-closed**（registry 側沒有 identity carrier，entry 側的值就無權威可比）；另驗 `implementationIdentity.implementationId != adapter.implementationId` → fail-closed。
+85. **Adapter 唯一性**（carrier：§11b.3 唯一性規則）：`adapterId` 重複 → fail-closed；`(implementationId, framework)` 重複 → fail-closed。
+86. **`implementationId` 綁定表為 closed，但正式 registry 尚不得落檔**（carrier：§11b.3 綁定表 ＋ §11b.12）：`node-test-v1` 必須恰好綁定 `framework: "node:test"`、`language: "javascript"`、`testDeclarationPatternIds: ["node-test-call"]`、`containerPatternIds: ["node-test-describe"]`、`attachmentRule: "leading-line-comments"`、`stableIdRule: "line-comment-tid-v1"`；每一欄都是**恰為**。搭配任何其他 `framework` → fail-closed；表中未列的組合（如 `containerPatternIds: []`）→ fail-closed。**本 AC 不主張任何形式的「registry 已完全由 spec 決定」—— 該宣稱已全數撤回**：已閉合的只有 **semantic algorithm tokens**，而 `implementationIdentity.parserId`／`parserVersion` 的值尚不存在，因此**正式 `test-adapters.json` 在 parser identity 被核准前不得落檔**。
+87. **Pattern-ID closed table 與 canonical array form**（carrier：§11b.3）：`node-test-call`／`node-test-describe` 各依表列 predicate 判定（v1 恰兩個 AST predicate，**無 path predicate**；`mjs-test-suffix` 已刪除，registry 亦無 `filePatternIds` 欄位可承載它）；未列於表的 pattern ID → fail-closed；陣列**反序**、**含重複**各自 fail-closed（不得由 writer 就地排序或去重後放行）。
+88. **Discovery 零命中與同級多命中**（carrier：§11b.4 precedence）：**三級**全部零命中 → fail-closed；同一 level 命中兩個**不相等**的 `adapterId` → fail-closed；同級多筆但都指向同一 `adapterId` → 視為唯一命中並通過；較高 level 已唯一命中時較低 level 不再評估。
+89. **`discovery.importSpecifiers` 綁定與 framework 不可冒充**（carrier：§11b.4 綁定值）：`node-test-v1` 的 `importSpecifiers` 必須恰為 `["node:test"]`、`manifestDependencies` 恰為 `[]`；以任意非空字串（`["test"]`、`["my-runner"]`）冒充 → fail-closed。只能推導出 `language` 而推導不出 framework 的檔案 → 零命中 fail-closed，**不得**以 `language: "javascript"` 已註冊為由通過。
+90. **副檔名不參與 adapter 選定：Playwright／Vitest 風格 `.test.mjs` 不得被誤分類**（carrier：§11b.4 三級 precedence）：**單變數對照**，兩個檔案除了 import 一行以外完全相同 —— (i) `a.test.mjs` 具 `import { test } from "node:test"` → 選定 `node-test-v1`；(ii) `b.test.mjs` 只 import 其他 runner 風格的 API、**無** `node:test` static import → 三級零命中 → **fail-closed**，**不得**因 `.test.mjs` 副檔名被選成 `node-test-v1`。另驗 registry schema 內**不存在**任何 file-pattern 欄位，因此連「以副檔名選 adapter」都無從表達。
+91. **`package.json` 的 per-view 最近祖先解析**（carrier：§11b.4 manifest 解析）：由測試檔所在目錄向 repo root 逐層尋找，取**最近祖先**的 `package.json`；base 與 head **各自解析**。**單變數負例**：head 於測試檔的中間目錄新增一個 `package.json`，其餘不變 → head 的 manifest 來源改變，**不得**沿用 base 的解析結果。完全找不到 `package.json` → 該級零命中（非錯誤），續評下一級。
+92. **Explicit config carrier 與 read-only 邊界**（carrier：§11b.4）：`.ctide/test-adapters-config.json` 的 `configVersion != 1`、未宣告 key、`assignments[].path` 重複、`adapterId` 未註冊 → 各自 fail-closed。另驗它是 **tracked committed project configuration**，**producer 對它 read-only** —— 檔案不存在時**不得**自動建立，內容不合法時**不得**改寫或補齊，只能 fail-closed。
+93. **跨 view framework migration 是刻意的 v1 邊界**（carrier：§11b.4 最後一段）：真實情境 —— 同一 path 在 base view 依 `node:test` 證據導出 `node-test-v1`，在 head view 改用另一套 framework 而導出**不同** `adapterId` → **fail-closed 且 no-write**。**不得**猜成 `moved` 或 `retagged`；理由必須落在「兩個 adapter 的 `structuralId` 演算法不同，跨 adapter 比較沒有共同定義域」。
+94. **node:test import alias、modifier 與 nested container**（carrier：§11b.6）：`import { test as it } from "node:test"` 經 binding 解析後仍被辨識；`.only`／`.skip`／`.todo` 視為同一 declaration 且 modifier **不進** identity；任意深度 nested container 的 chain 由外而內；裸 `"test"` specifier、CommonJS、`.foo` 成員 → 各自 unsupported fail-closed。
+95. **hook import form 與 `node:assert` 兩個 specifier**（carrier：§11b.6）：`import test, { before, after } from "node:test"`（default 與 named 併用）必須支援，`beforeEach`／`afterEach` 同；經此類**合法 static binding** 取得的 hook 才算 fixture declaration，非 static 取得者 → fail-closed。assertion 端：`node:assert` 與 `node:assert/strict` 的 default／namespace／named binding（含 `as` 別名）皆須支援。profile **不得**一面聲稱 hook supported、一面禁止能取得 hook binding 的 import form。其他 assertion library 維持 unsupported fail-closed。
+96. **Assertion binding 分類與 closed allowlist**（carrier：§11b.6 binding 分類 ＋ 17 名 allowlist）：**正例** —— 三種 assertion-object binding 各驗一次成員呼叫：`import assert from "node:assert"; assert.ok(...)`、`import * as assert from "node:assert"; assert.deepStrictEqual(...)`，以及**必須實跑的 strict alias**：`import { strict as assert } from "node:assert"; assert.ok(...)`；另加 assertion-function binding 的直接呼叫 `ok(...)` 與 default binding 的直接呼叫 `assert(...)`。**單變數負例** —— (i) 其餘完全相同，只把成員名換成 allowlist 外的名稱（`assert.partialDeepStrictEqual(...)`）→ unsupported fail-closed，不得因「看起來像 assertion」放行；(ii) 對 **assertion-function binding** 做成員呼叫（`ok.strict(...)`）→ unsupported，該類 binding 只能直接呼叫；(iii) 對 **namespace binding** 直接呼叫（`assert(...)`，其中 `assert` 來自 `import * as`）→ unsupported，namespace object 非 callable；(iv) `assert[expr]` computed member → unsupported。
+97. **Unsupported dynamic declaration**（carrier：§11b.6 明文 unsupported 清單）：第一引數為變數、含插值的模板字串、串接或函式回傳值；迴圈／map／工廠產生的 parameterized declaration；computed member；經物件屬性的間接別名 → **全部** `unsupported-syntax` fail-closed，**不得**以 regex 猜測。無插值的模板字串視同字串字面值並通過。
+98. **Tag cardinality：恰好一筆 `@src`**（carrier：§11b.5 ＋ §2:41）：一個 declaration 的 attachment block 內出現**第二筆 `@src`** → fail-closed —— 分別驗**內容不同**與**內容完全相同**兩種情形，**兩者都必須 fail-closed**。同一 block 內的 `@tid` **不計入** cardinality，`@tid` ＋ 單一 `@src` 為合法。head 中仍存在而零 `@src` 的 test → 依既有 INV-B2 fail-closed；pre-state legacy 的零 tag 合法性仍由既有 preState 規則處理，**不得**反向放寬 head。
+99. **Stable ID 正例與四種負例**（carrier：§11b.7）：正例 —— `// @tid <ID>` 與 `@src` 同一 leading comment block、無空白行分隔 → 該 ID 優先於推導的 `structuralId`。負例 —— 同一 declaration 兩筆 `@tid`；**同一個 view 內**兩個 declaration 使用相同 `@tid`；`@tid` 附著於 container（borrowed）；ID 不符 grammar 或該行含額外內容（malformed）→ 各自 fail-closed。另驗 `@tid` 與 declaration 之間有空白行時**不視為附著**。
+100. **Stable ID 的定位**（carrier：§11b.7 最後一段）：`@tid` 是 identity hint —— **不**表示任何 clause 綁定，**不得**取代 `@src`，不計入 tag cardinality，且不進入 `declarationDigest`／`bodyDigest`。只有 `@tid` 而無 `@src` 的 declaration 在 tag 層仍視為未標記。
+101. **Stable ID uniqueness 按 view 分別檢查**（carrier：§11b.7 uniqueness scope）：**正例 (i) unchanged** —— 同一個 `@tid` 在 base 恰一次、head 恰一次 → 合法 matching pair，**不得**判為 duplicate；**正例 (ii) moved** —— 同一 `@tid` 在 base 於 A 檔、head 於 B 檔各一次（bytes 不變）→ `status=moved`，仍不判 duplicate。**單變數負例**：把 head 那一筆複製成兩筆（base 不動）→ **head view 內**出現兩次 → 必須在 matching **之前** fail-closed；base 側同理。
+102. **Duplicate literal name 必須帶 `@tid`：前插同名 test 反例**（carrier：§11b.8 步驟 4）：
+     ```
+     base:  test("same", A)          head:  test("same", NEW)
+            test("same", B)                 test("same", A)
+                                            test("same", B)
+     ```
+     若以詞法序號消歧，base A 會被配給 head NEW、base B 被配給 head A，**全程 one-to-one、無 collision 可觸發 fail-closed**，兩筆 provenance 被無聲借用。要求：此 fixture **必須 fail-closed**；補齊三筆唯一 `@tid` 後正確配對；**只補其中兩筆 → 仍 fail-closed**。**不得**以位置、body digest 或降級成 added＋deleted 猜測。
+103. **Unique name 的 `s:` 鍵與 reorder／move 不變性**（carrier：§11b.8 步驟 2–3）：container chain 內名稱唯一者以 `"s:" + canonicalJson([...chain, name])` 為鍵；純搬檔（path 變、內容不變）→ `structuralId` 不變、`status=moved`；**同檔內重排順序不改變 identity**。
+104. **Matching 必須 one-to-one**（carrier：§11b.8 Matching）：collision、一對多、多對一 → 全部 fail-closed，**不得**降級成 added＋deleted。
+105. **`@tid` 的 canonical-byte 排除**（carrier：§11b.8b）：合法附著的 `@tid` 行連同其行終止符在 hashing 前被移除，其餘 bytes 原樣保留。因此 —— (i) 修改 `@tid` 的**值**或**位置** → `structuralId` 改變，`declarationDigest`／`bodyDigest` **不變**；(ii) `@tid` 與 `@src` **互換順序** → digest 相同（須由 byte 演算法推出，不得只以散文宣稱）；(iii) 同 block 內一般註解的任何改動 → digest **改變**；(iv) malformed 或 unattached 的 `@tid` **不得**被移除。
+106. **CRLF 與 LF 的 digest 等價**（carrier：§11b.8b 步驟 0）：同一份邏輯內容的兩個檔案，唯一差異是行終止符（一份全 LF、一份全 CRLF）→ 經步驟 0 正規化後，`declarationDigest`、`bodyDigest`、`effectiveOracleDigest` **全部相同**。另驗：正規化後的 canonical bytes **不含任何 CR**（含 `@tid` 行被移除處的接縫）。反向確認：`headViewDigest` 的 `contentDigest` 取 **raw bytes**，因此兩檔的 `headViewDigest` **不同** —— 兩者刻意不同層，AC 必須同時驗出這個差異。
+107. **Oracle dependency edge 恰三類**（carrier：§11b.9 表格 1–3）：local-assertion-helper、fixture-hook、snapshot-golden 各自產生預期的 `depRef.path`／`span` 並進入閉包。**單變數負例**：測試改以 `import expected from "./expected.json"` 取得預期資料 → `external-expected-data` 已從 v1 移除，該 edge 落入 unsupported → **fail-closed**，**不得**被靜默略過；改寫為 snapshot-golden 形式後通過。另驗 ——**assertion-root 不產生 depRef**（root bytes 已由 `declarationDigest` 承載）。
+108. **snapshot-golden 的 exact 契約**（carrier：§11b.9 snapshot-golden 區塊）：正例 —— `readFileSync(new URL("fixtures/golden.txt", import.meta.url))`，specifier 為 `node:fs`，path 引數在 index 0，相對於該模組在同 view 的 canonical path 解析 → 產生預期 `depRef`。**單變數負例（其餘皆同）**：(i) 改用未列於 allowlist 的 fs API（例如 `readdirSync`）→ unsupported fail-closed；(ii) 改成裸 cwd-relative 字面值 `readFileSync("fixtures/golden.txt")` → unsupported（意義取決於 process cwd，不可重現）；(iii) 改成 computed 或變數 path → unsupported；(iv) path 逃逸 repo root → fail-closed。
+109. **SUT import 與 oracle helper 的分界**（carrier：§11b.9 兩類 edge）：**單變數對照** —— (i) **只**修改測試所 import 的被測 production module（SUT）內容 → 該 test **不得**因 oracle dependency 規則被標為 `modified`；(ii) **只**修改測試所 import 的 assertion-bearing helper 內容 → 該 test **必須**被標為 `modified`。traversal／resolution edge 只用於解析 binding 與 call target，**本身不產生 depRef、不進 `effectiveOracleDigest`**。
+110. **assertion-bearing production callable 的保守分類**（carrier：§11b.9 誠實邊界段）：一個 production 模組若其可達展開內含 allowlist 的 assertion call（例如以 `node:assert` 寫 invariant），**必然**被分類為 oracle contributor，改動它會使測試 `modified`。AC 要求把這個結果**明確斷言為預期行為**，而非缺陷；同時要求實作與文件**不得宣稱**機械層知道該 callable 的真實 helper／SUT 身分。
+111. **Dynamic／reflection edge fail-closed**（carrier：§11b.9 unsupported 清單）：`import()`、`require()`、`.json` static import、未列於 allowlist 的 fs API、computed／變數／模板插值 path、裸 cwd-relative 字面值、reflection、無法唯一解析的 import binding、指向該 view 外的 specifier → 各自 fail-closed；**「看不到 assertion」不得產生空 closure** —— 只有每條 edge 都成功解析且集合確實為空才是空 closure。
+112. **Cycle 終止與 dedup**（carrier：§11b.9 遞迴與去重）：`A → B → A` 的閉包以已訪問集合終止，不報錯、不重複計入；結果依 canonical `depRef`（先 path 後 span）以 **code point** 序排序去重，插入順序不影響 digest。
+113. **base／head 各自展開閉包**（carrier：§11b.9 ＋ §11b.10）：同一 declaration 在兩個 view 內容不同的 helper 上得到不同的 `effectiveOracleDigest`；head 的 helper 內容**不得**參與 base 閉包，反之亦然。
+114. **`implementationIdentity` 為兩側 carrier**（carrier：§11b.9b）：registry `adapters[]` 與 inventory entry 兩處都必須帶 exact key set `{ implementationId, parserId, parserVersion }`、三欄非空；entry 的值必須**逐欄等於**其 `adapterId` 對應 adapter 的宣告值。**單變數負例**：只把 entry 的 `parserVersion` 改成與 registry 不同 → **consumer fail-closed**。`TestSemanticReviewBatch` **不得**複製這三欄。clean `entries: []` 的既有 v1 artifact 不受影響。
+115. **Identity 變動必然改變 `inventoryDigest`**（carrier：§11b.9b ＋ §11b.9c 公式）：其他輸入完全不變，僅將某 entry 與其 adapter 的 `parserVersion` 一致地改成新值 → 重算的 `inventoryDigest` **必然不同**，既有 batch 因此 stale，必須重產 inventory 後才可續行。
+116. **v2 envelope 的 exact shape**（carrier：§2 envelope 版本邊界 ＋ §11b.9c）：v2 文件必須帶 `inventoryVersion: 2`、`baseTreeOid`、`registryDigest`、`headViewDigest`、`inputProvenanceStoreDigest`、`entries`、`inventoryDigest`，exact key set；缺任一、多出未宣告 key、`inventoryVersion` 為其他值或非整數 → 各自 fail-closed。`inventoryDigest` 必須等於 `sha256(canonicalJson({ inventoryVersion, baseTreeOid, registryDigest, headViewDigest, inputProvenanceStoreDigest, entries }))`；**單變數負例**：其餘完全相同，只把公式換成不含 `inputProvenanceStoreDigest` 的版本 → 值不同 → fail-closed。
+117. **版本判別的誠實形式**（carrier：§2 envelope 版本邊界）：**v2 有 explicit discriminator `inventoryVersion: 2`；v1 沒有 discriminator，只能以 exact absence shape 辨識** —— root key set 恰為 `{ baseTreeOid, inventoryDigest, entries }` 且不含 `inventoryVersion`。**單變數負例**：一份缺 `inventoryVersion`、但多帶一個 key（形狀不吻合 v1 exact shape）的文件 → fail-closed，**不得**被寬容成 v1。rollout 後符合 v1 exact shape 者一律拒絕重產；**`entries: []` 的 v1 文件不得被當成「已涵蓋、無變更」** —— 它既無 `headViewDigest` 也無 `inputProvenanceStoreDigest`，無法證明 universe 為空。rollout 前 v1 仍是 Phase 2A clean-only 路徑的合法輸入（該既有 READY 不受影響）。
+118. **Consumer S3 source freshness：三個 entries-不變的反例**（carrier：§11b.9c consumer 協定第 1 步）：consumer 在接受 inventory／batch 前以當下狀態建立 **S3**、重算 `headViewDigest` 與 `registryDigest`。三個負例中 `entries` 完全不變 —— (a) 新增一個測試檔 → `headViewDigest` 不符 → stale fail-closed；(b) 修改 `.ctide/test-adapters-config.json` → `registryDigest` 不符 → stale；(c) 修改 `test-adapters.json` → `registryDigest` 不符 → stale。正例：三者皆未變 → 接受。另須斷言：若 freshness 只比對 per-entry identity 或只比對 `{ baseTreeOid, entries }`，三個負例**全部會靜默通過**。
+119. **`registryDigest` 的唯一公式**（carrier：§11b.9c）：`sha256(canonicalJson({ registry: <完整 exact test-adapters.json root，含 registryVersion>, explicitConfig: <head-view exact config object> | null }))`。**單變數負例**：(i) 只改 `registryVersion`（adapters 完全不變）→ digest **必須改變**（證明取的是整份 root 而非只有 `adapters`）；(ii) config 檔不存在時 `explicitConfig` 必須是 `null`，以 `{}` 代替 → digest 不同 → fail-closed。另須斷言：**base view 的 config 由 `baseTreeOid` 綁定**，不重複進本 digest —— 只改 base tree 內的 config 而 head 未變時，`registryDigest` **不變**，該變動由 `baseTreeOid` 承載。
+120. **`inputProvenanceStoreDigest` 的記法必須與上游 CAS 對位**（carrier：§11b.9c digest 記法）：值為 `sha256(canonicalText(檔案文字))`（去 BOM、CRLF/CR → LF），即上游 store 載入所得、也是其 CAS 比對的 digest。**單變數負例**：同一份 store 檔改以 **raw-bytes** digest 計算 → 在帶 BOM 或含 CRLF 的檔案上與上游 pre-state 值不同 → 交易 precondition **必然失敗**；AC 必須實際造出這種檔案並驗出不相等，證明兩種記法不可互換。另驗：store 檔**不存在**時本欄取上游 **canonical empty store** 的 digest（**不是** `null`、不是空字串），以 `null` 代之 → fail-closed。
+121. **Step 5 pre-state precondition：inventory 後、Step 5 前被其他 writer 改動**（carrier：intent-scan §8 `expectedInputProvenanceStoreDigest` ＋ §11b.9d）：inventory 產生後、`commit-test-provenance-batch` 提交前，**另一個 writer** 合法改動 `.ctide/provenance.json` → 交易 pre-state digest 不等於 payload 宣告值 → **CAS／precondition fail-closed 且整筆 no-write**（store bytes 不變、`TaskState.committedProvenanceBatchRef` 不變、無任何 record 落盤）。另驗：payload 缺該欄位 → fail-closed；同時提供 invocation option `--expect-digest` 且與 payload 值不相等 → fail-closed。
+122. **正常路徑端到端成功，且刪除 scratch 後仍可驗 persisted witness**（carrier：§8 七步 ＋ §11b.9c Step 6 協定與證明邊界）：**正例 (i) clean batch** —— Step 1 產生 inventory（`inputProvenanceStoreDigest` ＝ D0，`inventoryDigest` ＝ H0）→ Step 5 以 `expectedInputProvenanceStoreDigest = D0` 並帶 `inventorySnapshot`（其 `inputProvenanceStoreDigest` ＝ D0、`inventoryDigest` ＝ H0）提交零筆 resolution 的 batch，store 由 D0 變為 D1 → **Step 6 必須成功**。**正例 (ii) resolution batch** —— 同一時序但含至少一筆 ResolutionGroup（Transition ＋ DP repoint），store 同樣由 D0 變為 D1 → **Step 6 必須成功**。兩個正例都必須在刪除 `.ctide/output/**` 全部 scratch 後重跑 Step 6 並通過，此時可驗的**恰為**：重算 committed `inventorySnapshot` 自身的 `inventoryDigest`、record 與 snapshot 的 derived equality、`batchDigest` 涵蓋 `batchSnapshot`、以及以 S3 重算 `headViewDigest`／`registryDigest`。**本 AC 明確不主張**能事後獨立重新觀察歷史 `loadedStoreDigest` 或當時 payload，也不主張能只憑 digest 判斷它以 `canonicalText` 或 raw bytes 算出 —— 那一段是 writer 交易當下的義務（AC121／AC123／AC120 各自涵蓋），Step 6 承接的是 committed witness。另須斷言：**Step 5 自己對 `provenance.json` 的合法 mutation 不得造成 stale**。
+123. **`inventorySnapshot` 是 inventory 的唯一 authority：payload 追上 pre-state 也不得放行**（carrier：§11b.9c preimage 段 ＋ intent-scan §8 等式鏈）：**關鍵反例** —— inventory I0 的 `inputProvenanceStoreDigest` ＝ D0、`inventoryDigest` ＝ H0；Step 5 之前 store 變為 **D1**；caller 只把 `payload.expectedInputProvenanceStoreDigest` 改成 **D1**（因此 `loadedStoreDigest == payload` 成立、CAS 通過），但 `batchSnapshot.inventorySnapshot` 仍是 **D0／H0** → 第三段等式 `payload == inventorySnapshot.inputProvenanceStoreDigest` 不成立 → **fail-closed 且整筆 no-write**（store bytes 不變、`TaskState.committedProvenanceBatchRef` 不變、無任何 record 落盤）。**本 AC 不得與 AC121 合併**：AC121 抓的是 **CAS mismatch**（payload 沒追上 pre-state），本 AC 抓的是 **inventory-binding mismatch**（payload 追上了，inventory 沒有）；兩者是不同的失敗面。另驗：`batchSnapshot` 缺 `inventorySnapshot` → fail-closed。
+124. **`record.inventoryDigest` 是 derived，不是第二份 authority**（carrier：SM v1.13 record shape ＋ §2 `TestSemanticReviewBatch`）：**單變數負例** —— 其餘完全相同，只把 `provenanceBatch.inventoryDigest` 改成不等於 `batchSnapshot.inventorySnapshot.inventoryDigest` 的值 → **fail-closed**。另驗：caller 不得以「只提供 top-level digest 而不提供 snapshot」的方式提交；亦不得改以「把 `expectedInputProvenanceStoreDigest` 複製到 record top-level」代替 snapshot —— 該做法證明不了它參與過 preimage，且會製造第三個 authority，必須被拒絕。
+125. **改動 snapshot 欄位而未重算 digest 必須被抓出**（carrier：§11b.9c 重算義務）：**單變數負例** —— 其餘完全相同，只把 `inventorySnapshot.inputProvenanceStoreDigest` 改成另一個值，**不**重算 `inventorySnapshot.inventoryDigest` → writer 重算所得與宣告值不符 → **fail-closed 且整筆 no-write**。對稱負例：只改 `entries` 內任一欄而不重算 → 同樣 fail-closed。**正例**：一致地改動欄位並重算 `inventoryDigest`、且三段等式仍成立 → 通過。
+126. **`inventorySnapshot` 的形狀與正規化義務，及其 authority 歸屬**（carrier：**SM v1.13 最小 authoritative envelope** ＋ §11b.9c 的計算語義）：exact key set（恰七欄）與 `inventoryDigest` 唯一公式的 authority 在**上游 shared model**；本 spec 只定義四個 digest 各自的計算語義。writer 與 Step 6 都必須驗 —— (i) **exact key set**（缺 key、多出未宣告 key 各自 fail-closed）；(ii) **`inventoryDigest` 唯一公式重算**相符；(iii) **`entries` canonicalization** 依 `(path, adapterId, structuralId)` code point 序且 object key 已排序（送入未排序的 entries → fail-closed，**不得**由 writer 就地排序後放行）。(iv) **`inputProvenanceStoreDigest` 的 digest 記法**（`sha256(canonicalText(…))`、缺檔取 canonical empty store digest）是 **writer 交易當下**的義務 —— **Step 6 不得宣稱**能從 digest 字串本身驗出它用了哪種記法；該項由 AC120 在 writer 側涵蓋。
+127. **§6 freshness 是 proposal-time，不得引入 post-commit**（carrier：§6 適用時機 ＋ §11b.9c Step 6 協定 ＋ checker 分層表）：**正例** —— Step 5 之前，測試在 review 後被修改／沿用舊 run ruling／借用其他 test 的 ruling，各自由 §6 的 current-inventory 重算擋下。**關鍵負例** —— 一筆**完全正常**的提交（store 由 D0 推進到 D1、snapshot 為 D0／H0），若 Step 6 引入 §6 的 `batch.inventoryDigest == 重算的 current inventoryDigest`，則因當下重算必然不等於 H0 而被誤判 stale → **本 AC 要求 Step 6 通過**，任何把 §6 帶入 post-commit 的實作都必須被它抓出。checker 分層表的「Batch 完整性與新鮮度」一列必須分階段求值。
+128. **Batch record discriminator 與 legacy boundary**（carrier：SM v1.13 `batchRecordVersion` 與 legacy boundary）：**v2 正例** —— 帶 `batchRecordVersion: 2` 且 `batchSnapshot` 含合法 `inventorySnapshot` → 通過。**單變數負例** —— (i) 帶 `batchRecordVersion: 2` 但缺 `inventorySnapshot` → fail-closed，**不得**降級成 legacy 讀法；(ii) `batchRecordVersion` 為未知值或非整數 → fail-closed；(iii) record malformed → fail-closed。**legacy 正例／禁止** —— 一筆 v1.12 legacy record（無版本欄位、root key set 恰為 v1.12 exact absence shape）：其 `recordId`／`taskId`／`batchDigest`／`relatedRefs`／`previousBatchRef`／chain 位置**可讀**，但任何需要 inventory preimage 的判定（pre-state 綁定、derived equality、post-commit inventory 對位）一律視為**無證據 fail-closed**，**不得冒充 Phase 2 proof**；缺版本欄位而 root shape 又不吻合者 → fail-closed。**chain 行為** —— v2 接在 legacy head 之後 → **通過**（就地升級，歷史不遷移不回寫）；legacy 接在 v2 之後 → **fail-closed**（版本必須單調不減，這正是「新 writer 漏寫欄位」的可偵測訊號）。
+129. **排除 provenance store 不得使 `governance-affected` 失去 freshness**（carrier：§11b.9d ＋ §11b.10 closed exclusion）：`.ctide/provenance.json` 被排除於 `headViewDigest` 之外。**單變數負例**：inventory 產生後、Step 5 提交前，store 中某個 clause 的生命週期被改動（其反向閉包會產生不同的 `governance-affected` entry 集合）→ 該 inventory **必須**被擋下（由 `inputProvenanceStoreDigest` 經 pre-state precondition 與 AC123 的 binding 等式共同承載），**不得**因「store 不在 head universe 內」而靜默通過。本 AC 直接驗證「排除不等於放棄」。
+130. **head view 成分與 ignore authority**（carrier：§11b.10）：staged、unstaged、untracked 且未被忽略者**納入**；工作區已刪除者視為該 path 不存在；受版控 `.gitignore` 忽略者**排除**；path／case 取 Git literal。**單變數負例**：只在 `core.excludesFile` 指向的 global excludes 或 `.git/info/exclude` 中加入一條規則 → 輸出**不得**改變（兩者皆非 authority）。所採用的 `.gitignore` 本身納入 S1 與 fingerprint。untracked path 的 case 取實際 directory entry 字面值，**不得**由 Windows case-folding 重寫。
+131. **head view universe 的 closed exclusion／inclusion**（carrier：§11b.10 closed 範圍）：**exclusion 正例** —— 只改動 `.git/**` 內容、只改動 `.ctide/provenance.json`、只改動 `.ctide/output/**`（含 inventory 自身）三者，各自**不得**改變 `headViewDigest`。**inclusion 正例** —— 只改動測試檔、helper 模組、golden／expected-data 檔、`.ctide/test-adapters-config.json`、任一層級的 `package.json`、tracked `.gitignore` 六者，各自**必須**改變 `headViewDigest`。**負例**：實作以「必要檔案」之類的啟發式取代封閉列舉（例如只收 `*.test.mjs`）→ 上述 inclusion 正例中的 helper／golden／`package.json` 會漏，本 AC 必須抓出。
+132. **gitignore matching 的唯一語義**（carrier：§11b.10 engine boundary）：前綴 `/`、後綴 `/`、`*`／`?`／`**`、字元類、`!` 反否定、較後規則勝、巢狀 `.gitignore` 以其所在目錄為根 —— 各以 fixture 驗證。求值只以 S1 內的 `.gitignore` bytes 與候選 path 為輸入。以近似 glob 冒充（`**` 與 `*` 不分、忽略 `!`）→ 必須被本 AC 抓出。
+133. **Symlink 不跟隨**（carrier：§11b.10）：head view 中的 symlink 只讀 link entry 本身的 bytes，不解析目標；其 `type` 記為 `"symlink"`、`mode` 為 `"120000"`；base view 沿用 §2 既有規則。
+134. **HeadViewSnapshot S1／S2 原子讀取**（carrier：§11b.10 snapshot 協定）：(i) parsing、dependency resolution、digest 與 emission **只讀 S1** —— 驗法：S1 建立後、emission 前竄改 worktree，artifact bytes 仍須逐項等於 S1；(ii) 完成前取 S2，`S1.fingerprint != S2.fingerprint` → `head-view-unstable` 且**不產生任何 artifact**；(iii) **不得**把兩個時間點的 bytes 寫進同一份 inventory。允許呼叫端整批重試。
+135. **`headViewDigest` 涵蓋完整 universe**（carrier：§11b.10 canonical map 公式）：map 為 `path → { mode, type, contentDigest }`，依 path code point 序排序，`contentDigest` 取 **raw bytes**。四個**單變數**變動各自**必須**改變 `headViewDigest`：新增檔案、刪除檔案、改名（同內容）、只改檔案模式（`100644` → `100755`）。同時驗 entries 不變時這四者仍被 AC118 的 S3 擋下。
+136. **Parser 能力契約 fail-closed，且不含 re-export**（carrier：§11b.11）：syntax error、unsupported syntax、ambiguous binding → 各自 fail-closed；**regex-only fallback 不得冒充 AST**。**單變數負例**：測試經跨模組 **re-export** 取得 `test` 或 assertion binding（其餘寫法皆合法）→ **unsupported fail-closed** —— re-export 解析在 v1 profile 與 discovery 皆未授權，列為 capability 只會製造沒有規則支撐的期待。`parserId`／`parserVersion` 變動即視為 implementation 變動（carrier 見 AC114–115）。
+137. **兩個獨立 writer 結果一致**（carrier：§11b.8 canonical encoding ＋ §11b.9 排序 ＋ §11b.11 最後一句）：同一 source 與同一 view 下，兩個合規 writer 必須得到相同的 `structuralId`、dep closure 與所有 digest。**跨平台（Windows／Linux）未實跑者只能標為本機 deterministic contract evidence，不得宣稱 AC59 已滿足。**
+138. **Populated gate 在實作完整前仍 fail-closed**（carrier：§11b.12 rollout boundary）：v1.6 核准本身**不**解除 `parseInventory()` 的 `unsupported-populated-inventory`；只有 adapter registry（含已核准的 parser identity）、parser、gitignore engine、producer、canonical parser、consumer freshness 六者皆實作並通過其 AC 後才可接受 populated inventory。**另**：v1.13／v1.9／v1.6 三份 draft 核准後，Phase 1 與 Phase 2A 的既有 approved 狀態雖不撤回，但在 AC128 的 legacy boundary 實作並通過之前，**不得宣稱「新 draft promotion 後 Phase 1／2A 完全不受影響」** —— legacy batch record 的可讀範圍與禁止用途是新增的 consumer 義務。
 
 ## 14. 邊界與非目標
 

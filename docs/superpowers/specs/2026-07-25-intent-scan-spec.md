@@ -1,10 +1,10 @@
 # Intent-Scan Implementation Spec
 
-- 狀態：**approved v1.8**（2026-08-08 panel 放行；前一放行版本 approved v1.7）。實作以本文為準；變更需重新過 panel。v1.8 一處：來源 2 的條件 3 改為要求 writer 把因果**持久化**為上游 SM §2 的 **`reopenCauseRef`**；AC75／77／78 收窄為只對帶該 witness 的 DP 執行；新增 §8 的 **writer lifecycle 盤點**（逐一列出每個會改動 DP terminal／status 的交易該 set／clear／replace／preserve），AC72／81 補上 witness 的明確比對，新增 AC80（歷史 reopen 不因 prior 日後取得 successor 而被重新分類）與 AC82–90（caller 不得取得 normative effect、TransitionRef 形狀負向、borrowed Transition、non-source-2 DP 帶 witness、三種生命週期轉換、legacy absence、以及每個拒絕的 no-write 邊界），原 batch 正例順延為 AC81。§8 另新增正式的 **`migrate-store-v1-to-v2`** domain transaction（含**版本分派**、**migration-only v1 pre-validator**、exact 允許變更集、CAS／lock／temp／atomic replace 與 crash／no-write 契約），AC89 改為八格可執行矩陣，並新增 AC91（未受影響 DP 的 witness preserve 正例）。v1.7 的 loader 端 graph-shape 推斷已撤回 —— 它會誤判明示 `reopen-dp` 後才被 supersede 的 DP，以及共用同一 prior 的第二個 deferred reopen。v1.8 變更在 draft 期間不得實作；該限制已隨 v1.8 核准解除。v1.7 內容：v1.7 一處，來自 Phase 1A 實作暴露的**無合法 action 狀態**：`replace-terminal`／`supersede-requirement` 的 successor 非 null，但某個持有 carrier 的 **dependent DP** 因該 successor 對它不 applicable 而被 dependent closure reopen 時，四個 carrier action 全部落空（`preserve` 無 terminal 可對齊、`replace` 會把 carrier 留在非 resolved 的 DP、`unchanged-null` 因 pre-state carrier 非 null 不成立、`clear` 因 v1.6 要求 post-state resolved 不成立）。§8 把 `clear` 拆為三個互斥且各自封閉的來源 —— **來源 1 `resolved-direct`**（v1.6 條件逐字保留）、**來源 2 `reopened-dependent`**（新增，**十項**條件＋明文安全邊界）、**來源 3** 既有 retire／`reopen-dp`（原封不動）。來源 2 適用 `replace-terminal(successor != null)`、`supersede-requirement`，以及 `commit-test-provenance-batch` 中 `successor != null` 的 ResolutionGroup —— 三者執行同一套 dependent closure，§8 另附 batch 的欄位對位。持久化的 `reopenedBy` 一律是上游 SM §8 既有 semantic member「terminal clause 失效且無後繼（INV-4）」，其 **intent-scan v1 序列化**為 `terminal-invalidated-no-successor`（該字串的 authority 在本文，shared model 定義的是語義成員而非字串）；`successor-not-applicable` 只是 writer 在交易內推導的 **transaction-local cause**，不持久化、不是 enum 成員、也不出現在任何 payload（初稿曾把它寫成 trigger 值，那等於在上游 closed list 之外發明成員）。來源 2 的 eligibility **完全由 writer 推導**（dependent membership ∧ `applicable(...) == false` ∧ closure 確實 reopen），caller payload 不參與 —— 本版**不新增也不重定義**任何 command payload 欄位。上游 SM §2 的 `status != resolved ⇒ carrier == null` 已涵蓋新來源的 post-state，該 semantic member 也已在 SM §8 的 closed list 內，**上游不需修改**。新增 AC72–80（含 AC79 的 no-caller-steering 邊界 —— 它是 **implementation-regression／compatibility** 驗收，明文**不**把 `reopenTrigger` 納入 command payload contract）。來源 2 在 draft 期間不得實作；該限制已隨 v1.7 核准解除。v1.6 一處：受限 `clear` 的條件 2 原寫「本交易未提供任何 rulingRef」，是把**逐項條件誤放到整筆交易上** —— `resolutionCarrierUpdates[]` 是逐 dpId 的 map，同一 batch 可以有 DP-A（direct citation → `clear`）與 DP-B（binding-policy → `replace`，帶 `rulingRef`）並存，原文字會讓 DP-B 的合法 `rulingRef` 錯殺 DP-A 的合法 `clear`；作用域收窄為 **per-DP**，並新增 AC67（mixed batch 正向 ＋ 自帶 `rulingRef` 卻宣告 `clear` 的反向），其後順延至 AC71。v1.5 修 v1.4 草案的兩處：(1) **AC60 與 AC65 直接互斥** —— AC60 仍寫「批次不得鑄造 REQ」，AC65 卻要求 `ASSUM|DEC supersede → REQ` 必須通過；AC60 改為依 rule 6 條件放行或拒絕，正向覆蓋 ASSUM→REQ 與 DEC→REQ 兩列，負向覆蓋四項條件各自缺漏。(2) `adopt-existing-outcome` 的 `clear` 是**死分支** —— 該交易只接受 initial-open 或舊 terminal 已失效的 DP，其 pre-state carrier 依上游 carrier–status 蘊含必為 null，而 `clear` 要求 pre-state carrier 非 null；已移除，並補上該交易的正向 carrier AC。rule 6 的 plan-gate 對位同步為上游 v1.11 的**四欄**。v1.4 修 v1.3 草案的三個缺口：(1) v1.3 的 rule 6 一律禁止批次鑄 REQ，理由「批次無 plan-gate witness」是**發明的前提** —— test-provenance 的 loop 在 `successor=REQ` 時退出走 plan gate 再 `resume-task` 回同一 taskId，witness 於 Step 5 已在 pre-state；禁令使 `ASSUM|DEC supersede → REQ` 不可達，而其餘命令都補不上（`create-requirement` 與 DP 無關且無 Transition、`supersede-requirement` 是 REQ→REQ、預建 `replace-terminal` 的 Transition 不在 Git base 故不能冒充 `historical-convergence`）。改為封閉四條件下允許；(2) carrier 契約缺 direct row-1 re-adopt 的 `clear`（`replace-terminal(successor != null)` 原本只給 `preserve|replace|unchanged-null`，上游明文要求的清除無交易可執行），並補上漏列的 `adopt-existing-outcome`；(3) same-subject 衝突只拒不同 successor／action，successor 與 action 相同而 draft payload 不同時結果未定義 —— 改為 `subjectRef` 唯一、sibling 進交易前聚合、重複一律 fail-closed。另新增 AC65–69（原 AC65 順延為 AC70）。v1.3 修 v1.2 草案的四個缺口：(1) v1.2 寫死「`commit-test-provenance-batch` 不得鑄造 clause」，使下游 test-provenance 的 `assum-reading-change` 路徑不可達 —— 改為 §8 新增封閉的 **`successorClauseDraft`**，revise group 內可原子鑄造 successor ASSUM（REQ 仍不得）；(2) 上游 carrier 無命令承載 —— §8 新增封閉的 **carrier 更新契約**（逐 DP `resolutionCarrierUpdates[]`，五交易 × 四 action × 六不變量）；(3) §5 postcondition 表的 binding-policy 一列仍是舊的無 carrier 限定寫法（會永久凍結 `resolvedBy`）—— 改為只對 current carrier 課條件並沿 active successor chain 比對；(4) §4 array table 重述的 `basisRefs` 排序鍵缺 `digest` tie-break —— 改為只引上游。另新增 AC57–65。v1.2 變更：§8 **ASSUM-minting 路徑共同規則**（`routingOrigin` 必填，逐路徑盤點）；binding-policy 的 adopt 對位改用上游 **`resolutionRulingRef` current carrier**，**撤回**初稿的全稱量化；§4 `materialReasons`／`basisRefs` 定序改以上游 SM 為唯一 authoritative 定義。草案審閱期間，本版新增契約不得由下游實作；該限制已隨 v1.6 核准解除。
+- 狀態：**approved v1.9**（2026-08-09 panel 放行；前一放行版本 approved v1.8，2026-08-08 panel 放行）。實作以本文為準；變更需重新過 panel。本版與 **shared-decision-provenance-model v1.13**、**test-provenance v1.6** 為 **coupled set**，2026-08-09 panel 同輪一併放行；三者不得分開採用。 **本次放行只核准規格本身**，不代表 implementation、populated inventory、migration、push 或 Phase 2 已就緒；AC138 的限制持續有效 —— AC128 的 legacy boundary 尚未實作並通過前，不得宣稱 Phase 1／2A 完全不受影響。 v1.9 是 **command contract 變更**，因此本文退回 draft：`commit-test-provenance-batch` 的 payload 新增 typed 必填欄位 **`expectedInputProvenanceStoreDigest`**，並在 §8 新增交易內的 **inventory binding 等式鏈**。動機來自下游 test-provenance draft v1.6 的 direct inspect：現行的 pre-state 保護只有 **invocation option** `expectedStoreDigest`（`--expect-digest`）—— 可省略、caller 給定、且**不落盤**，能擋 race 卻無法在事後證明某個成功 batch 出自哪個 pre-state。**初稿曾宣稱新欄位「已由 `inventoryDigest` 遞移持久化」、因此 shared model 不需修改 —— 該宣稱撤回**：record 只存 opaque digest，writer 沒有 typed preimage 可驗該 digest 內用的是哪個 pre-state，caller 可讓 payload 追上實際 pre-state 卻仍送舊 digest 而完全不被察覺。修正方式是把 preimage 本身持久化：`batchSnapshot` 新增完整 typed `inventorySnapshot: ChangedTestInventoryV2`，`record.inventoryDigest` 由它派生，writer 在同一筆交易內重算並比對三段等式。該持久化欄位屬上游 record 形狀，因此 **shared model 一併退回 draft v1.13**。v1.9 新增契約在 draft 期間不得實作；該限制已隨 v1.9 核准解除。前一放行版本說明：approved v1.8。實作以本文為準；變更需重新過 panel。v1.8 一處：來源 2 的條件 3 改為要求 writer 把因果**持久化**為上游 SM §2 的 **`reopenCauseRef`**；AC75／77／78 收窄為只對帶該 witness 的 DP 執行；新增 §8 的 **writer lifecycle 盤點**（逐一列出每個會改動 DP terminal／status 的交易該 set／clear／replace／preserve），AC72／81 補上 witness 的明確比對，新增 AC80（歷史 reopen 不因 prior 日後取得 successor 而被重新分類）與 AC82–90（caller 不得取得 normative effect、TransitionRef 形狀負向、borrowed Transition、non-source-2 DP 帶 witness、三種生命週期轉換、legacy absence、以及每個拒絕的 no-write 邊界），原 batch 正例順延為 AC81。§8 另新增正式的 **`migrate-store-v1-to-v2`** domain transaction（含**版本分派**、**migration-only v1 pre-validator**、exact 允許變更集、CAS／lock／temp／atomic replace 與 crash／no-write 契約），AC89 改為八格可執行矩陣，並新增 AC91（未受影響 DP 的 witness preserve 正例）。v1.7 的 loader 端 graph-shape 推斷已撤回 —— 它會誤判明示 `reopen-dp` 後才被 supersede 的 DP，以及共用同一 prior 的第二個 deferred reopen。v1.8 變更在 draft 期間不得實作；該限制已隨 v1.8 核准解除。v1.7 內容：v1.7 一處，來自 Phase 1A 實作暴露的**無合法 action 狀態**：`replace-terminal`／`supersede-requirement` 的 successor 非 null，但某個持有 carrier 的 **dependent DP** 因該 successor 對它不 applicable 而被 dependent closure reopen 時，四個 carrier action 全部落空（`preserve` 無 terminal 可對齊、`replace` 會把 carrier 留在非 resolved 的 DP、`unchanged-null` 因 pre-state carrier 非 null 不成立、`clear` 因 v1.6 要求 post-state resolved 不成立）。§8 把 `clear` 拆為三個互斥且各自封閉的來源 —— **來源 1 `resolved-direct`**（v1.6 條件逐字保留）、**來源 2 `reopened-dependent`**（新增，**十項**條件＋明文安全邊界）、**來源 3** 既有 retire／`reopen-dp`（原封不動）。來源 2 適用 `replace-terminal(successor != null)`、`supersede-requirement`，以及 `commit-test-provenance-batch` 中 `successor != null` 的 ResolutionGroup —— 三者執行同一套 dependent closure，§8 另附 batch 的欄位對位。持久化的 `reopenedBy` 一律是上游 SM §8 既有 semantic member「terminal clause 失效且無後繼（INV-4）」，其 **intent-scan v1 序列化**為 `terminal-invalidated-no-successor`（該字串的 authority 在本文，shared model 定義的是語義成員而非字串）；`successor-not-applicable` 只是 writer 在交易內推導的 **transaction-local cause**，不持久化、不是 enum 成員、也不出現在任何 payload（初稿曾把它寫成 trigger 值，那等於在上游 closed list 之外發明成員）。來源 2 的 eligibility **完全由 writer 推導**（dependent membership ∧ `applicable(...) == false` ∧ closure 確實 reopen），caller payload 不參與 —— 本版**不新增也不重定義**任何 command payload 欄位。上游 SM §2 的 `status != resolved ⇒ carrier == null` 已涵蓋新來源的 post-state，該 semantic member 也已在 SM §8 的 closed list 內，**上游不需修改**。新增 AC72–80（含 AC79 的 no-caller-steering 邊界 —— 它是 **implementation-regression／compatibility** 驗收，明文**不**把 `reopenTrigger` 納入 command payload contract）。來源 2 在 draft 期間不得實作；該限制已隨 v1.7 核准解除。v1.6 一處：受限 `clear` 的條件 2 原寫「本交易未提供任何 rulingRef」，是把**逐項條件誤放到整筆交易上** —— `resolutionCarrierUpdates[]` 是逐 dpId 的 map，同一 batch 可以有 DP-A（direct citation → `clear`）與 DP-B（binding-policy → `replace`，帶 `rulingRef`）並存，原文字會讓 DP-B 的合法 `rulingRef` 錯殺 DP-A 的合法 `clear`；作用域收窄為 **per-DP**，並新增 AC67（mixed batch 正向 ＋ 自帶 `rulingRef` 卻宣告 `clear` 的反向），其後順延至 AC71。v1.5 修 v1.4 草案的兩處：(1) **AC60 與 AC65 直接互斥** —— AC60 仍寫「批次不得鑄造 REQ」，AC65 卻要求 `ASSUM|DEC supersede → REQ` 必須通過；AC60 改為依 rule 6 條件放行或拒絕，正向覆蓋 ASSUM→REQ 與 DEC→REQ 兩列，負向覆蓋四項條件各自缺漏。(2) `adopt-existing-outcome` 的 `clear` 是**死分支** —— 該交易只接受 initial-open 或舊 terminal 已失效的 DP，其 pre-state carrier 依上游 carrier–status 蘊含必為 null，而 `clear` 要求 pre-state carrier 非 null；已移除，並補上該交易的正向 carrier AC。rule 6 的 plan-gate 對位同步為上游 v1.11 的**四欄**。v1.4 修 v1.3 草案的三個缺口：(1) v1.3 的 rule 6 一律禁止批次鑄 REQ，理由「批次無 plan-gate witness」是**發明的前提** —— test-provenance 的 loop 在 `successor=REQ` 時退出走 plan gate 再 `resume-task` 回同一 taskId，witness 於 Step 5 已在 pre-state；禁令使 `ASSUM|DEC supersede → REQ` 不可達，而其餘命令都補不上（`create-requirement` 與 DP 無關且無 Transition、`supersede-requirement` 是 REQ→REQ、預建 `replace-terminal` 的 Transition 不在 Git base 故不能冒充 `historical-convergence`）。改為封閉四條件下允許；(2) carrier 契約缺 direct row-1 re-adopt 的 `clear`（`replace-terminal(successor != null)` 原本只給 `preserve|replace|unchanged-null`，上游明文要求的清除無交易可執行），並補上漏列的 `adopt-existing-outcome`；(3) same-subject 衝突只拒不同 successor／action，successor 與 action 相同而 draft payload 不同時結果未定義 —— 改為 `subjectRef` 唯一、sibling 進交易前聚合、重複一律 fail-closed。另新增 AC65–69（原 AC65 順延為 AC70）。v1.3 修 v1.2 草案的四個缺口：(1) v1.2 寫死「`commit-test-provenance-batch` 不得鑄造 clause」，使下游 test-provenance 的 `assum-reading-change` 路徑不可達 —— 改為 §8 新增封閉的 **`successorClauseDraft`**，revise group 內可原子鑄造 successor ASSUM（REQ 仍不得）；(2) 上游 carrier 無命令承載 —— §8 新增封閉的 **carrier 更新契約**（逐 DP `resolutionCarrierUpdates[]`，五交易 × 四 action × 六不變量）；(3) §5 postcondition 表的 binding-policy 一列仍是舊的無 carrier 限定寫法（會永久凍結 `resolvedBy`）—— 改為只對 current carrier 課條件並沿 active successor chain 比對；(4) §4 array table 重述的 `basisRefs` 排序鍵缺 `digest` tie-break —— 改為只引上游。另新增 AC57–65。v1.2 變更：§8 **ASSUM-minting 路徑共同規則**（`routingOrigin` 必填，逐路徑盤點）；binding-policy 的 adopt 對位改用上游 **`resolutionRulingRef` current carrier**，**撤回**初稿的全稱量化；§4 `materialReasons`／`basisRefs` 定序改以上游 SM 為唯一 authoritative 定義。草案審閱期間，本版新增契約不得由下游實作；該限制已隨 v1.6 核准解除。
 - 前一版狀態：**approved v1.1**（2026-07-26 panel 放行；前一放行版本 approved v1.0，經九輪修訂）。v1.1 變更範圍：**§8** store command surface —— `replace-terminal` 支援 `successor=null`（retire；v1.0 的命令面**沒有任何交易能產生 `retire` Transition**，是既有缺口）、新增 `commit-test-provenance-batch` 複合交易（`0..N` `ResolutionGroupDraft`）、`init-task`／`resume-task` 接上 tracked TaskState；**§6** —— user-authority clause transition 的 witness 一律為 plan-gate；**§13** —— AC11 更正並新增 AC43–56。其餘章節未動。
 - 日期：2026-07-25
-- 上游：`2026-07-25-shared-decision-provenance-model.md`（**approved v1.12**）。本 spec 只落地其 intent-scan 半邊；不重新定義任何 shared concept，附加的實作欄位一律以「annotation」標示且不改變上游欄位語義。
-- 姊妹 spec：`2026-07-25-test-provenance-spec.md`（**approved v1.5**）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
+- 上游：`2026-07-25-shared-decision-provenance-model.md`（**approved v1.13**，與本文同輪放行）。本 spec 只落地其 intent-scan 半邊；不重新定義任何 shared concept，附加的實作欄位一律以「annotation」標示且不改變上游欄位語義。
+- 姊妹 spec：`2026-07-25-test-provenance-spec.md`（**approved v1.6**，與本文同輪放行；前一放行版本 approved v1.5 —— v1.6 補 Phase 2B1 的 adapter／oracle／content-view／tag-cardinality／parser-identity authority，其 `inputProvenanceStoreDigest` 所需的上游 pre-state precondition 即本文 v1.9 §8 的 payload 欄位，不在下游自行發明）。§8 的 provenance store 與 store script 是兩者共用的 shared infrastructure，test-provenance spec 消費、不重定義。
 
 ## 1. 目的與範圍
 
@@ -382,6 +382,23 @@ commit-test-provenance-batch
                           Transition，或讓多 finding 被錯誤聚合／漏記。
 
                           payload:
+                            **expectedInputProvenanceStoreDigest**  ← v1.9 新增，必填
+                              typed string；本交易 **pre-state** canonical store digest。
+                              記法與 store 自身 CAS 相同：sha256(canonicalText(檔案文字))
+                              （去 BOM、CRLF/CR → LF）；store 不存在時為 canonical
+                              empty store 的 digest。**不是** raw-bytes digest ——
+                              後者是 baseProvenance.storeDigest 對 historical immutable
+                              base tree 的另一個檢查，兩者不得混用。
+                              不符 → CAS／precondition fail-closed、**整筆 no-write**。
+                              **本欄單獨不足以證明 pre-state** —— 它只是交易當下的
+                              precondition。可證明性來自下方 inventory binding 所要求的
+                              持久化 preimage（batchSnapshot.inventorySnapshot），
+                              不是來自本欄，也不是來自 opaque 的 inventoryDigest。
+                              與既有的 invocation option expectedStoreDigest（--expect-digest）
+                              的分工：後者可省略、caller 給定、不落盤，只能擋 race；
+                              本欄為**本命令必填**，並與下方 inventorySnapshot 的
+                              同名欄位機械綁定 —— **僅靠本欄本身仍證明不了 pre-state**
+                              （見下「inventory binding」）。
                             batchSnapshot
                             **recordsToCreate[]**            ← 本交易要鑄造的新 record：
                               semantic evidence drafts
@@ -401,6 +418,44 @@ commit-test-provenance-batch
 
                           **所有 ref 必須解析至 pre-state 或同交易的 `recordsToCreate`**
                           —— 只給 ref 而無 draft payload 時 writer 無從鑄造（v1.1 初稿的缺口）
+
+                          **Inventory binding（v1.9；交易內強制，任一不符 → 整筆 no-write）**
+
+                          初稿曾宣稱「expectedInputProvenanceStoreDigest 已由 inventoryDigest
+                          遞移持久化」——**該宣稱撤回，它不成立**。record 只存 opaque digest 時：
+                            store 在 inventory 之後由 D0 變 D1，caller 把 payload expected 改成 D1、
+                            batch 仍送以 D0 為 preimage 的 H0 → writer 驗得過（expected == 實際
+                            pre-state == D1），H0 卻是不透明的，writer 無 typed preimage 可驗其中
+                            是 D0；committed record 也沒留下實際使用的 D1，事後只看到
+                            batch.H0 == inventory.H0，**永遠發現不了 D1 != D0**。
+
+                          因此 batchSnapshot 必須帶完整 typed
+                          **inventorySnapshot: ChangedTestInventoryV2**（exact v2 envelope）。
+                          **Authority 分工**：exact key set 與 inventoryDigest 唯一公式見
+                          上游 **shared model v1.13**；各 digest 的計算語義與 entries
+                          canonicalization 見 **test-provenance §2／§11b.9c**。
+                          writer 在**同一筆
+                          交易內**強制下列等式：
+
+                            loadedStoreDigest
+                              == payload.expectedInputProvenanceStoreDigest
+                              == batchSnapshot.inventorySnapshot.inputProvenanceStoreDigest
+
+                            provenanceBatch.inventoryDigest
+                              == batchSnapshot.inventorySnapshot.inventoryDigest
+                              == 由 inventorySnapshot **重算**所得的 inventoryDigest
+
+                          另須驗：inventorySnapshot 的 exact key set、entries canonicalization、
+                          以及 inputProvenanceStoreDigest 的 digest 記法（sha256(canonicalText(…))，
+                          缺檔取 canonical empty store digest —— 與本 store 的 CAS 記法相同，
+                          **不是** raw-bytes 記法）。
+
+                          invocation option --expect-digest 若存在，**也必須等於同一值**。
+
+                          provenanceBatch.inventoryDigest 是 **derived** 的：它由
+                          inventorySnapshot 派生，**不得**由 caller 獨立提供成為第二份 authority；
+                          同樣**不得**改以「把 pre-state digest 複製到 record top-level」代替 ——
+                          那證明不了它參與過 preimage，且會製造第三個 authority。
 
                           不變量：
                             同一 subject 每輪**至多一筆** Transition

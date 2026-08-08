@@ -1,6 +1,6 @@
 # Shared Decision & Provenance Model（共同決策與溯源模型）
 
-- 狀態：**approved v1.12**（2026-08-08 panel 放行；前一放行版本 approved v1.11）。實作以本文為準；變更需重新過 panel。v1.12 一處：§2 DP 新增 **`reopenCauseRef`**（TransitionRef | null）作為 reopen 成因的 **persisted causal witness**，並在 §9 新增 `Reopen cause coherence` 一列；同時於 typed refs 區正式定義可重用的 **TransitionRef** exact shape，並寫明 **legacy absence 的 upgrade boundary**（採 normalize-absent-to-null，附「不存在 durable pre-v1.12 source-2 state」的證據與適用範圍）。下游 IS v1.7 曾以 `status=open ∧ prior 有 effective Transition ∧ successor != null` 從 snapshot **反推**來源 2 的成因；該推斷不成立，且擋掉兩條合法收斂（明示 `reopen-dp` 後 prior 日後才被 supersede；兩個 DP 對同一 prior deferred reopen）。成因是歷史事實，只能讀持久化 witness，不得由 current graph 形狀反推。v1.11 內容不變：實作以本文為準；變更需重新過 panel。v1.11 關閉兩個**型別缺口** —— 下游已被要求驗證的東西，上游 schema 卻無法表示（下游不得自行補欄位，故一律回上游）：(1) `Transition.compatibility` 原限定 `僅 subject=REQ ∧ action=supersede`，但 matrix 早已允許 `ASSUM|DEC supersede → REQ` 走 kind=user，該路徑的 impact／disposition **無處存放**；適用條件改綁 **successor**（`action=supersede ∧ successor 為 REQ`），相容性義務來自「一條 REQ 開始生效」而非「被取代的是不是 REQ」。(2) plan-gate payload 無 `successor`，故一筆核准「取代 ASSUM-x」的 record 可授權換成**任何** REQ；新增 typed `successor: ClauseRef | null` 並定義必填條件，§7 proposal 的 target 放寬為 clause ref、新增具名 successor，witness binding 與 §9 機械比對由三欄擴為**四欄**。v1.10 一處：§9 檢查分層新增 **`Carrier coherence`** 一列 —— v1.9 把 carrier 宣告為 loader／final-snapshot invariant，但 §9 的 `DP 完整性` 只驗 terminal／status／successor，該 invariant 從未進入正式 gate contract，繞過交易入口構造的不一致狀態不會被擋。v1.9 修 v1.8 草案自身的三個缺口：carrier 與 `status` 的關係改寫為精確蘊含（「同生同滅」是錯的 —— row 1 direct citation 允許 `resolvedBy` 非空而 carrier 為 null）；`unrelated re-adopt` 收窄為 **binding-policy 驅動**，direct citation 改為清除並保持 null；`packetBasisRef` 補上完整 **total-order tuple**（原本無 `digest` tie-break，同 `sourceId` 不同 `digest` 的兩筆無法定序）。v1.8 變更四處，皆為下游實作暴露的 carrier／契約缺口：§2 `ASSUM` 新增三值 `routingOrigin`（authored、immutable，附 loader-level 全生命週期 invariant）；§2 `DP` 新增 `resolutionRulingRef` **current application carrier**（取代對歷史 binding-policy ruling 的全稱量化 —— 那條規則會永久凍結 `resolvedBy` 並牴觸「歷史 ruling 只驗 snapshot 自洽」）；§2 補上 `ObservationalRef` 與 Governance Packet `basisRefs` 的 **exact discriminated union**；§4 `materialReasons` 補 closed member set 並宣告本文為定序的**唯一** authoritative 定義。草案審閱期間，本版新增契約不得由下游實作；該限制已隨 v1.11 核准解除。
+- 狀態：**approved v1.13**（2026-08-09 panel 放行；前一放行版本 approved v1.12，2026-08-08 panel 放行）。實作以本文為準；變更需重新過 panel。本版與 **intent-scan v1.9**、**test-provenance v1.6** 為 **coupled set**，2026-08-09 panel 同輪一併放行；三者不得分開採用。 **本次放行只核准規格本身**，不代表 implementation、populated inventory、migration、push 或 Phase 2 已就緒；AC138 的限制持續有效 —— AC128 的 legacy boundary 尚未實作並通過前，不得宣稱 Phase 1／2A 完全不受影響。 v1.13 一處，來自下游 test-provenance draft v1.6 的 direct inspect：`provenance-batch` 只持久化 opaque 的 `inventoryDigest`，**證明不了該 digest 的 preimage 用的是哪一個 store pre-state** —— caller 可以讓 payload 的 expected 值追上實際 pre-state（D1），卻仍送出以 D0 為 preimage 的舊 digest，writer 兩邊都驗得過，事後也查不出來。因此 `batchSnapshot` 新增完整 typed **`inventorySnapshot: ChangedTestInventoryV2`**（保存 exact v2 envelope，而非只有 digest），`record.inventoryDigest` 改為由它**派生**、不得由 caller 獨立提供，並要求 writer 在同一筆交易內重算並比對；**明確拒絕**把 pre-state digest 複製到 record top-level 的替代做法（那會製造第三個 authority 且仍無法證明 preimage）。上游本身不新增任何交易命令，`inventorySnapshot` 的**最小 authoritative envelope（exact key set ＋ `inventoryDigest` 唯一公式）由本文自持**，下游只補各 digest 的計算語義 —— 前一稿把型別整個委派給下游，顛倒了權威方向，已修正。同輪另新增 **`batchRecordVersion` discriminator** 與 legacy boundary（legacy 記錄的可讀範圍、不得冒充 Phase 2 proof、v2 缺 snapshot／未知版本／malformed 一律 fail-closed、chain 版本單調不減、reader-before-writer 的 rollout 順序與不支援回退）。v1.13 新增契約在 draft 期間不得實作；該限制已隨 v1.13 核准解除。前一放行版本說明：approved v1.12（2026-08-08 panel 放行；前一放行版本 approved v1.11）。實作以本文為準；變更需重新過 panel。v1.12 一處：§2 DP 新增 **`reopenCauseRef`**（TransitionRef | null）作為 reopen 成因的 **persisted causal witness**，並在 §9 新增 `Reopen cause coherence` 一列；同時於 typed refs 區正式定義可重用的 **TransitionRef** exact shape，並寫明 **legacy absence 的 upgrade boundary**（採 normalize-absent-to-null，附「不存在 durable pre-v1.12 source-2 state」的證據與適用範圍）。下游 IS v1.7 曾以 `status=open ∧ prior 有 effective Transition ∧ successor != null` 從 snapshot **反推**來源 2 的成因；該推斷不成立，且擋掉兩條合法收斂（明示 `reopen-dp` 後 prior 日後才被 supersede；兩個 DP 對同一 prior deferred reopen）。成因是歷史事實，只能讀持久化 witness，不得由 current graph 形狀反推。v1.11 內容不變：實作以本文為準；變更需重新過 panel。v1.11 關閉兩個**型別缺口** —— 下游已被要求驗證的東西，上游 schema 卻無法表示（下游不得自行補欄位，故一律回上游）：(1) `Transition.compatibility` 原限定 `僅 subject=REQ ∧ action=supersede`，但 matrix 早已允許 `ASSUM|DEC supersede → REQ` 走 kind=user，該路徑的 impact／disposition **無處存放**；適用條件改綁 **successor**（`action=supersede ∧ successor 為 REQ`），相容性義務來自「一條 REQ 開始生效」而非「被取代的是不是 REQ」。(2) plan-gate payload 無 `successor`，故一筆核准「取代 ASSUM-x」的 record 可授權換成**任何** REQ；新增 typed `successor: ClauseRef | null` 並定義必填條件，§7 proposal 的 target 放寬為 clause ref、新增具名 successor，witness binding 與 §9 機械比對由三欄擴為**四欄**。v1.10 一處：§9 檢查分層新增 **`Carrier coherence`** 一列 —— v1.9 把 carrier 宣告為 loader／final-snapshot invariant，但 §9 的 `DP 完整性` 只驗 terminal／status／successor，該 invariant 從未進入正式 gate contract，繞過交易入口構造的不一致狀態不會被擋。v1.9 修 v1.8 草案自身的三個缺口：carrier 與 `status` 的關係改寫為精確蘊含（「同生同滅」是錯的 —— row 1 direct citation 允許 `resolvedBy` 非空而 carrier 為 null）；`unrelated re-adopt` 收窄為 **binding-policy 驅動**，direct citation 改為清除並保持 null；`packetBasisRef` 補上完整 **total-order tuple**（原本無 `digest` tie-break，同 `sourceId` 不同 `digest` 的兩筆無法定序）。v1.8 變更四處，皆為下游實作暴露的 carrier／契約缺口：§2 `ASSUM` 新增三值 `routingOrigin`（authored、immutable，附 loader-level 全生命週期 invariant）；§2 `DP` 新增 `resolutionRulingRef` **current application carrier**（取代對歷史 binding-policy ruling 的全稱量化 —— 那條規則會永久凍結 `resolvedBy` 並牴觸「歷史 ruling 只驗 snapshot 自洽」）；§2 補上 `ObservationalRef` 與 Governance Packet `basisRefs` 的 **exact discriminated union**；§4 `materialReasons` 補 closed member set 並宣告本文為定序的**唯一** authoritative 定義。草案審閱期間，本版新增契約不得由下游實作；該限制已隨 v1.11 核准解除。
 - 前一版狀態：**approved v1.7**（2026-07-26 panel 放行；前一放行版本 approved v1.6）。v1.7 變更：§9 gate scope 改為具名 closed set（含 body／oracle 變更）＋ `lifecycleAffectedClauses` 反向閉包；綁定拆 **pre-change／post-change 兩相**；§9 新增 **base provenance witness**（inline、storePath 固定、immutable）；§2 新增 **TaskState**（tracked canonical task membership 與 committed head）與 `provenance-batch` RecordRef kind（canonical `batchDigest` total order、derived `relatedRefs`、chain 連結約束、committed head 三分）；review-ruling／plan-gate 新增 `resolutionGroupDigest` 作為 witness coverage 的 carrier。本文件為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念，可附加實作欄位但不得改變本文欄位語義。
 - 日期：2026-07-25
 - 範圍：只定義模型 —— 物件、權威、分流、狀態、不變量。scan 觸發與流程、檢查器實作、reviewer prompt 調整、hook 接線屬於下游 spec。
@@ -234,8 +234,14 @@ plan-gate:             recordId, target, impact, disposition, approvedBy（user�
 constraint-revocation: recordId, targetConstraintRef, authorityRef（source-authority，
                        匹配 ownerRef）, effectiveAt
 exception-grant:       ＝ Source（contentKind=exception-grant；payload 見 Source schema）
-provenance-batch:      recordId, taskId, inventoryDigest,
-                       batchSnapshot（完整內容，非僅 digest —— scratch 遺失時須可由 tracked 重建）,
+provenance-batch:      recordId, taskId,
+                       batchRecordVersion: 2（**v1.13 新增，新記錄必填**；
+                         legacy 記錄無此欄位，辨識規則見下「legacy boundary」）,
+                       inventoryDigest（**derived**：必須等於
+                         batchSnapshot.inventorySnapshot.inventoryDigest，
+                         **不得**由 caller 獨立提供第二份 authority —— 見下）,
+                       batchSnapshot（完整內容，非僅 digest —— scratch 遺失時須可由 tracked 重建；
+                         **v1.13 起必含 inventorySnapshot**）,
                        batchDigest（定義見下）,
                        relatedRefs[]（typed；見下）,
                        previousBatchRef: RecordRef(provenance-batch) | null（chain）
@@ -255,6 +261,91 @@ canonicalJson 沿用本文既有規則（UTF-8 無 BOM、LF、object key 依 cod
                           同 kind 同 binding 時以完整 canonical finding bytes 作最後 tie-break
   relatedRefs             typed ref（{kind, ref}），依 (kind, ref) 排序並**去重**
 ```
+
+**`inventorySnapshot`：inventory digest 的 preimage 必須被持久化（v1.13 新增）**
+
+`inventoryDigest` 是一個 opaque 值。只持久化它，**證明不了它的 preimage 用的是哪一個 pre-state**。具體反例（下游 test-provenance 的 direct inspect 所得）：
+
+```
+1. inventory I0 記錄 inputProvenanceStoreDigest = D0，inventoryDigest = H0 = hash(… D0 …)
+2. 交易提交前 store 變為 D1
+3. caller 只把 payload 的 expected 值改成 D1，batch／record 仍送 H0
+4. writer 可驗「expected == 實際 pre-state == D1」，但它拿到的 H0 是 opaque，
+   無從得知 H0 的 preimage 裡是 D0
+5. committed record 沒有保存實際使用的 D1
+6. 事後檢查只看到 batch.H0 == inventory.H0，**永遠發現不了 D1 != D0**
+```
+
+因此 `batchSnapshot` 必須承載完整 typed preimage，而不是只承載 digest：
+
+**最小 authoritative envelope（本文自持，v1.13）** —— 前一稿把型別與公式整個委派給下游，那顛倒了權威方向：本文是兩份 downstream 的共同上游，凡進入 persisted record 的形狀必須由本文定義。因此 **exact key set 與 `inventoryDigest` 的唯一公式在此定案**，下游只補「每個 digest 各自怎麼算」的語義：
+
+```
+batchSnapshot.inventorySnapshot : ChangedTestInventoryV2
+  exact key set（恰七欄，缺一或多一皆 fail-closed）:
+    inventoryVersion            : 整數，恰為 2
+    baseTreeOid                 : Git tree oid
+    registryDigest              : digest 字串
+    headViewDigest              : digest 字串
+    inputProvenanceStoreDigest  : digest 字串
+    entries                     : 陣列（可為空）
+    inventoryDigest             : digest 字串
+
+  inventoryDigest 唯一公式（本文定案）:
+    sha256(canonicalJson({ inventoryVersion, baseTreeOid, registryDigest,
+                           headViewDigest, inputProvenanceStoreDigest, entries }))
+
+  對本文而言，四個 digest 欄位是**不透明字串**：它們各自的計算語義
+  （head universe 範圍、registry preimage、store digest 記法、entry 形狀與定序）
+  由 test-provenance §2／§11b.9c 定義。本文定義的是 envelope 與綁定，不是計算方式。
+
+writer 於**同一筆交易內**必須驗（任一不符 → 整筆 no-write）:
+  exact key set 完整
+  重算 inventorySnapshot 的 inventoryDigest == inventorySnapshot.inventoryDigest
+  record.inventoryDigest == inventorySnapshot.inventoryDigest（derived，非獨立輸入）
+  entries 已依下游 canonicalization 定序
+  inputProvenanceStoreDigest 的 digest 記法符合下游規定
+```
+
+**Legacy boundary（`batchRecordVersion`；沿用本文對「新增 persisted field 必須有 discriminator」的既有要求）**
+
+```
+v2 記錄   : 必帶 batchRecordVersion: 2，且 batchSnapshot 必含合法 inventorySnapshot。
+            帶版本卻缺 snapshot、snapshot 未通過上列檢查、
+            batchRecordVersion 為未知值或非整數、record malformed
+            → **各自 fail-closed**（不得降級成 legacy 讀法）。
+legacy 記錄: 無 batchRecordVersion，且 root key set 恰為 v1.12 的
+            { recordId, taskId, inventoryDigest, batchSnapshot, batchDigest,
+              relatedRefs, previousBatchRef } —— 即 **exact absence shape**。
+            形狀不吻合而又缺版本欄位 → fail-closed。
+
+legacy 的可讀範圍（唯讀歷史陳述，不可作為判定依據以外的用途）:
+            recordId、taskId、batchDigest、relatedRefs、previousBatchRef、
+            chain 位置，以及 batchSnapshot 內 v1.12 已定義的欄位。
+legacy 的禁止用途:
+            **不得冒充 Phase 2 proof** —— 任何需要 inventory preimage 的判定
+            （pre-state 綁定、derived equality、post-commit inventory 對位）
+            一律視為「無證據」，fail-closed，**不得**以「舊格式故從寬」放行。
+            這同時使 byte 層的殘餘歧義無害：一個漏寫欄位的 v2 writer
+            即使產出 legacy 形狀的 bytes，也拿不到任何 Phase 2 效力。
+
+chain 行為:
+            v2 **允許**接在 legacy head 之後（就地升級，歷史不遷移、不回寫）。
+            legacy **不得**接在 v2 之後 —— 同一 task 的 chain 上版本必須單調不減；
+            違反者 fail-closed，這正是「新 writer 漏寫欄位」的可偵測訊號。
+            chain 連續性（previousBatchRef、committed head）不因跨版本而改變。
+
+rollout 順序（reader before writer）:
+            **先部署能讀 v2 的 consumer，再啟用會寫 v2 的 writer。**
+            反序會讓不理解 v2 的舊 consumer 遇到帶 batchRecordVersion 的記錄 ——
+            它既非自己認得的 legacy exact shape，又無從驗 inventorySnapshot。
+            同一 task 一旦產出第一筆 v2 batch，**不支援回退**至不理解 v2 的舊 consumer：
+            chain 版本單調不減，回退後的 consumer 會把合法 v2 記錄讀成不明形狀。
+            需要回退時，唯一合法路徑是連同該 task 的後續 batch 一併停用，
+            **不得**以刪除或改寫既有 record 的方式製造可回退的假象（append-only）。
+```
+
+**不得**改採「把 pre-state digest 再複製一份到 record top-level」的做法 —— 那仍然證明不了它參與過 `inventoryDigest` 的 preimage，而且會製造**第三個** authority。**唯一** authority 是 `batchSnapshot.inventorySnapshot`；`record.inventoryDigest` 由它派生，供索引與快速比對之用。
 
 **Batch chain 與 committed head**（scratch 全失後的單一可信依據）：
 
