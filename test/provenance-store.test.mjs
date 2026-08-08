@@ -125,8 +125,11 @@ const DP1 = dp("DP-1");
 const DP2 = dp("DP-2");
 const DP3 = dp("DP-3", { layer: "intent" });
 
+// SM §7: successor is a REQUIRED typed field. This helper is the retire / non-supersede shape, so
+// it states null explicitly rather than leaving the key absent — an absent key is a different
+// statement and is now refused.
 function planGate(recordId, target, impact = "no consumers", disposition = "no-affected-dependents") {
-  return { recordId, kind: "plan-gate", target, impact, disposition, approvedBy: "user" };
+  return { recordId, kind: "plan-gate", target, successor: null, impact, disposition, approvedBy: "user" };
 }
 
 const CODE = { kind: "discipline", discipline: "code" };
@@ -135,18 +138,37 @@ const INTENT = { kind: "discipline", discipline: "intent" };
 const ARBITER = { kind: "arbiter" };
 
 // A store where DP-1 is assumed via ASSUM-a (governedBy code).
+// SM §2 routingOrigin: a safe default at implementation layer is governed by the CODE discipline.
+// A fixture governed by anyone else is therefore a reviewed-provisional, which must cite an
+// approved-provisional ruling by that same principal — so the two branches differ in substance,
+// not merely in a label.
 function withAssumption(governedBy = CODE) {
   let s = baseFixture();
-  s = apply(s, "create-initial-outcome", {
-    dpId: "DP-1",
-    records: [reviewRuling("R-rule1", governedBy, "DP-1")],
-    clause: {
+  const isSafeDefault = principalsEqualForFixture(governedBy, CODE);
+  const records = isSafeDefault
+    ? [reviewRuling("R-rule1", governedBy, "DP-1")]
+    : [typedRuling("R-rule1", governedBy, DP1, "approved-provisional", {
+      selectedAlternative: "A", rejectedAlternative: "B",
+    })];
+  const clause = isSafeDefault
+    ? {
       id: "ASSUM-a", layer: "implementation", derivedFrom: "DP-1",
       text: "treat null as absent", alternative: "treat null as invalid",
       basis: "matches the option table", basisRefs: ["S-req"], governedBy,
-    },
-  });
+      routingOrigin: "safe-default",
+    }
+    : {
+      id: "ASSUM-a", layer: "implementation", derivedFrom: "DP-1",
+      text: "A", alternative: "B", basis: "stated basis",
+      basisRefs: [{ kind: "review-ruling", ref: "R-rule1" }], governedBy,
+      routingOrigin: "reviewed-provisional",
+    };
+  s = apply(s, "create-initial-outcome", { dpId: "DP-1", records, clause });
   return s;
+}
+
+function principalsEqualForFixture(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 // --- 1. store & canonical encoding (SM §2 batchDigest, §9 canonical bytes) -------------------------
@@ -295,6 +317,7 @@ test("SM §2: a wrong ref KIND fails closed even when the id exists", () => {
     clause: {
       id: "ASSUM-w", layer: "implementation", derivedFrom: "DP-2", text: "t", alternative: "u",
       basis: "b", basisRefs: [{ kind: "plan-gate", ref: "R-owner" }], governedBy: CODE,
+      routingOrigin: "safe-default",
     },
   }), "E_INV4_NOT_APPLICABLE", "clause whose basisRef names the right id under the wrong kind");
   assert.match(e.message, /basisRef unresolvable/);
@@ -399,7 +422,7 @@ test("SM §2: ASSUM revise by its governing principal is accepted (positive row)
     records: [reviewRuling("R-rev", CODE, "ASSUM-a")],
     successorClause: {
       id: "ASSUM-b", layer: "implementation", derivedFrom: "DP-1", text: "revised reading",
-      alternative: "treat null as invalid", basis: "new evidence", basisRefs: [], governedBy: CODE,
+      alternative: "treat null as invalid", basis: "new evidence", basisRefs: [], governedBy: CODE, routingOrigin: "safe-default",
     },
     transition: {
       id: "T-1", subject: "ASSUM-a", action: "revise", successor: "ASSUM-b",
@@ -418,8 +441,9 @@ test("SM §2: another discipline may NOT revise a security-governed ASSUM (autho
     resolutionCarrierUpdates: nulls("DP-1"),
     records: [reviewRuling("R-rev", CODE, "ASSUM-a")],
     successorClause: {
-      id: "ASSUM-b", layer: "implementation", derivedFrom: "DP-1", text: "t", alternative: "u",
-      basis: "b", basisRefs: [], governedBy: SECURITY,
+      id: "ASSUM-b", layer: "implementation", derivedFrom: "DP-1", text: "A", alternative: "B",
+      basis: "stated basis", governedBy: SECURITY, routingOrigin: "reviewed-provisional",
+      basisRefs: [{ kind: "review-ruling", ref: "R-rule1" }],
     },
     transition: {
       id: "T-1", subject: "ASSUM-a", action: "revise", successor: "ASSUM-b",
@@ -435,8 +459,9 @@ test("SM §2: arbiter may revise any ASSUM (cross-discipline final authority)", 
     resolutionCarrierUpdates: nulls("DP-1"),
     records: [reviewRuling("R-arb", ARBITER, "ASSUM-a")],
     successorClause: {
-      id: "ASSUM-b", layer: "implementation", derivedFrom: "DP-1", text: "t", alternative: "u",
-      basis: "b", basisRefs: [], governedBy: SECURITY,
+      id: "ASSUM-b", layer: "implementation", derivedFrom: "DP-1", text: "A", alternative: "B",
+      basis: "stated basis", governedBy: SECURITY, routingOrigin: "reviewed-provisional",
+      basisRefs: [{ kind: "review-ruling", ref: "R-rule1" }],
     },
     transition: {
       id: "T-1", subject: "ASSUM-a", action: "revise", successor: "ASSUM-b",
@@ -463,15 +488,17 @@ test("SM §2 / IS AC54: ASSUM → REQ with a bare user-answer is refused; a plan
     transition: {
       id: "T-1", subject: "ASSUM-a", action: "supersede", successor: "REQ-b",
       authorityRef: { kind: "user" }, ackRef: { kind: "user-answer", ref: "R-ua" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
     },
   }), "E_WITNESS_KIND", "user-answer standing in for a plan gate");
 
   const ok = apply(s, "replace-terminal", {
     ...common,
-    records: [planGate("R-pg", "ASSUM-a")],
+    records: [planGateFor("R-pg", "ASSUM-a", "REQ-b")],
     transition: {
       id: "T-1", subject: "ASSUM-a", action: "supersede", successor: "REQ-b",
       authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
     },
   });
   assert.strictEqual(statusOf(indexStore(ok), "ASSUM-a"), "superseded");
@@ -484,7 +511,7 @@ test("SM §2: a plan-gate witness naming a DIFFERENT target is refused (no borro
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a",
     resolutionCarrierUpdates: nulls("DP-1"),
-    records: [planGate("R-pg", "REQ-a")], // legitimate record, wrong subject
+    records: [planGateFor("R-pg", "REQ-a", "REQ-b")], // legitimate record, wrong subject
     successorClause: {
       id: "REQ-b", authority: "approved-requirement", kind: "specification", text: "t",
       sourceRef: "S-REQ-b", taskRef: "TASK-1",
@@ -492,6 +519,7 @@ test("SM §2: a plan-gate witness naming a DIFFERENT target is refused (no borro
     transition: {
       id: "T-1", subject: "ASSUM-a", action: "supersede", successor: "REQ-b",
       authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
     },
   }), "E_WITNESS_TARGET", "plan-gate for another clause");
 });
@@ -545,7 +573,7 @@ test("SM §2: a hard-constraint REQ can never be superseded", () => {
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-2", casMode: "current-terminal", expectedCurrentTerminalRef: "REQ-hc",
     resolutionCarrierUpdates: nulls("DP-2"),
-    records: [planGate("R-pg", "REQ-hc")],
+    records: [planGateFor("R-pg", "REQ-hc", "REQ-new")],
     successorClause: {
       id: "REQ-new", authority: "approved-requirement", kind: "specification", text: "t",
       sourceRef: "S-REQ-new", taskRef: "TASK-1",
@@ -629,7 +657,7 @@ test("SM §7: a REQ supersede whose compatibility block disagrees with the plan-
   assertRejects(() => apply(s, "supersede-requirement", {
     initiatingDpIds: ["DP-2"],
     resolutionCarrierUpdates: nulls("DP-2"),
-    records: [planGate("R-pg", "REQ-c", "breaks two callers", "migration")],
+    records: [planGateFor("R-pg", "REQ-c", "REQ-b", "breaks two callers", "migration")],
     successorClause,
     transition: {
       id: "T-1", subject: "REQ-c", action: "supersede", successor: "REQ-b",
@@ -691,7 +719,7 @@ test("SM §8: replace-terminal repoints EVERY dependent DP in one transaction (n
     dpId: "DP-1",
     clause: {
       id: "ASSUM-shared", layer: "implementation", derivedFrom: "DP-1", text: "t", alternative: "u",
-      basis: "b", basisRefs: [], governedBy: CODE,
+      basis: "b", basisRefs: [], governedBy: CODE, routingOrigin: "safe-default",
     },
   });
   // A second DP adopts the same clause, so the closure has two dependents to move.
@@ -703,7 +731,7 @@ test("SM §8: replace-terminal repoints EVERY dependent DP in one transaction (n
     records: [reviewRuling("R-r", CODE, "ASSUM-shared")],
     successorClause: {
       id: "ASSUM-next", layer: "implementation", derivedFrom: "DP-1", text: "t2", alternative: "u",
-      basis: "b", basisRefs: [], governedBy: CODE,
+      basis: "b", basisRefs: [], governedBy: CODE, routingOrigin: "safe-default",
     },
     transition: {
       id: "T-1", subject: "ASSUM-shared", action: "revise", successor: "ASSUM-next",
@@ -721,7 +749,7 @@ test("SM §8 / IS AC43: retire (successor=null) reopens every dependent DP atomi
     dpId: "DP-1",
     clause: {
       id: "ASSUM-shared", layer: "implementation", derivedFrom: "DP-1", text: "t", alternative: "u",
-      basis: "b", basisRefs: [], governedBy: CODE,
+      basis: "b", basisRefs: [], governedBy: CODE, routingOrigin: "safe-default",
     },
   });
   s = apply(s, "adopt-existing-outcome", { dpId: "DP-2", resolutionCarrierUpdates: nulls("DP-2"), clauseRef: "ASSUM-shared" });
@@ -760,7 +788,7 @@ test("IS AC32: an initiating DP the successor cannot cover rejects the WHOLE sup
   // rejected rather than superseding REQ-c and reopening DP-3 afterwards.
   const e = assertRejects(() => runTransaction(cwd, "supersede-requirement", {
     initiatingDpIds: ["DP-3"],
-    records: [planGate("R-pg", "REQ-c")],
+    records: [planGateFor("R-pg", "REQ-c", "REQ-b")],
     sources: [{
       sourceId: "S-exc", contentKind: "exception-grant", driftMode: "snapshot-only", locator: "grant#1",
       excerpt: "scoped exception", targetConstraintRef: "REQ-hc-absent",
@@ -885,7 +913,7 @@ test("IS AC37/40: casMode=current-terminal completes ASSUM→REQ in ONE transact
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-wrong",
     resolutionCarrierUpdates: nulls("DP-1"),
-    records: [planGate("R-pg", "ASSUM-a")],
+    records: [planGateFor("R-pg", "ASSUM-a", "REQ-a")],
     transition: {
       id: "T-1", subject: "ASSUM-wrong", action: "supersede", successor: "REQ-a",
       authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
@@ -895,10 +923,11 @@ test("IS AC37/40: casMode=current-terminal completes ASSUM→REQ in ONE transact
   const ok = apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a",
     resolutionCarrierUpdates: nulls("DP-1"),
-    records: [planGate("R-pg", "ASSUM-a")],
+    records: [planGateFor("R-pg", "ASSUM-a", "REQ-a")],
     transition: {
       id: "T-1", subject: "ASSUM-a", action: "supersede", successor: "REQ-a",
       authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
     },
   });
   assert.strictEqual(indexStore(ok).dps.get("DP-1").resolvedBy, "REQ-a");
@@ -916,10 +945,11 @@ test("IS AC40: a persisted reopen converges via casMode=reopened-prior; current-
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a",
     resolutionCarrierUpdates: nulls("DP-1"),
-    records: [planGate("R-pg", "ASSUM-a")],
+    records: [planGateFor("R-pg", "ASSUM-a", "REQ-a")],
     transition: {
       id: "T-1", subject: "ASSUM-a", action: "supersede", successor: "REQ-a",
       authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
     },
   }), "E_CAS_TERMINAL", "current-terminal mode after a persisted reopen");
 
@@ -927,7 +957,7 @@ test("IS AC40: a persisted reopen converges via casMode=reopened-prior; current-
   assertRejects(() => apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "reopened-prior", expectedPriorTerminalRef: "ASSUM-nope",
     resolutionCarrierUpdates: nulls("DP-1"),
-    records: [planGate("R-pg", "ASSUM-a")],
+    records: [planGateFor("R-pg", "ASSUM-a", "REQ-a")],
     transition: {
       id: "T-1", subject: "ASSUM-nope", action: "supersede", successor: "REQ-a",
       authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
@@ -937,10 +967,11 @@ test("IS AC40: a persisted reopen converges via casMode=reopened-prior; current-
   const ok = apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "reopened-prior", expectedPriorTerminalRef: "ASSUM-a",
     resolutionCarrierUpdates: nulls("DP-1"),
-    records: [planGate("R-pg", "ASSUM-a")],
+    records: [planGateFor("R-pg", "ASSUM-a", "REQ-a")],
     transition: {
       id: "T-1", subject: "ASSUM-a", action: "supersede", successor: "REQ-a",
       authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
     },
   });
   const index = indexStore(ok);
@@ -1157,6 +1188,7 @@ test("panel 6 / SM §7: a plan-gate record whose approvedBy is not the user, or 
     transition: {
       id: "T-1", subject: "ASSUM-a", action: "supersede", successor: "REQ-b",
       authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
     },
   });
   assertRejects(() => attempt({ recordId: "R-pg", kind: "plan-gate", target: "ASSUM-a", impact: "none", disposition: "no-affected-dependents", approvedBy: "some-agent" }),
@@ -1173,7 +1205,7 @@ test("panel 4 / IS AC35: a reopened DP with an active prior terminal is refused 
     "E_REOPENED_NEEDS_TRANSITION", "adopt-existing-outcome");
   assertRejects(() => apply(s, "create-initial-outcome", {
     dpId: "DP-1",
-    clause: { id: "ASSUM-new", layer: "implementation", derivedFrom: "DP-1", text: "t", alternative: "u", basis: "b", basisRefs: [], governedBy: CODE },
+    clause: { id: "ASSUM-new", layer: "implementation", derivedFrom: "DP-1", text: "t", alternative: "u", basis: "b", basisRefs: [], governedBy: CODE, routingOrigin: "safe-default" },
   }), "E_REOPENED_NEEDS_TRANSITION", "create-initial-outcome");
 
   let s2 = apply(s, "append-source", {
@@ -1351,14 +1383,14 @@ test("panel 3 / IS §13: the store-script assertions bite — selection must com
   assertRejects(() => apply(s, "create-initial-outcome", {
     dpId: "DP-2",
     records: [typedRuling("R-ap", CODE, DP2, "approved-provisional", { selectedAlternative: "A", rejectedAlternative: "A", basis: "b" })],
-    clause: { id: "ASSUM-x", layer: "implementation", derivedFrom: "DP-2", text: "A", alternative: "A", basis: "b", basisRefs: [{ kind: "review-ruling", ref: "R-ap" }], governedBy: CODE },
+    clause: { id: "ASSUM-x", layer: "implementation", derivedFrom: "DP-2", text: "A", alternative: "A", basis: "b", basisRefs: [{ kind: "review-ruling", ref: "R-ap" }], governedBy: CODE, routingOrigin: "reviewed-provisional" },
   }), "E_RULING_SELECTION", "selected and rejected identical");
 
   // and the positive: a well-formed approved-provisional ruling backs its ASSUM
   const ok = apply(s, "create-initial-outcome", {
     dpId: "DP-2",
     records: [typedRuling("R-ap", CODE, DP2, "approved-provisional", { selectedAlternative: "A", rejectedAlternative: "B", basis: "b" })],
-    clause: { id: "ASSUM-x", layer: "implementation", derivedFrom: "DP-2", text: "A", alternative: "B", basis: "b", basisRefs: [{ kind: "review-ruling", ref: "R-ap" }], governedBy: CODE },
+    clause: { id: "ASSUM-x", layer: "implementation", derivedFrom: "DP-2", text: "A", alternative: "B", basis: "b", basisRefs: [{ kind: "review-ruling", ref: "R-ap" }], governedBy: CODE, routingOrigin: "reviewed-provisional" },
   });
   assert.strictEqual(indexStore(ok).dps.get("DP-2").assumedAs, "ASSUM-x");
 });
@@ -1488,6 +1520,7 @@ test("panel 1: an UNTYPED ruling bound to another DP cannot be borrowed either",
     clause: {
       id: "ASSUM-x", layer: "implementation", derivedFrom: "DP-2", text: "t", alternative: "u",
       basis: "b", basisRefs: [{ kind: "review-ruling", ref: "R-plain" }], governedBy: CODE,
+      routingOrigin: "safe-default",
     },
   }), "E_RULING_BORROWED", "untyped ruling about DP-1 cited by a DP-2 clause");
 });
@@ -1606,14 +1639,18 @@ test("SM §2 DEC row / IS AC38: DEC → REQ is a product ruling and needs a user
     dpId: "DP-2", casMode: "current-terminal", expectedCurrentTerminalRef: "DEC-a",
     resolutionCarrierUpdates: nulls("DP-2"),
     records: [reviewRuling("R-c", CODE, "DP-2")], successorClause,
-    transition: { id: "T-1", subject: "DEC-a", action: "supersede", successor: "REQ-b", authorityRef: CODE, ackRef: { kind: "review-ruling", ref: "R-c" } },
+    transition: {
+      id: "T-1", subject: "DEC-a", action: "supersede", successor: "REQ-b", authorityRef: CODE,
+      ackRef: { kind: "review-ruling", ref: "R-c" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+    },
   }), "E_MATRIX_AUTHORITY", "a discipline promoting a DEC to a REQ");
 
   const ok = apply(s, "replace-terminal", {
     dpId: "DP-2", casMode: "current-terminal", expectedCurrentTerminalRef: "DEC-a",
     resolutionCarrierUpdates: nulls("DP-2"),
-    records: [planGate("R-pg", "DEC-a")], successorClause,
-    transition: { id: "T-1", subject: "DEC-a", action: "supersede", successor: "REQ-b", authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" } },
+    records: [planGateFor("R-pg", "DEC-a", "REQ-b")], successorClause,
+    transition: { id: "T-1", subject: "DEC-a", action: "supersede", successor: "REQ-b", authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" }, compatibility: { impact: "no consumers", disposition: "no-affected-dependents" } },
   });
   assert.strictEqual(indexStore(ok).dps.get("DP-2").resolvedBy, "REQ-b");
 });
@@ -1693,27 +1730,28 @@ test("IS AC45: after deleting all scratch, the batch content is fully rebuildabl
 // --- 8. commit-test-provenance-batch ---------------------------------------------------------------
 
 // One subject with N sibling evidence refs sharing ONE transition.
+// IS v1.8 AC70: subjectRef is unique, so sibling findings are aggregated by the CALLER into one
+// group carrying several semanticEvidenceRefs — the writer no longer merges them.
 function siblingBatch(evidenceIds, witnessId = "R-w") {
   const evidence = evidenceIds.map((id) => ({ kind: "review-ruling", ref: id }));
   const digest = resolutionGroupDigest({
     subjectRef: "ASSUM-a", action: "retire", successor: null, semanticEvidenceRefs: evidence,
   });
   return {
-    // retiring ASSUM-a reopens DP-1, so the batch declares that DP's carrier disposition
     resolutionCarrierUpdates: nulls("DP-1"),
     recordsToCreate: [
       ...evidenceIds.map((id) => reviewRuling(id, { kind: "discipline", discipline: "test" }, "ASSUM-a")),
       reviewRuling(witnessId, CODE, "ASSUM-a", { resolutionGroupDigest: digest }),
     ],
-    resolutions: evidenceIds.map((id) => ({
+    resolutions: [{
       subjectRef: "ASSUM-a",
-      semanticEvidenceRefs: [{ kind: "review-ruling", ref: id }],
+      semanticEvidenceRefs: evidence,
       governanceWitnessRef: { kind: "review-ruling", ref: witnessId },
       transitionDraft: {
         id: "T-b", subject: "ASSUM-a", action: "retire", successor: null,
         authorityRef: CODE, ackRef: { kind: "review-ruling", ref: witnessId },
       },
-    })),
+    }],
   };
 }
 
@@ -1735,7 +1773,7 @@ test("IS AC46(ii): two different subjects produce two groups and two transitions
     dpId: "DP-2",
     clause: {
       id: "ASSUM-c", layer: "implementation", derivedFrom: "DP-2", text: "t", alternative: "u",
-      basis: "b", basisRefs: [], governedBy: CODE,
+      basis: "b", basisRefs: [], governedBy: CODE, routingOrigin: "safe-default",
     },
   });
   const mk = (subject, evId, wId, tId) => {
@@ -1779,7 +1817,7 @@ test("IS AC47: two groups demanding different actions for one subject reject the
       { subjectRef: "ASSUM-a", semanticEvidenceRefs: [ev("R-e1")], governanceWitnessRef: ev("R-w"), transitionDraft: { id: "T-1", subject: "ASSUM-a", action: "retire", successor: null, authorityRef: CODE, ackRef: ev("R-w") } },
       { subjectRef: "ASSUM-a", semanticEvidenceRefs: [ev("R-e1")], governanceWitnessRef: ev("R-w"), transitionDraft: { id: "T-2", subject: "ASSUM-a", action: "revise", successor: "ASSUM-x", authorityRef: CODE, ackRef: ev("R-w") } },
     ],
-  }), OPTS), "E_SUBJECT_CONFLICT", "conflicting demands on one subject");
+  }), OPTS), "E_SUBJECT_DUPLICATE", "two groups on one subject, conflicting or not");
   assert.strictEqual(fs.readFileSync(storePath(cwd), "utf8"), before, "no-write assertion");
 });
 
@@ -1797,23 +1835,28 @@ test("IS AC50: a resolution ref that is in neither pre-state nor recordsToCreate
 });
 
 test("IS AC48/52: a witness whose resolutionGroupDigest omits a sibling is refused", () => {
-  let s = withAssumption(CODE);
-  const evidence = [{ kind: "review-ruling", ref: "R-e1" }, { kind: "review-ruling", ref: "R-e2" }];
-  const shortDigest = resolutionGroupDigest({
+  const s = withAssumption(CODE);
+  // the witness is computed over ONE evidence ref while the group carries two: the digest must not
+  // match, so the witness demonstrably does not cover what it is attached to.
+  const evidence = ["R-e1", "R-e2"].map((id) => ({ kind: "review-ruling", ref: id }));
+  const short = resolutionGroupDigest({
     subjectRef: "ASSUM-a", action: "retire", successor: null,
-    semanticEvidenceRefs: [evidence[0]], // one sibling missing
+    semanticEvidenceRefs: [evidence[0]],
   });
   assertRejects(() => apply(s, "commit-test-provenance-batch", batchPayload({
+    resolutionCarrierUpdates: nulls("DP-1"),
     recordsToCreate: [
-      reviewRuling("R-e1", { kind: "discipline", discipline: "test" }, "ASSUM-a"),
-      reviewRuling("R-e2", { kind: "discipline", discipline: "test" }, "ASSUM-a"),
-      reviewRuling("R-w", CODE, "ASSUM-a", { resolutionGroupDigest: shortDigest }),
+      ...["R-e1", "R-e2"].map((id) => reviewRuling(id, { kind: "discipline", discipline: "test" }, "ASSUM-a")),
+      reviewRuling("R-w", CODE, "ASSUM-a", { resolutionGroupDigest: short }),
     ],
-    resolutions: evidence.map((e) => ({
-      subjectRef: "ASSUM-a", semanticEvidenceRefs: [e],
+    resolutions: [{
+      subjectRef: "ASSUM-a", semanticEvidenceRefs: evidence,
       governanceWitnessRef: { kind: "review-ruling", ref: "R-w" },
-      transitionDraft: { id: "T-b", subject: "ASSUM-a", action: "retire", successor: null, authorityRef: CODE, ackRef: { kind: "review-ruling", ref: "R-w" } },
-    })),
+      transitionDraft: {
+        id: "T-b", subject: "ASSUM-a", action: "retire", successor: null,
+        authorityRef: CODE, ackRef: { kind: "review-ruling", ref: "R-w" },
+      },
+    }],
   })), "E_WITNESS_COVERAGE", "witness missing a sibling");
 });
 
@@ -2050,7 +2093,7 @@ test("panel-3 blocker 2: the packet is CLOSED — an undeclared extra key and a 
   // matching the DP (freshness still applies: a "tidier" packet is not a licence to differ)
   const wellFormed = {
     ...packetFor(DP2, CODE),
-    basisRefs: [{ kind: "review-ruling", ref: "R-1" }, { sourceId: "S-req", digest: "abc" }],
+    basisRefs: [{ sourceId: "S-req", digest: "abc" }, { kind: "review-ruling", ref: "R-1" }],
   };
   assert.ok(apply(s, "append-record", { record: mk(wellFormed, "R-good") }));
 
@@ -2140,7 +2183,7 @@ test("IS AC62: a carrier is preserved across a legal supersede when its clause's
   // is now REQ-b, which is exactly what the DP holds — so the carrier survives.
   const out = apply(s, "supersede-requirement", {
     initiatingDpIds: ["DP-2"],
-    records: [planGate("R-pg", "REQ-a")],
+    records: [planGateFor("R-pg", "REQ-a", "REQ-b")],
     transition: {
       id: "T-1", subject: "REQ-a", action: "supersede", successor: "REQ-b",
       authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
@@ -2195,7 +2238,7 @@ test("IS AC61: carrier updates must cover exactly the DPs whose terminal this tr
   }
   const supersede = (resolutionCarrierUpdates) => () => apply(s, "supersede-requirement", {
     initiatingDpIds: ["DP-1", "DP-2"],
-    records: [planGate("R-pg", "REQ-a")],
+    records: [planGateFor("R-pg", "REQ-a", "REQ-b")],
     transition: {
       id: "T-1", subject: "REQ-a", action: "supersede", successor: "REQ-b",
       authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
@@ -2238,7 +2281,7 @@ test("IS AC67: clear and replace are judged PER DP — one DP's rulingRef cannot
   }
   const supersede = (resolutionCarrierUpdates, extraRecords = []) => () => apply(s, "supersede-requirement", {
     initiatingDpIds: ["DP-1", "DP-2"],
-    records: [planGate("R-pg", "REQ-a"), ...extraRecords],
+    records: [planGateFor("R-pg", "REQ-a", "REQ-b"), ...extraRecords],
     transition: {
       id: "T-1", subject: "REQ-a", action: "supersede", successor: "REQ-b",
       authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
@@ -2307,7 +2350,7 @@ function withStaleCarrier() {
 function supersedeReqAToB(resolutionCarrierUpdates, extraRecords = []) {
   return {
     initiatingDpIds: ["DP-2"],
-    records: [planGate("R-pg", "REQ-a"), ...extraRecords],
+    records: [planGateFor("R-pg", "REQ-a", "REQ-b"), ...extraRecords],
     transition: {
       id: "T-1", subject: "REQ-a", action: "supersede", successor: "REQ-b",
       authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
@@ -2452,7 +2495,7 @@ function withExplicitReopen(trigger = "new-dependent") {
 function supersedeReqAToBNoDeps(over = {}) {
   return {
     initiatingDpIds: [],
-    records: [planGate("R-pg", "REQ-a")],
+    records: [planGateFor("R-pg", "REQ-a", "REQ-b")],
     transition: {
       id: "T-1", subject: "REQ-a", action: "supersede", successor: "REQ-b",
       authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
@@ -2497,7 +2540,7 @@ test("IS AC80(ii): two DPs deferred-reopened on one prior — the first convergi
   // DP-1 converges through the deferred-reopen path, minting REQ-a → REQ-b.
   const out = apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "reopened-prior", expectedPriorTerminalRef: "REQ-a",
-    records: [planGate("R-pg", "REQ-a")],
+    records: [planGateFor("R-pg", "REQ-a", "REQ-b")],
     transition: {
       id: "T-1", subject: "REQ-a", action: "supersede", successor: "REQ-b",
       authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
@@ -2552,7 +2595,7 @@ function supersedeToScoped(updates, over = {}) {
   const { extraRecords = [], ...rest } = over;
   return {
     initiatingDpIds: [],
-    records: [planGate("R-pg", "REQ-a"), ...extraRecords],
+    records: [planGateFor("R-pg", "REQ-a", "REQ-x"), ...extraRecords],
     sources: [EXCEPTION_SOURCE],
     successorClause: SCOPED_SUCCESSOR,
     transition: {
@@ -2599,7 +2642,7 @@ test("IS AC72: source 2 works the same way through replace-terminal", () => {
   const s = withDependentReopenFixture();
   const out = apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "REQ-a",
-    records: [planGate("R-pg", "REQ-a")],
+    records: [planGateFor("R-pg", "REQ-a", "REQ-x")],
     sources: [EXCEPTION_SOURCE],
     successorClause: SCOPED_SUCCESSOR,
     transition: {
@@ -2704,7 +2747,7 @@ test("IS AC77/78: the loader re-checks a reopened dependent DP's prior and trigg
   // evidence the reopen the DP claims.
   const alsoSuperseded = apply(good, "supersede-requirement", {
     initiatingDpIds: [],
-    records: [planGate("R-pg2", "REQ-b")],
+    records: [planGateFor("R-pg2", "REQ-b", "REQ-b2")],
     successorClause: {
       id: "REQ-b2", authority: "approved-requirement", kind: "specification", text: "plain successor",
       sourceRef: "S-req", taskRef: "TASK-1",
@@ -2734,7 +2777,7 @@ test("IS AC79: a non-canonical caller reopenTrigger cannot steer source 2 on any
   // replace-terminal
   const b = apply(s, "replace-terminal", {
     dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "REQ-a",
-    records: [planGate("R-pg", "REQ-a")], sources: [EXCEPTION_SOURCE], successorClause: SCOPED_SUCCESSOR,
+    records: [planGateFor("R-pg", "REQ-a", "REQ-x")], sources: [EXCEPTION_SOURCE], successorClause: SCOPED_SUCCESSOR,
     transition: {
       id: "T-1", subject: "REQ-a", action: "supersede", successor: "REQ-x",
       authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
@@ -2768,7 +2811,7 @@ test("IS AC81: source 2 inside commit-test-provenance-batch — one CAS, head ad
   const batch = (updates) => batchPayload({
     recordsToCreate: [
       reviewRuling("R-e1", { kind: "discipline", discipline: "test" }, "REQ-a"),
-      { ...planGate("R-pg", "REQ-a"), resolutionGroupDigest: digest },
+      { ...planGateFor("R-pg", "REQ-a", "REQ-x"), resolutionGroupDigest: digest },
     ],
     resolutions: [{
       subjectRef: "REQ-a", semanticEvidenceRefs: evidence,
@@ -2875,7 +2918,7 @@ test("IS AC88: a second source-2 reopen replaces the witness rather than keeping
   });
   const out = apply(s, "supersede-requirement", {
     initiatingDpIds: [],
-    records: [planGate("R-pg2", "REQ-b")],
+    records: [planGateFor("R-pg2", "REQ-b", "REQ-y")],
     successorClause: {
       id: "REQ-y", authority: "approved-requirement", kind: "specification", text: "scoped 2",
       sourceRef: "S-exc2", taskRef: "TASK-1",
@@ -2925,7 +2968,7 @@ test("IS AC83/84/85: witness shape, borrowing and settled-DP negatives are loade
   // AC84: a real transition whose subject is not this DP's prior terminal
   const other = apply(s, "supersede-requirement", {
     initiatingDpIds: [],
-    records: [planGate("R-pg2", "REQ-b")],
+    records: [planGateFor("R-pg2", "REQ-b", "REQ-b2")],
     successorClause: {
       id: "REQ-b2", authority: "approved-requirement", kind: "specification", text: "t",
       sourceRef: "S-req", taskRef: "TASK-1",
@@ -2959,7 +3002,7 @@ test("IS AC81: source 2 inside a batch persists the group's transition as the wi
   const out = apply(s, "commit-test-provenance-batch", batchPayload({
     recordsToCreate: [
       reviewRuling("R-e1", { kind: "discipline", discipline: "test" }, "REQ-a"),
-      { ...planGate("R-pg", "REQ-a"), resolutionGroupDigest: digest },
+      { ...planGateFor("R-pg", "REQ-a", "REQ-x"), resolutionGroupDigest: digest },
     ],
     resolutions: [{
       subjectRef: "REQ-a", semanticEvidenceRefs: evidence,
@@ -2986,7 +3029,7 @@ test("IS §8 lifecycle: a batch retire clears the witness rather than carrying i
     dpId: "DP-1",
     clause: {
       id: "ASSUM-shared", layer: "implementation", derivedFrom: "DP-1", text: "t", alternative: "u",
-      basis: "b", basisRefs: [], governedBy: CODE,
+      basis: "b", basisRefs: [], governedBy: CODE, routingOrigin: "safe-default",
     },
   });
   assert.strictEqual(indexStore(t).dps.get("DP-1").reopenCauseRef, null, "landing a terminal cleared it");
@@ -3209,6 +3252,688 @@ test("legacy decoder (helper level): a version 1 store decodes and validates wit
   const normalized = { ...parsed, provenanceVersion: 2, decisionPoints: parsed.decisionPoints.map((d) => ({ ...d, reopenCauseRef: null })) };
   assert.notStrictEqual(sha256Hex(canonicalStoreBytes(normalized)), rawDigest,
     "normalized bytes have a different digest, so they can never stand in for the raw comparison");
+});
+
+// --- Phase 1B: routingOrigin, packetBasisRef total order, plan-gate successor, --------------------
+// --- successorClauseDraft, and resolutions[] subject uniqueness ------------------------------------
+
+const ROUTING_ORIGINS = ["safe-default", "user-deferred", "reviewed-provisional"];
+
+// A plan gate that NAMES its successor. §7 as amended: target, successor, impact and disposition
+// are all compared against the Transition, so a gate approving "replace X" can no longer authorise
+// replacing it with anything at all.
+function planGateFor(recordId, target, successor, impact = "no consumers", disposition = "no-affected-dependents") {
+  return { recordId, kind: "plan-gate", target, successor, impact, disposition, approvedBy: "user" };
+}
+
+function userAnswer(recordId, subjectRef, answer = "defer it") {
+  return { recordId, kind: "user-answer", subjectRef, answer };
+}
+
+// ASSUM shapes for the three routing origins, each carrying exactly the obligations SM §2 attaches.
+function assumFor(origin, id, dpFixture, over = {}) {
+  const base = {
+    id, derivedFrom: dpFixture.id, text: "t", alternative: "u", basis: "b",
+    routingOrigin: origin, basisRefs: [], ...over,
+  };
+  if (origin === "safe-default") {
+    return {
+      ...base,
+      layer: dpFixture.layer,
+      governedBy: dpFixture.layer === "intent" ? INTENT : CODE,
+      ...over,
+    };
+  }
+  if (origin === "user-deferred") {
+    return { ...base, layer: "intent", governedBy: INTENT, ...over };
+  }
+  return { ...base, layer: "implementation", ...over }; // reviewed-provisional: governedBy == ruling.by
+}
+
+test("SM §2 routingOrigin: the three authored values carry their own obligations, checked by the loader", () => {
+  // safe-default on an implementation DP is governed by code and needs no ruling
+  let s = baseFixture();
+  const ok = apply(s, "create-initial-outcome", {
+    dpId: "DP-1", clause: assumFor("safe-default", "ASSUM-sd", DP1),
+  });
+  assert.strictEqual(indexStore(ok).clauses.get("ASSUM-sd").routingOrigin, "safe-default");
+
+  // an ASSUM with no routingOrigin at all is refused — it is authored, never inferred
+  assertRejects(() => apply(s, "create-initial-outcome", {
+    dpId: "DP-1", clause: { ...assumFor("safe-default", "ASSUM-x", DP1), routingOrigin: undefined },
+  }), "E_ROUTING_ORIGIN_MISSING", "ASSUM without routingOrigin");
+
+  // and an unknown value is refused rather than normalised
+  assertRejects(() => apply(s, "create-initial-outcome", {
+    dpId: "DP-1", clause: { ...assumFor("safe-default", "ASSUM-x", DP1), routingOrigin: "invented" },
+  }), "E_ENUM", "unknown routingOrigin");
+});
+
+test("SM §2 routingOrigin: safe-default's principal follows the DP layer", () => {
+  const s = baseFixture();
+  // implementation DP → code principal; declaring intent instead is refused
+  assertRejects(() => apply(s, "create-initial-outcome", {
+    dpId: "DP-1", clause: assumFor("safe-default", "ASSUM-sd", DP1, { governedBy: INTENT }),
+  }), "E_ROUTING_ORIGIN_OBLIGATION", "safe-default on an implementation DP governed by intent");
+  // intent DP → intent principal
+  const ok = apply(s, "create-initial-outcome", {
+    dpId: "DP-3", clause: { ...assumFor("safe-default", "ASSUM-i", DP3), scenario: DP3.scenario },
+  });
+  assert.strictEqual(indexStore(ok).clauses.get("ASSUM-i").governedBy.discipline, "intent");
+});
+
+test("SM §2 routingOrigin: user-deferred needs layer=intent, an intent principal and a DP-bound user-answer", () => {
+  const s = baseFixture();
+  const good = {
+    ...assumFor("user-deferred", "ASSUM-ud", DP3),
+    scenario: DP3.scenario,
+    basisRefs: [{ kind: "user-answer", ref: "R-ua" }],
+  };
+  const withAnswer = (clause, extra = []) => () => apply(s, "create-initial-outcome", {
+    dpId: "DP-3", records: [userAnswer("R-ua", "DP-3"), ...extra], clause,
+  });
+  assert.ok(withAnswer(good)(), "the complete shape is accepted");
+
+  assertRejects(withAnswer({ ...good, layer: "implementation" }),
+    "E_ROUTING_ORIGIN_OBLIGATION", "user-deferred at implementation layer");
+  assertRejects(withAnswer({ ...good, governedBy: CODE }),
+    "E_ROUTING_ORIGIN_OBLIGATION", "user-deferred governed by code");
+  assertRejects(() => apply(s, "create-initial-outcome", {
+    dpId: "DP-3", records: [userAnswer("R-ua", "DP-1")], clause: good,
+  }), "E_ROUTING_ORIGIN_OBLIGATION", "the user-answer is bound to another DP");
+});
+
+test("SM §2 routingOrigin: reviewed-provisional needs an approved-provisional ruling and governedBy == ruling.by", () => {
+  const s = baseFixture();
+  const ruling = typedRuling("R-ap", CODE, DP1, "approved-provisional", {
+    selectedAlternative: "A", rejectedAlternative: "B",
+  });
+  const good = {
+    ...assumFor("reviewed-provisional", "ASSUM-rp", DP1),
+    text: "A", alternative: "B", basis: "stated basis", governedBy: CODE,
+    basisRefs: [{ kind: "review-ruling", ref: "R-ap" }],
+  };
+  assert.ok(apply(s, "create-initial-outcome", { dpId: "DP-1", records: [ruling], clause: good }));
+
+  // flip ONLY the layer: DP-3 is an intent DP, so the clause's layer agrees with its DP and the
+  // rejection can only come from the routingOrigin obligation.
+  const intentRuling = typedRuling("R-ap3", INTENT, DP3, "approved-provisional", {
+    selectedAlternative: "A", rejectedAlternative: "B",
+  });
+  assertRejects(() => apply(s, "create-initial-outcome", {
+    dpId: "DP-3", records: [intentRuling],
+    clause: {
+      ...good, id: "ASSUM-rp3", derivedFrom: "DP-3", layer: "intent", scenario: DP3.scenario,
+      governedBy: INTENT, basisRefs: [{ kind: "review-ruling", ref: "R-ap3" }],
+    },
+  }), "E_ROUTING_ORIGIN_OBLIGATION", "reviewed-provisional at intent layer");
+  // no approved-provisional ruling among basisRefs
+  assertRejects(() => apply(s, "create-initial-outcome", {
+    dpId: "DP-1", records: [reviewRuling("R-plain", CODE, "DP-1")],
+    clause: { ...good, basisRefs: [{ kind: "review-ruling", ref: "R-plain" }] },
+  }), "E_ROUTING_ORIGIN_OBLIGATION", "reviewed-provisional without an approved-provisional ruling");
+});
+
+test("IS AC71: packetBasisRef is an exact union with a TOTAL order including the source digest", () => {
+  const s = baseFixture();
+  const mk = (basisRefs, id = "R-p") => ({
+    ...reviewRuling(id, CODE, "DP-2"), rulingKind: "technical-decision", basis: "b",
+    selectedAlternative: "A",
+    inputPacketSnapshot: { ...packetFor(DP2, CODE), basisRefs },
+    inputPacketDigest: digestOf({ ...packetFor(DP2, CODE), basisRefs }),
+  });
+  // AC71: same sourceId, different digest — the tie-break must order them deterministically
+  const a = { sourceId: "S-1", digest: "aaa" };
+  const b = { sourceId: "S-1", digest: "bbb" };
+  assert.ok(apply(s, "append-record", { record: mk([a, b]) }), "digest-ascending order is canonical");
+  assertRejects(() => apply(s, "append-record", { record: mk([b, a]) }),
+    "E_RULING_PACKET_ORDER", "the reverse order must be refused, not accepted as equally canonical");
+
+  // exact union: a bare string is not an ObservationalRef
+  assertRejects(() => apply(s, "append-record", { record: mk(["just a description"]) }),
+    "E_RULING_PACKET_INCOMPLETE", "a bare string basisRef");
+  // undeclared keys, empty strings
+  assertRejects(() => apply(s, "append-record", { record: mk([{ sourceId: "S-1", digest: "a", note: "x" }]) }),
+    "E_RULING_PACKET_INCOMPLETE", "an undeclared key on a source ref");
+  assertRejects(() => apply(s, "append-record", { record: mk([{ kind: "observational", description: "" }]) }),
+    "E_RULING_PACKET_INCOMPLETE", "an empty description");
+  // canonical-bytes duplicates are refused BEFORE ordering
+  assertRejects(() => apply(s, "append-record", { record: mk([a, { sourceId: "S-1", digest: "aaa" }]) }),
+    "E_RULING_PACKET_DUPLICATE", "byte-identical duplicate refs");
+});
+
+test("SM §7: a plan gate must NAME its successor, and all four fields are compared", () => {
+  let s = withAssumption(CODE);
+  s = withRequirementSuccessor(s, "REQ-b");
+  const successorClause = {
+    id: "REQ-b", authority: "approved-requirement", kind: "specification",
+    text: "the product ruling", sourceRef: "S-REQ-b", taskRef: "TASK-1",
+  };
+  const attempt = (gate, over = {}) => () => apply(s, "replace-terminal", {
+    dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "ASSUM-a",
+    successorClause, records: [gate], resolutionCarrierUpdates: nulls("DP-1"),
+    transition: {
+      id: "T-1", subject: "ASSUM-a", action: "supersede", successor: "REQ-b",
+      authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
+      compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+      ...over,
+    },
+  });
+  // the complete four-field gate is accepted
+  assert.ok(attempt(planGateFor("R-pg", "ASSUM-a", "REQ-b"))(), "four-field gate");
+
+  // a gate with no successor no longer constitutes a supersede proposal
+  assertRejects(attempt({ ...planGateFor("R-pg", "ASSUM-a", "REQ-b"), successor: null }),
+    "E_WITNESS_SUCCESSOR", "a supersede gate with a null successor");
+  assertRejects(attempt(planGateFor("R-pg", "ASSUM-a", "REQ-other")),
+    "E_WITNESS_SUCCESSOR", "the gate names a different successor");
+  assertRejects(attempt(planGateFor("R-pg", "ASSUM-a", "REQ-b", "breaks callers")),
+    "E_PROPOSAL_MISMATCH", "impact disagrees");
+  assertRejects(attempt(planGateFor("R-pg", "ASSUM-a", "REQ-b", "no consumers", "migration")),
+    "E_PROPOSAL_MISMATCH", "disposition disagrees");
+});
+
+// --- successorClauseDraft ---------------------------------------------------------------------
+
+function reviseBatch(draft, over = {}) {
+  const evidence = [{ kind: "review-ruling", ref: "R-e1" }];
+  const digest = resolutionGroupDigest({
+    subjectRef: "ASSUM-a", action: "revise", successor: "ASSUM-b", semanticEvidenceRefs: evidence,
+  });
+  return batchPayload({
+    recordsToCreate: [
+      reviewRuling("R-e1", { kind: "discipline", discipline: "test" }, "ASSUM-a"),
+      reviewRuling("R-w", CODE, "ASSUM-a", { resolutionGroupDigest: digest }),
+    ],
+    resolutions: [{
+      subjectRef: "ASSUM-a", semanticEvidenceRefs: evidence,
+      governanceWitnessRef: { kind: "review-ruling", ref: "R-w" },
+      transitionDraft: {
+        id: "T-b", subject: "ASSUM-a", action: "revise", successor: "ASSUM-b",
+        authorityRef: CODE, ackRef: { kind: "review-ruling", ref: "R-w" },
+      },
+      ...(draft === undefined ? {} : { successorClauseDraft: draft }),
+    }],
+    resolutionCarrierUpdates: nulls("DP-1"),
+    ...over,
+  });
+}
+
+const REVISED_ASSUM = {
+  id: "ASSUM-b", layer: "implementation", derivedFrom: "DP-1", text: "revised reading",
+  alternative: "treat null as invalid", basis: "new evidence", basisRefs: [],
+  governedBy: CODE, routingOrigin: "safe-default",
+};
+
+test("IS AC57: a batch mints the revise successor ASSUM in the SAME transaction", () => {
+  const s = withAssumption(CODE);
+  const out = apply(s, "commit-test-provenance-batch", reviseBatch(REVISED_ASSUM));
+  const index = indexStore(out);
+  assert.ok(index.clauses.get("ASSUM-b"), "the successor was minted here");
+  assert.strictEqual(statusOf(index, "ASSUM-a"), "revised");
+  assert.strictEqual(index.dps.get("DP-1").assumedAs, "ASSUM-b");
+  assert.deepStrictEqual(
+    index.taskStates.get("TASK-1").committedProvenanceBatchRef,
+    { kind: "provenance-batch", ref: "R-b1" }, "one transaction: head advanced too");
+});
+
+test("IS AC58: successorClauseDraft presence rules are exact", () => {
+  const s = withAssumption(CODE);
+  // successor not in pre-state and no draft
+  assertRejects(() => apply(s, "commit-test-provenance-batch", reviseBatch(undefined)),
+    "E_SUCCESSOR_DRAFT_MISSING", "successor absent from pre-state with no draft");
+  // draft id disagreeing with the transition's successor
+  assertRejects(() => apply(s, "commit-test-provenance-batch", reviseBatch({ ...REVISED_ASSUM, id: "ASSUM-c" })),
+    "E_SUCCESSOR_DRAFT_ID", "draft id != transitionDraft.successor");
+  // a retire carries no draft
+  const retire = siblingBatch(["R-e1"]);
+  assertRejects(() => apply(s, "commit-test-provenance-batch", batchPayload({
+    ...retire,
+    resolutions: retire.resolutions.map((r) => ({ ...r, successorClauseDraft: REVISED_ASSUM })),
+  })), "E_SUCCESSOR_DRAFT_FORBIDDEN", "retire with a draft");
+});
+
+test("IS AC59: a batch-minted successor ASSUM is held to its routingOrigin obligations", () => {
+  const s = withAssumption(CODE);
+  assertRejects(() => apply(s, "commit-test-provenance-batch",
+    reviseBatch({ ...REVISED_ASSUM, routingOrigin: undefined })),
+    "E_ROUTING_ORIGIN_MISSING", "batch-minted ASSUM with no routingOrigin");
+  assertRejects(() => apply(s, "commit-test-provenance-batch",
+    reviseBatch({ ...REVISED_ASSUM, routingOrigin: "user-deferred" })),
+    "E_ROUTING_ORIGIN_OBLIGATION", "user-deferred obligations unmet");
+});
+
+test("IS AC60/65: a batch mints a REQ only for ASSUM|DEC supersede with a complete plan gate", () => {
+  const s = withAssumption(CODE);
+  const req = {
+    id: "REQ-n", authority: "approved-requirement", kind: "specification",
+    text: "the product ruling", sourceRef: "S-req", taskRef: "TASK-1",
+  };
+  const reqBatch = (over = {}, clause = req, gate = planGateFor("R-pg", "ASSUM-a", "REQ-n")) => {
+    const evidence = [{ kind: "review-ruling", ref: "R-e1" }];
+    const digest = resolutionGroupDigest({
+      subjectRef: "ASSUM-a", action: "supersede", successor: clause.id, semanticEvidenceRefs: evidence,
+    });
+    return batchPayload({
+      recordsToCreate: [
+        reviewRuling("R-e1", { kind: "discipline", discipline: "test" }, "ASSUM-a"),
+        { ...gate, resolutionGroupDigest: digest },
+      ],
+      resolutions: [{
+        subjectRef: "ASSUM-a", semanticEvidenceRefs: evidence,
+        governanceWitnessRef: { kind: "plan-gate", ref: gate.recordId },
+        transitionDraft: {
+          id: "T-b", subject: "ASSUM-a", action: "supersede", successor: clause.id,
+          authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: gate.recordId },
+          compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+        },
+        successorClauseDraft: clause,
+      }],
+      resolutionCarrierUpdates: nulls("DP-1"),
+      ...over,
+    });
+  };
+  // positive: ASSUM → new REQ
+  const out = apply(s, "commit-test-provenance-batch", reqBatch());
+  assert.strictEqual(indexStore(out).dps.get("DP-1").resolvedBy, "REQ-n");
+  assert.strictEqual(statusOf(indexStore(out), "ASSUM-a"), "superseded");
+
+  // hard-constraint may never be minted here
+  assertRejects(() => apply(s, "commit-test-provenance-batch",
+    reqBatch({}, { ...req, authority: "hard-constraint", ownerRef: { kind: "source-authority", ref: "R-owner" } })),
+    "E_SUCCESSOR_DRAFT_TIER", "hard-constraint through the batch");
+  // the gate must name this successor
+  assertRejects(() => apply(s, "commit-test-provenance-batch",
+    reqBatch({}, req, planGateFor("R-pg", "ASSUM-a", "REQ-other"))),
+    "E_WITNESS_SUCCESSOR", "the gate names a different successor");
+});
+
+test("IS AC70: resolutions[] refuses a repeated subjectRef instead of merging siblings", () => {
+  const s = withAssumption(CODE);
+  const one = siblingBatch(["R-e1"]);
+  const dup = batchPayload({
+    ...one,
+    resolutions: [one.resolutions[0], { ...one.resolutions[0] }],
+  });
+  assertRejects(() => apply(s, "commit-test-provenance-batch", dup),
+    "E_SUBJECT_DUPLICATE", "the same subject twice, even with identical payloads");
+});
+
+// --- Phase 1B repair: closed successor-kind matrix, biconditional compatibility, ----------------
+// --- required plan-gate successor, existential reviewed-provisional ------------------------------
+
+// A batch over one subject with an arbitrary action/successor, so the matrix can be probed directly
+// rather than through replace-terminal.
+function subjectBatch({ subject, action, successor, draft, witness, authorityRef, compatibility, carrier }) {
+  const evidence = [{ kind: "review-ruling", ref: "R-e1" }];
+  const digest = resolutionGroupDigest({
+    subjectRef: subject, action, successor: successor === undefined ? null : successor,
+    semanticEvidenceRefs: evidence,
+  });
+  const w = witness || reviewRuling("R-w", CODE, subject, { resolutionGroupDigest: digest });
+  const witnessRef = { kind: w.kind === "plan-gate" ? "plan-gate" : "review-ruling", ref: w.recordId };
+  const transitionDraft = {
+    id: "T-b", subject, action, successor: successor === undefined ? null : successor,
+    authorityRef: authorityRef || CODE, ackRef: witnessRef,
+    ...(compatibility === undefined ? {} : { compatibility }),
+  };
+  return batchPayload({
+    recordsToCreate: [
+      reviewRuling("R-e1", { kind: "discipline", discipline: "test" }, subject),
+      { ...w, resolutionGroupDigest: digest },
+    ],
+    resolutions: [{
+      subjectRef: subject, semanticEvidenceRefs: evidence,
+      governanceWitnessRef: witnessRef, transitionDraft,
+      ...(draft === undefined ? {} : { successorClauseDraft: draft }),
+    }],
+    resolutionCarrierUpdates: carrier || nulls("DP-1"),
+  });
+}
+
+const ASSUM_B = {
+  id: "ASSUM-b", layer: "implementation", derivedFrom: "DP-1", text: "revised", alternative: "u",
+  basis: "b", basisRefs: [], governedBy: CODE, routingOrigin: "safe-default",
+};
+const REQ_N = {
+  id: "REQ-n", authority: "approved-requirement", kind: "specification",
+  text: "the product ruling", sourceRef: "S-req", taskRef: "TASK-1",
+};
+const DEC_N = {
+  id: "DEC-n", layer: "implementation", derivedFrom: "DP-1", decision: "A",
+  alternatives: ["A", "B"], approvedBy: CODE, basisRefs: [{ kind: "review-ruling", ref: "R-td" }],
+};
+
+test("SM §2 matrix: the successor KIND is a closed set, not a fallthrough", () => {
+  const s = withAssumption(CODE);
+  // ASSUM revise → ASSUM is the one legal revise successor, and stays legal
+  assert.ok(apply(s, "commit-test-provenance-batch", subjectBatch({
+    subject: "ASSUM-a", action: "revise", successor: "ASSUM-b", draft: ASSUM_B,
+  })), "ASSUM revise → ASSUM");
+
+  // ASSUM supersede → ASSUM has no row in the matrix
+  assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch({
+    subject: "ASSUM-a", action: "supersede", successor: "ASSUM-b", draft: ASSUM_B,
+  })), "E_MATRIX_SUCCESSOR_KIND", "ASSUM supersede → ASSUM");
+
+  // REQ supersede → ASSUM has no row either
+  let r = withSecondRequirement(baseFixture());
+  r = apply(r, "adopt-existing-outcome", { dpId: "DP-1", clauseRef: "REQ-a", resolutionCarrierUpdates: nulls("DP-1") });
+  assertRejects(() => apply(r, "commit-test-provenance-batch", subjectBatch({
+    subject: "REQ-a", action: "supersede", successor: "ASSUM-z",
+    draft: { ...ASSUM_B, id: "ASSUM-z" },
+    authorityRef: { kind: "user" },
+    witness: planGateFor("R-pg", "REQ-a", "ASSUM-z"),
+  })), "E_MATRIX_SUCCESSOR_KIND", "REQ supersede → ASSUM");
+});
+
+test("SM §2 matrix: ASSUM supersede reaches DEC and REQ, and DEC supersede reaches a new REQ in a batch", () => {
+  // ASSUM → DEC, governed by the same principal
+  let s = withAssumption(CODE);
+  const decBatch = subjectBatch({
+    subject: "ASSUM-a", action: "supersede", successor: "DEC-n",
+    draft: { ...DEC_N, basisRefs: [{ kind: "review-ruling", ref: "R-td" }] },
+  });
+  decBatch.recordsToCreate.push(typedRuling("R-td", CODE, DP1, "technical-decision", { selectedAlternative: "A" }));
+  assert.ok(apply(s, "commit-test-provenance-batch", decBatch), "ASSUM supersede → DEC");
+
+  // ASSUM → new REQ under a complete plan gate
+  const reqOut = apply(s, "commit-test-provenance-batch", subjectBatch({
+    subject: "ASSUM-a", action: "supersede", successor: "REQ-n", draft: REQ_N,
+    authorityRef: { kind: "user" }, witness: planGateFor("R-pg", "ASSUM-a", "REQ-n"),
+    compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+  }));
+  assert.strictEqual(indexStore(reqOut).dps.get("DP-1").resolvedBy, "REQ-n");
+
+  // TP AC78: DEC → new REQ, driven through the BATCH rather than replace-terminal
+  let d = withDecision(CODE);
+  const out = apply(d, "commit-test-provenance-batch", subjectBatch({
+    subject: "DEC-a", action: "supersede", successor: "REQ-n",
+    draft: REQ_N, authorityRef: { kind: "user" },
+    witness: planGateFor("R-pg", "DEC-a", "REQ-n"),
+    compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+    carrier: nulls("DP-2"),
+  }));
+  const index = indexStore(out);
+  assert.ok(index.clauses.get("REQ-n"), "the REQ was minted here");
+  assert.strictEqual(statusOf(index, "DEC-a"), "superseded");
+  assert.strictEqual(index.dps.get("DP-2").resolvedBy, "REQ-n");
+  assert.ok(index.records.get("R-pg"), "the plan-gate witness landed in the same transaction");
+  assert.deepStrictEqual(index.taskStates.get("TASK-1").committedProvenanceBatchRef,
+    { kind: "provenance-batch", ref: "R-b1" }, "head advanced in the same transaction");
+});
+
+test("SM §2: successorClauseDraft consumes the SAME matrix — an ASSUM draft only fits a revise", () => {
+  const s = withAssumption(CODE);
+  assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch({
+    subject: "ASSUM-a", action: "supersede", successor: "ASSUM-b", draft: ASSUM_B,
+  })), "E_MATRIX_SUCCESSOR_KIND", "an ASSUM draft on a supersede group");
+});
+
+test("SM §2: compatibility is a BICONDITIONAL — present exactly when supersede lands a REQ", () => {
+  const s = withAssumption(CODE);
+  // missing where required
+  assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch({
+    subject: "ASSUM-a", action: "supersede", successor: "REQ-n", draft: REQ_N,
+    authorityRef: { kind: "user" }, witness: planGateFor("R-pg", "ASSUM-a", "REQ-n"),
+  })), "E_COMPAT_MISSING", "supersede → REQ without compatibility");
+
+  const compat = { impact: "no consumers", disposition: "no-affected-dependents" };
+  // present where forbidden: retire
+  assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch({
+    subject: "ASSUM-a", action: "retire", successor: null, compatibility: compat,
+  })), "E_COMPAT_FORBIDDEN", "retire carrying compatibility");
+  // present where forbidden: revise
+  assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch({
+    subject: "ASSUM-a", action: "revise", successor: "ASSUM-b", draft: ASSUM_B, compatibility: compat,
+  })), "E_COMPAT_FORBIDDEN", "revise carrying compatibility");
+  // present where forbidden: supersede landing a DEC
+  const decBatch = subjectBatch({
+    subject: "ASSUM-a", action: "supersede", successor: "DEC-n",
+    draft: DEC_N, compatibility: compat,
+  });
+  decBatch.recordsToCreate.push(typedRuling("R-td", CODE, DP1, "technical-decision", { selectedAlternative: "A" }));
+  assertRejects(() => apply(s, "commit-test-provenance-batch", decBatch),
+    "E_COMPAT_FORBIDDEN", "supersede → DEC carrying compatibility");
+});
+
+test("SM §2: plan-gate.successor is a REQUIRED typed field, not an optional one", () => {
+  let s = withSecondRequirement(baseFixture());
+  s = apply(s, "adopt-existing-outcome", { dpId: "DP-1", clauseRef: "REQ-a", resolutionCarrierUpdates: nulls("DP-1") });
+
+  // the key must be present on every plan-gate record, whatever it witnesses
+  assertRejects(() => apply(s, "append-record", {
+    record: { recordId: "R-pg", kind: "plan-gate", target: "REQ-a", impact: "i", disposition: "migration", approvedBy: "user" },
+  }), "E_RECORD_PAYLOAD", "a plan-gate with no successor key at all");
+  assertRejects(() => apply(s, "append-record", {
+    record: { recordId: "R-pg", kind: "plan-gate", target: "REQ-a", successor: "", impact: "i", disposition: "migration", approvedBy: "user" },
+  }), "E_RECORD_PAYLOAD", "an empty successor string");
+  // an explicit null is the retire / non-supersede shape and is accepted
+  assert.ok(apply(s, "append-record", {
+    record: { recordId: "R-pg2", kind: "plan-gate", target: "REQ-a", successor: null, impact: "i", disposition: "migration", approvedBy: "user" },
+  }), "explicit null");
+
+  // a REQ retire witnessed by a gate whose successor key is absent is refused …
+  const retire = (gate) => () => apply(s, "replace-terminal", {
+    dpId: "DP-1", casMode: "current-terminal", expectedCurrentTerminalRef: "REQ-a",
+    resolutionCarrierUpdates: [{ dpId: "DP-1", action: "unchanged-null" }],
+    records: [gate],
+    transition: {
+      id: "T-1", subject: "REQ-a", action: "retire", successor: null,
+      authorityRef: { kind: "user" }, ackRef: { kind: "plan-gate", ref: "R-pg" },
+    },
+  });
+  assertRejects(retire({ recordId: "R-pg", kind: "plan-gate", target: "REQ-a", impact: "no consumers", disposition: "no-affected-dependents", approvedBy: "user" }),
+    "E_RECORD_PAYLOAD", "retire gate with no successor key");
+  // … and a gate naming a successor cannot witness a retire either
+  assertRejects(retire(planGateFor("R-pg", "REQ-a", "REQ-b")),
+    "E_WITNESS_SUCCESSOR", "retire gate naming a successor");
+  // … while the explicit null goes through
+  assert.ok(retire(planGate("R-pg", "REQ-a"))(), "retire gate with successor: null");
+});
+
+// The obligation is written as an existential over basisRefs — one ruling satisfying rulingKind,
+// subjectRef AND by together — rather than "first ruling matching two of them, then check the
+// third". NOTE: no legal counterexample distinguishes the two formulations today, because
+// validateGovernanceRulings already requires EVERY cited approved-provisional ruling to match the
+// clause's governedBy and runs first; an array whose matching ruling is not first is rejected there,
+// by E_RULING_POSTCONDITION. The quantifier is written correctly as defence in depth, and this test
+// pins both the reachable rejection and the positive rather than claiming a red it cannot produce.
+test("SM §2 routingOrigin: reviewed-provisional needs a ruling matching kind, subject AND principal", () => {
+  const s = baseFixture();
+  const right = typedRuling("R-ap-b", CODE, DP1, "approved-provisional", {
+    selectedAlternative: "A", rejectedAlternative: "B",
+  });
+  const clause = {
+    id: "ASSUM-rp", layer: "implementation", derivedFrom: "DP-1", text: "A", alternative: "B",
+    basis: "stated basis", governedBy: CODE, routingOrigin: "reviewed-provisional",
+    basisRefs: [{ kind: "review-ruling", ref: "R-ap-b" }],
+  };
+  assert.ok(apply(s, "create-initial-outcome", { dpId: "DP-1", records: [right], clause }), "the complete shape");
+
+  // a ruling by another principal is rejected — reachably, by the per-ruling postcondition
+  const wrong = typedRuling("R-ap-a", SECURITY, DP1, "approved-provisional", {
+    selectedAlternative: "A", rejectedAlternative: "B",
+  });
+  assertRejects(() => apply(s, "create-initial-outcome", {
+    dpId: "DP-1", records: [wrong],
+    clause: { ...clause, basisRefs: [{ kind: "review-ruling", ref: "R-ap-a" }] },
+  }), "E_RULING_POSTCONDITION", "an approved-provisional ruling by another principal");
+
+  // and with no approved-provisional ruling at all the routingOrigin obligation itself fires
+  assertRejects(() => apply(s, "create-initial-outcome", {
+    dpId: "DP-1", records: [reviewRuling("R-plain", CODE, "DP-1")],
+    clause: { ...clause, basisRefs: [{ kind: "review-ruling", ref: "R-plain" }] },
+  }), "E_ROUTING_ORIGIN_OBLIGATION", "no approved-provisional ruling among basisRefs");
+});
+
+test("IS AC60/65 + TP AC79: every batch REQ-minting condition fails closed on its own, with no write", () => {
+  const cwd = temporary("prov-b1b-nowrite-");
+  const s = withAssumption(CODE);
+  fs.mkdirSync(path.dirname(storePath(cwd)), { recursive: true });
+  fs.writeFileSync(storePath(cwd), canonicalStoreBytes(s), "utf8");
+  const before = fs.readFileSync(storePath(cwd), "utf8");
+  const headBefore = indexStore(s).taskStates.get("TASK-1").committedProvenanceBatchRef;
+  const compat = { impact: "no consumers", disposition: "no-affected-dependents" };
+  const good = () => subjectBatch({
+    subject: "ASSUM-a", action: "supersede", successor: "REQ-n", draft: REQ_N,
+    authorityRef: { kind: "user" }, witness: planGateFor("R-pg", "ASSUM-a", "REQ-n"), compatibility: compat,
+  });
+
+  const cases = [
+    ["authorityRef.kind != user", (b) => { b.resolutions[0].transitionDraft.authorityRef = CODE; }],
+    ["ackRef.kind != plan-gate", (b) => {
+      b.recordsToCreate[1] = reviewRuling("R-pg", CODE, "ASSUM-a", { resolutionGroupDigest: b.recordsToCreate[1].resolutionGroupDigest });
+      b.resolutions[0].governanceWitnessRef = { kind: "review-ruling", ref: "R-pg" };
+      b.resolutions[0].transitionDraft.ackRef = { kind: "review-ruling", ref: "R-pg" };
+    }],
+    ["gate target mismatch", (b) => { b.recordsToCreate[1].target = "ASSUM-other"; }],
+    ["gate successor mismatch", (b) => { b.recordsToCreate[1].successor = "REQ-other"; }],
+    ["gate impact mismatch", (b) => { b.recordsToCreate[1].impact = "breaks callers"; }],
+    ["gate disposition mismatch", (b) => { b.recordsToCreate[1].disposition = "migration"; }],
+    ["REQ tier not approved-requirement|compatibility", (b) => {
+      b.resolutions[0].successorClauseDraft = { ...REQ_N, authority: "hard-constraint", ownerRef: { kind: "source-authority", ref: "R-owner" } };
+    }],
+  ];
+  for (const [what, mutate] of cases) {
+    const payload = good();
+    mutate(payload);
+    const e = threw(() => runTransaction(cwd, "commit-test-provenance-batch", payload, OPTS));
+    assert.ok(e instanceof ProvenanceError, `${what}: expected a rejection, got ${e}`);
+    assert.strictEqual(fs.readFileSync(storePath(cwd), "utf8"), before, `${what}: store bytes unchanged`);
+    assert.ok(!fs.existsSync(`${storePath(cwd)}.lock`), `${what}: lock released`);
+    assert.deepStrictEqual(fs.readdirSync(path.dirname(storePath(cwd))).sort(), ["provenance.json"], `${what}: no temp file`);
+    assert.deepStrictEqual(
+      indexStore(parseStore(fs.readFileSync(storePath(cwd), "utf8"))).taskStates.get("TASK-1").committedProvenanceBatchRef,
+      headBefore, `${what}: committed head unchanged`);
+  }
+  // subject that is neither ASSUM nor DEC
+  let r = withSecondRequirement(baseFixture());
+  r = apply(r, "adopt-existing-outcome", { dpId: "DP-1", clauseRef: "REQ-a", resolutionCarrierUpdates: nulls("DP-1") });
+  assertRejects(() => apply(r, "commit-test-provenance-batch", subjectBatch({
+    subject: "REQ-a", action: "supersede", successor: "REQ-n", draft: REQ_N,
+    authorityRef: { kind: "user" }, witness: planGateFor("R-pg", "REQ-a", "REQ-n"), compatibility: compat,
+  })), "E_SUCCESSOR_DRAFT_TIER", "a REQ subject cannot mint its successor through the batch");
+});
+
+test("IS AC58: successorClauseDraft presence rules, including an existing successor", () => {
+  let s = withAssumption(CODE);
+  s = withSecondRequirement(s); // REQ-b exists in pre-state
+  // successor already in pre-state → the draft is forbidden
+  assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch({
+    subject: "ASSUM-a", action: "supersede", successor: "REQ-b",
+    draft: { ...REQ_N, id: "REQ-b" }, authorityRef: { kind: "user" },
+    witness: planGateFor("R-pg", "ASSUM-a", "REQ-b"),
+    compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
+  })), "E_SUCCESSOR_DRAFT_FORBIDDEN", "existing successor carrying a draft");
+  // draft with no id / a non-string id
+  for (const [id, what] of [[undefined, "no id"], [42, "a non-string id"]]) {
+    assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch({
+      subject: "ASSUM-a", action: "revise", successor: "ASSUM-b", draft: { ...ASSUM_B, id },
+    })), "E_SUCCESSOR_DRAFT_ID", `draft with ${what}`);
+  }
+});
+
+// --- Phase 1B repair 2: own-property compatibility, typed plan-gate successor, disk no-write -----
+
+test("SM §2: compatibility presence is OWN-PROPERTY — an explicit null is not absence", () => {
+  const s = withAssumption(CODE);
+  // A forbidden row that STATES compatibility: null still states it. Reading presence with a
+  // nullish test made "the key is there, holding null" indistinguishable from "no key at all".
+  const withNullCompat = (over) => {
+    const b = subjectBatch(over);
+    b.resolutions[0].transitionDraft.compatibility = null;
+    return b;
+  };
+  assertRejects(() => apply(s, "commit-test-provenance-batch", withNullCompat({
+    subject: "ASSUM-a", action: "retire", successor: null,
+  })), "E_COMPAT_FORBIDDEN", "retire carrying compatibility: null");
+
+  assertRejects(() => apply(s, "commit-test-provenance-batch", withNullCompat({
+    subject: "ASSUM-a", action: "revise", successor: "ASSUM-b", draft: ASSUM_B,
+  })), "E_COMPAT_FORBIDDEN", "revise carrying compatibility: null");
+
+  const decNull = withNullCompat({ subject: "ASSUM-a", action: "supersede", successor: "DEC-n", draft: DEC_N });
+  decNull.recordsToCreate.push(typedRuling("R-td", CODE, DP1, "technical-decision", { selectedAlternative: "A" }));
+  assertRejects(() => apply(s, "commit-test-provenance-batch", decNull),
+    "E_COMPAT_FORBIDDEN", "supersede → DEC carrying compatibility: null");
+
+  // and the required row still rejects a stated null, which is not a usable block either
+  const reqNull = withNullCompat({
+    subject: "ASSUM-a", action: "supersede", successor: "REQ-n", draft: REQ_N,
+    authorityRef: { kind: "user" }, witness: planGateFor("R-pg", "ASSUM-a", "REQ-n"),
+  });
+  assertRejects(() => apply(s, "commit-test-provenance-batch", reqNull),
+    "E_COMPAT_MISSING", "supersede → REQ stating compatibility: null");
+});
+
+test("SM §7: plan-gate.successor is a typed REQ ClauseRef, not any non-empty string", () => {
+  const s = withAssumption(CODE);
+  const gate = (successor) => ({
+    recordId: "R-pg", kind: "plan-gate", target: "ASSUM-a", successor,
+    impact: "no consumers", disposition: "no-affected-dependents", approvedBy: "user",
+  });
+  for (const [value, what] of [
+    ["not-a-clause-ref", "an arbitrary string"],
+    ["DEC-x", "a DEC ref"],
+    ["ASSUM-x", "an ASSUM ref"],
+  ]) {
+    assertRejects(() => apply(s, "append-record", { record: gate(value) }), "E_RECORD_PAYLOAD", what);
+  }
+  // §7 keeps the standalone proposal legal: a gate may name a REQ that does not exist yet, because
+  // the clause is minted by the transaction the gate authorises.
+  assert.ok(apply(s, "append-record", { record: gate("REQ-not-yet-minted") }),
+    "a REQ ref that is not in pre-state is still a valid proposal");
+  assert.ok(apply(s, "append-record", { record: gate(null) }), "an explicit null");
+});
+
+test("TP AC79 + IS AC58: the remaining Phase 1B negatives fail closed at the DISK entry point", () => {
+  const compat = { impact: "no consumers", disposition: "no-affected-dependents" };
+
+  // (a) a REQ subject may not mint a successor through the batch
+  let reqStore = withSecondRequirement(baseFixture());
+  reqStore = apply(reqStore, "adopt-existing-outcome", {
+    dpId: "DP-1", clauseRef: "REQ-a", resolutionCarrierUpdates: nulls("DP-1"),
+  });
+  // (b)-(d) successorClauseDraft existence rules, on a store where ASSUM-a is the terminal
+  const assumStore = withSecondRequirement(withAssumption(CODE));
+
+  const cases = [
+    ["REQ subject minting a successor", reqStore, "E_SUCCESSOR_DRAFT_TIER", () => subjectBatch({
+      subject: "REQ-a", action: "supersede", successor: "REQ-n", draft: REQ_N,
+      authorityRef: { kind: "user" }, witness: planGateFor("R-pg", "REQ-a", "REQ-n"), compatibility: compat,
+    })],
+    ["successor absent from pre-state with no draft", assumStore, "E_SUCCESSOR_DRAFT_MISSING", () => subjectBatch({
+      subject: "ASSUM-a", action: "revise", successor: "ASSUM-b",
+    })],
+    ["draft id disagreeing with the successor", assumStore, "E_SUCCESSOR_DRAFT_ID", () => subjectBatch({
+      subject: "ASSUM-a", action: "revise", successor: "ASSUM-b", draft: { ...ASSUM_B, id: "ASSUM-c" },
+    })],
+    ["retire carrying a draft", assumStore, "E_SUCCESSOR_DRAFT_FORBIDDEN", () => subjectBatch({
+      subject: "ASSUM-a", action: "retire", successor: null, draft: ASSUM_B,
+    })],
+    ["existing successor carrying a draft", assumStore, "E_SUCCESSOR_DRAFT_FORBIDDEN", () => subjectBatch({
+      subject: "ASSUM-a", action: "supersede", successor: "REQ-b", draft: { ...REQ_N, id: "REQ-b" },
+      authorityRef: { kind: "user" }, witness: planGateFor("R-pg", "ASSUM-a", "REQ-b"), compatibility: compat,
+    })],
+  ];
+
+  for (const [what, store, code, build] of cases) {
+    const cwd = temporary("prov-1b-disk-");
+    fs.mkdirSync(path.dirname(storePath(cwd)), { recursive: true });
+    fs.writeFileSync(storePath(cwd), canonicalStoreBytes(store), "utf8");
+    const before = fs.readFileSync(storePath(cwd), "utf8");
+    const headBefore = indexStore(store).taskStates.get("TASK-1").committedProvenanceBatchRef;
+
+    assertRejects(() => runTransaction(cwd, "commit-test-provenance-batch", build(), OPTS), code, what);
+    assert.strictEqual(fs.readFileSync(storePath(cwd), "utf8"), before, `${what}: store bytes unchanged`);
+    assert.deepStrictEqual(
+      indexStore(parseStore(fs.readFileSync(storePath(cwd), "utf8"))).taskStates.get("TASK-1").committedProvenanceBatchRef,
+      headBefore, `${what}: committed head unchanged`);
+    assert.ok(!fs.existsSync(`${storePath(cwd)}.lock`), `${what}: lock released`);
+    assert.deepStrictEqual(
+      fs.readdirSync(path.dirname(storePath(cwd))).sort(), ["provenance.json"], `${what}: no temp file`);
+  }
 });
 
 test("clauseKindOf routes ids by prefix and rejects anything else", () => {

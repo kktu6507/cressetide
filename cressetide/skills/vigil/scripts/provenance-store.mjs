@@ -335,6 +335,10 @@ export const DRIFT_MODES = ["repo-file", "snapshot-only"];
 export const DP_DIMENSIONS = ["actor", "lifecycle", "data", "money", "external", "failure", "time", "OTHER"];
 export const DP_STATUSES = ["open", "asked", "resolved", "decided", "assumed"];
 export const DP_LAYERS = ["intent", "implementation"];
+// SM §2: an ASSUM's routingOrigin is AUTHORED control state, immutable, and never inferred from
+// basisRefs (evidence) or governedBy (authority). Each value carries its own obligations, checked
+// on every load rather than once at the minting entry.
+export const ROUTING_ORIGINS = ["safe-default", "user-deferred", "reviewed-provisional"];
 export const SUPERSEDE_DISPOSITIONS = [
   "migration", "version-boundary", "deprecation-window", "coordinated-cutover",
   "no-affected-dependents", "backward-compatible", "accepted-breaking",
@@ -556,6 +560,21 @@ export function recordPayloadComplete(rec) {
     }
     case "plan-gate": {
       const base = need(["recordId", "target", "impact", "disposition", "approvedBy"]);
+      // SM §7 as amended: a clause supersede proposal NAMES its successor, and the field is TYPED
+      // and REQUIRED — an absent key is not the same statement as an explicit null, and treating it
+      // as one lets a gate that never mentioned a successor witness one.
+      if (!Object.prototype.hasOwnProperty.call(rec, "successor")) {
+        return { ok: false, reason: `plan-gate ${rec.recordId} must state successor explicitly (a clause ref, or null for a retire)` };
+      }
+      // A named successor is a typed REQ ClauseRef. §7 deliberately does NOT require it to exist
+      // yet — a standalone proposal is the pre-state witness for the transaction that mints it —
+      // but "any non-empty string" let a gate name something that is not a clause at all.
+      if (rec.successor !== null && clauseKindOf(rec.successor) !== "REQ") {
+        return {
+          ok: false,
+          reason: `plan-gate ${rec.recordId} successor must be a REQ clause ref or null, got ${JSON.stringify(rec.successor)}`,
+        };
+      }
       if (!base.ok) return base;
       // §7: the proposal is a USER approval. Presence alone would let any value stand in.
       const approver = rec.approvedBy;
@@ -831,6 +850,67 @@ function validateRefs(index) {
 // shared §2 validity table + witness binding. Every legal row has a positive path here; every
 // authority boundary rejects. Witness binding is what stops a legitimate-but-unrelated record
 // from being borrowed as authorisation.
+// SM §2 legal transitions, enumerated. Previously the successor's KIND was only consulted to pick
+// an authority requirement, so any combination the enumeration does not name — REQ supersede →
+// ASSUM, ASSUM supersede → ASSUM — fell through unchallenged. A state machine has to close its
+// edge set, not just describe the edges it expects to see.
+const LEGAL_SUCCESSOR_KINDS = {
+  "REQ:revise": null,                    // no such row
+  "REQ:supersede": ["REQ"],
+  "REQ:retire": [],                      // successor must be null
+  "DEC:revise": null,
+  "DEC:supersede": ["DEC", "REQ"],
+  "DEC:retire": [],
+  "ASSUM:revise": ["ASSUM"],
+  "ASSUM:supersede": ["DEC", "REQ"],
+  "ASSUM:retire": [],
+};
+
+function assertSuccessorKindLegal(t, subjectKind) {
+  const allowed = LEGAL_SUCCESSOR_KINDS[`${subjectKind}:${t.action}`];
+  if (allowed === undefined || allowed === null) {
+    reject("E_MATRIX_FORBIDDEN", `transition ${t.id}: ${subjectKind} ${t.action} is not a row in the matrix`, t.id);
+  }
+  const successorKind = t.successor ? clauseKindOf(t.successor) : null;
+  if (allowed.length === 0) {
+    if (successorKind !== null) {
+      reject("E_MATRIX_SUCCESSOR_KIND", `transition ${t.id}: ${subjectKind} ${t.action} takes no successor, got ${t.successor}`, t.id);
+    }
+    return;
+  }
+  if (successorKind === null) {
+    reject("E_MATRIX_SUCCESSOR_KIND", `transition ${t.id}: ${subjectKind} ${t.action} needs a successor of kind ${allowed.join(" or ")}`, t.id);
+  }
+  if (!allowed.includes(successorKind)) {
+    reject(
+      "E_MATRIX_SUCCESSOR_KIND",
+      `transition ${t.id}: ${subjectKind} ${t.action} may only land ${allowed.join(" or ")}, got ${successorKind} (${t.successor})`,
+      t.id,
+    );
+  }
+}
+
+// SM v1.11: the compatibility block exists EXACTLY when a supersede lands a REQ. Only the "missing
+// where required" half was enforced, so a retire or an ASSUM-landing supersede could carry a block
+// that nothing would ever compare.
+function assertCompatibilityPresence(t) {
+  const required = t.action === "supersede" && t.successor && clauseKindOf(t.successor) === "REQ";
+  // OWN-PROPERTY, not nullish: `compatibility: null` STATES the field, and a row forbidden to
+  // carry it must reject that statement rather than read it as absence.
+  const stated = Object.prototype.hasOwnProperty.call(t, "compatibility");
+  const usable = stated && t.compatibility !== null && typeof t.compatibility === "object";
+  if (required && !usable) {
+    reject("E_COMPAT_MISSING", `transition ${t.id}: a supersede landing a REQ needs a compatibility block`, t.id);
+  }
+  if (!required && stated) {
+    reject(
+      "E_COMPAT_FORBIDDEN",
+      `transition ${t.id}: compatibility is carried only by a supersede landing a REQ, not by ${t.action}${t.successor ? ` → ${clauseKindOf(t.successor)}` : ""}`,
+      t.id,
+    );
+  }
+}
+
 function validateTransitionMatrix(index) {
   for (const t of index.store.transitions) {
     const subject = index.clauses.get(t.subject);
@@ -838,6 +918,8 @@ function validateTransitionMatrix(index) {
     const auth = t.authorityRef;
     const ackResolved = resolveRecordRef(index, t.ackRef);
     if (!ackResolved.ok) reject("E_WITNESS_UNRESOLVABLE", `transition ${t.id} ackRef unresolvable`, t.id);
+    assertSuccessorKindLegal(t, kind);
+    assertCompatibilityPresence(t);
     const ack = ackResolved.value;
 
     if (kind === "REQ") {
@@ -936,12 +1018,26 @@ function assertUserClauseWitness(index, t, ack) {
   if (ack.target !== t.subject) {
     reject("E_WITNESS_TARGET", `transition ${t.id}: plan-gate target ${ack.target} does not name the subject ${t.subject}`, t.id);
   }
-  if (t.action === "supersede" && clauseKindOf(t.subject) === "REQ") {
-    // §7: the proposal's three fields must match the Transition's compatibility block exactly.
-    const compat = t.compatibility;
-    if (!compat || typeof compat !== "object") {
-      reject("E_COMPAT_MISSING", `transition ${t.id}: REQ supersede needs a compatibility block`, t.id);
+  if (t.action === "supersede") {
+    // §7: the gate's successor must be the one this Transition actually installs.
+    const named = ack.successor;
+    if (named !== t.successor) {
+      reject(
+        "E_WITNESS_SUCCESSOR",
+        `transition ${t.id}: the plan gate names successor ${JSON.stringify(named)} but this transition installs ${JSON.stringify(t.successor)}`,
+        t.id,
+      );
     }
+  }
+  if (t.action !== "supersede" && ack.successor !== undefined && ack.successor !== null) {
+    reject("E_WITNESS_SUCCESSOR", `transition ${t.id}: a ${t.action} gate must carry a null successor`, t.id);
+  }
+  // SM v1.11: the compatibility obligation follows the SUCCESSOR — a REQ taking effect — not the
+  // tier of whatever it replaces, so ASSUM|DEC supersede → REQ carries it too.
+  if (t.action === "supersede" && clauseKindOf(t.successor) === "REQ") {
+    // §7: the proposal's three fields must match the Transition's compatibility block exactly.
+    // presence is settled by assertCompatibilityPresence(); here we only compare its contents
+    const compat = t.compatibility;
     if (!SUPERSEDE_DISPOSITIONS.includes(compat.disposition)) {
       reject("E_ENUM", `transition ${t.id}: unknown compatibility disposition ${compat.disposition}`, t.id);
     }
@@ -1135,34 +1231,74 @@ function assertMaterialReasonsCanonical(rec, reasons) {
 
 // IS §4: basisRefs normalise to [(sourceId, digest) | RecordRef | ObservationalRef]. Anything else —
 // including a bare null — is not a basis reference.
+// SM §2 packetBasisRef: the FULL tuple. The old key stopped at the variant discriminator plus one
+// id, so two legal source refs sharing a sourceId but differing in digest were unordered and two
+// independent writers could emit them either way round — which is exactly the disagreement the
+// digest exists to detect.
+const PACKET_BASIS_SHAPES = {
+  source: ["digest", "sourceId"],
+  record: ["kind", "ref"],
+  observational: ["description", "kind"],
+};
+
+function packetBasisVariant(ref) {
+  if (!ref || typeof ref !== "object" || Array.isArray(ref)) return null;
+  if (typeof ref.sourceId === "string") return "source";
+  if (ref.kind === "observational") return "observational";
+  if (typeof ref.kind === "string" && RECORD_KINDS.includes(ref.kind)) return "record";
+  return null;
+}
+
 function basisRefSortKey(ref) {
-  if (typeof ref === "string") return ["observational", ref];
-  if (ref && typeof ref.sourceId === "string") return ["source", ref.sourceId];
-  if (ref && ref.kind === "observational") return ["observational", canonicalJson(ref)];
-  return [String(ref && ref.kind), String(ref && ref.ref)];
+  const variant = packetBasisVariant(ref);
+  if (variant === "source") return [0, ref.sourceId, ref.digest];
+  if (variant === "record") return [1, ref.kind, ref.ref];
+  return [2, ref.description];
+}
+
+function compareBasisRefs(a, b) {
+  const ka = basisRefSortKey(a);
+  const kb = basisRefSortKey(b);
+  if (ka[0] !== kb[0]) return ka[0] < kb[0] ? -1 : 1;
+  for (let i = 1; i < Math.max(ka.length, kb.length); i++) {
+    const c = compareCodePoint(ka[i] === undefined ? "" : ka[i], kb[i] === undefined ? "" : kb[i]);
+    if (c !== 0) return c;
+  }
+  return 0;
 }
 
 function assertPacketBasisRefsCanonical(rec, refs) {
+  const seen = new Set();
   for (const ref of refs) {
-    const ok = (typeof ref === "string" && ref.length > 0)
-      || (ref && typeof ref === "object" && typeof ref.sourceId === "string" && typeof ref.digest === "string")
-      || (ref && typeof ref === "object" && ref.kind === "observational")
-      || (ref && typeof ref === "object" && RECORD_KINDS.includes(ref.kind) && typeof ref.ref === "string");
-    if (!ok) {
-      reject(
-        "E_RULING_PACKET_INCOMPLETE",
-        `review-ruling ${rec.recordId}: ${JSON.stringify(ref)} is not a normalised basisRef ({sourceId,digest} | RecordRef | ObservationalRef)`,
-        rec.recordId,
-      );
+    const variant = packetBasisVariant(ref);
+    const bad = (why) => reject(
+      "E_RULING_PACKET_INCOMPLETE",
+      `review-ruling ${rec.recordId}: ${JSON.stringify(ref)} is not a normalised basisRef — ${why}`,
+      rec.recordId,
+    );
+    if (!variant) bad("it matches none of {sourceId,digest} | RecordRef | ObservationalRef");
+    // exact key set per variant: an undeclared extra key rides inside the digest otherwise
+    const keys = Object.keys(ref).sort(compareCodePoint);
+    if (canonicalJson(keys) !== canonicalJson(PACKET_BASIS_SHAPES[variant])) {
+      bad(`a ${variant} ref's key set must be exactly ${PACKET_BASIS_SHAPES[variant].join(", ")}`);
     }
+    for (const k of PACKET_BASIS_SHAPES[variant]) {
+      if (typeof ref[k] !== "string" || ref[k].length === 0) bad(`"${k}" must be a non-empty string`);
+    }
+    // duplicates are rejected BEFORE ordering, so a duplicate never masquerades as an ordering fault
+    const bytes = canonicalJson(ref);
+    if (seen.has(bytes)) {
+      reject("E_RULING_PACKET_DUPLICATE", `review-ruling ${rec.recordId}: basisRef ${bytes} appears more than once`, rec.recordId);
+    }
+    seen.add(bytes);
   }
-  const sorted = [...refs].sort((a, b) => {
-    const ka = basisRefSortKey(a);
-    const kb = basisRefSortKey(b);
-    return compareCodePoint(ka[0], kb[0]) || compareCodePoint(ka[1], kb[1]);
-  });
+  const sorted = [...refs].sort(compareBasisRefs);
   if (canonicalJson(refs) !== canonicalJson(sorted)) {
-    reject("E_RULING_PACKET_ORDER", `review-ruling ${rec.recordId}: basisRefs must be in canonical order (kind, then id/description)`, rec.recordId);
+    reject(
+      "E_RULING_PACKET_ORDER",
+      `review-ruling ${rec.recordId}: basisRefs must be in the canonical total order (variant, then every field of its tuple)`,
+      rec.recordId,
+    );
   }
 }
 
@@ -1325,6 +1461,63 @@ export function carrierConsumedRulingRefs(payload) {
     }
   }
   return refs;
+}
+
+// SM §2 routingOrigin obligations, as a loader/final-snapshot invariant.
+function validateRoutingOrigins(index) {
+  for (const c of index.store.clauses) {
+    if (clauseKindOf(c.id) !== "ASSUM") continue;
+    const origin = c.routingOrigin;
+    if (origin === undefined || origin === null) {
+      reject(
+        "E_ROUTING_ORIGIN_MISSING",
+        `ASSUM ${c.id} has no routingOrigin — it is authored control state and cannot be inferred from basisRefs or governedBy`,
+        c.id,
+      );
+    }
+    if (!ROUTING_ORIGINS.includes(origin)) {
+      reject("E_ENUM", `ASSUM ${c.id} has unknown routingOrigin ${JSON.stringify(origin)}`, c.id);
+    }
+    const dp = index.dps.get(c.derivedFrom);
+    const fail = (why) => reject("E_ROUTING_ORIGIN_OBLIGATION", `ASSUM ${c.id} (routingOrigin=${origin}): ${why}`, c.id);
+    const cites = (kind, predicate) => (c.basisRefs || []).some((r) => {
+      if (!r || typeof r !== "object" || r.kind !== kind) return false;
+      const rec = index.records.get(r.ref);
+      return !!rec && predicate(rec);
+    });
+
+    if (origin === "safe-default") {
+      // routed by LAYER, with no ruling required: intent DPs to the intent principal, everything
+      // else to code. This is the only value whose principal is a function of the DP.
+      if (dp && c.layer !== dp.layer) fail(`layer ${c.layer} disagrees with its DP's ${dp.layer}`);
+      const want = c.layer === "intent" ? "intent" : "code";
+      if (!c.governedBy || c.governedBy.kind !== "discipline" || c.governedBy.discipline !== want) {
+        fail(`a ${c.layer}-layer safe default is governed by the ${want} discipline`);
+      }
+    } else if (origin === "user-deferred") {
+      if (c.layer !== "intent") fail("it must sit at layer=intent");
+      if (!c.governedBy || c.governedBy.kind !== "discipline" || c.governedBy.discipline !== "intent") {
+        fail("it must be governed by the intent discipline");
+      }
+      if (!cites("user-answer", (rec) => rec.subjectRef === c.derivedFrom)) {
+        fail(`its basisRefs must include a user-answer bound to ${c.derivedFrom}`);
+      }
+    } else {
+      if (c.layer !== "implementation") fail("it must sit at layer=implementation");
+      // EXISTENTIAL over basisRefs: at least one ruling satisfying ALL three conditions at once.
+      // Finding the first record that matches only some of them and then testing the rest against
+      // that one record rejects a legitimate array whose matching ruling is not first.
+      const ruling = (c.basisRefs || [])
+        .map((r) => (r && typeof r === "object" && r.kind === "review-ruling" ? index.records.get(r.ref) : null))
+        .find((rec) => rec
+          && rec.rulingKind === "approved-provisional"
+          && rec.subjectRef === c.derivedFrom
+          && principalsEqual(c.governedBy, rec.by));
+      if (!ruling) {
+        fail(`its basisRefs must include an approved-provisional ruling bound to ${c.derivedFrom} and issued by its governing principal`);
+      }
+    }
+  }
 }
 
 function validateGovernanceRulings(index) {
@@ -1587,6 +1780,7 @@ export function validateAll(store, options = {}) {
   validateMergeReconciliation(index);
   validateTransitionMatrix(index);
   validateGovernanceRulings(index);
+  validateRoutingOrigins(index);
   validateInvariants(index, now);
   validateTaskStatesAndHeads(index);
   return { ok: true, index };
@@ -2320,6 +2514,7 @@ defineTransaction("commit-test-provenance-batch", (store, payload, ctx) => {
   const relatedRefs = [];
   for (const r of created) relatedRefs.push({ kind: r.kind, ref: r.recordId });
 
+  const preClauseIds = new Set(store.clauses.map((c) => c.id));
   const bySubject = new Map();
   const persistedGroups = [];
   for (const group of resolutions) {
@@ -2337,23 +2532,20 @@ defineTransaction("commit-test-provenance-batch", (store, payload, ctx) => {
     if (draftT.subject !== group.subjectRef) {
       reject("E_SUBJECT_MISMATCH", `ResolutionGroupDraft: transitionDraft.subject ${draftT.subject} does not match subjectRef ${group.subjectRef}`, group.subjectRef);
     }
-    const shape = canonicalJson({ action: draftT.action, successor: draftT.successor === undefined ? null : draftT.successor });
+    // IS v1.8 AC70: subjectRef is UNIQUE. Merging siblings here looked harmless while the payloads
+    // matched, but two groups agreeing on action and successor can still disagree on the successor
+    // clause's text, routingOrigin or basisRefs, and the writer would have had to pick one. Siblings
+    // are aggregated by the caller into ONE group carrying several semanticEvidenceRefs.
     if (bySubject.has(group.subjectRef)) {
-      if (bySubject.get(group.subjectRef).shape !== shape) {
-        reject(
-          "E_SUBJECT_CONFLICT",
-          `commit-test-provenance-batch: subject ${group.subjectRef} is asked for two different action/successor combinations — the whole batch is rejected`,
-          group.subjectRef,
-        );
-      }
-      // Siblings share the ONE transition already minted for this subject.
-      const existing = bySubject.get(group.subjectRef);
-      existing.evidence.push(...evidence);
-      existing.witnesses.push(group.governanceWitnessRef);
-      continue;
+      reject(
+        "E_SUBJECT_DUPLICATE",
+        `commit-test-provenance-batch: subject ${group.subjectRef} appears in more than one resolution group — aggregate sibling findings into a single group with several semanticEvidenceRefs`,
+        group.subjectRef,
+      );
     }
     bySubject.set(group.subjectRef, {
-      shape, transition: draftT, evidence: [...evidence], witnesses: [group.governanceWitnessRef],
+      transition: draftT, evidence: [...evidence], witnesses: [group.governanceWitnessRef],
+      draft: group.successorClauseDraft,
     });
   }
 
@@ -2376,6 +2568,58 @@ defineTransaction("commit-test-provenance-batch", (store, payload, ctx) => {
         );
       }
     }
+    // IS v1.8 successorClauseDraft. Order inside the transaction: successor clause → Transition →
+    // DP closure/carrier → batch record/TaskState head. Only the final snapshot is validated.
+    const successorId = group.transition.successor === undefined ? null : group.transition.successor;
+    const existsInPre = successorId !== null && preClauseIds.has(successorId);
+    const clauseDraft = group.draft;
+    if (clauseDraft !== undefined) {
+      if (successorId === null) {
+        reject("E_SUCCESSOR_DRAFT_FORBIDDEN", `commit-test-provenance-batch: subject ${subjectRef} retires, so it carries no successorClauseDraft`, subjectRef);
+      }
+      if (existsInPre) {
+        reject("E_SUCCESSOR_DRAFT_FORBIDDEN", `commit-test-provenance-batch: successor ${successorId} already exists in pre-state, so it is cited rather than minted`, subjectRef);
+      }
+      if (!clauseDraft || typeof clauseDraft.id !== "string") {
+        reject("E_SUCCESSOR_DRAFT_ID", `commit-test-provenance-batch: successorClauseDraft for ${subjectRef} needs an id`, subjectRef);
+      }
+      if (clauseDraft.id !== successorId) {
+        reject("E_SUCCESSOR_DRAFT_ID", `commit-test-provenance-batch: successorClauseDraft.id ${clauseDraft.id} does not equal transitionDraft.successor ${successorId}`, subjectRef);
+      }
+      const tier = clauseKindOf(clauseDraft.id);
+      // The draft's tier is governed by the SAME enumeration the Transition matrix uses, so an
+      // ASSUM draft cannot ride a supersede group and a DEC draft cannot ride a revise one.
+      const allowed = LEGAL_SUCCESSOR_KINDS[`${clauseKindOf(subjectRef)}:${group.transition.action}`];
+      if (!allowed || !allowed.includes(tier)) {
+        reject(
+          "E_MATRIX_SUCCESSOR_KIND",
+          `commit-test-provenance-batch: ${clauseKindOf(subjectRef)} ${group.transition.action} may not mint a ${tier} successor`,
+          subjectRef,
+        );
+      }
+      if (tier === "REQ") {
+        // rule 6: only ASSUM|DEC supersede → REQ, under user authority with a complete plan gate,
+        // and only the two tiers a plan gate can authorise.
+        const subjectTier = clauseKindOf(subjectRef);
+        if (group.transition.action !== "supersede" || (subjectTier !== "ASSUM" && subjectTier !== "DEC")) {
+          reject("E_SUCCESSOR_DRAFT_TIER", `commit-test-provenance-batch: a REQ successor is only minted for an ASSUM|DEC supersede, got ${subjectTier} ${group.transition.action}`, subjectRef);
+        }
+        if (!["approved-requirement", "compatibility"].includes(clauseDraft.authority)) {
+          reject("E_SUCCESSOR_DRAFT_TIER", `commit-test-provenance-batch: a batch-minted REQ must be approved-requirement or compatibility, got ${JSON.stringify(clauseDraft.authority)}`, subjectRef);
+        }
+        if (!group.transition.authorityRef || group.transition.authorityRef.kind !== "user") {
+          reject("E_SUCCESSOR_DRAFT_TIER", `commit-test-provenance-batch: minting REQ ${clauseDraft.id} needs user authority`, subjectRef);
+        }
+      }
+      draft.clauses.push(clauseDraft);
+    } else if (successorId !== null && !existsInPre) {
+      reject(
+        "E_SUCCESSOR_DRAFT_MISSING",
+        `commit-test-provenance-batch: successor ${successorId} is not in pre-state and no successorClauseDraft was supplied — a two-transaction split would expose intermediate state`,
+        subjectRef,
+      );
+    }
+
     draft.transitions.push(group.transition);
     relatedRefs.push({ kind: "transition", ref: group.transition.id });
     applyDependentClosure(draft, subjectRef, group.transition.successor || null, {
