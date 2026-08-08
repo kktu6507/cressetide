@@ -1,6 +1,6 @@
 # Shared Decision & Provenance Model（共同決策與溯源模型）
 
-- 狀態：**draft v1.12 — 修訂待 panel**（前一放行版本：approved v1.11）。v1.12 一處：§2 DP 新增 **`reopenCauseRef`**（TransitionRef | null）作為 reopen 成因的 **persisted causal witness**，並在 §9 新增 `Reopen cause coherence` 一列。下游 IS v1.7 曾以 `status=open ∧ prior 有 effective Transition ∧ successor != null` 從 snapshot **反推**來源 2 的成因；該推斷不成立，且擋掉兩條合法收斂（明示 `reopen-dp` 後 prior 日後才被 supersede；兩個 DP 對同一 prior deferred reopen）。成因是歷史事實，只能讀持久化 witness，不得由 current graph 形狀反推。v1.11 內容不變：實作以本文為準；變更需重新過 panel。v1.11 關閉兩個**型別缺口** —— 下游已被要求驗證的東西，上游 schema 卻無法表示（下游不得自行補欄位，故一律回上游）：(1) `Transition.compatibility` 原限定 `僅 subject=REQ ∧ action=supersede`，但 matrix 早已允許 `ASSUM|DEC supersede → REQ` 走 kind=user，該路徑的 impact／disposition **無處存放**；適用條件改綁 **successor**（`action=supersede ∧ successor 為 REQ`），相容性義務來自「一條 REQ 開始生效」而非「被取代的是不是 REQ」。(2) plan-gate payload 無 `successor`，故一筆核准「取代 ASSUM-x」的 record 可授權換成**任何** REQ；新增 typed `successor: ClauseRef | null` 並定義必填條件，§7 proposal 的 target 放寬為 clause ref、新增具名 successor，witness binding 與 §9 機械比對由三欄擴為**四欄**。v1.10 一處：§9 檢查分層新增 **`Carrier coherence`** 一列 —— v1.9 把 carrier 宣告為 loader／final-snapshot invariant，但 §9 的 `DP 完整性` 只驗 terminal／status／successor，該 invariant 從未進入正式 gate contract，繞過交易入口構造的不一致狀態不會被擋。v1.9 修 v1.8 草案自身的三個缺口：carrier 與 `status` 的關係改寫為精確蘊含（「同生同滅」是錯的 —— row 1 direct citation 允許 `resolvedBy` 非空而 carrier 為 null）；`unrelated re-adopt` 收窄為 **binding-policy 驅動**，direct citation 改為清除並保持 null；`packetBasisRef` 補上完整 **total-order tuple**（原本無 `digest` tie-break，同 `sourceId` 不同 `digest` 的兩筆無法定序）。v1.8 變更四處，皆為下游實作暴露的 carrier／契約缺口：§2 `ASSUM` 新增三值 `routingOrigin`（authored、immutable，附 loader-level 全生命週期 invariant）；§2 `DP` 新增 `resolutionRulingRef` **current application carrier**（取代對歷史 binding-policy ruling 的全稱量化 —— 那條規則會永久凍結 `resolvedBy` 並牴觸「歷史 ruling 只驗 snapshot 自洽」）；§2 補上 `ObservationalRef` 與 Governance Packet `basisRefs` 的 **exact discriminated union**；§4 `materialReasons` 補 closed member set 並宣告本文為定序的**唯一** authoritative 定義。草案審閱期間，本版新增契約不得由下游實作；該限制已隨 v1.11 核准解除。
+- 狀態：**draft v1.12 — 修訂待 panel**（前一放行版本：approved v1.11）。v1.12 一處：§2 DP 新增 **`reopenCauseRef`**（TransitionRef | null）作為 reopen 成因的 **persisted causal witness**，並在 §9 新增 `Reopen cause coherence` 一列；同時於 typed refs 區正式定義可重用的 **TransitionRef** exact shape，並寫明 **legacy absence 的 upgrade boundary**（採 normalize-absent-to-null，附「不存在 durable pre-v1.12 source-2 state」的證據與適用範圍）。下游 IS v1.7 曾以 `status=open ∧ prior 有 effective Transition ∧ successor != null` 從 snapshot **反推**來源 2 的成因；該推斷不成立，且擋掉兩條合法收斂（明示 `reopen-dp` 後 prior 日後才被 supersede；兩個 DP 對同一 prior deferred reopen）。成因是歷史事實，只能讀持久化 witness，不得由 current graph 形狀反推。v1.11 內容不變：實作以本文為準；變更需重新過 panel。v1.11 關閉兩個**型別缺口** —— 下游已被要求驗證的東西，上游 schema 卻無法表示（下游不得自行補欄位，故一律回上游）：(1) `Transition.compatibility` 原限定 `僅 subject=REQ ∧ action=supersede`，但 matrix 早已允許 `ASSUM|DEC supersede → REQ` 走 kind=user，該路徑的 impact／disposition **無處存放**；適用條件改綁 **successor**（`action=supersede ∧ successor 為 REQ`），相容性義務來自「一條 REQ 開始生效」而非「被取代的是不是 REQ」。(2) plan-gate payload 無 `successor`，故一筆核准「取代 ASSUM-x」的 record 可授權換成**任何** REQ；新增 typed `successor: ClauseRef | null` 並定義必填條件，§7 proposal 的 target 放寬為 clause ref、新增具名 successor，witness binding 與 §9 機械比對由三欄擴為**四欄**。v1.10 一處：§9 檢查分層新增 **`Carrier coherence`** 一列 —— v1.9 把 carrier 宣告為 loader／final-snapshot invariant，但 §9 的 `DP 完整性` 只驗 terminal／status／successor，該 invariant 從未進入正式 gate contract，繞過交易入口構造的不一致狀態不會被擋。v1.9 修 v1.8 草案自身的三個缺口：carrier 與 `status` 的關係改寫為精確蘊含（「同生同滅」是錯的 —— row 1 direct citation 允許 `resolvedBy` 非空而 carrier 為 null）；`unrelated re-adopt` 收窄為 **binding-policy 驅動**，direct citation 改為清除並保持 null；`packetBasisRef` 補上完整 **total-order tuple**（原本無 `digest` tie-break，同 `sourceId` 不同 `digest` 的兩筆無法定序）。v1.8 變更四處，皆為下游實作暴露的 carrier／契約缺口：§2 `ASSUM` 新增三值 `routingOrigin`（authored、immutable，附 loader-level 全生命週期 invariant）；§2 `DP` 新增 `resolutionRulingRef` **current application carrier**（取代對歷史 binding-policy ruling 的全稱量化 —— 那條規則會永久凍結 `resolvedBy` 並牴觸「歷史 ruling 只驗 snapshot 自洽」）；§2 補上 `ObservationalRef` 與 Governance Packet `basisRefs` 的 **exact discriminated union**；§4 `materialReasons` 補 closed member set 並宣告本文為定序的**唯一** authoritative 定義。草案審閱期間，本版新增契約不得由下游實作；該限制已隨 v1.11 核准解除。
 - 前一版狀態：**approved v1.7**（2026-07-26 panel 放行；前一放行版本 approved v1.6）。v1.7 變更：§9 gate scope 改為具名 closed set（含 body／oracle 變更）＋ `lifecycleAffectedClauses` 反向閉包；綁定拆 **pre-change／post-change 兩相**；§9 新增 **base provenance witness**（inline、storePath 固定、immutable）；§2 新增 **TaskState**（tracked canonical task membership 與 committed head）與 `provenance-batch` RecordRef kind（canonical `batchDigest` total order、derived `relatedRefs`、chain 連結約束、committed head 三分）；review-ruling／plan-gate 新增 `resolutionGroupDigest` 作為 witness coverage 的 carrier。本文件為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念，可附加實作欄位但不得改變本文欄位語義。
 - 日期：2026-07-25
 - 範圍：只定義模型 —— 物件、權威、分流、狀態、不變量。scan 觸發與流程、檢查器實作、reviewer prompt 調整、hook 接線屬於下游 spec。
@@ -293,6 +293,19 @@ relatedRefs ＝ 本交易 recordsToCreate 的全部 ref
 依 (kind, ref) 排序並去重；與上述集合不符 → fail-closed
 ```
 
+- **TransitionRef（exact shape，v1.12）**：指向本 store 內一筆 **immutable Transition** 的 typed ref。`reopenCauseRef` 與**所有後續 consumer** 一律引用本定義，**不得各自重述**：
+
+```
+TransitionRef ＝ { kind: "transition", ref: <Transition id> }
+
+規則（全部 fail-closed）：
+  kind 必須**精確**為 "transition"（其他 kind 即使 id 存在也不解析）
+  ref 必須是**非空**字串，且是 store-local 的合法 Transition id
+  **不允許 undeclared keys**（key set 必須恰為 {kind, ref}）
+  必須解析到一筆**存在且 immutable** 的 Transition
+  malformed／wrong kind／dangling → 各自 fail-closed
+```
+
 - **ObservationalRef（exact shape，v1.8）**：對觀察性證據（code path、caller、資料現況）的描述性指標 —— **明文不解析**，disclosure-only；不屬 RecordRef，不參與機械 resolution。先前只有這句散文而無 schema，下游因此無從驗證其形狀：
 
 ```
@@ -396,7 +409,7 @@ classificationBasis: 為何此決定屬產品／工程權限（必填）
 materialReasons[]:   safeToAssume 失敗 conjunct 的衍生清單
 discoveredAt:        plan-scan | test-time | review（純遙測，不參與路由）
 reopenedBy:          reopen trigger（§8 closed list；重入時必填）
-reopenCauseRef:      TransitionRef ＝ { kind: "transition", ref: <transition id> } | null
+reopenCauseRef:      **TransitionRef**（exact shape 見上 typed refs 區）| null
                      ← **persisted causal witness**（v1.12 新增）。只在「本次 dependent
                        closure 因 successor 對本 DP 不 applicable 而 reopen」時由 writer
                        設定，指向造成該 reopen 的 Transition；其餘一切 reopen 成因為 null。
@@ -486,7 +499,36 @@ ref 可解析為 Transition T
 
 **`reopenCauseRef == null` 的 DP 一律不被歸類為該情形**，且**不因 prior clause 日後取得 Transition 而被重新分類** —— 這正是上述兩個反例得以合法的原因。
 
-本節定義 carrier 的**語義**；承載它的**命令面**在 IS §8「carrier 更新契約」（逐 DP 的 `resolutionCarrierUpdates[]`），**執行它的檢查**在 §9 檢查分層的 `Carrier coherence` 一列。三者缺一即失效：缺命令面則 preserve／replace／clear 無交易可執行；缺 §9 一列則上式只是散文，繞過交易入口直接構造的不一致狀態不會被擋。
+**Ownership** —— `reopenCauseRef` 是 **writer-owned** 的 persisted causal witness，與 `resolutionRulingRef` 的 caller-declared 模型**不同**，兩者不共用命令面：
+
+```
+caller **不得**提供、覆寫，或以任何未宣告欄位影響 reopenCauseRef。
+它沒有對應的 caller-facing action 詞彙（沒有 preserve／replace／clear 宣告），
+writer 依 §2 lifecycle 自行設定、清除或替換；
+loader／gate 由 §9 的 **Reopen cause coherence** 一列驗證 —— **不是** Carrier coherence，
+後者只管 resolutionRulingRef。
+```
+
+**Legacy absence 與 upgrade boundary（v1.12）** —— 新增 persisted 欄位必須定義舊 snapshot 缺欄位時的行為，否則三種狀態會被壓成同一種：合法的非 source-2 reopen、舊實作產生但無 witness 的 source-2 reopen、以及新 writer 漏寫欄位的實作錯誤。本模型採 **normalize-absent-to-null**，並附證據：
+
+```
+主張    不存在任何 durable pre-v1.12 source-2 state。
+證據    (1) 能產生該狀態的唯一程式路徑是 clear 來源 2，首次實作於 cressetide
+            commit 6c743e7；
+        (2) 該 commit 與其整條開發線**從未 push／釋出**，因此沒有任何 consumer
+            能執行到它；
+        (3) 本 repo 內不存在任何 tracked 或 on-disk 的 `.ctide/provenance.json`；
+        (4) 規格在 v1.7 核准前明文禁止實作來源 2，核准與實作皆發生於同一日且未釋出。
+適用範圍 僅限上述證據成立的情形。若日後有任何已釋出 writer 曾產生 source-2 state，
+        本正規化即不適用，必須改走 migration／store-version 路徑：ambiguous open DP
+        **不得**由 current graph 回填成因（那正是本版在修的錯誤），必須 fail-closed
+        並重新 routing／固化，之後才轉為顯式 null 或有效 TransitionRef。
+規則    pre-v1.12 snapshot 缺欄位 → 正規化為 null；
+        **所有 v1.12 writer 一律顯式寫入 null 或 TransitionRef**，
+        因此「缺欄位」在 v1.12 之後即為實作錯誤，而非 legacy。
+```
+
+`resolutionRulingRef`（**與本節無關的另一個 carrier**）的語義定義於上一節；承載它的**命令面**在 IS §8「carrier 更新契約」（逐 DP 的 `resolutionCarrierUpdates[]`），**執行它的檢查**在 §9 的 `Carrier coherence` 一列。三者缺一即失效：缺命令面則 preserve／replace／clear 無交易可執行；缺 §9 一列則該式只是散文，繞過交易入口直接構造的不一致狀態不會被擋。
 
 ## 3. layer 判準（decision authority）
 
