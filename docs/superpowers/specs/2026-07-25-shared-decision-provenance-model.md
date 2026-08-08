@@ -530,7 +530,8 @@ loader／gate 由 §9 的 **Reopen cause coherence** 一列驗證 —— **不�
 ```
 provenanceVersion: 1   （legacy）
   DP 缺 reopenCauseRef → 由 **migration** 補為 explicit null，不得由 current graph 回填成因
-  migration 之外的任何路徑不得讀寫 version 1 store
+  **current mutable** version 1 store：除 migration 外不得 operational read／write
+  （**不含** historical immutable base-tree v1 —— 那由 checker read-only 讀取，見下三分表與 §9）
 
 provenanceVersion: 2   （current）
   **每個 DP 必須顯式含有 reopenCauseRef: null | TransitionRef**
