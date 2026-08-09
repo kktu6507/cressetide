@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "authorization": {
+    "status": "selection-authorized-artifacts-not-vendored",
+    "approvedOn": "2026-08-09",
+    "decisionRecord": "docs/adr/2026-08-09-vigil-vendored-parser-ignore-capability.md",
+    "carrierRole": "dependency-authorization-packet-only-not-registry",
+    "inseparableCapabilities": [
+      "ast-parser",
+      "gitignore-matching"
+    ],
+    "runtimeInstall": false,
+    "runtimeNetwork": false
+  },
+  "implementationIdentity": {
+    "implementationId": "node-test-v1",
+    "parserId": "acorn",
+    "parserVersion": "8.18.0"
+  },
+  "ignoreEngineIdentity": {
+    "engineId": "ignore",
+    "engineVersion": "7.0.6"
+  },
+  "packages": [
+    {
+      "name": "acorn",
+      "version": "8.18.0",
+      "tarball": "https://registry.npmjs.org/acorn/-/acorn-8.18.0.tgz",
+      "integrity": "sha512-lGq+9yr1/GuAWaVYIHRjvvySG5/4VfKIvC8EWxStPdcDh/Ka7FG3twP6v4d5BkravUilhIAsG4Qj83t02LWUPQ==",
+      "license": "MIT",
+      "runtimeDependencies": 0,
+      "members": [
+        {
+          "source": "package/dist/acorn.mjs",
+          "target": "cressetide/skills/vigil/vendor/acorn-8.18.0.mjs",
+          "state": "authorized-not-vendored",
+          "bytes": 233301,
+          "sha256": "953573b8fdab71599749ea5f2b33d3e760c2116178f9423ee7458dbe39d59453"
+        },
+        {
+          "source": "package/LICENSE",
+          "target": "cressetide/skills/vigil/vendor/licenses/acorn-MIT.txt",
+          "state": "authorized-not-vendored",
+          "bytes": 1099,
+          "sha256": "76a876cf886ff9be2a8b5e2e86514fed06223c8c9f0c1e9ee9606e93841e00b7"
+        }
+      ]
+    },
+    {
+      "name": "ignore",
+      "version": "7.0.6",
+      "tarball": "https://registry.npmjs.org/ignore/-/ignore-7.0.6.tgz",
+      "integrity": "sha512-BAg6QkE8W+TuQLrrw0Ugr7HegXduRuuj8/ti2kSOc+jz1dmx8/WNcjr6XGnq5YpDWxFwwaavqD0+jIUOKelTsw==",
+      "license": "MIT",
+      "runtimeDependencies": 0,
+      "members": [
+        {
+          "source": "package/index.js",
+          "target": "cressetide/skills/vigil/vendor/ignore-7.0.6.js",
+          "state": "authorized-not-vendored",
+          "bytes": 19981,
+          "sha256": "3d580a0188919a58035ca2700216bca7d143a1cae40bf8ef71237ca2396ef5a6"
+        },
+        {
+          "source": "package/LICENSE-MIT",
+          "target": "cressetide/skills/vigil/vendor/licenses/ignore-MIT.txt",
+          "state": "authorized-not-vendored",
+          "bytes": 1095,
+          "sha256": "9c94db23dc4b1e9aaee5d195668b916afc71efed54af226b66cf0ccc4389c1c0"
+        }
+      ]
+    }
+  ],
+  "resourcePolicy": {
+    "preDispatch": {
+      "maxNormalizedSourceBytes": 524288,
+      "maxGitignoreFileBytes": 65536,
+      "maxGitignoreTotalBytes": 262144,
+      "maxGitignoreFiles": 256,
+      "maxGitignorePatterns": 4096,
+      "maxGitignorePatternBytes": 1024,
+      "maxIgnoreLayerDepth": 64,
+      "maxSnapshotEntries": 50000
+    },
+    "postParse": {
+      "maxAstNodes": 100000
+    },
+    "worker": {
+      "module": "node:worker_threads",
+      "concurrency": 1,
+      "maxOldGenerationSizeMb": 256,
+      "maxYoungGenerationSizeMb": 64,
+      "stackSizeMb": 4,
+      "parserWallTimeoutMsPerSource": 3000,
+      "ignoreWallTimeoutMsPerSnapshot": 5000,
+      "directFilesystemAccess": false,
+      "networkAccess": false
+    },
+    "failureMode": "fail-closed-no-partial-artifact"
+  },
+  "wrapperContract": {
+    "acorn": {
+      "sourceType": "module",
+      "rangeAuthority": "normalized UTF-8 bytes via explicit code-unit-to-byte mapping",
+      "unsupported": [
+        "commonjs-require",
+        "computed-member",
+        "dynamic-import",
+        "re-export",
+        "syntax-error"
+      ]
+    },
+    "ignore": {
+      "ignorecase": false,
+      "allowRelativePaths": false,
+      "authority": "S1 tracked .gitignore bytes and canonical repo-relative POSIX candidate paths only"
+    }
+  }
+}
