@@ -3,13 +3,13 @@
 - **Status**: accepted
 - **Date**: 2026-08-09
 - **Scope**: dependency selection and resource policy only
-- **Authority**: narrative rationale only; `cressetide/skills/vigil/vendor/vendor-manifest.json` is the sole canonical machine-readable authority for exact identities, members, hashes, wrapper settings, and resource limits
+- **Authority split**: this ADR is the human governance record for the approved selection, scope, and rationale; `cressetide/skills/vigil/vendor/vendor-manifest.json` is the sole canonical machine-readable operational authority for exact identities, members, hashes, wrapper settings, and resource limits
 
 ## Context
 
 Approved `test-provenance` v1.6 requires AST parsing and Git-compatible ignore matching to be authorized together before a populated changed-test inventory can be implemented. The repository has no runtime dependencies or lockfile. The release archive contains tracked files under `cressetide/**`, while distribution validation rejects `cressetide/package.json` and `cressetide/node_modules`; therefore an ordinary npm runtime dependency would not be present in the installed plugin.
 
-This ADR explains the choice but does not supply operational values to runtime code. Implementations and verification tools must consume only the shipped manifest for exact values. If this narrative and the manifest appear to disagree, the packet is invalid pending an intentional update and review; neither side may silently merge values from both files.
+This ADR records why the capability set and its boundaries were approved; it is not an input to runtime code or verification tools. Implementations and verification tools must consume only the shipped manifest for exact operational values. If this ADR and the manifest disagree, the authorization packet is internally inconsistent and must be reviewed before further vendoring or implementation; runtime code and verification tools must not parse this ADR or merge values from both files.
 
 A non-shipping proof on 2026-08-09 verified `acorn@8.18.0` and `ignore@7.0.6`, including exact tarball integrity, selected-member hashes, MIT license files, normalized UTF-8 byte-range mapping, fail-closed AST profile checks, case-sensitive Git-ignore behavior, nested ignore roots, negation, directory handling, and symlink handling.
 
@@ -17,7 +17,7 @@ Resource measurements on Windows x64 with Node v24.16.0 found a current tracked-
 
 ## Decision
 
-1. Authorize the dependency identities as one inseparable capability set: parser identity `{ implementationId: "node-test-v1", parserId: "acorn", parserVersion: "8.18.0" }` and ignore-engine identity `{ engineId: "ignore", engineVersion: "7.0.6" }`. In this ADR and its manifest, that tuple is an authorization-packet selection only; it is not the formal adapter-registry carrier and does not replace `test-adapters.json`.
+1. The approved dependency identities are one inseparable capability set, recorded machine-readably in the manifest: parser identity `{ implementationId: "node-test-v1", parserId: "acorn", parserVersion: "8.18.0" }` and ignore-engine identity `{ engineId: "ignore", engineVersion: "7.0.6" }`. This ADR records the governance decision and rationale for that selection. The tuple is an authorization-packet selection only; it is not the formal adapter-registry carrier and does not replace `test-adapters.json`.
 2. The only authorized acquisition form is the exact tracked vendored members and license files listed in `cressetide/skills/vigil/vendor/vendor-manifest.json`. Runtime package installation, package-manager resolution, network access, unpinned versions, alternate package members, and transitive dependencies remain unauthorized.
 3. This ADR and the manifest authorize only the exact selection, the allowed future vendoring shape, and the required resource policy. They do not themselves authorize copying third-party bytes, writing `test-adapters.json`, implementing the populated producer/consumer path, removing `unsupported-populated-inventory`, migrating records, publishing, or pushing.
 4. Acorn offsets are never byte offsets by authority: the wrapper must normalize BOM/line endings first and explicitly map Acorn code-unit ranges to normalized UTF-8 byte ranges.
