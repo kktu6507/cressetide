@@ -4,12 +4,16 @@
 // declarations, classify node:test or node:assert bindings, analyse scope, read attachment tags,
 // compute stableId/structuralId/oracle closures, select adapters, enumerate a worktree, or produce
 // any inventory. Those remain unimplemented, and nothing here should be read as claiming the
-// parser component, a populated inventory, or Phase 2 is ready.
+// parser component, AC136, a populated inventory, or Phase 2 is ready.
 //
-// AUTHORITY: cressetide/skills/vigil/vendor/vendor-manifest.json is the single machine-readable
-// source for identities, member targets, hashes, wrapper settings and resource limits. This file
-// reads every one of those from the manifest and restates none of them; the ADR and the approved
-// specs are human governance records and are never parsed here.
+// AUTHORITY: the vendor manifest beside this file is the single machine-readable source for
+// identities, member targets, hashes, wrapper settings and resource limits. This file reads every
+// one of those from the manifest and restates none of them; the ADR and the approved specs are
+// human governance records and are never parsed here.
+//
+// The public API takes no overrides. There is no way for a caller to substitute a manifest, a
+// worker entry, an execArgv set, a timeout or a capability object: the shipped manifest and the
+// production worker are the only things these functions will ever run.
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -30,7 +34,20 @@ const fail = (code, message, detail) => new ParserIgnoreWrapperError(code, messa
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const VENDOR_DIR = path.resolve(HERE, "..", "vendor");
+const REPO_ROOT = path.resolve(VENDOR_DIR, "..", "..", "..", "..");
 const MANIFEST_PATH = path.join(VENDOR_DIR, "vendor-manifest.json");
+
+// Values this build knows how to honour. A manifest that asks for anything else is a manifest this
+// implementation cannot serve, which is a fail-closed condition rather than a setting to ignore.
+// These are capability names, not resource numbers: every limit still comes from the manifest.
+const SUPPORTED = {
+  sourceType: "module",
+  rangeAuthority: "normalized UTF-8 bytes via explicit code-unit-to-byte mapping",
+  workerModule: "node:worker_threads",
+  failureMode: "fail-closed-no-partial-artifact",
+  ignorecase: false,
+  allowRelativePaths: false,
+};
 
 // --- manifest loading ------------------------------------------------------------------------------
 
@@ -46,6 +63,9 @@ function requireInteger(value, code, what) {
   if (!Number.isSafeInteger(value) || value <= 0) throw fail(code, `${what} must be a positive integer`);
   return value;
 }
+function requireExactly(actual, expected, code, what) {
+  if (actual !== expected) throw fail(code, `${what} is ${JSON.stringify(actual)}; this build only implements ${JSON.stringify(expected)}`);
+}
 
 // A member target must resolve inside the shipped vendor directory. Absolute paths, backslashes,
 // drive prefixes and any traversal are rejected before the path is used, not after.
@@ -54,16 +74,12 @@ function resolveMemberTarget(target) {
   if (target.includes("\\")) throw fail("E_MEMBER_PATH", `member target must use POSIX separators: ${target}`);
   if (path.posix.isAbsolute(target) || /^[A-Za-z]:/.test(target)) throw fail("E_MEMBER_PATH", `member target must be repository-relative: ${target}`);
   if (path.posix.normalize(target) !== target) throw fail("E_MEMBER_PATH", `member target must already be canonical: ${target}`);
-  const absolute = path.resolve(VENDOR_DIR, path.posix.basename(target) === target ? target : target.split("/").slice(-999).join(path.sep));
-  // Resolve through the repository root so the declared path -- not just its basename -- is checked.
-  const repoRoot = path.resolve(VENDOR_DIR, "..", "..", "..", "..");
-  const viaRepo = path.resolve(repoRoot, target);
-  const relative = path.relative(VENDOR_DIR, viaRepo);
+  const absolute = path.resolve(REPO_ROOT, target);
+  const relative = path.relative(VENDOR_DIR, absolute);
   if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
     throw fail("E_MEMBER_PATH", `member target escapes the vendor directory: ${target}`);
   }
-  void absolute;
-  return viaRepo;
+  return absolute;
 }
 
 function verifyMember(member) {
@@ -90,7 +106,7 @@ function verifyMember(member) {
   if (digest !== member.sha256) {
     throw fail("E_MEMBER_DIGEST", `vendored member ${member.target} hashes to ${digest}; the manifest authorizes ${member.sha256}`);
   }
-  return { ...member, absolute, bytes };
+  return { target: member.target, bytes };
 }
 
 // The runtime member is chosen by extension, not by array position: taking members[0] would make
@@ -111,14 +127,21 @@ function findPackage(manifest, name, version, code) {
   return matches[0];
 }
 
-let cachedVendor = null;
+// Everything the caller can reach is frozen all the way down, and every value is copied out of the
+// parsed manifest rather than aliased into it. A caller that empties `unsupported` or rewrites a
+// limit changes nothing, because there is no shared mutable object to change.
+function deepFreeze(value) {
+  if (value === null || typeof value !== "object") return value;
+  for (const key of Object.keys(value)) deepFreeze(value[key]);
+  return Object.freeze(value);
+}
 
-export function loadVendorCapability({ manifestPath = MANIFEST_PATH, cache = true } = {}) {
-  if (cache && cachedVendor !== null) return cachedVendor;
+let cachedCapability = null;
 
+function buildCapability() {
   let raw;
-  try { raw = fs.readFileSync(manifestPath, "utf8"); } catch {
-    throw fail("E_MANIFEST_UNREADABLE", `the shipped vendor manifest is unreadable: ${manifestPath}`);
+  try { raw = fs.readFileSync(MANIFEST_PATH, "utf8"); } catch {
+    throw fail("E_MANIFEST_UNREADABLE", `the shipped vendor manifest is unreadable: ${MANIFEST_PATH}`);
   }
   let manifest;
   try { manifest = JSON.parse(raw); } catch (e) {
@@ -141,7 +164,8 @@ export function loadVendorCapability({ manifestPath = MANIFEST_PATH, cache = tru
 
   const parserIdentity = requireObject(manifest.implementationIdentity, "E_MANIFEST_SHAPE", "manifest.implementationIdentity");
   const ignoreIdentity = requireObject(manifest.ignoreEngineIdentity, "E_MANIFEST_SHAPE", "manifest.ignoreEngineIdentity");
-  requireString(parserIdentity.implementationId, "E_MANIFEST_SHAPE", "implementationId");
+  for (const key of ["implementationId", "parserId", "parserVersion"]) requireString(parserIdentity[key], "E_MANIFEST_SHAPE", `implementationIdentity.${key}`);
+  for (const key of ["engineId", "engineVersion"]) requireString(ignoreIdentity[key], "E_MANIFEST_SHAPE", `ignoreEngineIdentity.${key}`);
 
   const policy = requireObject(manifest.resourcePolicy, "E_MANIFEST_SHAPE", "manifest.resourcePolicy");
   const preDispatch = requireObject(policy.preDispatch, "E_MANIFEST_SHAPE", "resourcePolicy.preDispatch");
@@ -151,9 +175,8 @@ export function loadVendorCapability({ manifestPath = MANIFEST_PATH, cache = tru
   const acornContract = requireObject(contract.acorn, "E_MANIFEST_SHAPE", "wrapperContract.acorn");
   const ignoreContract = requireObject(contract.ignore, "E_MANIFEST_SHAPE", "wrapperContract.ignore");
 
-  for (const key of ["maxNormalizedSourceBytes", "maxGitignoreFileBytes", "maxGitignoreTotalBytes", "maxGitignoreFiles", "maxGitignorePatterns", "maxGitignorePatternBytes", "maxIgnoreLayerDepth", "maxSnapshotEntries"]) {
-    requireInteger(preDispatch[key], "E_MANIFEST_SHAPE", `resourcePolicy.preDispatch.${key}`);
-  }
+  const PRE_DISPATCH_KEYS = ["maxNormalizedSourceBytes", "maxGitignoreFileBytes", "maxGitignoreTotalBytes", "maxGitignoreFiles", "maxGitignorePatterns", "maxGitignorePatternBytes", "maxIgnoreLayerDepth", "maxSnapshotEntries"];
+  for (const key of PRE_DISPATCH_KEYS) requireInteger(preDispatch[key], "E_MANIFEST_SHAPE", `resourcePolicy.preDispatch.${key}`);
   requireInteger(postParse.maxAstNodes, "E_MANIFEST_SHAPE", "resourcePolicy.postParse.maxAstNodes");
   for (const key of ["maxOldGenerationSizeMb", "maxYoungGenerationSizeMb", "stackSizeMb", "parserWallTimeoutMsPerSource", "ignoreWallTimeoutMsPerSnapshot"]) {
     requireInteger(worker[key], "E_MANIFEST_SHAPE", `resourcePolicy.worker.${key}`);
@@ -162,15 +185,19 @@ export function loadVendorCapability({ manifestPath = MANIFEST_PATH, cache = tru
   if (worker.directFilesystemAccess !== false || worker.networkAccess !== false) {
     throw fail("E_MANIFEST_SHAPE", "the manifest must forbid worker filesystem and network access");
   }
-  if (acornContract.sourceType !== "module") {
-    throw fail("E_MANIFEST_UNSUPPORTED", `wrapperContract.acorn.sourceType is ${JSON.stringify(acornContract.sourceType)}; this build only implements "module"`);
-  }
+
+  // Implementation-support checks: this build serves exactly one shape of each of these.
+  requireExactly(worker.module, SUPPORTED.workerModule, "E_MANIFEST_UNSUPPORTED", "resourcePolicy.worker.module");
+  requireExactly(policy.failureMode, SUPPORTED.failureMode, "E_MANIFEST_UNSUPPORTED", "resourcePolicy.failureMode");
+  requireExactly(acornContract.sourceType, SUPPORTED.sourceType, "E_MANIFEST_UNSUPPORTED", "wrapperContract.acorn.sourceType");
+  requireExactly(acornContract.rangeAuthority, SUPPORTED.rangeAuthority, "E_MANIFEST_UNSUPPORTED", "wrapperContract.acorn.rangeAuthority");
+  requireExactly(ignoreContract.ignorecase, SUPPORTED.ignorecase, "E_MANIFEST_UNSUPPORTED", "wrapperContract.ignore.ignorecase");
+  requireExactly(ignoreContract.allowRelativePaths, SUPPORTED.allowRelativePaths, "E_MANIFEST_UNSUPPORTED", "wrapperContract.ignore.allowRelativePaths");
+
   if (!Array.isArray(acornContract.unsupported) || acornContract.unsupported.length === 0) {
     throw fail("E_MANIFEST_SHAPE", "wrapperContract.acorn.unsupported must be a non-empty array");
   }
-  if (typeof ignoreContract.ignorecase !== "boolean" || typeof ignoreContract.allowRelativePaths !== "boolean") {
-    throw fail("E_MANIFEST_SHAPE", "wrapperContract.ignore must declare boolean ignorecase and allowRelativePaths");
-  }
+  for (const kind of acornContract.unsupported) requireString(kind, "E_MANIFEST_SHAPE", "wrapperContract.acorn.unsupported[]");
 
   // Every declared member is verified, not just the two that get executed: a tampered LICENSE is
   // still a tampered authorization packet, and loading half a capability is not a state this
@@ -188,13 +215,16 @@ export function loadVendorCapability({ manifestPath = MANIFEST_PATH, cache = tru
   const parserMember = selectRuntimeMember(parserPkg, verifiedByPackage.get(parserPkg));
   const ignoreMember = selectRuntimeMember(ignorePkg, verifiedByPackage.get(ignorePkg));
 
-  const capability = {
-    manifestPath,
-    identities: { parser: parserIdentity, ignore: ignoreIdentity },
-    limits: {
-      preDispatch: { ...preDispatch },
-      maxAstNodes: postParse.maxAstNodes,
+  const preDispatchCopy = {};
+  for (const key of PRE_DISPATCH_KEYS) preDispatchCopy[key] = preDispatch[key];
+
+  return deepFreeze({
+    manifestPath: MANIFEST_PATH,
+    identities: {
+      parser: { implementationId: parserIdentity.implementationId, parserId: parserIdentity.parserId, parserVersion: parserIdentity.parserVersion },
+      ignore: { engineId: ignoreIdentity.engineId, engineVersion: ignoreIdentity.engineVersion },
     },
+    limits: { preDispatch: preDispatchCopy, maxAstNodes: postParse.maxAstNodes },
     worker: {
       resourceLimits: {
         maxOldGenerationSizeMb: worker.maxOldGenerationSizeMb,
@@ -206,12 +236,15 @@ export function loadVendorCapability({ manifestPath = MANIFEST_PATH, cache = tru
     },
     acorn: { sourceType: acornContract.sourceType, unsupported: [...acornContract.unsupported], source: parserMember.bytes.toString("utf8") },
     ignore: { ignorecase: ignoreContract.ignorecase, allowRelativePaths: ignoreContract.allowRelativePaths, source: ignoreMember.bytes.toString("utf8") },
-  };
-  if (cache) cachedVendor = capability;
-  return capability;
+  });
 }
 
-export function resetVendorCache() { cachedVendor = null; }
+// The one and only capability, built from the shipped manifest. There is no parameter here: an
+// alternate manifest cannot be requested, so it can never reach this cache.
+export function loadVendorCapability() {
+  if (cachedCapability === null) cachedCapability = buildCapability();
+  return cachedCapability;
+}
 
 // --- source normalization ---------------------------------------------------------------------------
 
@@ -325,7 +358,6 @@ export function parseGitignorePatterns(text, filePath, limits) {
 export function prepareIgnoreSnapshot({ ignoreFiles, candidatePaths }, limits) {
   if (!Array.isArray(ignoreFiles)) throw fail("E_IGNORE_INPUT", "ignoreFiles must be an array");
   if (!Array.isArray(candidatePaths)) throw fail("E_IGNORE_INPUT", "candidatePaths must be an array");
-  if (candidatePaths.length === 0) throw fail("E_IGNORE_INPUT", "candidatePaths must not be empty");
 
   if (ignoreFiles.length > limits.maxGitignoreFiles) {
     throw fail("E_IGNORE_LIMIT", `${ignoreFiles.length} .gitignore files, over the authorized ceiling of ${limits.maxGitignoreFiles}`, { count: ignoreFiles.length, limit: limits.maxGitignoreFiles });
@@ -385,10 +417,19 @@ export function prepareIgnoreSnapshot({ ignoreFiles, candidatePaths }, limits) {
   return { layers: layers.map(({ dir, patterns }) => ({ dir, patterns })), candidates: [...candidatePaths], activePatterns: totalPatterns, totalBytes };
 }
 
-// --- public API ------------------------------------------------------------------------------------
+// --- result validation ------------------------------------------------------------------------------
 
-// Mirrors the worker's traversal, seen-set included: a node object the parser reused in two
-// positions is one node and gets one identity, assigned on first visit in pre-order.
+function exactKeys(value, expected, code, what) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw fail(code, `${what} must be an object`);
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  if (actual.length !== wanted.length || actual.some((k, i) => k !== wanted[i])) {
+    throw fail(code, `${what} must declare exactly ${JSON.stringify(wanted)}; got ${JSON.stringify(actual)}`);
+  }
+}
+
+// Assigns identity and byte spans, and re-derives the node count from the tree the coordinator can
+// actually see. A worker claiming a count the AST does not support is a disagreement, not a hint.
 function annotate(ast, map) {
   let ordinal = 0;
   const seen = new Set();
@@ -398,10 +439,19 @@ function annotate(ast, map) {
     if (typeof node.type !== "string") return;
     if (seen.has(node)) return;
     seen.add(node);
+
+    if (!Number.isInteger(node.start) || !Number.isInteger(node.end) || node.end < node.start) {
+      throw fail("E_WORKER_RESULT", `node ${node.type} carries an incoherent code-unit span`);
+    }
+    if (!Array.isArray(node.range) || node.range.length !== 2 || node.range[0] !== node.start || node.range[1] !== node.end) {
+      throw fail("E_WORKER_RESULT", `node ${node.type} carries a range that disagrees with its start/end`);
+    }
     node.nodeId = ordinal;
     ordinal += 1;
     node.byteStart = byteOffsetAt(map, node.start);
     node.byteEnd = byteOffsetAt(map, node.end);
+    if (node.byteEnd < node.byteStart) throw fail("E_WORKER_RESULT", `node ${node.type} maps to a reversed byte span`);
+
     for (const key of Object.keys(node)) {
       if (key === "type" || key === "start" || key === "end" || key === "range" || key === "loc" || key === "nodeId" || key === "byteStart" || key === "byteEnd") continue;
       visit(node[key]);
@@ -411,14 +461,56 @@ function annotate(ast, map) {
   return ordinal;
 }
 
+// Pure validators over a worker's reply. They hold no authority -- every threshold is passed in --
+// so exporting them for direct testing opens no override path into the public API.
+export function validateParserResult({ result, map, maxAstNodes }) {
+  exactKeys(result, ["kind", "ast", "nodeCount"], "E_WORKER_RESULT", "the parser worker result");
+  if (result.kind !== "parse") throw fail("E_WORKER_RESULT", `the parser worker returned kind ${JSON.stringify(result.kind)}`);
+  if (result.ast === null || typeof result.ast !== "object" || result.ast.type !== "Program") {
+    throw fail("E_WORKER_RESULT", "the parser worker did not return a Program root");
+  }
+  if (!Number.isSafeInteger(result.nodeCount) || result.nodeCount <= 0) {
+    throw fail("E_WORKER_RESULT", `the parser worker reported a nodeCount of ${JSON.stringify(result.nodeCount)}`);
+  }
+  if (result.nodeCount > maxAstNodes) {
+    throw fail("E_AST_TOO_LARGE", `the parser worker returned ${result.nodeCount} nodes, over the authorized ceiling of ${maxAstNodes}`, { nodeCount: result.nodeCount, limit: maxAstNodes });
+  }
+  const annotated = annotate(result.ast, map);
+  if (annotated !== result.nodeCount) {
+    throw fail("E_WORKER_RESULT", `the parser worker reported ${result.nodeCount} nodes but the returned AST holds ${annotated}`, { reported: result.nodeCount, actual: annotated });
+  }
+  return annotated;
+}
+
+export function validateIgnoreResult({ result, candidates }) {
+  exactKeys(result, ["kind", "results"], "E_WORKER_RESULT", "the ignore worker result");
+  if (result.kind !== "ignore") throw fail("E_WORKER_RESULT", `the ignore worker returned kind ${JSON.stringify(result.kind)}`);
+  if (!Array.isArray(result.results) || result.results.length !== candidates.length) {
+    throw fail("E_WORKER_RESULT", "the ignore worker returned a different number of results than candidates");
+  }
+  result.results.forEach((entry, index) => {
+    exactKeys(entry, ["path", "ignored"], "E_WORKER_RESULT", `ignore result ${index}`);
+    if (entry.path !== candidates[index]) throw fail("E_WORKER_RESULT", `ignore result ${index} is out of order`);
+    if (typeof entry.ignored !== "boolean") throw fail("E_WORKER_RESULT", `ignore result ${index} did not report a boolean`);
+  });
+  return result.results;
+}
+
 function rethrow(error) {
   if (error instanceof ParserIgnoreWrapperError) throw error;
   if (error instanceof WorkerRunnerError) throw fail(error.code, error.message, error.detail);
   throw fail("E_WRAPPER_INTERNAL", (error && error.message) || String(error));
 }
 
-export async function parseModuleSource(sourceBytes, options = {}) {
-  const vendor = options.vendor ?? loadVendorCapability();
+// --- public API ------------------------------------------------------------------------------------
+
+function refuseExtraArguments(count, name) {
+  if (count > 1) throw fail("E_API_ARGUMENTS", `${name} takes exactly one argument; overriding the manifest, the worker entry, the execArgv set or the timeout is not supported`);
+}
+
+export async function parseModuleSource(sourceBytes) {
+  refuseExtraArguments(arguments.length, "parseModuleSource");
+  const vendor = loadVendorCapability();
   const { text, normalized } = normalizeSource(sourceBytes, vendor.limits.preDispatch);
   const map = buildByteOffsetMap(text);
   try {
@@ -427,33 +519,38 @@ export async function parseModuleSource(sourceBytes, options = {}) {
         kind: "parse",
         acornSource: vendor.acorn.source,
         source: text,
-        settings: { sourceType: vendor.acorn.sourceType, unsupported: vendor.acorn.unsupported },
+        settings: { sourceType: vendor.acorn.sourceType, unsupported: [...vendor.acorn.unsupported] },
         limits: { maxAstNodes: vendor.limits.maxAstNodes },
       },
       resourceLimits: vendor.worker.resourceLimits,
-      timeoutMs: options.timeoutMs ?? vendor.worker.parserTimeoutMs,
-      execArgv: options.execArgv ?? resolveExecArgv(),
-      workerSource: options.workerSource,
+      timeoutMs: vendor.worker.parserTimeoutMs,
+      execArgv: resolveExecArgv(),
     });
-    if (result.kind !== "parse" || result.ast === null || typeof result.ast !== "object") {
-      throw fail("E_WORKER_RESULT", "the parser worker returned an unexpected result shape");
-    }
-    const annotated = annotate(result.ast, map);
+
+    validateParserResult({ result, map, maxAstNodes: vendor.limits.maxAstNodes });
     return {
       ast: result.ast,
       nodeCount: result.nodeCount,
-      annotatedNodes: annotated,
-      normalizedBytes: normalized.length,
+      normalizedSourceBytes: normalized,
+      normalizedByteLength: normalized.length,
       sourceType: vendor.acorn.sourceType,
       identity: { ...vendor.identities.parser },
     };
   } catch (error) { return rethrow(error); }
 }
 
-export async function matchGitignoreSnapshot(input, options = {}) {
-  const vendor = options.vendor ?? loadVendorCapability();
+export async function matchGitignoreSnapshot(input) {
+  refuseExtraArguments(arguments.length, "matchGitignoreSnapshot");
+  const vendor = loadVendorCapability();
   if (input === null || typeof input !== "object") throw fail("E_IGNORE_INPUT", "matchGitignoreSnapshot expects { ignoreFiles, candidatePaths }");
   const prepared = prepareIgnoreSnapshot(input, vendor.limits.preDispatch);
+
+  // An empty snapshot is a legitimate answer to a legitimate question, not malformed input. The
+  // capability has already been verified above, so the integrity guarantee still holds.
+  if (prepared.candidates.length === 0) {
+    return { results: [], activePatterns: prepared.activePatterns, layerCount: prepared.layers.length, identity: { ...vendor.identities.ignore } };
+  }
+
   try {
     const result = await runWorkerJob({
       workerData: {
@@ -464,21 +561,11 @@ export async function matchGitignoreSnapshot(input, options = {}) {
         settings: { ignorecase: vendor.ignore.ignorecase, allowRelativePaths: vendor.ignore.allowRelativePaths },
       },
       resourceLimits: vendor.worker.resourceLimits,
-      timeoutMs: options.timeoutMs ?? vendor.worker.ignoreTimeoutMs,
-      execArgv: options.execArgv ?? resolveExecArgv(),
-      workerSource: options.workerSource,
+      timeoutMs: vendor.worker.ignoreTimeoutMs,
+      execArgv: resolveExecArgv(),
     });
-    if (result.kind !== "ignore" || !Array.isArray(result.results)) {
-      throw fail("E_WORKER_RESULT", "the ignore worker returned an unexpected result shape");
-    }
-    if (result.results.length !== prepared.candidates.length) {
-      throw fail("E_WORKER_RESULT", "the ignore worker returned a different number of results than candidates");
-    }
-    result.results.forEach((entry, index) => {
-      if (entry.path !== prepared.candidates[index] || typeof entry.ignored !== "boolean") {
-        throw fail("E_WORKER_RESULT", `the ignore worker returned result ${index} out of order or malformed`);
-      }
-    });
+
+    validateIgnoreResult({ result, candidates: prepared.candidates });
     return {
       results: result.results,
       activePatterns: prepared.activePatterns,

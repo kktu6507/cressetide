@@ -5,6 +5,9 @@
 // single lane so at most one worker is alive at a time. All operational numbers (resource limits,
 // timeouts) are passed in by the coordinator, which reads them from the shipped manifest; this
 // file restates none of them.
+//
+// This module is internal. The public wrapper API exposes none of its parameters, so a caller
+// cannot substitute a worker entry, an execArgv set or a timeout through it.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -87,8 +90,22 @@ function entryUrl(source) {
   return new URL(`data:text/javascript,${encodeURIComponent(source)}`);
 }
 
+function envelopeError(message) {
+  const error = message && message.error;
+  if (error === null || typeof error !== "object") {
+    return new WorkerRunnerError("E_WORKER_RESULT", "the dependency worker reported a failure without a describable cause");
+  }
+  return new WorkerRunnerError(typeof error.code === "string" ? error.code : "E_WORKER_RESULT",
+    typeof error.message === "string" ? error.message : "the dependency worker reported an unspecified failure", error.detail);
+}
+
 // Settles on exit rather than on the first message. That is what makes "the worker sent a second
 // message" detectable at all: settling early would consume message one and never see message two.
+// It is also what lets a non-zero exit code overrule an otherwise well-formed result.
+//
+// Nothing settles until the worker is actually gone. Resolving while a terminate() promise is still
+// pending would hand the lane to the next job with the previous worker still alive, which is
+// exactly the concurrency guarantee this lane exists to provide.
 export function runWorkerJob({ workerData, resourceLimits, timeoutMs, execArgv, workerSource }) {
   return serialize(() => new Promise((resolve, reject) => {
     const source = workerSource ?? readWorkerEntry();
@@ -97,16 +114,27 @@ export function runWorkerJob({ workerData, resourceLimits, timeoutMs, execArgv, 
     let worker = null;
     const messages = [];
 
-    const settle = (fn, value) => {
+    const finish = (outcome, value) => {
       if (settled) return;
       settled = true;
       if (timer !== null) { clearTimeout(timer); timer = null; }
-      if (worker !== null) {
-        worker.removeAllListeners();
-        worker.terminate().catch(() => {});
-      }
-      fn(value);
+      if (worker === null) return outcome === "resolve" ? resolve(value) : reject(value);
+
+      worker.removeAllListeners();
+      Promise.resolve()
+        .then(() => worker.terminate())
+        .then(
+          () => { if (outcome === "resolve") resolve(value); else reject(value); },
+          // A terminate that will not settle is a worker we cannot prove is gone, so a would-be
+          // success becomes a failure. An already-failing job keeps its original cause.
+          (e) => {
+            if (outcome === "resolve") reject(new WorkerRunnerError("E_WORKER_TERMINATE", `the dependency worker could not be terminated: ${e.message}`));
+            else reject(value);
+          },
+        );
     };
+    const succeed = (value) => finish("resolve", value);
+    const abort = (error) => finish("reject", error);
 
     try {
       worker = new Worker(entryUrl(source), {
@@ -117,37 +145,44 @@ export function runWorkerJob({ workerData, resourceLimits, timeoutMs, execArgv, 
         stdin: false,
       });
     } catch (e) {
-      return settle(reject, new WorkerRunnerError("E_WORKER_SPAWN", `could not start the dependency worker: ${e.message}`));
+      return abort(new WorkerRunnerError("E_WORKER_SPAWN", `could not start the dependency worker: ${e.message}`));
     }
 
     timer = setTimeout(() => {
-      settle(reject, new WorkerRunnerError("E_WORKER_TIMEOUT", `the dependency worker exceeded its ${timeoutMs} ms wall budget`, { timeoutMs }));
+      abort(new WorkerRunnerError("E_WORKER_TIMEOUT", `the dependency worker exceeded its ${timeoutMs} ms wall budget`, { timeoutMs }));
     }, timeoutMs);
     if (typeof timer.unref === "function") timer.unref();
 
     worker.on("message", (message) => messages.push(message));
-    worker.on("messageerror", (e) => settle(reject, new WorkerRunnerError("E_WORKER_MESSAGE", `the dependency worker sent an undeserializable message: ${e.message}`)));
-    worker.on("error", (e) => settle(reject, new WorkerRunnerError("E_WORKER_ERROR", `the dependency worker threw: ${e.message}`)));
+    worker.on("messageerror", (e) => abort(new WorkerRunnerError("E_WORKER_MESSAGE", `the dependency worker sent an undeserializable message: ${e.message}`)));
+    worker.on("error", (e) => abort(new WorkerRunnerError("E_WORKER_ERROR", `the dependency worker threw: ${e.message}`)));
     worker.on("exit", (code) => {
+      // A non-zero exit is a failed run whatever it managed to post on the way out.
+      if (code !== 0) {
+        return abort(new WorkerRunnerError("E_WORKER_EXIT", `the dependency worker exited with code ${code}`, { code, messages: messages.length }));
+      }
       if (messages.length === 0) {
-        return settle(reject, new WorkerRunnerError("E_WORKER_EXIT", `the dependency worker exited with code ${code} without producing a result`, { code }));
+        return abort(new WorkerRunnerError("E_WORKER_EXIT", `the dependency worker exited with code ${code} without producing a result`, { code }));
       }
       if (messages.length > 1) {
-        return settle(reject, new WorkerRunnerError("E_WORKER_MESSAGE", `the dependency worker sent ${messages.length} messages; exactly one is the protocol`, { count: messages.length }));
+        return abort(new WorkerRunnerError("E_WORKER_MESSAGE", `the dependency worker sent ${messages.length} messages; exactly one is the protocol`, { count: messages.length }));
       }
       const message = messages[0];
-      if (message === null || typeof message !== "object" || typeof message.ok !== "boolean") {
-        return settle(reject, new WorkerRunnerError("E_WORKER_RESULT", "the dependency worker returned a malformed result envelope"));
+      if (message === null || typeof message !== "object" || Array.isArray(message) || typeof message.ok !== "boolean") {
+        return abort(new WorkerRunnerError("E_WORKER_RESULT", "the dependency worker returned a malformed result envelope"));
       }
-      if (message.ok === false) {
-        const error = message.error || {};
-        return settle(reject, new WorkerRunnerError(typeof error.code === "string" ? error.code : "E_WORKER_RESULT",
-          typeof error.message === "string" ? error.message : "the dependency worker reported an unspecified failure", error.detail));
+      // An envelope carrying both a result and an error, or any undeclared field, is contradictory
+      // and is never resolved in the caller's favour.
+      const keys = Object.keys(message).sort().join(",");
+      const expected = message.ok ? "ok,result" : "error,ok";
+      if (keys !== expected) {
+        return abort(new WorkerRunnerError("E_WORKER_RESULT", `the dependency worker envelope declares ${JSON.stringify(keys)}; ${JSON.stringify(expected)} is the protocol`));
       }
-      if (message.result === null || typeof message.result !== "object") {
-        return settle(reject, new WorkerRunnerError("E_WORKER_RESULT", "the dependency worker returned no result body"));
+      if (message.ok === false) return abort(envelopeError(message));
+      if (message.result === null || typeof message.result !== "object" || Array.isArray(message.result)) {
+        return abort(new WorkerRunnerError("E_WORKER_RESULT", "the dependency worker returned no result body"));
       }
-      settle(resolve, message.result);
+      succeed(message.result);
     });
   }));
 }
