@@ -41,12 +41,17 @@ const MANIFEST_PATH = path.join(VENDOR_DIR, "vendor-manifest.json");
 // implementation cannot serve, which is a fail-closed condition rather than a setting to ignore.
 // These are capability names, not resource numbers: every limit still comes from the manifest.
 const SUPPORTED = {
+  schemaVersion: 1,
+  carrierRole: "dependency-authorization-packet-only-not-registry",
+  inseparableCapabilities: ["ast-parser", "gitignore-matching"],
   sourceType: "module",
   rangeAuthority: "normalized UTF-8 bytes via explicit code-unit-to-byte mapping",
   workerModule: "node:worker_threads",
   failureMode: "fail-closed-no-partial-artifact",
   ignorecase: false,
   allowRelativePaths: false,
+  ignoreAuthority: "S1 tracked .gitignore bytes and canonical repo-relative POSIX candidate paths only",
+  runtimeDependencies: 0,
 };
 
 // --- manifest loading ------------------------------------------------------------------------------
@@ -65,6 +70,14 @@ function requireInteger(value, code, what) {
 }
 function requireExactly(actual, expected, code, what) {
   if (actual !== expected) throw fail(code, `${what} is ${JSON.stringify(actual)}; this build only implements ${JSON.stringify(expected)}`);
+}
+
+// Order and multiplicity are part of the declaration, so this compares the array as written. It
+// deliberately does not sort or de-duplicate first: silently repairing a capability list would
+// accept a packet that says something other than what this build implements.
+function requireExactArray(actual, expected, code, what) {
+  const same = Array.isArray(actual) && actual.length === expected.length && actual.every((v, i) => v === expected[i]);
+  if (!same) throw fail(code, `${what} is ${JSON.stringify(actual)}; this build only implements exactly ${JSON.stringify(expected)}`);
 }
 
 // A member target must resolve inside the shipped vendor directory. Absolute paths, backslashes,
@@ -148,7 +161,13 @@ function buildCapability() {
     throw fail("E_MANIFEST_SHAPE", `the shipped vendor manifest is not valid JSON: ${e.message}`);
   }
   requireObject(manifest, "E_MANIFEST_SHAPE", "manifest root");
+  requireExactly(manifest.schemaVersion, SUPPORTED.schemaVersion, "E_MANIFEST_UNSUPPORTED", "manifest.schemaVersion");
   const authorization = requireObject(manifest.authorization, "E_MANIFEST_SHAPE", "manifest.authorization");
+  // What the packet says it is, and what it says it authorizes. A manifest that reclassifies itself
+  // as an adapter registry, or that narrows the inseparable capability set, is describing a
+  // different artifact than the one this build knows how to load.
+  requireExactly(authorization.carrierRole, SUPPORTED.carrierRole, "E_MANIFEST_UNSUPPORTED", "authorization.carrierRole");
+  requireExactArray(authorization.inseparableCapabilities, SUPPORTED.inseparableCapabilities, "E_MANIFEST_UNSUPPORTED", "authorization.inseparableCapabilities");
   if (authorization.status !== "selection-authorized-artifacts-vendored") {
     throw fail("E_MANIFEST_NOT_VENDORED", `manifest authorization status is ${JSON.stringify(authorization.status)}; the wrapper requires vendored artifacts`);
   }
@@ -193,6 +212,7 @@ function buildCapability() {
   requireExactly(acornContract.rangeAuthority, SUPPORTED.rangeAuthority, "E_MANIFEST_UNSUPPORTED", "wrapperContract.acorn.rangeAuthority");
   requireExactly(ignoreContract.ignorecase, SUPPORTED.ignorecase, "E_MANIFEST_UNSUPPORTED", "wrapperContract.ignore.ignorecase");
   requireExactly(ignoreContract.allowRelativePaths, SUPPORTED.allowRelativePaths, "E_MANIFEST_UNSUPPORTED", "wrapperContract.ignore.allowRelativePaths");
+  requireExactly(ignoreContract.authority, SUPPORTED.ignoreAuthority, "E_MANIFEST_UNSUPPORTED", "wrapperContract.ignore.authority");
 
   if (!Array.isArray(acornContract.unsupported) || acornContract.unsupported.length === 0) {
     throw fail("E_MANIFEST_SHAPE", "wrapperContract.acorn.unsupported must be a non-empty array");
@@ -206,6 +226,7 @@ function buildCapability() {
   for (const pkg of manifest.packages) {
     requireString(pkg.name, "E_MANIFEST_SHAPE", "package name");
     requireString(pkg.version, "E_MANIFEST_SHAPE", "package version");
+    requireExactly(pkg.runtimeDependencies, SUPPORTED.runtimeDependencies, "E_MANIFEST_UNSUPPORTED", `package ${pkg.name} runtimeDependencies`);
     if (!Array.isArray(pkg.members) || pkg.members.length === 0) throw fail("E_MANIFEST_SHAPE", `package ${pkg.name} declares no members`);
     verifiedByPackage.set(pkg, pkg.members.map(verifyMember));
   }

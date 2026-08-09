@@ -185,6 +185,20 @@ test("wrapper: a manifest this build cannot serve fails closed, and never reache
     ["E_MANIFEST_UNSUPPORTED", (m) => { m.wrapperContract.acorn.rangeAuthority = "acorn code units"; }],
     ["E_MANIFEST_UNSUPPORTED", (m) => { m.wrapperContract.ignore.ignorecase = true; }],
     ["E_MANIFEST_UNSUPPORTED", (m) => { m.wrapperContract.ignore.allowRelativePaths = true; }],
+    // What the packet says it is, what it authorizes, and what its engines are allowed to read.
+    ["E_MANIFEST_UNSUPPORTED", (m) => { m.schemaVersion = 999; }],
+    ["E_MANIFEST_UNSUPPORTED", (m) => { m.authorization.carrierRole = "adapter-registry"; }],
+    ["E_MANIFEST_UNSUPPORTED", (m) => { m.wrapperContract.ignore.authority = "arbitrary filesystem discovery"; }],
+    ["E_MANIFEST_UNSUPPORTED", (m) => { m.packages[0].runtimeDependencies = 1; }],
+    ["E_MANIFEST_UNSUPPORTED", (m) => { m.packages[1].runtimeDependencies = 1; }],
+    // The capability set is compared as written: a missing half, a reversed pair, a duplicate and an
+    // extra entry are each a different declaration, and none of them is quietly repaired.
+    ["E_MANIFEST_UNSUPPORTED", (m) => { m.authorization.inseparableCapabilities = ["ast-parser"]; }],
+    ["E_MANIFEST_UNSUPPORTED", (m) => { m.authorization.inseparableCapabilities = ["gitignore-matching", "ast-parser"]; }],
+    ["E_MANIFEST_UNSUPPORTED", (m) => { m.authorization.inseparableCapabilities = ["ast-parser", "ast-parser"]; }],
+    ["E_MANIFEST_UNSUPPORTED", (m) => { m.authorization.inseparableCapabilities = ["ast-parser", "gitignore-matching", "network-fetch"]; }],
+    ["E_MANIFEST_UNSUPPORTED", (m) => { m.authorization.inseparableCapabilities = []; }],
+    ["E_MANIFEST_UNSUPPORTED", (m) => { m.authorization.inseparableCapabilities = "ast-parser,gitignore-matching"; }],
   ];
   for (const [expected, mutate] of cases) {
     const { dir, url } = scratchLayout(mutate);
