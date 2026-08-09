@@ -3,10 +3,13 @@
 - **Status**: accepted
 - **Date**: 2026-08-09
 - **Scope**: dependency selection and resource policy only
+- **Authority**: narrative rationale only; `cressetide/skills/vigil/vendor/vendor-manifest.json` is the sole canonical machine-readable authority for exact identities, members, hashes, wrapper settings, and resource limits
 
 ## Context
 
 Approved `test-provenance` v1.6 requires AST parsing and Git-compatible ignore matching to be authorized together before a populated changed-test inventory can be implemented. The repository has no runtime dependencies or lockfile. The release archive contains tracked files under `cressetide/**`, while distribution validation rejects `cressetide/package.json` and `cressetide/node_modules`; therefore an ordinary npm runtime dependency would not be present in the installed plugin.
+
+This ADR explains the choice but does not supply operational values to runtime code. Implementations and verification tools must consume only the shipped manifest for exact values. If this narrative and the manifest appear to disagree, the packet is invalid pending an intentional update and review; neither side may silently merge values from both files.
 
 A non-shipping proof on 2026-08-09 verified `acorn@8.18.0` and `ignore@7.0.6`, including exact tarball integrity, selected-member hashes, MIT license files, normalized UTF-8 byte-range mapping, fail-closed AST profile checks, case-sensitive Git-ignore behavior, nested ignore roots, negation, directory handling, and symlink handling.
 
