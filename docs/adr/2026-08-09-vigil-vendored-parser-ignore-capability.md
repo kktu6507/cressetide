@@ -52,7 +52,7 @@ Timeout, worker error/exit, memory termination, stack exhaustion, malformed resu
 
 ## Consequences
 
-Future vendoring is a deliberate source import, not an npm install. It must copy only the four authorized members, preserve both MIT notices, mechanically verify tarball SRI plus extracted byte count/SHA-256 against the manifest, and add tests for provenance, wrapper semantics, limit rejection, timeout/worker termination, and no-write behavior.
+The authorized vendoring is a deliberate source import, not an npm install. It copies only the four authorized members, preserves both MIT notices, and keeps their extracted byte count and SHA-256 mechanically verified against the manifest. Tarball SRI is verified during acquisition. Tests for wrapper semantics, limit rejection, timeout or worker termination, and no-write behavior remain required before the corresponding implementation gates may move.
 
 Upgrades require a new proof and an intentional manifest/ADR update; floating or compatible ranges are not allowed. The resource ceilings intentionally fail closed on repositories or files outside the authorized operating envelope; raising a ceiling requires measurements and review.
 
@@ -68,4 +68,4 @@ No approved spec is changed by this ADR. The formal `test-adapters.json` remains
 
 ## Approval evidence
 
-The exact selection followed a non-shipping proof and targeted architecture, security, test, and gatekeeper review. The user explicitly approved creation of the dependency authorization packet on 2026-08-09. Copying the authorized third-party members remains a separate explicit step.
+The exact selection followed a non-shipping proof and targeted architecture, security, test, and gatekeeper review. The user explicitly approved creation of the dependency authorization packet on 2026-08-09, and separately and explicitly approved the exact four-member vendoring on 2026-08-09. That second approval covers only the four members listed in the manifest. It does not cover the adapter registry, the parser or ignore wrapper, the producer/consumer path, removal of `unsupported-populated-inventory`, record migration, publishing, or pushing.

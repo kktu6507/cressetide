@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "authorization": {
-    "status": "selection-authorized-artifacts-not-vendored",
+    "status": "selection-authorized-artifacts-vendored",
     "approvedOn": "2026-08-09",
     "canonicalAuthority": "this-file",
     "carrierRole": "dependency-authorization-packet-only-not-registry",
@@ -33,14 +33,14 @@
         {
           "source": "package/dist/acorn.mjs",
           "target": "cressetide/skills/vigil/vendor/acorn-8.18.0.mjs",
-          "state": "authorized-not-vendored",
+          "state": "vendored",
           "bytes": 233301,
           "sha256": "953573b8fdab71599749ea5f2b33d3e760c2116178f9423ee7458dbe39d59453"
         },
         {
           "source": "package/LICENSE",
           "target": "cressetide/skills/vigil/vendor/licenses/acorn-MIT.txt",
-          "state": "authorized-not-vendored",
+          "state": "vendored",
           "bytes": 1099,
           "sha256": "76a876cf886ff9be2a8b5e2e86514fed06223c8c9f0c1e9ee9606e93841e00b7"
         }
@@ -57,14 +57,14 @@
         {
           "source": "package/index.js",
           "target": "cressetide/skills/vigil/vendor/ignore-7.0.6.js",
-          "state": "authorized-not-vendored",
+          "state": "vendored",
           "bytes": 19981,
           "sha256": "3d580a0188919a58035ca2700216bca7d143a1cae40bf8ef71237ca2396ef5a6"
         },
         {
           "source": "package/LICENSE-MIT",
           "target": "cressetide/skills/vigil/vendor/licenses/ignore-MIT.txt",
-          "state": "authorized-not-vendored",
+          "state": "vendored",
           "bytes": 1095,
           "sha256": "9c94db23dc4b1e9aaee5d195668b916afc71efed54af226b66cf0ccc4389c1c0"
         }
