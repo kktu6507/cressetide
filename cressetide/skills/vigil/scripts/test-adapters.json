@@ -1,0 +1,31 @@
+{
+  "registryVersion": 1,
+  "adapters": [
+    {
+      "adapterId": "node-test",
+      "language": "javascript",
+      "framework": "node:test",
+      "implementationId": "node-test-v1",
+      "implementationIdentity": {
+        "implementationId": "node-test-v1",
+        "parserId": "acorn",
+        "parserVersion": "8.18.0"
+      },
+      "testDeclarationPatternIds": [
+        "node-test-call"
+      ],
+      "containerPatternIds": [
+        "node-test-describe"
+      ],
+      "attachmentRule": "leading-line-comments",
+      "stableIdRule": "line-comment-tid-v1",
+      "discovery": {
+        "explicitConfigPath": ".ctide/test-adapters-config.json",
+        "manifestDependencies": [],
+        "importSpecifiers": [
+          "node:test"
+        ]
+      }
+    }
+  ]
+}
