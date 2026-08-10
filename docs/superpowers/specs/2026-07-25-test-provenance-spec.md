@@ -1,6 +1,6 @@
 # Test-Provenance Implementation Spec
 
-- 狀態：**approved v1.6**（2026-08-09 panel 放行；前一放行版本 approved v1.5）。實作以本文為準；變更需重新過 panel。本版與 **shared-decision-provenance-model v1.13**、**intent-scan v1.9** 為 **coupled set**，2026-08-09 panel 同輪一併放行；三者不得分開採用。 **本次放行只核准規格本身**，不代表 implementation、populated inventory、migration、push 或 Phase 2 已就緒；AC138 的限制持續有效 —— AC128 的 legacy boundary 尚未實作並通過前，不得宣稱 Phase 1／2A 完全不受影響。 v1.6 **只補 authority，不授權任何 dependency，也不宣告任何實作就緒**：Phase 2B1 的 direct inspect 證實 §2 的 adapter 契約在形式上無法落地 —— `structuralId(decl)` 是函式卻被要求序列化進 `test-adapters.json`，`testDeclarationPatterns`／`containerPatterns` 只有欄位名而無語言，`attachmentRule` 只有四個字詞而非 closed enum，明示穩定 ID 被整個委派給一個不存在的 adapter，effective-oracle 只有例子而無 closed edge contract，base/head content view 從未定義。新增 **§11b**（registry exact schema 與 closed pattern-ID table、`implementationId` 綁定表、discovery precedence 與 explicit-config carrier、`attachmentRule` closed enum 與 tag cardinality、node:test v1 profile 含 `node:assert`／hook import form、stable-ID `@tid` 實際語法、`structuralId` 演算法、`@tid` canonical-byte 排除、兩類 oracle edge 的 closed table、`implementationIdentity` per-entry carrier、HeadViewSnapshot S1／S2 協定與 ignore authority、parser 能力契約與 rollout boundary）與 **AC84–138**。**第二輪修訂（panel REVISE 後）**再閉合七處：tag cardinality 改為恰好一筆 `@src`（與 §2 一致，不再允許多筆並正規化）；pattern ID 由欄位名補成有 predicate 的 closed table 並綁定 `node-test-v1`；`implementationIdentity` 由散文落成 inventory entry 欄位並經 `inventoryDigest` 進 freshness；移除詞法序號消歧（前插同名 test 會靜默錯配 identity），duplicate name 一律要求 `@tid` 且 uniqueness scope 擴至 matching universe；oracle edge 拆成 traversal 與 oracle dependency 兩類，SUT import 不再進 closure；head 讀取改為 S1／S2 原子 snapshot 並明定 ignore authority；`@tid` 的 digest 排除補上 exact bytes 演算法。**第三輪修訂（panel REVISE 後）**再閉合七處：`implementationIdentity` 補上 **registry 側** carrier，並撤回「已可完整寫出正式 registry」的宣稱；新增 **v2 versioned inventory envelope**（`inventoryVersion`／`registryDigest`／`headViewDigest`）與 consumer 的 **S3** 完整-universe freshness 協定，legacy v1 以顯式 discriminator 拒絕、`entries: []` 不得成為 populated coverage bypass；`node-test-v1` 的 mapping 收斂為唯一組合，`.test.mjs` 降為 eligibility filter 而非 framework evidence；assertion 名稱與 snapshot-golden 的 fs API／path 形式各補 closed allowlist，並誠實寫明結構分類會把任何含 assertion 的 reachable callable 保守視為 oracle contributor；stable-ID uniqueness 改為 base／head **分別**檢查；canonical bytes 在建立 range **之前**先正規化行終止符；gitignore 語義列為與 AST parser 同一次 dependency authorization 的能力。**第四輪修訂（panel REVISE 後）**再閉合五處：以 direct inspect 上游 store 的 CAS 為據，把 **source freshness** 與 **provenance-store freshness** 分離 —— `headViewDigest` 取得 closed 的 exclusion／inclusion 規則並排除 `.ctide/provenance.json`，store 的新鮮度改由新欄位 `inputProvenanceStoreDigest` 承載並進入 `inventoryDigest`，其上游 precondition 為 intent-scan draft v1.9 的必填 payload 欄位 `expectedInputProvenanceStoreDigest`（該輪同時宣稱「shared model 不需修改」，**已於第五輪撤回**，見下）；assertion binding 分為 assertion-object 與 assertion-function 兩類，strict alias 明列；死 token `mjs-test-suffix` 與 `filePatternIds` 欄位一併刪除；半開的 `external-expected-data` edge 與未授權的 re-export capability 各自移除；version dispatch 改為誠實表述（v2 有 explicit discriminator，v1 只能以 exact absence shape 辨識），`registryDigest` 亦改為涵蓋整份 registry root 與 head-view config 的唯一公式。**第五輪修訂（panel REVISE 後）**閉合最後一個綁定缺口：前一稿宣稱 `expectedInputProvenanceStoreDigest` 已由 `inventoryDigest` 遞移持久化、Step 6 可事後證明 pre-state、shared model 不需修改 —— **三項宣稱全數撤回**。`inventoryDigest` 是 opaque 值，caller 可讓 payload 追上實際 pre-state（D1）卻仍送出以 D0 為 preimage 的舊 digest，writer 兩段等式都驗得過而事後查不出。修正是把 **preimage 本身持久化**：`batchSnapshot` 新增完整 typed **`inventorySnapshot: ChangedTestInventoryV2`**（唯一 authority），`record.inventoryDigest` 由它派生，writer 在同一筆交易內重算並強制三段等式，Step 6 改讀該 snapshot 重播綁定。持久化欄位屬上游 record 形狀，因此 **shared model 一併退回 draft v1.13**、intent-scan 續為 **draft v1.9**。**第六輪修訂（panel REVISE 後）**收尾五處：intent-scan 仍是 live normative text 的舊宣稱（opaque digest 足以證明 pre-state、shared 不需 persisted field）**刪除**；§6 的 freshness 明定為 **Step 5 前 proposal-time**，checker 分層表改為分階段，**禁止**把 current-inventory 重算引入 post-commit（正常 D0→D1 提交會被誤判 stale）；上游新增 **`batchRecordVersion` discriminator** 與 legacy boundary（legacy 可讀範圍、不得冒充 Phase 2 proof、v2 缺 snapshot／未知版本／malformed 一律 fail-closed、chain 版本單調不減）；Step 6 的事後證明改為**誠實劃界** —— 可重算 snapshot digest 與 derived equality、可視 snapshot 為 committed witness，但**不能**獨立重新觀察歷史 `loadedStoreDigest`／payload，也不能只憑 digest 判斷其記法；`inventorySnapshot` 的最小 authoritative envelope **上提至 shared**，本文只保留計算語義。§11b.11 的 dependency 段落為 **non-normative 且未核准**。**核准後 `parseInventory()` 的 populated gate 仍不得移除**（解除條件見 §11b.12 的六項）；本版亦不改動 Phase 1 與 Phase 2A 既有的 READY 狀態。前一放行版本說明：approved v1.5（2026-08-08 panel 放行；前一放行版本 approved v1.4）。實作以本文為準；變更需重新過 panel。v1.5 **確有語義變更**（初稿宣稱「不改任何語義或 AC」，那已不誠實）：(1) 本文消費的 **canonical empty store** 改為上游 SM §2 的唯一定義，其 `provenanceVersion` 為 **2**；(2) `baseProvenance` checker 對 **historical immutable base-tree store** 新增明確的 read-only 版本行為 —— 該 tree 的 store 可能是 v1 或 v2，checker 驗其**原始** bytes 的 `storeDigest`，**不遷移、不回寫**，也不得拿 normalized bytes 比對 raw digest；current store 的版本與它無關；(3) **AC60 已改寫**，新增 historical v1／v2 的版本分支（原始 bytes digest 優先、normalize 不得充當比對依據、historical v1 不遷移不回寫、無 store 檔時引用上游唯一的 v2 canonical empty store）；current v1 的 migration 仍由 intent-scan AC89 負責，兩條路徑不得混用。上游 v1.12 已於同輪核准，本文連同該版本邊界一併放行。前一放行版本說明：approved v1.4（2026-08-02 panel 放行；前一放行版本 approved v1.0，2026-07-26 panel 放行，自 draft v0.10 經九輪修訂）。實作以本文為準；變更需重新過 panel。**曾退回 draft 的原因**：v1.0 的 `assum-reading-change` 路徑要求「本 run 內產生 revise Transition」，而 revise 的 successor 依定義是尚不存在的新 clause；姊妹 spec intent-scan v1.2 同時寫死「`commit-test-provenance-batch` 不得鑄造任何 clause」，兩者合起來使該路徑**形式上不可達**。v1.1 隨 intent-scan v1.3 的 `successorClauseDraft` 補齊 **ASSUM successor** 的 Step 5 與 AC。v1.2 續修兩處：(1) §6 與 Step 4b 把 `ASSUM.governedBy` 當成可以是 `user`／`plan-gate` 的分支條件 —— 它的型別是 **ReviewerPrincipal**（discipline | arbiter），該比對恆為 false，會讓 REQ 的退出重審路徑**靜默失效**；改以 **`transition.successor`** 決定是否退出，`governedBy` 只決定 reviewer-side principal；(2) 隨當時的 intent-scan v1.4 補上 `ASSUM|DEC supersede → REQ` 的端到端 AC，與 sibling 聚合／重複 subject／carrier 覆蓋的負向 AC（AC76 改寫，新增 AC77 起）。v1.3 修 v1.2 草案一處：Step 5 正文仍把 `successorClauseDraft` 敘述成只鑄造 successor ASSUM，與已放寬的 REQ 契約不符；改寫為**通則**（不在 pre-state 即必須帶 draft；ASSUM 驗 `routingOrigin` 等義務；REQ 驗 rule 6 的 user／plan-gate／四欄／tier 義務；其他 clause 類型未授權即 fail-closed），並補 `DEC → 新 REQ` 的完整成功 AC 與 adopt 的正向 carrier AC（新增 AC78、AC80，其後順延至 AC83）。v1.4 修 v1.3 草案一處：§8 的 typed transaction summary 仍寫「revise group 帶 `successorClauseDraft`（鑄造 successor ASSUM）」，位置在契約摘要而非歷史註解，會把已放寬的合法 REQ successor 重新說窄；改為與 Step 5 完全一致的通則。草案審閱期間，本版新增契約不得實作；該限制已隨 v1.4 核准解除。
+- 狀態：**draft v1.7 — 未審核**（**最後放行 baseline 仍為 approved v1.6**，2026-08-09 panel 放行）。v1.7 尚**未** approved、**未**經 panel 放行，**不**代表 implementation READY，**不**代表 AC136／AC137／AC138 已滿足，**不**使 populated inventory 可被接受，**不**代表 Phase 2 READY；在核准之前，一切以 **approved v1.6** 為生效契約。**v1.7 draft delta（authority closure，只補規則，不新增能力）**：v1.6 之下，兩個獨立 writer 對 node-test-v1 的executable adapter **不可能**算出相同結果 —— declaration 長在哪裡、帶什麼參數才算 declaration 沒有規則；attachment block的掃描與 `@src`／`@tid` 的 lexical form 只有敘述；`declarationDigest` 的 range 沒有指名 AST node；fixture hook 的「body span」與「同 container chain」都不足以決定一組 depRef；local-assertion-helper 的「可靜態解析的函式」是個沒有演算法的占位詞，跨 module 更沒有 resolver。本版新增四節把這些收斂成 closed 規則：**§11b.6b**（declaration placement、test／container／hook 的 argument 與 callback profile、以 decoded StringValue 為 declaration name）、**§11b.8c**（attachment block 的 maximal 掃描、directive accounting、`@src`／`@tid` 的唯一 lexical form、`REQ@DP` 的 adapter／pipeline 分層、canonical declaration range 取最外層 `ExpressionStatement`）、**§11b.9e**（fixture-hook 的 byte-rangespan 與 closed applicability）、**§11b.9f**（local-assertion-helper 的 callable 子集與 closed relative-module resolver）。新增 **AC139–150**，每條都帶可區分錯誤實作的單變數正／負例。**`REQ@DP` 的最終合法集合未放寬** —— 分層只改變拒絕發生的層級（DEC／ASSUM qualifier 仍由 adapter 直接拒絕；非 exception-backed 的 REQ 由 pipeline 以同一份 captured storepre-state 在 entry emission 之前拒絕）。**AC138 的 gate 未弱化**，`unsupported-populated-inventory` 仍不得移除，三項 executable capability（`structuralId`、tag attachment、`effectiveOracleDeps`）在本版之後仍**一項都未實作**。以下為 v1.6 及更早的既有歷史，原文保留：**approved v1.6**（2026-08-09 panel 放行；前一放行版本 approved v1.5）。實作以本文為準；變更需重新過 panel。本版與 **shared-decision-provenance-model v1.13**、**intent-scan v1.9** 為 **coupled set**，2026-08-09 panel 同輪一併放行；三者不得分開採用。 **本次放行只核准規格本身**，不代表 implementation、populated inventory、migration、push 或 Phase 2 已就緒；AC138 的限制持續有效 —— AC128 的 legacy boundary 尚未實作並通過前，不得宣稱 Phase 1／2A 完全不受影響。 v1.6 **只補 authority，不授權任何 dependency，也不宣告任何實作就緒**：Phase 2B1 的 direct inspect 證實 §2 的 adapter 契約在形式上無法落地 —— `structuralId(decl)` 是函式卻被要求序列化進 `test-adapters.json`，`testDeclarationPatterns`／`containerPatterns` 只有欄位名而無語言，`attachmentRule` 只有四個字詞而非 closed enum，明示穩定 ID 被整個委派給一個不存在的 adapter，effective-oracle 只有例子而無 closed edge contract，base/head content view 從未定義。新增 **§11b**（registry exact schema 與 closed pattern-ID table、`implementationId` 綁定表、discovery precedence 與 explicit-config carrier、`attachmentRule` closed enum 與 tag cardinality、node:test v1 profile 含 `node:assert`／hook import form、stable-ID `@tid` 實際語法、`structuralId` 演算法、`@tid` canonical-byte 排除、兩類 oracle edge 的 closed table、`implementationIdentity` per-entry carrier、HeadViewSnapshot S1／S2 協定與 ignore authority、parser 能力契約與 rollout boundary）與 **AC84–138**。**第二輪修訂（panel REVISE 後）**再閉合七處：tag cardinality 改為恰好一筆 `@src`（與 §2 一致，不再允許多筆並正規化）；pattern ID 由欄位名補成有 predicate 的 closed table 並綁定 `node-test-v1`；`implementationIdentity` 由散文落成 inventory entry 欄位並經 `inventoryDigest` 進 freshness；移除詞法序號消歧（前插同名 test 會靜默錯配 identity），duplicate name 一律要求 `@tid` 且 uniqueness scope 擴至 matching universe；oracle edge 拆成 traversal 與 oracle dependency 兩類，SUT import 不再進 closure；head 讀取改為 S1／S2 原子 snapshot 並明定 ignore authority；`@tid` 的 digest 排除補上 exact bytes 演算法。**第三輪修訂（panel REVISE 後）**再閉合七處：`implementationIdentity` 補上 **registry 側** carrier，並撤回「已可完整寫出正式 registry」的宣稱；新增 **v2 versioned inventory envelope**（`inventoryVersion`／`registryDigest`／`headViewDigest`）與 consumer 的 **S3** 完整-universe freshness 協定，legacy v1 以顯式 discriminator 拒絕、`entries: []` 不得成為 populated coverage bypass；`node-test-v1` 的 mapping 收斂為唯一組合，`.test.mjs` 降為 eligibility filter 而非 framework evidence；assertion 名稱與 snapshot-golden 的 fs API／path 形式各補 closed allowlist，並誠實寫明結構分類會把任何含 assertion 的 reachable callable 保守視為 oracle contributor；stable-ID uniqueness 改為 base／head **分別**檢查；canonical bytes 在建立 range **之前**先正規化行終止符；gitignore 語義列為與 AST parser 同一次 dependency authorization 的能力。**第四輪修訂（panel REVISE 後）**再閉合五處：以 direct inspect 上游 store 的 CAS 為據，把 **source freshness** 與 **provenance-store freshness** 分離 —— `headViewDigest` 取得 closed 的 exclusion／inclusion 規則並排除 `.ctide/provenance.json`，store 的新鮮度改由新欄位 `inputProvenanceStoreDigest` 承載並進入 `inventoryDigest`，其上游 precondition 為 intent-scan draft v1.9 的必填 payload 欄位 `expectedInputProvenanceStoreDigest`（該輪同時宣稱「shared model 不需修改」，**已於第五輪撤回**，見下）；assertion binding 分為 assertion-object 與 assertion-function 兩類，strict alias 明列；死 token `mjs-test-suffix` 與 `filePatternIds` 欄位一併刪除；半開的 `external-expected-data` edge 與未授權的 re-export capability 各自移除；version dispatch 改為誠實表述（v2 有 explicit discriminator，v1 只能以 exact absence shape 辨識），`registryDigest` 亦改為涵蓋整份 registry root 與 head-view config 的唯一公式。**第五輪修訂（panel REVISE 後）**閉合最後一個綁定缺口：前一稿宣稱 `expectedInputProvenanceStoreDigest` 已由 `inventoryDigest` 遞移持久化、Step 6 可事後證明 pre-state、shared model 不需修改 —— **三項宣稱全數撤回**。`inventoryDigest` 是 opaque 值，caller 可讓 payload 追上實際 pre-state（D1）卻仍送出以 D0 為 preimage 的舊 digest，writer 兩段等式都驗得過而事後查不出。修正是把 **preimage 本身持久化**：`batchSnapshot` 新增完整 typed **`inventorySnapshot: ChangedTestInventoryV2`**（唯一 authority），`record.inventoryDigest` 由它派生，writer 在同一筆交易內重算並強制三段等式，Step 6 改讀該 snapshot 重播綁定。持久化欄位屬上游 record 形狀，因此 **shared model 一併退回 draft v1.13**、intent-scan 續為 **draft v1.9**。**第六輪修訂（panel REVISE 後）**收尾五處：intent-scan 仍是 live normative text 的舊宣稱（opaque digest 足以證明 pre-state、shared 不需 persisted field）**刪除**；§6 的 freshness 明定為 **Step 5 前 proposal-time**，checker 分層表改為分階段，**禁止**把 current-inventory 重算引入 post-commit（正常 D0→D1 提交會被誤判 stale）；上游新增 **`batchRecordVersion` discriminator** 與 legacy boundary（legacy 可讀範圍、不得冒充 Phase 2 proof、v2 缺 snapshot／未知版本／malformed 一律 fail-closed、chain 版本單調不減）；Step 6 的事後證明改為**誠實劃界** —— 可重算 snapshot digest 與 derived equality、可視 snapshot 為 committed witness，但**不能**獨立重新觀察歷史 `loadedStoreDigest`／payload，也不能只憑 digest 判斷其記法；`inventorySnapshot` 的最小 authoritative envelope **上提至 shared**，本文只保留計算語義。§11b.11 的 dependency 段落為 **non-normative 且未核准**。**核准後 `parseInventory()` 的 populated gate 仍不得移除**（解除條件見 §11b.12 的六項）；本版亦不改動 Phase 1 與 Phase 2A 既有的 READY 狀態。前一放行版本說明：approved v1.5（2026-08-08 panel 放行；前一放行版本 approved v1.4）。實作以本文為準；變更需重新過 panel。v1.5 **確有語義變更**（初稿宣稱「不改任何語義或 AC」，那已不誠實）：(1) 本文消費的 **canonical empty store** 改為上游 SM §2 的唯一定義，其 `provenanceVersion` 為 **2**；(2) `baseProvenance` checker 對 **historical immutable base-tree store** 新增明確的 read-only 版本行為 —— 該 tree 的 store 可能是 v1 或 v2，checker 驗其**原始** bytes 的 `storeDigest`，**不遷移、不回寫**，也不得拿 normalized bytes 比對 raw digest；current store 的版本與它無關；(3) **AC60 已改寫**，新增 historical v1／v2 的版本分支（原始 bytes digest 優先、normalize 不得充當比對依據、historical v1 不遷移不回寫、無 store 檔時引用上游唯一的 v2 canonical empty store）；current v1 的 migration 仍由 intent-scan AC89 負責，兩條路徑不得混用。上游 v1.12 已於同輪核准，本文連同該版本邊界一併放行。前一放行版本說明：approved v1.4（2026-08-02 panel 放行；前一放行版本 approved v1.0，2026-07-26 panel 放行，自 draft v0.10 經九輪修訂）。實作以本文為準；變更需重新過 panel。**曾退回 draft 的原因**：v1.0 的 `assum-reading-change` 路徑要求「本 run 內產生 revise Transition」，而 revise 的 successor 依定義是尚不存在的新 clause；姊妹 spec intent-scan v1.2 同時寫死「`commit-test-provenance-batch` 不得鑄造任何 clause」，兩者合起來使該路徑**形式上不可達**。v1.1 隨 intent-scan v1.3 的 `successorClauseDraft` 補齊 **ASSUM successor** 的 Step 5 與 AC。v1.2 續修兩處：(1) §6 與 Step 4b 把 `ASSUM.governedBy` 當成可以是 `user`／`plan-gate` 的分支條件 —— 它的型別是 **ReviewerPrincipal**（discipline | arbiter），該比對恆為 false，會讓 REQ 的退出重審路徑**靜默失效**；改以 **`transition.successor`** 決定是否退出，`governedBy` 只決定 reviewer-side principal；(2) 隨當時的 intent-scan v1.4 補上 `ASSUM|DEC supersede → REQ` 的端到端 AC，與 sibling 聚合／重複 subject／carrier 覆蓋的負向 AC（AC76 改寫，新增 AC77 起）。v1.3 修 v1.2 草案一處：Step 5 正文仍把 `successorClauseDraft` 敘述成只鑄造 successor ASSUM，與已放寬的 REQ 契約不符；改寫為**通則**（不在 pre-state 即必須帶 draft；ASSUM 驗 `routingOrigin` 等義務；REQ 驗 rule 6 的 user／plan-gate／四欄／tier 義務；其他 clause 類型未授權即 fail-closed），並補 `DEC → 新 REQ` 的完整成功 AC 與 adopt 的正向 carrier AC（新增 AC78、AC80，其後順延至 AC83）。v1.4 修 v1.3 草案一處：§8 的 typed transaction summary 仍寫「revise group 帶 `successorClauseDraft`（鑄造 successor ASSUM）」，位置在契約摘要而非歷史註解，會把已放寬的合法 REQ successor 重新說窄；改為與 Step 5 完全一致的通則。草案審閱期間，本版新增契約不得實作；該限制已隨 v1.4 核准解除。
 - 日期：2026-07-25
 - 上游：`2026-07-25-shared-decision-provenance-model.md`（**approved v1.13**，與本文同輪放行）—— 提供 gate scope、pre／post binding 兩相、**base provenance witness**、`provenance-batch` record kind 與 chain head 規則。不重新定義任何 shared concept；附加欄位一律標為 annotation 且不改上游語義。inventory 欄位對映上游語義：`tagBefore → preChangeBinding`、`tagAfter → postChangeBinding`。
 - 姊妹 spec：`2026-07-25-intent-scan-spec.md`（**approved v1.9**，與本文同輪放行；前一放行版本 approved v1.8）—— 提供 provenance store、store script 命令面（含 `commit-test-provenance-batch`、`successor=null` retire）、task manifest、Review Packet 接線；本文消費而不重定義。**Gate scope 直接消費 shared model §9 的 canonical 定義**（不在本文改寫或摘要）。
@@ -32,11 +32,14 @@ clauseRef  := ("REQ" | "DEC" | "ASSUM") "-" ULID
 dpRef      := "DP-" ULID
 解析結果一律表示為 { clauseRef, dpRef? } | { expl: true }
 
-解析層拒絕（fail-closed，不留到後續檢查）：
-  DEC-…@DP-…       ← DEC 不得帶 qualifier
-  ASSUM-…@DP-…     ← ASSUM 不得帶 qualifier
-  非 exception-backed 的 REQ-…@DP-…
-  即：`@dpRef` **僅** exception-backed REQ 合法（§7）
+拒絕（fail-closed，不留到後續檢查；分兩層，見 §11b.8c）：
+  DEC-…@DP-…       ← DEC 不得帶 qualifier          ← 純結構，adapter 層即拒
+  ASSUM-…@DP-…     ← ASSUM 不得帶 qualifier        ← 同上
+  非 exception-backed 的 REQ-…@DP-…                ← 需 store context，
+                                                     由 inventory pipeline 以同一份
+                                                     captured pre-state 判定並拒絕
+  即：`@dpRef` **僅** exception-backed REQ 合法（§7）——
+      最終合法集合不變，只是後者的拒絕發生在有 store context 的那一層
 ```
 - **每個測試恰好一個 tag**。需要兩個來源者**必須拆成兩個測試** —— 這正是攔截「掛名 AC、實際釘設計選擇」的結構。
 - **Parameterized／table-driven**：一個宣告一個 tag 涵蓋其全部 row；**但若不同 row 的期望來自不同 clause，必須拆成不同宣告** ——「一宣告一 tag」不使 mixed-source table 合法。
@@ -108,6 +111,8 @@ entries 依 (path, adapterId, structuralId) 的 Unicode code point 序排序
 每個 entry 的 object key 依 code point 排序
 bodyDigest 的 body span ＝ adapter 定義的宣告完整範圍
   （含 decorator／attribute／attachmentRule 所涵蓋的前置區塊，不含前後空白行）
+  ← v1.7：node:test v1 的**唯一** exact 定義（最外層 ExpressionStatement ＋
+    attachment block 起點）見 §11b.8c；本行不再是該 range 的 authority
 body 正規化：UTF-8 無 BOM、LF、不 trim 內部空白
   ← v1.6：hashing 前對合法附著之 @tid 行的移除，唯一演算法見 §11b.8b
 ```
@@ -863,6 +868,9 @@ pre-state legacy 的零 tag 合法性仍由既有 preState 規則處理，**不�
 
 decorator／attribute／annotation 三種 attachmentRule 在 v1 **未定義**，登記即 fail-closed。
 
+> **v1.7 起**：attachment block 的 exact 掃描規則、directive accounting，以及 `@src`／`@tid`
+> 的唯一 lexical form，全部由 **§11b.8c** 定義。本節其餘敘述為沿革，遇歧義以 §11b.8c 為準。
+
 ### 11b.6 node:test v1 adapter profile
 
 本 profile 是**本 spec 自行選定的穩定子集**，不是「本機 Node 恰好 export 什麼」。未列舉語法一律 `unsupported-syntax` fail-closed，**禁止以 regex 猜測**。
@@ -926,24 +934,85 @@ assertion call 的精確定義:
   callee 都必須解析回上列 import binding；computed member（assert[expr]）→ unsupported
 
 test declaration      : test binding 的直接呼叫，第一引數為字串字面值
+                        —— placement、argument 數量與 callback profile 見 §11b.6b（closed）
 container declaration : describe binding 的直接呼叫，第一引數為字串字面值
+                        —— 同上，見 §11b.6b
 modifier              : .only / .skip / .todo 支援（同一 declaration，modifier 不進 identity）；
                         其他成員存取 → unsupported
 nested container      : 支援任意深度；container chain 依詞法巢狀由外而內
 hooks                 : hook binding 的直接呼叫即 fixture declaration —— **只有**經上列合法
                         static binding 取得者才算；不承載 tag，但參與 oracle closure（11b.9）
+                        —— argument 與 callback profile 見 §11b.6b；
+                           span 與 applicability 見 §11b.9e
 ```
 
 **明文 unsupported（全部 fail-closed）**：第一引數非字串字面值（變數、含插值模板、串接、函式回傳）；迴圈／map／工廠產生的 parameterized 或 generated declaration；computed member；經物件屬性的間接別名；CommonJS `require`；`import()`；reflection 或執行期組出的 declaration。無插值的模板字串（`` `name` ``）視同字串字面值，允許。
 
 **其他 assertion library**（chai、expect…）在本 profile 維持 unsupported fail-closed，除非另立 adapter／profile。
 
+### 11b.6b Declaration placement 與 callback profile（closed；v1.7 新增）
+
+§11b.6 說了什麼是 `node:test` binding，卻沒說一個**呼叫**要長在哪裡、帶什麼參數才算 declaration。兩個 writer 因此可以對同一份 source 得到不同的 declaration 集合。本節是這件事的**唯一** normative 規則。
+
+**合法 declaration placement**
+
+```
+test／container／hook declaration 必須是一個完整的外層 ExpressionStatement，且只能是：
+  (a) Program.body 的直接元素；或
+  (b) 某個已合法辨識之 container callback 的 BlockStatement.body 直接元素。
+
+不得跨越普通 function、class、if、switch、loop（for／while／do）、try／catch／finally、
+非 container 的 callback，或任何其他控制結構，把其中的呼叫推測成靜態 declaration。
+
+辨識到 node:test binding 的呼叫但 placement 不符 → unsupported-syntax fail-closed。
+—— 不是「略過」：一個看得見的 test 呼叫沒有被登記，正是本模型要防的靜默漏審。
+```
+
+**test／container 的 argument 與 callback profile**
+
+test binding、其 `.only`／`.skip`／`.todo`，以及 describe binding 的合法呼叫：
+
+```
+arguments        : 恰兩個
+argument 0       : §11b.6 已允許的字串 literal 或無插值 template literal
+argument 1       : FunctionExpression 或 ArrowFunctionExpression
+callback body    : 必須是 BlockStatement
+async            : true 或 false 皆可
+generator        : FunctionExpression.generator 必須為 false
+parameters       : 零個以上的簡單 Identifier；default、rest、destructuring 不支援
+```
+
+**hook 的 argument**
+
+`before`／`after`／`beforeEach`／`afterEach` 的合法呼叫：
+
+```
+arguments : 恰一個
+argument 0: 與上方**完全相同**的 callback profile（BlockStatement body、非 generator、
+            簡單 Identifier parameters、async 可有可無）
+```
+
+**全部 unsupported（fail-closed，不得寬容解析）**：options argument（無論第幾個位置）、spread argument、缺 callback、多餘 argument、concise arrow expression body（`() => expr`）、generator callback、default／rest／destructuring parameter。
+
+**Declaration name（structuralId 的名稱來源）**
+
+```
+名稱 ＝ ECMAScript 解碼後的 StringValue：
+  string literal            → parser 回報的 decoded string value
+  無插值 template literal   → cooked value
+不使用 raw token、不使用引號形式、不使用 escape 拼法。
+decoded value 不 trim、不 case-fold。
+```
+
+因此 `"same"`、`'same'`、`` `same` ``、`"same"` 得到**同一個名稱**；只有實際 StringValue 不同才是不同名稱。這條與 §11b.8 的 duplicate-name 規則直接相扣：拼法不同但 StringValue 相同者，屬同一 duplicate group，因而各自需要唯一 `@tid`。
+
 ### 11b.7 Stable test ID（node:test v1）
 
 ```
 stableIdRule    : "line-comment-tid-v1"
 exact syntax    : 單行註解中一整行恰為   @tid <ID>
-                  前導空白與 `//` 之後的單一空格允許；行內不得有其他內容
+                  —— v1.7：唯一 lexical form（兩個分隔位置各恰一個 U+0020、
+                     ID 後不得有任何內容）見 §11b.8c；本行為沿革敘述
 ID grammar      : ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$
 位置            : 與 @src 同一 attachment block（11b.5），block 與 declaration 間無空白行
 與 @src 的順序  : 不拘（digest 不受影響，由 11b.8b 的 byte 演算法實際保證）
@@ -995,6 +1064,7 @@ base:  test("same", A) → #0        head:  test("same", NEW) → #0
                  **再**交給 parser 建立 range。range、行號、span 皆定義在正規化後的 bytes 上。
                  —— 順序不可顛倒：先切 range 再逐行移除，CRLF 檔案會留下孤立 CR。
 source range   : 仍包含完整 attachment block（供 tag／stable-ID parser 使用）
+                 —— v1.7：其 exact 起點與終點由 §11b.8c 定義（最外層 ExpressionStatement）
 hashing 之前   : 自該 range 逐行掃描，移除**合法且已附著**的 @tid 行，
                  連同其（已為 LF 的）行終止符；檔尾最後一行則無終止符可移。
                  移除後**不得留下任何 CR**。
@@ -1006,6 +1076,94 @@ hashing 之前   : 自該 range 逐行掃描，移除**合法且已附著**的 @
 ```
 
 由此**推導**（非散文宣稱）：同一份邏輯內容分別以 LF 與 CRLF 存檔，經步驟 0 後 bytes 完全相同 ⇒ 兩者所有 digest 相同（見 CRLF／LF 等價 AC）。`@tid` 與 `@src` 換序後，被移除的恰是同一組 `@tid` 行，剩餘 bytes 逐字相同 ⇒ `declarationDigest` 相同。`@tid` 的值或位置改變會改變 identity，但**不改** `declarationDigest`；任何一般註解的改動仍會改變 digest。
+
+### 11b.8c Attachment block、directive 語法與 canonical declaration range（exact；v1.7 新增）
+
+本節所有 range 都在 **§11b.8b 步驟 0 的 UTF-8／LF 正規化完成後**計算。它是 attachment 與 declaration range 的**唯一** authority；§11b.5 與 §11b.7 的敘述性條文以本節為準。
+
+**Attachment block 的掃描規則**
+
+```
+基準       : declaration 起始的實體行（physical line）
+方向       : 由該行向前逐行掃描
+每一行必須 : 只含可選的 SP／HTAB indentation，加上一個 // single-line comment
+相鄰       : 與下一行直接相鄰（中間沒有空白行、沒有非 line-comment 行）
+停止條件   : 遇到空白行、非 line-comment 行，或檔案開頭
+結果       : 距 declaration 最近的那個 **maximal 連續 block**
+```
+
+**只有這個 maximal block 能附著。**更早、且被空白行或任何非 line-comment 行隔開的 directive 是 **unattached**。
+
+**Directive accounting（不得靜默忽略）**
+
+```
+每一個「看起來意圖使用 @src 或 @tid」的 line comment 都必須得到唯一歸屬。
+以下全部 fail-closed：
+  malformed（有 directive 意圖但不符下方 exact syntax）
+  unattached（不在任何 declaration 的 maximal block 內）
+  ambiguous（同時可歸屬兩個 declaration）
+  borrowed（附著到 container、hook 或普通 helper —— 三者皆不得承載 @src 或 @tid）
+**不得**因為某一行「沒有成功附著」就當成普通註解而略過。
+```
+
+**`@src` 的唯一 lexical form**
+
+```
+physical line（不含結尾 LF）:
+  [SP|HTAB]*  "// @src "  <§2 canonical tag token>
+  ── "//" 之後恰一個 U+0020
+  ── "@src" 之後恰一個 U+0020
+  ── token 之後不得有任何空白、註解或其他內容
+```
+
+**`@tid` 的唯一 lexical form**
+
+```
+physical line（不含結尾 LF），語義即 ^[\x20\t]*// @tid <ID>$ :
+  兩個固定分隔位置各恰一個 U+0020
+  <ID> 依 §11b.7 的既有 ID grammar
+  ID 之後不得有 trailing whitespace 或任何其他內容
+```
+
+任何「indentation 後的 line comment，其 comment text 以 `@src`（或 `@tid`）為前綴卻不符 exact form」都是 **malformed directive**，**不是**普通註解。tag token 與 ID 的文法**不在此重複**：`@src` 的 token 引 §2 唯一 grammar，`@tid` 的 ID 引 §11b.7。
+
+**`@src REQ-…@DP-…` 的分層（adapter 與 pipeline 的職責切分）**
+
+adapter capability 在解析 tag 時**沒有** provenance-store context，卻被舊文字要求判斷「是否 exception-backed」。該職責切分如下：
+
+```
+adapter 負責（純 lexical／structural，不需 store）:
+  attachment、cardinality、上方 exact lexical grammar
+  DEC-…@DP-… 與 ASSUM-…@DP-… 的結構拒絕（這兩者永遠不得帶 qualifier）
+  把 REQ-…@DP-… 解析成 { clauseRef, dpRef }
+
+inventory pipeline 負責（需要 store）:
+  以**同一份 captured provenance-store pre-state** 驗該 REQ 是否確為 exception-backed，
+  並依 §7 驗其五項綁定
+  —— 在此 semantic validation 通過之前，**不得接受或 emit 任何 inventory entry**
+```
+
+**這不是放寬**：最終合法集合與 §2／§7 完全相同，非 exception-backed 的 `REQ-x@DP-y` 仍然 fail-closed，只是拒絕發生在有 store context 的那一層。「adapter 不驗 store」**不得**被讀成端到端 fail-closed 被放寬。
+
+**Canonical declaration range（唯一定義）**
+
+```
+syntactic declaration range
+  ＝ pinned parser 回報的**最外層 ExpressionStatement** 的 [byteStart, byteEnd)
+  ── 原始語法若有 semicolon，它位於該 ExpressionStatement range 之內，因此**進 digest**
+  ── trailing whitespace、行終止符、statement 之後的 trailing inline comment 都**不在** range
+
+canonical source range
+  start : 有 attachment block → 該 maximal block **第一行的 line-start byte**（含該行 indentation）
+          無 attachment block → ExpressionStatement.byteStart
+  end   : 永遠是 ExpressionStatement.byteEnd
+  ── range 包含 block 與 declaration 之間的 LF、indentation，以及所有非 directive 的 line comment
+
+其後才依 §11b.8b 移除**合法且已附著**的完整 @tid physical line（連同其 LF）。
+@src 行、一般註解、semicolon 與其餘 declaration bytes 全部保留。
+```
+
+**不得**以內層 `CallExpression`、callback function 或 callback body 作為 `declarationDigest` 的 range —— 那會讓「只增刪一個 semicolon」或「改動 callback 外的 bytes」不改變 digest。
 
 ### 11b.9 Effective-oracle edge contract（closed）
 
@@ -1023,8 +1181,8 @@ oracle dependency edge       : 產生 depRef 並進 digest。
 
 | # | Edge kind | 產生條件 | depRef.path | depRef.span |
 |---|---|---|---|---|
-| 1 | local-assertion-helper | 呼叫一個同 view 內可靜態解析的函式，其遞迴展開含 11b.6 定義的 assertion call | 被呼叫函式所在檔 | `{ kind: "whole-file" }` |
-| 2 | fixture-hook | 同 container chain 上經合法 hook binding 取得的 before／after／beforeEach／afterEach | 宣告所在檔 | 該 hook 的 body span |
+| 1 | local-assertion-helper | 呼叫一個同 view 內可靜態解析的函式，其遞迴展開含 11b.6 定義的 assertion call —— **callable 子集與 module resolver 的 closed 定義見 §11b.9f** | 被呼叫函式所在檔 | `{ kind: "whole-file" }` |
+| 2 | fixture-hook | 經合法 hook binding 取得的 before／after／beforeEach／afterEach —— **applicability 的 closed 規則見 §11b.9e** | 宣告所在檔 | callback `BlockStatement` 的 byte-range（含大括號）；**exact 形狀見 §11b.9e** |
 | 3 | snapshot-golden | 下方 snapshot-golden 契約所定義的 fs 讀取 | 解析出的 canonical repo-relative path | `{ kind: "whole-file" }` |
 
 
@@ -1253,6 +1411,130 @@ Step 6 事後**不能**做的（不得宣稱）:
 
 **Legacy v1 的處置**：v2 rollout 啟用後，凡符合 v1 exact absence shape 的文件一律**拒絕並要求重產**，不遷移、不推斷。**`entries: []` 的 v1 文件尤其不得被當成「已涵蓋、無變更」** —— 它沒有 `headViewDigest` 也沒有 `inputProvenanceStoreDigest`，無法證明 universe 為空，接受它等於為 populated coverage 開一個 bypass。判別方式依 §2 envelope 版本邊界：**v2 有 explicit discriminator，v1 只能以 exact absence shape 辨識**；形狀不吻合者一律 fail-closed，**不以 optional field 猜測**。
 
+### 11b.9e Fixture-hook 的 span 與 applicability（exact；v1.7 新增）
+
+§11b.9 表格第 2 列原本只寫「該 hook 的 body span」與「同 container chain」，兩者都不足以讓兩個 writer 得到同一組結果。本節是 fixture-hook 的**唯一** normative 規則。
+
+**depRef 形狀**
+
+```
+{
+  path: <hook declaration 所在的 canonical module path>,
+  span: {
+    kind: "byte-range",
+    startInclusive: callback.body.byteStart,
+    endExclusive:   callback.body.byteEnd
+  }
+}
+```
+
+`callback.body` 必須是 §11b.6b 所定義之合法 callback 的 `BlockStatement`。該 range **包含** `{` 與 `}`，**不包含** function／arrow 的 parameters，**也不是**大括號內部（不是 body 內容的 span）。
+
+**Applicable hook 集合（closed）**
+
+```
+1. Program scope 的直接 hook（即 Program.body 的直接元素）
+   → 適用於該 module 的**所有** test。
+2. 每一個 ancestor container callback 的 **direct body** 中的 hook
+   → 適用於該 container 的**完整 subtree**。
+3. 一個 test 的集合 ＝ Program scope
+                     ＋ 由外而內**所有** ancestor container scope
+                     ＋ current container scope。
+4. sibling container、descendant container，以及任何普通 function 內的 hook → **不適用**。
+5. before／after／beforeEach／afterEach 使用**完全相同**的靜態 applicability 規則
+   —— v1 不區分「每次」與「一次」的執行語義，那是 runtime 行為，不是靜態依賴。
+6. 合法 scope 內的 hook，**不因**位於 test declaration 之前或之後而改變 applicability
+   —— 位置是詞法巧合，不是依賴關係。
+7. hook declaration 本身產生上述 fixture-hook byte-range depRef。
+8. hook body **還必須**依 §11b.9／§11b.9f 的同一套 oracle traversal 規則遞迴展開，
+   把它觸及的 helper 與 snapshot dependency 一併納入。
+9. applicable hook 集合依 canonical depRef 排序去重，**不得**依發現順序輸出。
+```
+
+### 11b.9f local-assertion-helper 的 callable 子集與 module resolution（closed；v1.7 新增）
+
+§11b.9 表格第 1 列的「同 view 內**可靜態解析**的函式」是一個沒有演算法的占位詞。本節把它收斂成封閉子集，並補上跨 module 的 resolver。
+
+**合法 callable binding**
+
+只支援 **direct identifier call**（`helper(...)`），且該 identifier 必須唯一解析至下列之一：
+
+```
+1. FunctionDeclaration
+2. const <Identifier> = <FunctionExpression | ArrowFunctionExpression>
+
+function／arrow 的 body 必須是 BlockStatement；generator 不支援。
+```
+
+**不在 v1 子集（全部 unsupported）**：`let`／`var` function binding、assignment 或任何 reassignment、destructured binding、object／class method、member／computed／optional-chain call target、runtime factory 產生的 function、ambiguous binding。
+
+同一 module 內依 **ECMAScript lexical scope** 選最近的合法 binding。binding 不唯一、target 不符上述 closed form，或該 binding 存在 reassignment → **fail-closed**。
+
+**分析 callable body 時**
+
+```
+掃描所有**可能執行**的 expression 與控制流程分支
+  —— 不得因某個靜態條件「看起來為 false」而略過分支。
+不自動進入**未被呼叫**的 nested function 或 class body。
+只有經合法 direct identifier call 解析到的 callable 才遞迴展開。
+
+每個 reachable CallExpression 都必須被分類為下列四者之一：
+  1. §11b.6 的 assertion call
+  2. §11b.9 的 snapshot-golden fs call
+  3. 合法的 local callable（本節上方子集）
+  4. 已明文列出的 unsupported form
+未分類、dynamic、computed 或 ambiguous 的 call
+  → **不得**以「它不是 oracle」為由靜默略過，一律 fail-closed。
+```
+
+**Closed relative-module resolution**
+
+跨 module helper 只支援 **top-level static ESM relative import**：
+
+```
+specifier   : 字串 literal，且以 "./" 或 "../" 開頭
+副檔名      : 必須明寫 .mjs 或 .js
+不做        : extension probing、directory-index、package-exports resolution
+禁止        : 反斜線、query、fragment、absolute path、repo-root escape
+解析基準    : importer 的 canonical POSIX dirname
+命中要求    : 結果必須精確命中**同一 captured S1／base view** 內的 blob
+symlink     : 不跟隨，且不得作為 executable helper module
+.js 的模式  : 依既有「最近祖先 package.json」規則確定為 ESM；.mjs 直接為 ESM
+讀取來源    : parsing、binding 與 resolution 全程**只讀指定的 immutable view**，
+              不讀 live filesystem
+```
+
+**支援的 import form**：named import（允許 `as` alias）、default import。
+
+**支援的 target export form**：
+
+```
+export function name() {}
+export const name = <FunctionExpression | ArrowFunctionExpression>
+export { local }            ← 不帶 from 的 local export list
+export { local as exported } ← 同上
+export default function ...
+export default <FunctionExpression | block-bodied ArrowFunctionExpression>
+```
+
+**Unsupported**：namespace import、`export *`、任何**帶 `source`** 的 re-export、CommonJS、dynamic import、bare-package helper、extensionless import、不唯一的 export。`node:test`／`node:assert`／`node:fs` 的既有 closed 特例**不受本節影響**。
+
+**只存在但未進入 traversal path 的 import 不自行產生 depRef。**當某個 imported binding 位於 reachable call path 上時，**必須**使用上述 resolver；解析不到**不得**當成 empty closure。
+
+**Contributor 與 depRef**
+
+```
+若某 callable 自身、或其遞迴 reachable callable，含 §11b.6 allowlist 的 assertion：
+  traversal path 上**每一個**符合此判準的 callable 都是 local-assertion-helper contributor；
+  每個 contributor 產生其**所在 module** 的 { kind: "whole-file" } depRef；
+  root test declaration 本身仍**不**產生 assertion-root depRef（§11b.9 既有規則）；
+  同檔 contributor 仍產生該檔的 whole-file depRef；
+  cycle 依既有 visited-set 終止 —— 可確定解析的 cycle **不是**錯誤；
+  結果依既有 canonical depRef 排序與去重。
+```
+
+**只有**在「所有 reachable edge 都被完整、無歧義地分類」且「確實沒有 assertion、fixture 或 snapshot dependency」時，才可得到 empty closure。
+
 ### 11b.10 Base／head content view 與 snapshot 協定
 
 ```
@@ -1334,7 +1616,10 @@ base view ＝ baseProvenance.treeOid 指向的 EXACT immutable Git tree
 **不允許** regex-only fallback 冒充 AST
 ```
 
-`implementationIdentity ＝ { implementationId, parserId, parserVersion }`，其 carrier 為 registry 與 inventory entry 兩側，見 11b.9b。**`parserId`／`parserVersion` 的實際值必須在 dependency authorization 時一併決定並寫入 registry** —— 在此之前，正式的 `test-adapters.json` 不得落檔（§11b.12）。**兩個合規 writer 對同一 source 與同一 view，必須得到相同的 `structuralId`、dep closure 與所有 digest。**
+`implementationIdentity ＝ { implementationId, parserId, parserVersion }`，其 carrier 為 registry 與 inventory entry 兩側，見 11b.9b。**`parserId`／`parserVersion` 的實際值必須在 dependency authorization 時一併決定並寫入 registry** —— 在此之前，正式的 `test-adapters.json` 不得落檔（§11b.12）。**兩個合規 writer 對同一 source 與同一 view，必須得到相同的 `structuralId`、dep closure 與所有 digest。** ——
+v1.7 起，這個承諾所依賴的 declaration range、declaration name、hook applicability、callable 子集與
+module resolver 各有唯一定義（§11b.6b、§11b.8c、§11b.9e、§11b.9f）；在 v1.6 下它們尚未閉合，
+因此該承諾當時不可能被兩個獨立實作滿足。
 
 > **Non-normative implementation note（未核准）** —— 本 repo 目前**沒有**任何 AST dependency（零 dependencies、無 lockfile、無 node_modules，Node 亦不公開 AST parser API）。實作前必須**另行授權**，且該次授權必須**同時涵蓋兩項能力**：**AST parser** 與 **gitignore matching engine**（§11b.10）—— 後者同樣不是 Node 內建，把它當成「順手就有」會低估授權範圍。兩者各自可選 **(a) 新增外部 dependency ＋ lockfile**，或 **(b) vendored 實作**。取捨：(a) lockfile 可審計、升級路徑清楚，但這是 **shipped skill script** 的依賴 —— consuming project 執行時同樣需要它，對一個至今零 runtime dependency 的 plugin 是架構層改變；(b) 無 npm 解析與 supply-chain 攻擊面，但把第三方原始碼與其 license 帶進本 repo，升級須人工。兩案都需確認 license 相容與 Node >= 20 相容。傾向 **(a)**，因為 vendored 副本會重蹈本檔案已記錄多次的「複本漂移」問題。
 > **本段不構成採用決策；正式授權前，任何 package 名稱都不得寫入 §12 或任何 normative 章節。**
@@ -1417,7 +1702,7 @@ v2 rollout   : 啟用後 v1 envelope 一律拒絕並重產；entries=[] 的 v1 �
 32. **未處置即擋，且不可自陳**：batch fresh 且完整但含 `scope-violation` → `status=fail`；把該 finding **標成已處理卻未實際修復**同樣 fail（判準是 fresh batch 中不存在該 finding，不是 flag）。
 33. **間接 oracle 變更被捕獲**：（i）修改帶斷言的 helper、（ii）修改 fixture／setup、（iii）更新 snapshot／golden 檔、（iv）改動外部 parameterized expected-data —— 四者皆使受影響測試以 `status=modified` 進 inventory 並需語義審查；宣告本體未動不構成豁免。
 34. **無法歸屬即擋**：adapter 無法可靠解析的 assertion style（動態組裝／反射式斷言）→ fail-closed，**不得**視為 inventory empty。
-35. **Grammar 解析層拒絕**：`DEC-x@DP-y`、`ASSUM-x@DP-y`、非 exception-backed 的 `REQ-x@DP-y` → 解析層即 fail-closed。
+35. **Qualifier 拒絕（分層；最終合法集合不變）**：`DEC-x@DP-y` 與 `ASSUM-x@DP-y` 為純結構違規 → **解析層即 fail-closed**（不需 store）。非 exception-backed 的 `REQ-x@DP-y` 需要 store context → 由 inventory pipeline 以**同一份 captured provenance-store pre-state** 判定，並在**產生任何 inventory entry 之前** fail-closed（§11b.8c 分層規則）。三者最終皆不合法，與 §2／§7 完全相同。
 36. **結構重整可救**：container 改名使 `structuralId` 變動且無法唯一配對 → fail-closed；加上明示穩定 ID 後配對成功。單純搬檔（僅 path 變）→ `status=moved`，identity 維持。
 37. **前態不被課現時效力**（上游 v1.7）：把測試從 inactive／superseded clause retag 到 active successor、或移除引用過期 exception-backed REQ 的測試 → **通過**，不因舊 binding 失效而被擋。
 38. **拆掉 tag 不能脫逃**（上游 INV-B2 鏡射）：測試仍存在但移除 `@src` → inventory schema 層即非法（`status != deleted ⇒ tagAfter != null`），不得被誤讀成已刪除而跳過 post 驗證。
@@ -1529,6 +1814,19 @@ v2 rollout   : 啟用後 v1 envelope 一律拒絕並重產；entries=[] 的 v1 �
 136. **Parser 能力契約 fail-closed，且不含 re-export**（carrier：§11b.11）：syntax error、unsupported syntax、ambiguous binding → 各自 fail-closed；**regex-only fallback 不得冒充 AST**。**單變數負例**：測試經跨模組 **re-export** 取得 `test` 或 assertion binding（其餘寫法皆合法）→ **unsupported fail-closed** —— re-export 解析在 v1 profile 與 discovery 皆未授權，列為 capability 只會製造沒有規則支撐的期待。`parserId`／`parserVersion` 變動即視為 implementation 變動（carrier 見 AC114–115）。
 137. **兩個獨立 writer 結果一致**（carrier：§11b.8 canonical encoding ＋ §11b.9 排序 ＋ §11b.11 最後一句）：同一 source 與同一 view 下，兩個合規 writer 必須得到相同的 `structuralId`、dep closure 與所有 digest。**跨平台（Windows／Linux）未實跑者只能標為本機 deterministic contract evidence，不得宣稱 AC59 已滿足。**
 138. **Populated gate 在實作完整前仍 fail-closed**（carrier：§11b.12 rollout boundary）：v1.6 核准本身**不**解除 `parseInventory()` 的 `unsupported-populated-inventory`；只有 adapter registry（含已核准的 parser identity）、parser、gitignore engine、producer、canonical parser、consumer freshness 六者皆實作並通過其 AC 後才可接受 populated inventory。**另**：v1.13／v1.9／v1.6 三份 draft 核准後，Phase 1 與 Phase 2A 的既有 approved 狀態雖不撤回，但在 AC128 的 legacy boundary 實作並通過之前，**不得宣稱「新 draft promotion 後 Phase 1／2A 完全不受影響」** —— legacy batch record 的可讀範圍與禁止用途是新增的 consumer 義務。
+
+139. **Declaration range 是最外層 `ExpressionStatement`**（carrier：§11b.8c canonical declaration range）：**單變數** —— 在一個合法 test declaration 尾端**只增或只刪一個 semicolon**，其餘 bytes 完全不動 → `declarationDigest` **必須改變**（semicolon 落在 `ExpressionStatement` range 之內）。**反例實作**：以內層 `CallExpression`、callback function 或 callback body 作為 range 者，該 digest 會**不變** —— 本 AC 必須抓出。另驗：statement 之後的 trailing inline comment 與行終止符改動 → digest **不變**（不在 range 內）。
+140. **Canonical range 的起點與邊界**（carrier：§11b.8c）：有 attachment block 時，range **起於該 maximal block 第一行的 line-start byte**。**單變數正例** —— 只改該行的 indentation（空白多寡）→ digest **改變**；只改 block 與 declaration 之間某個一般 line comment 的內容 → digest **改變**。**單變數負例** —— 只改 statement 之後的 trailing inline comment，或只改 statement 之後的行終止符數量 → digest **不變**。無 attachment block 時起點為 `ExpressionStatement.byteStart`。
+141. **`@src`／`@tid` 的 exact lexical form 與 directive accounting**（carrier：§11b.8c）：**正例** —— `// @src <token>` 兩個分隔位置各恰一個 U+0020，token 後無任何內容。**單變數負例（其餘完全相同）** —— `//@src …`（缺空格）、`//  @src …`（兩個空格）、`// @src  …`（`@src` 後兩個空格）、`// @src <token> `（trailing space）、`// @src <token> // note`（token 後有內容）→ **各自 malformed fail-closed，不得降級為普通註解**。`@tid` 同樣五種負例。另驗四類歸屬失敗 —— **orphan**（被空白行隔開的 directive）、**malformed**、**ambiguous**（同時可歸屬兩個 declaration）、**borrowed**（附著於 container／hook／普通 helper）→ 全部 fail-closed。
+142. **test／container／hook 的 argument 與 callback closed profile**（carrier：§11b.6b）：**正例** —— 兩個 argument、字串 literal ＋ block-bodied arrow／function callback，`async` 有無皆可，零個或多個簡單 Identifier parameter。**單變數負例** —— options argument（`test("n", { skip: true }, fn)`）、缺 callback（`test("n")`）、多餘 argument（`test("n", fn, extra)`）、spread（`test(...args)`）、concise arrow expression body（`test("n", () => expr)`）、generator callback（`function* () {}`）、default parameter（`(t = 1) => {}`）、rest parameter（`(...a) => {}`）、destructuring parameter（`({ t }) => {}`）→ 各自 unsupported fail-closed。hook 端：恰一個 argument，`before(fn)` 通過；`before({}, fn)`、`before()`、`before(fn, extra)` 各自 fail-closed。**placement 負例** —— 同一個 `test(...)` 呼叫置於 `if`／`for`／`try`／普通 function／非 container callback 之內 → 各自 unsupported fail-closed，**不得**被推測成靜態 declaration。
+143. **Declaration name 取 decoded StringValue**（carrier：§11b.6b declaration name）：`test("same", …)`、`test('same', …)`、`` test(`same`, …) ``、`test("same", …)` 四種拼法 → **derived structuralId 相同**（因而落入同一 duplicate group，各自需要唯一 `@tid`）。**單變數負例** —— `test("same ", …)`（尾隨空格）、`test("Same", …)`（大小寫不同）→ StringValue 不同 ⇒ **名稱不同、structuralId 不同**（不 trim、不 case-fold）。
+144. **Fixture-hook 的 span 與 applicability**（carrier：§11b.9e）：**span 正例** —— depRef 為 `{ kind: "byte-range", startInclusive: callback.body.byteStart, endExclusive: callback.body.byteEnd }`，**包含** `{` 與 `}`。**單變數負例** —— 只改 hook callback 的 parameter 名稱（body bytes 不變）→ 該 depRef 的 span **不變**；把 span 實作成大括號**內部**者，會在只改 `{`／`}` 相鄰 bytes 時失準，本 AC 須抓出。**applicability 六案** —— (i) Program scope hook → 適用該 module 所有 test；(ii) ancestor container hook → 適用其完整 subtree；(iii) current container hook → 適用；(iv) **sibling** container hook → **不適用**；(v) **descendant** container hook → **不適用**；(vi) 同一合法 scope 內，hook 置於 test **之前**與**之後**兩種排列 → applicability **完全相同**。另驗 hook body 內的 helper／snapshot dependency 一併被遞迴展開，且集合依 canonical depRef 排序去重（非發現順序）。
+145. **同 module callable binding 的 closed 子集**（carrier：§11b.9f）：**正例** —— `function helper() {}` 與 `const helper = () => {}`／`const helper = function () {}`，皆為 block-bodied，經 direct identifier call 解析。**單變數負例** —— `let helper = …`、`var helper = …`、宣告後再 `helper = other`（reassignment）、object method（`obj.helper()`）、class method、computed call target（`obj[k]()`）、member call target、optional-chain call（`obj?.helper()`）、destructured binding（`const { helper } = …`）、runtime factory 產物、同名兩個合法 binding（ambiguous）→ 各自 fail-closed。另驗 generator function binding 不支援。
+146. **Relative-module resolver 的 closed 形式**（carrier：§11b.9f）：**正例** —— `import { helper } from "./h.mjs"`、`import { helper as h } from "../lib/h.js"`、`import helper from "./h.mjs"`；target 端 `export function`／`export const`／`export { local }`／`export { local as exported }`／`export default function`／`export default` 的 function／block-bodied arrow 皆可解析。**單變數負例** —— extensionless（`"./h"`）、directory index（`"./lib"` 期待 `lib/index.mjs`）、namespace import（`import * as h`）、帶 `source` 的 re-export（`export { helper } from "./h.mjs"`）、`export *`、bare package（`"lodash"`）、repo-root escape（`"../../../outside.mjs"`）、反斜線／query／fragment specifier、指向 symlink 的 helper module、`.js` 依最近祖先 `package.json` 判定為 CommonJS、以及解析結果不在同一 captured view 內 → 各自 fail-closed。另驗 resolver **只讀 immutable view**：把同名檔案只放在 live filesystem 而不在該 view 內 → 仍 fail-closed，**不得**解析成功。
+147. **Contributor 判準、SUT 排除、同檔、cycle 與 dedup**（carrier：§11b.9f contributor 段）：**正例** —— test → `a()` → `b()`，且只有 `b` 含 allowlist assertion → `a` 與 `b` **都是** contributor（`a` 在 traversal path 上且其遞迴展開含 assertion），各自產生所在 module 的 whole-file depRef；同檔 contributor 仍產生該檔 whole-file depRef；`a → b → a` 的 cycle 以 visited-set 終止且**不是錯誤**；同一 module 的多個 contributor 去重後只留一筆 whole-file depRef。**單變數負例** —— 只修改測試所呼叫的**不含 assertion** 的 SUT callable → 該 test **不得**因 oracle 規則被標為 `modified`。**關鍵負例** —— traversal path 上出現一個未分類／dynamic／computed／ambiguous 的 `CallExpression` → **fail-closed**，**不得**回傳 empty closure。
+148. **`REQ@DP` 的分層與最終合法集合不變**（carrier：§11b.8c 分層段 ＋ §2 ＋ §7）：**adapter 層** —— `REQ-x@DP-y` 被解析成 `{ clauseRef, dpRef }` 並通過 lexical／structural 檢查；`DEC-x@DP-y` 與 `ASSUM-x@DP-y` 仍由 adapter **直接拒絕**（不需 store）。**pipeline 層** —— 以**同一份 captured provenance-store pre-state** 驗該 REQ 是否確為 exception-backed；**單變數負例**：`REQ-x` 非 exception-backed 而 tag 寫成 `REQ-x@DP-y` → **在 entry emission 之前 fail-closed**，且**不得**產生任何 inventory entry。本 AC 必須斷言最終合法集合與 §2／§7 **完全相同**——分層只改變拒絕發生的層級，不放寬端到端 fail-closed。
+149. **兩個獨立 writer 對新增規則產生相同結果**（carrier：§11b.6b ＋ §11b.8c ＋ §11b.9e ＋ §11b.9f）：同一 normalized source 與同一 immutable view 下，兩個合規 writer 必須對 **declaration range、declaration name、hook applicability、callable／module resolver 與 oracle closure** 全部產生相同結果。**單變數負例** —— 兩個實作若在下列任一處分歧：range 取 `CallExpression` vs `ExpressionStatement`、name 取 raw token vs decoded StringValue、hook 只取 current container vs 取完整 ancestor chain、resolver 做 extension probing vs 不做 → 本 AC 必須產生不同輸出而被抓出。**跨平台（Windows／Linux）未實跑者只能標為本機 deterministic contract evidence**，不得宣稱 AC59／AC137 已滿足。
+150. **本輪只是 draft authority closure**（carrier：本文件狀態行 ＋ §11b.12 rollout boundary）：v1.7 為 **draft**，最後放行 baseline 仍是 **approved v1.6**。**不得**因本輪而宣稱 node-test-v1 executable component 已實作、AC136／AC137／AC138 已滿足、`unsupported-populated-inventory` 可解除、populated inventory 可接受，或 Phase 2 READY。**AC138 的 gate 與其附加限制不因本輪而弱化**；三項 executable capability（`structuralId`、tag attachment、`effectiveOracleDeps`）在本輪之後**仍然一項都沒有實作**。
 
 ## 14. 邊界與非目標
 
