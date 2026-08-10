@@ -1,5 +1,10 @@
 // Loader and validator for the formal test adapter registry.
 //
+// FILE NAME: this module is deliberately NOT called test-adapter-registry.mjs. Node's test runner
+// auto-discovers `test-*.mjs` anywhere in the tree, so that name made a production module run as a
+// test file on every `npm test`. The registry it reads keeps its spec-mandated name; only the
+// loader is renamed.
+//
 // SCOPE: this reads DATA and ALGORITHM IDs and nothing else. It does not map an implementationId to
 // an implementation module, and it does not provide structuralId, tag attachment or
 // effectiveOracleDeps -- those three capabilities remain unimplemented. It performs no declaration
@@ -152,7 +157,11 @@ function validateAdapter(raw, index, vendorParserIdentity) {
 
   // The registry declares an identity; the shipped manifest is what makes it true.
   const identity = exactKeys(raw.implementationIdentity, IDENTITY_KEYS, `${where}.implementationIdentity`);
-  for (const key of IDENTITY_KEYS) requireString(identity[key], `${where}.implementationIdentity.${key}`);
+  // §11b.3 gives every ID in the registry one grammar, and two of these three fields are IDs. The
+  // version is not: it carries a package version string, which that grammar would reject.
+  requireIdToken(identity.implementationId, `${where}.implementationIdentity.implementationId`);
+  requireIdToken(identity.parserId, `${where}.implementationIdentity.parserId`);
+  requireString(identity.parserVersion, `${where}.implementationIdentity.parserVersion`);
   if (identity.implementationId !== implementationId) {
     throw fail("E_REGISTRY_SHAPE", `${where}.implementationIdentity.implementationId is ${JSON.stringify(identity.implementationId)} but the adapter declares ${JSON.stringify(implementationId)}`);
   }

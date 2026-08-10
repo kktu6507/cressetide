@@ -1,5 +1,5 @@
 // Coverage for the formal test adapter registry and its loader:
-// cressetide/skills/vigil/scripts/test-adapters.json and test-adapter-registry.mjs.
+// cressetide/skills/vigil/scripts/test-adapters.json and adapter-registry.mjs.
 //
 // SCOPE NOTE: this covers the registry CARRIER and its VALIDATION only. Nothing here implements or
 // asserts the three executable capabilities an implementationId is meant to map to -- structuralId,
@@ -25,7 +25,7 @@ import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 
-import { TestAdapterRegistryError, loadTestAdapterRegistry } from "../cressetide/skills/vigil/scripts/test-adapter-registry.mjs";
+import { TestAdapterRegistryError, loadTestAdapterRegistry } from "../cressetide/skills/vigil/scripts/adapter-registry.mjs";
 import { loadVendorCapability } from "../cressetide/skills/vigil/scripts/parser-ignore-wrapper.mjs";
 import { root } from "./support.mjs";
 import { temporary } from "./helpers.mjs";
@@ -49,23 +49,32 @@ const codeOf = async (fn) => {
 
 // A repo-external copy of the shipped layout. Both the loader and the wrapper resolve their files
 // from their own location, so a scratch copy is a fully independent registry and capability.
-function scratchLayout(mutate) {
+// `mutateManifest` lets a single case move the vendor manifest and the registry together, which is
+// what it takes to isolate a registry-side rule: if only the registry moved, the wrapper's identity
+// comparison would fire first and hide whatever the registry was supposed to catch on its own.
+function scratchLayout(mutate, mutateManifest) {
   const dir = temporary("ctide-scratch-registry-");
   const vigil = path.join(dir, "cressetide", "skills", "vigil");
   fs.mkdirSync(path.join(vigil, "scripts"), { recursive: true });
   fs.cpSync(path.join(root, VENDOR_REL), path.join(vigil, "vendor"), { recursive: true });
-  for (const file of ["test-adapter-registry.mjs", "test-adapters.json", "parser-ignore-wrapper.mjs", "parser-ignore-worker.mjs", "parser-ignore-worker-runner.mjs"]) {
+  for (const file of ["adapter-registry.mjs", "test-adapters.json", "parser-ignore-wrapper.mjs", "parser-ignore-worker.mjs", "parser-ignore-worker-runner.mjs"]) {
     fs.cpSync(path.join(root, SCRIPTS_REL, file), path.join(vigil, "scripts", file));
+  }
+  if (mutateManifest) {
+    const manifestFile = path.join(vigil, "vendor", "vendor-manifest.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+    mutateManifest(manifest);
+    fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
   }
   const registryFile = path.join(vigil, "scripts", "test-adapters.json");
   const registry = JSON.parse(fs.readFileSync(registryFile, "utf8"));
   const written = mutate(registry);
   fs.writeFileSync(registryFile, written === undefined ? JSON.stringify(registry, null, 2) : written);
-  return { dir, url: pathToFileURL(path.join(vigil, "scripts", "test-adapter-registry.mjs")).href };
+  return { dir, url: pathToFileURL(path.join(vigil, "scripts", "adapter-registry.mjs")).href };
 }
 
-async function expectScratch(expected, mutate, label) {
-  const { dir, url } = scratchLayout(mutate);
+async function expectScratch(expected, mutate, label, mutateManifest) {
+  const { dir, url } = scratchLayout(mutate, mutateManifest);
   try {
     const scratch = await import(url);
     assert.strictEqual(await codeOf(() => scratch.loadTestAdapterRegistry()), expected, label);
@@ -217,6 +226,35 @@ test("registry: implementationIdentity shape and agreement", async () => {
     "parserId disagrees with the shipped manifest");
   await expectScratch("E_REGISTRY_IDENTITY", (r) => { r.adapters[0].implementationIdentity.parserVersion = "8.18.1"; },
     "parserVersion disagrees with the shipped manifest");
+});
+
+test("registry: an identity field must obey the ID-token grammar even when the manifest agrees", async () => {
+  // The registry and the manifest are moved together, so the equality check passes and the only
+  // thing left to object is the grammar itself. The package is renamed alongside the identity so
+  // the wrapper can still resolve its own authority packet -- otherwise E_IDENTITY_UNRESOLVED would
+  // fire first and this case would prove nothing about the registry.
+  await expectScratch(
+    "E_REGISTRY_SHAPE",
+    (r) => { r.adapters[0].implementationIdentity.parserId = "Acorn"; },
+    "capitalised parserId, agreed on both sides, is still not a legal ID token",
+    (m) => {
+      m.implementationIdentity.parserId = "Acorn";
+      for (const pkg of m.packages) if (pkg.name === "acorn") pkg.name = "Acorn";
+    },
+  );
+  // The same shape with a legal token is accepted, which is what makes the rejection above about
+  // the grammar rather than about the harness.
+  const { dir, url } = scratchLayout(
+    (r) => { r.adapters[0].implementationIdentity.parserId = "acorn-fork"; },
+    (m) => {
+      m.implementationIdentity.parserId = "acorn-fork";
+      for (const pkg of m.packages) if (pkg.name === "acorn") pkg.name = "acorn-fork";
+    },
+  );
+  try {
+    const scratch = await import(url);
+    assert.strictEqual(scratch.loadTestAdapterRegistry().adapters[0].implementationIdentity.parserId, "acorn-fork");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("registry: unknown implementationId fails closed without any module lookup", async () => {
