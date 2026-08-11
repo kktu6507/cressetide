@@ -1,12 +1,12 @@
 // Coverage for the formal test adapter registry and its loader:
 // cressetide/skills/vigil/scripts/test-adapters.json and adapter-registry.mjs.
 //
-// SCOPE NOTE: this covers the registry CARRIER and its VALIDATION only. Nothing here implements or
-// asserts the three executable capabilities an implementationId is meant to map to -- structuralId,
-// tag attachment and effectiveOracleDeps -- and nothing here runs discovery. Checking that a
-// discovery declaration holds exact data is not the discovery algorithm, so AC88-93 remain
-// uncovered. A green run does not mean the adapter executable component, a populated inventory,
-// AC136, AC138 or Phase 2 is ready.
+// SCOPE NOTE: this covers the registry CARRIER and its VALIDATION only. The three executable
+// capabilities an implementationId maps to -- structuralId, tag attachment and effectiveOracleDeps
+// -- are asserted in test/node-test-adapter.test.mjs, not here; this file only checks that the
+// mapping itself is closed. Nothing here runs discovery: checking that a discovery declaration
+// holds exact data is not the discovery algorithm, so AC88-93 remain uncovered. A green run does
+// not mean a producer, a populated inventory, AC136, AC138 or Phase 2 is ready.
 //
 // What it does cover:
 //   AC84  registry exact shape, unknown implementationId, and no dynamic module lookup
@@ -57,7 +57,10 @@ function scratchLayout(mutate, mutateManifest) {
   const vigil = path.join(dir, "cressetide", "skills", "vigil");
   fs.mkdirSync(path.join(vigil, "scripts"), { recursive: true });
   fs.cpSync(path.join(root, VENDOR_REL), path.join(vigil, "vendor"), { recursive: true });
-  for (const file of ["adapter-registry.mjs", "test-adapters.json", "parser-ignore-wrapper.mjs", "parser-ignore-worker.mjs", "parser-ignore-worker-runner.mjs"]) {
+  // The loader's whole static import graph has to come along, or the scratch copy fails to load for
+  // a reason that has nothing to do with the registry rule under test.
+  for (const file of ["adapter-registry.mjs", "test-adapters.json", "parser-ignore-wrapper.mjs", "parser-ignore-worker.mjs",
+    "parser-ignore-worker-runner.mjs", "node-test-adapter.mjs", "provenance-store.mjs"]) {
     fs.cpSync(path.join(root, SCRIPTS_REL, file), path.join(vigil, "scripts", file));
   }
   if (mutateManifest) {

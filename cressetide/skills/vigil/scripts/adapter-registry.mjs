@@ -5,12 +5,14 @@
 // test file on every `npm test`. The registry it reads keeps its spec-mandated name; only the
 // loader is renamed.
 //
-// SCOPE: this reads DATA and ALGORITHM IDs and nothing else. It does not map an implementationId to
-// an implementation module, and it does not provide structuralId, tag attachment or
-// effectiveOracleDeps -- those three capabilities remain unimplemented. It performs no declaration
-// discovery, no AST work and no adapter selection: validating a discovery declaration's exact data
-// is not the discovery algorithm. Nothing here should be read as claiming the adapter executable
-// component, a populated inventory, AC136, AC138 or Phase 2 is ready.
+// SCOPE: this reads DATA and ALGORITHM IDs, and resolves an implementationId to a component through
+// a CLOSED table of shipped objects. The set of components is closed at build time: an
+// implementationId that is not a key of that table is a fail-closed condition, never a module path
+// to load, and no caller can nominate one. This file still performs no declaration discovery, no
+// AST work and no adapter selection -- validating a discovery declaration's exact data is not the
+// discovery algorithm, and choosing which files an adapter covers is not implemented anywhere.
+// Nothing here should be read as claiming a producer, a populated inventory, AC136, AC137, AC138 or
+// Phase 2 is ready.
 //
 // AUTHORITY: two files, each authoritative for its own half.
 //   test-adapters.json beside this module  -> the semantic algorithm tokens and the registry data
@@ -23,6 +25,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { nodeTestV1Component } from "./node-test-adapter.mjs";
 import { loadVendorCapability } from "./parser-ignore-wrapper.mjs";
 
 export class TestAdapterRegistryError extends Error {
@@ -60,6 +63,29 @@ const IMPLEMENTATIONS = {
     },
   },
 };
+
+// 11b.2: the registry carries data, the capability lives in shipped code. This is that mapping, and
+// it is a table of already-imported objects -- there is no name-to-path step anywhere in it, so an
+// unknown implementationId cannot become a module load however it is spelled.
+const COMPONENTS = {
+  "node-test-v1": nodeTestV1Component,
+};
+
+// The two closed tables describe the same closed set from two sides, so they must not drift: a
+// declared implementation with no component, or a component with no declaration, is a build error
+// rather than something to discover at call time.
+{
+  const declared = Object.keys(IMPLEMENTATIONS).sort();
+  const shipped = Object.keys(COMPONENTS).sort();
+  if (declared.length !== shipped.length || declared.some((k, i) => k !== shipped[i])) {
+    throw fail("E_REGISTRY_UNSUPPORTED", `the implementation table ${JSON.stringify(declared)} and the component table ${JSON.stringify(shipped)} disagree`);
+  }
+  for (const [id, component] of Object.entries(COMPONENTS)) {
+    if (component === null || typeof component !== "object" || component.implementationId !== id) {
+      throw fail("E_REGISTRY_UNSUPPORTED", `the component registered for ${JSON.stringify(id)} does not declare that implementationId`);
+    }
+  }
+}
 
 const ROOT_KEYS = ["registryVersion", "adapters"];
 const ADAPTER_KEYS = ["adapterId", "language", "framework", "implementationId", "implementationIdentity",
@@ -250,4 +276,20 @@ export function loadTestAdapterRegistry() {
   // call to try again from the file rather than inheriting a half-validated result.
   if (cached === null) cached = buildRegistry();
   return cached;
+}
+
+// Resolution by lookup in a closed table, never by turning a name into a path. The argument is an
+// implementationId and nothing else: a module specifier, a URL, a file path or a component object
+// supplied by a caller is rejected the same way an unknown ID is.
+export function resolveAdapterComponent(implementationId) {
+  if (arguments.length !== 1) {
+    throw fail("E_API_ARGUMENTS", "resolveAdapterComponent takes exactly one argument; a module path, a component object or a parser cannot be supplied");
+  }
+  if (typeof implementationId !== "string" || implementationId === "") {
+    throw fail("E_REGISTRY_UNSUPPORTED", "resolveAdapterComponent expects an implementationId string");
+  }
+  if (!Object.prototype.hasOwnProperty.call(COMPONENTS, implementationId)) {
+    throw fail("E_REGISTRY_UNSUPPORTED", `${JSON.stringify(implementationId)} is not an implementation this build ships; no module is looked up by that name`);
+  }
+  return COMPONENTS[implementationId];
 }

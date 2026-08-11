@@ -2,9 +2,10 @@
 // parser-ignore-wrapper.mjs and the worker/runner pair it drives.
 //
 // SCOPE NOTE: these tests exercise the WRAPPER ONLY. Nothing here asserts declaration discovery,
-// node:test or node:assert binding classification, stableId/structuralId, oracle closure, adapter
-// selection or inventory production, because none of that is implemented. A green run of this file
-// does not mean the parser component, AC136, a populated inventory or Phase 2 is ready.
+// node:test or node:assert binding classification, stableId/structuralId or oracle closure -- that
+// layer is the node-test-v1 component, and it has its own file, test/node-test-adapter.test.mjs.
+// Adapter selection and inventory production are asserted nowhere, because neither is implemented.
+// A green run of this file does not mean a producer, a populated inventory or Phase 2 is ready.
 //
 // The public API takes no overrides, so nothing below injects through it. Worker fault fixtures go
 // straight to the internal runner, result-shape negatives go to the exported pure validators, and

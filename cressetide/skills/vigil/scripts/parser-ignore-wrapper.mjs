@@ -3,8 +3,10 @@
 // SCOPE: this is the dependency-wrapper layer and nothing else. It does not discover test
 // declarations, classify node:test or node:assert bindings, analyse scope, read attachment tags,
 // compute stableId/structuralId/oracle closures, select adapters, enumerate a worktree, or produce
-// any inventory. Those remain unimplemented, and nothing here should be read as claiming the
-// parser component, AC136, a populated inventory, or Phase 2 is ready.
+// any inventory. The node-test-v1 component in node-test-adapter.mjs now does the recognition and
+// closure work ON TOP of this file, calling parseModuleSource() like any other consumer; adapter
+// discovery, adapter selection and inventory production are still unimplemented anywhere. Nothing
+// here should be read as claiming a producer, a populated inventory, or Phase 2 is ready.
 //
 // AUTHORITY: the vendor manifest beside this file is the single machine-readable source for
 // identities, member targets, hashes, wrapper settings and resource limits. This file reads every
