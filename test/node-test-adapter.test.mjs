@@ -968,8 +968,10 @@ test("AC153 positives: prefixed, nested, dot-segment and escaped spellings all r
 });
 
 test("AC153 negatives 1-13: StringValue cases, each fail-closed on its own", async () => {
-  // Every literal here would, under some wrong reading, name a real file; none of them is rescued
-  // by the target being absent, because fixtures/golden.txt is in the view for all of them.
+  // Every case keeps the same control view. Under the wrong writers named by AC153, (1), (2), (3)
+  // and (5) resolve to the existing fixtures/golden.txt discriminator target. The remaining cases
+  // must still return E_SPECIFIER before exact-view existence is consulted; they are mandatory
+  // fail-closed negatives, but do not each claim an existing alternate target.
   const specifierCases = [
     ['"fixtures/golden.txt"', "(1) no ./ or ../ prefix"],
     ['"fix%74ures/golden.txt"', "(2) percent escape, unprefixed"],
