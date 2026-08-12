@@ -96,16 +96,21 @@ const dirnameOf = (p) => {
   return cut < 0 ? "" : p.slice(0, cut);
 };
 
-// 11b.9f "Relative specifier lexical normalization", the one algorithm: POSIX text, no URL parsing,
-// no percent decoding, "%" rejected outright so one string cannot have two readings, empty segments
-// rejected, "." and ".." resolved on a segment stack, and any pop past the repo root fatal.
+// The one lexical algorithm, shared by two callers under explicit authority: 11b.9f for a relative
+// module specifier, and approved v1.9's 11b.9 "snapshot path resolution" for a snapshot path, which
+// states in so many words that it shares 11b.9f's segment-stack steps rather than leaving an
+// implementer to infer them. Both require a literal ./ or ../ prefix; both read the decoded
+// StringValue as POSIX text; neither parses a URL or percent-decodes, because a "%" would give one
+// string two readings. Empty segments are rejected, "." and ".." resolve on a segment stack, and a
+// pop past the repo root is fatal.
 //
-// It is also the only algorithm this document gives for turning a relative literal into a canonical
-// repo-relative path, so the snapshot-golden path argument goes through it too. That is an applied
-// reading, not a rule invented here, and it is the strictly fail-closed side: every specifier this
-// accepts, a WHATWG-URL reading accepts identically, and the two only differ where this one refuses.
+// The one place the two callers deliberately differ is the extension rule, which is 11b.9f's alone
+// and is enforced at the import binding, not here: a golden file may carry any extension.
 function resolveRelativeLexically(fromDir, specifier, what) {
   if (typeof specifier !== "string" || specifier === "") throw fail("E_SPECIFIER", `${what} must be a non-empty string`);
+  if (!specifier.startsWith("./") && !specifier.startsWith("../")) {
+    throw fail("E_SPECIFIER", `${what} must begin with "./" or "../": ${specifier}`);
+  }
   if (specifier.includes("%")) throw fail("E_SPECIFIER", `${what} contains "%", which has two readings and is unsupported: ${specifier}`);
   if (specifier.includes("\\")) throw fail("E_SPECIFIER", `${what} contains a backslash: ${specifier}`);
   if (specifier.includes("?") || specifier.includes("#")) throw fail("E_SPECIFIER", `${what} carries a query or fragment: ${specifier}`);
@@ -130,6 +135,11 @@ function resolveRelativeLexically(fromDir, specifier, what) {
 
 // --- content view -------------------------------------------------------------------------------
 
+// Module-private identity brand. Membership is the ONLY thing that makes an object a view: it is
+// not a property, so it cannot be copied, spread, cloned or hand-written by a caller, and a
+// look-alike carrying the same four members is not the object this set holds.
+const VIEWS = new WeakSet();
+
 // The immutable view the caller captured. Bytes are copied in once, so a caller that mutates its
 // own buffer afterwards changes nothing here, and nothing below ever touches the live filesystem.
 export function createContentView(entries) {
@@ -149,7 +159,7 @@ export function createContentView(entries) {
     if (files.has(path)) throw fail("E_VIEW_INPUT", `duplicate view entry: ${path}`);
     files.set(path, Buffer.from(bytes));
   }
-  return Object.freeze({
+  const view = Object.freeze({
     size: files.size,
     has: (path) => files.has(path),
     // A copy per read: a caller cannot reach into the view and edit what the next read returns.
@@ -160,11 +170,16 @@ export function createContentView(entries) {
     },
     paths: () => Object.freeze([...files.keys()].sort(compareCodePoint)),
   });
+  // Branded only after it is fully built and frozen, so a half-made object is never a view.
+  VIEWS.add(view);
+  return view;
 }
 
+// Identity, not shape. A duck-typed object with the same four members, a spread copy and a clone
+// all fail here, because none of them is the object createContentView froze and branded.
 function requireView(view, what) {
-  if (view === null || typeof view !== "object" || typeof view.has !== "function" || typeof view.read !== "function") {
-    throw fail("E_VIEW_INPUT", `${what} must be a view built by createContentView`);
+  if (view === null || typeof view !== "object" || !VIEWS.has(view)) {
+    throw fail("E_VIEW_INPUT", `${what} must be the exact object returned by createContentView; a copy or a look-alike is not a captured view`);
   }
   return view;
 }
@@ -371,7 +386,15 @@ function buildScopes(program, bindings) {
     parentOf.set(node, parent);
     let inner = scope;
     if (FUNCTIONS.has(node.type)) {
-      inner = new Scope(scope, true);
+      // A named function expression binds its own name inside itself and nowhere else. That name
+      // lives in a scope of its own, OUTSIDE the parameter and body scope, so a parameter or a
+      // local of the same name still shadows it and the name never leaks to the enclosing scope.
+      let enclosing = scope;
+      if (node.type === "FunctionExpression" && node.id !== null && node.id !== undefined) {
+        enclosing = new Scope(scope, false);
+        enclosing.declare(node.id.name, { kind: "function-expression-name", node });
+      }
+      inner = new Scope(enclosing, true);
       for (const param of node.params) for (const id of patternNames(param, [])) inner.declare(id.name, { kind: "param", node: param });
     } else if (node.type === "BlockStatement" && (parent === null || !FUNCTIONS.has(parent.type))) {
       inner = new Scope(scope, false);
@@ -469,6 +492,13 @@ function collectBindings(program, modulePath) {
     // binding, so an unsupported import fails whether or not anything calls it.
     if (relative && !/\.(mjs|js)$/.test(specifier)) {
       throw fail("E_UNSUPPORTED_IMPORT", `${modulePath}: relative specifier ${JSON.stringify(specifier)} must name a .mjs or .js module; extension probing, directory index resolution and data imports are unsupported`);
+    }
+    // A relative import that declares no binding at all -- `import "./h.mjs"` or
+    // `import {} from "./h.mjs"` -- is not one of 11b.9f's supported forms. It is rejected for
+    // being that form, not for where it points, so an existing target does not rescue it. Named
+    // and default relative imports are untouched, used or not.
+    if (relative && statement.specifiers.length === 0) {
+      throw fail("E_UNSUPPORTED_IMPORT", `${modulePath}: ${JSON.stringify(specifier)} is imported for side effects with no binding; only named and default relative imports are supported`);
     }
 
     for (const s of statement.specifiers) {
@@ -875,10 +905,18 @@ function snapshotCall(module, call) {
   if (literal.type !== "Literal" || typeof literal.value !== "string") {
     throw fail("E_SNAPSHOT_FORM", `${where}: the snapshot path must be a plain string literal, not a variable, template or expression`);
   }
+  // Node for node. new.target is a MetaProperty too, so checking only the node TYPE would let
+  // new.target.url through and resolve a snapshot against something that is not the module.
   const base = first.arguments[1];
-  if (base.type !== "MemberExpression" || base.computed === true || base.object.type !== "MetaProperty"
-    || base.property.type !== "Identifier" || base.property.name !== "url") {
-    throw fail("E_SNAPSHOT_FORM", `${where}: the resolution root must be import.meta.url`);
+  const meta = base.type === "MemberExpression" ? base.object : null;
+  const exact = base.type === "MemberExpression"
+    && base.computed === false && base.optional !== true
+    && base.property.type === "Identifier" && base.property.name === "url"
+    && meta.type === "MetaProperty"
+    && meta.meta.type === "Identifier" && meta.meta.name === "import"
+    && meta.property.type === "Identifier" && meta.property.name === "meta";
+  if (!exact) {
+    throw fail("E_SNAPSHOT_FORM", `${where}: the resolution root must be exactly import.meta.url`);
   }
   const resolved = resolveRelativeLexically(dirnameOf(module.path), literal.value, `${where}: snapshot path`);
   return { api: allowed, path: resolved };
@@ -891,6 +929,15 @@ function callableFromDeclaration(declaration, path, name, where) {
     throw fail("E_ORACLE_BINDING", `${where}: ${JSON.stringify(name)} is reassigned somewhere in its module, so its declaration does not fix what it calls`);
   }
   if (declaration.kind === "function") {
+    const node = declaration.node;
+    if (node.generator === true) throw fail("E_ORACLE_BINDING", `${where}: ${JSON.stringify(name)} is a generator, which is unsupported`);
+    if (node.body.type !== "BlockStatement") throw fail("E_ORACLE_BINDING", `${where}: ${JSON.stringify(name)} has no block body`);
+    return { path, node, body: node.body };
+  }
+  // The function expression's own name resolves to the very same node the outer binding reaches, so
+  // callableKey is identical and the visited set terminates the self-call without counting the
+  // callable, its contributor status or its depRef twice.
+  if (declaration.kind === "function-expression-name") {
     const node = declaration.node;
     if (node.generator === true) throw fail("E_ORACLE_BINDING", `${where}: ${JSON.stringify(name)} is a generator, which is unsupported`);
     if (node.body.type !== "BlockStatement") throw fail("E_ORACLE_BINDING", `${where}: ${JSON.stringify(name)} has no block body`);
@@ -972,6 +1019,13 @@ async function expandBody(session, module, body, closure, ownerKey) {
 
   for (const call of pending) {
     const where = `${module.path}:${lineIndexAt(module.lines, call.byteStart) + 1}`;
+    // One guard ahead of every classifier, so an optional call cannot slip in as an assertion, a
+    // snapshot read, a local callable or an imported one. Acorn spells it two ways -- `a.b?.()`
+    // marks the CallExpression, `a?.b()` marks the callee -- and wraps either in a
+    // ChainExpression, which the walk above descends through rather than stopping at.
+    if (call.optional === true || (call.callee !== null && call.callee !== undefined && call.callee.optional === true)) {
+      throw fail("E_ORACLE_UNCLASSIFIED", `${where}: an optional call is conditional at run time, so it cannot be classified as an oracle edge`);
+    }
     if (assertionCall(module, call)) {
       closure.hasAssertion.add(ownerKey);
       continue;

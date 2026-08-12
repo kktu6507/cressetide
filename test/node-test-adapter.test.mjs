@@ -232,7 +232,16 @@ test("uninterpolated template literals are legal declaration names", async () =>
 });
 
 // ---------------------------------------------------------------------------------------------
-// Attachment block, directive accounting, exact lexical form  (AC98, AC99, AC100, AC141)
+// Attachment block, directive accounting, exact lexical form  (AC99, AC100, AC141, and the
+// component-local half of AC98)
+//
+// AC98 has two halves and only one of them is reachable from here. The COMPONENT-LOCAL half is tag
+// cardinality: exactly one @src per attachment block, a repeat rejected even when byte-identical,
+// and @tid never counting toward it. That is what the cardinality test below covers. The other
+// half -- a test still present in HEAD with zero @src failing under INV-B2 -- belongs to the
+// inventory pipeline, which knows which view it is looking at; the component does not, reports
+// `tag: null`, and enforces nothing about it. Nothing here covers that half, and no pipeline
+// enforcement is added. The AC99 claim below is unaffected and stands in full.
 // ---------------------------------------------------------------------------------------------
 
 test("the maximal block nearest the declaration attaches, and intervening comments stay inside it", async () => {
@@ -278,12 +287,18 @@ test("one block that could serve two declarations on the same line is ambiguous"
   )), "E_DIRECTIVE_AMBIGUOUS");
 });
 
+// Covers the component-local cardinality half of AC98 only -- see the section note above. The
+// head-side zero-@src rule (INV-B2) is the pipeline's and is not asserted anywhere in this file.
 test("exactly one @src per declaration, whether or not the second one repeats the first", async () => {
   assert.strictEqual(await rejects(simple(`// @src ${REQ}`, `// @src ${DEC}`, 'test("n", () => { assert.ok(1); });')), "E_TAG_CARDINALITY");
   assert.strictEqual(await rejects(simple(`// @src ${REQ}`, `// @src ${REQ}`, 'test("n", () => { assert.ok(1); });')), "E_TAG_CARDINALITY");
   const declaration = await only(simple(`// @src ${REQ}`, "// @tid alpha", 'test("n", () => { assert.ok(1); });'));
   assert.deepStrictEqual(declaration.tag, { clauseRef: REQ });
   assert.strictEqual(declaration.stableId, "alpha");
+  // A declaration with no @src reports tag: null and is NOT rejected here. Deciding whether that
+  // is legal needs to know whether this view is base or head, which the component cannot know.
+  const untagged = await only(simple('test("n", () => { assert.ok(1); });'));
+  assert.strictEqual(untagged.tag, null);
 });
 
 test("@tid is an identity hint: zero or one per declaration, never a substitute for @src", async () => {
@@ -876,57 +891,199 @@ test("base and head expand separately: the same declaration over different helpe
 });
 
 // ---------------------------------------------------------------------------------------------
-// Snapshot golden  (AC108, AC111)
+// Snapshot golden: the AC153 executable matrix  (AC108, AC111, AC153)
+//
+// One control fixture for the whole matrix. Every case below changes exactly the dimension it
+// names -- the argument-0 StringValue, the AST carrier, where the module sits, whether the target
+// is in the view, or an enclosing scope binding -- and holds everything else equal to this.
+//
+// The discriminator fixtures only work if fixtures/golden.txt EXISTS, which is asserted before the
+// matrix runs. A writer that skipped the ./ gate resolves "fixtures/golden.txt" onto it and
+// accepts; a writer that percent-decodes resolves "fix%74ures/..." onto it and accepts; a writer
+// that hands the literal to a URL parser resolves "file:fixtures/..." onto it and accepts. If the
+// target were absent, all three would fail for the wrong reason and prove nothing.
 // ---------------------------------------------------------------------------------------------
 
-test("snapshot-golden accepts both allowlisted APIs from their own specifiers", async () => {
-  const cases = [
-    ['import fs from "node:fs";', 'fs.readFileSync(new URL("fixtures/golden.txt", import.meta.url));'],
-    ['import * as fs from "node:fs";', 'fs.readFile(new URL("fixtures/golden.txt", import.meta.url), () => {});'],
-    ['import { readFileSync } from "node:fs";', 'readFileSync(new URL("fixtures/golden.txt", import.meta.url));'],
-    ['import { readFile } from "node:fs/promises";', 'await readFile(new URL("fixtures/golden.txt", import.meta.url));'],
-    ['import { readFile as read } from "node:fs/promises";', 'await read(new URL("fixtures/golden.txt", import.meta.url));'],
+const GOLDEN = "fixtures/golden.txt";
+const CANONICAL_DEP = [{ path: GOLDEN, span: { kind: "whole-file" } }];
+const FS_DEFAULT = 'import fs from "node:fs";';
+
+// The control: one module, one test, one snapshot read, and the golden file it reads.
+const snapshotControl = (call, files = {}, importLine = FS_DEFAULT) => ({
+  "a.test.mjs": src('import test from "node:test";', 'import assert from "node:assert";', importLine,
+    `test("n", async () => { ${call} assert.ok(1); });`),
+  [GOLDEN]: "golden\n",
+  ...files,
+});
+const snapshotRead = (literal) => `fs.readFileSync(new URL(${literal}, import.meta.url));`;
+
+test("AC153 control: the discriminator target really is in the view", async () => {
+  const files = snapshotControl(snapshotRead('"./fixtures/golden.txt"'));
+  const control = viewOf(files);
+  assert.strictEqual(control.has(GOLDEN), true, "every discriminator below depends on this file existing");
+  assert.deepStrictEqual((await only(files)).effectiveOracleDeps, CANONICAL_DEP);
+});
+
+test("AC153 positives: prefixed, nested, dot-segment and escaped spellings all reach one canonical depRef", async () => {
+  // (1) the plain prefixed form.
+  assert.deepStrictEqual((await only(snapshotControl(snapshotRead('"./fixtures/golden.txt"')))).effectiveOracleDeps, CANONICAL_DEP);
+
+  // (2) a nested module resolving against ITS OWN dirname, not the repo root and not a cwd.
+  const nested = await only({
+    "deep/nest/a.test.mjs": src('import test from "node:test";', 'import assert from "node:assert";', FS_DEFAULT,
+      'test("n", () => { fs.readFileSync(new URL("../fixtures/golden.txt", import.meta.url)); assert.ok(1); });'),
+    "deep/fixtures/golden.txt": "golden\n",
+  }, "deep/nest/a.test.mjs");
+  assert.deepStrictEqual(nested.effectiveOracleDeps, [{ path: "deep/fixtures/golden.txt", span: { kind: "whole-file" } }]);
+  // A one-line control proving the root is the module's dirname: the same literal from the repo
+  // root would name fixtures/golden.txt instead, and does not resolve from deep/nest.
+  assert.notStrictEqual(nested.effectiveOracleDeps[0].path, GOLDEN);
+
+  // (3) dot segments resolve lexically to the SAME canonical depRef, compared field by field.
+  for (const literal of ['"./lib/../fixtures/golden.txt"', '"./fixtures/./golden.txt"', '"./lib/./../fixtures/golden.txt"']) {
+    const declaration = await only(snapshotControl(snapshotRead(literal)));
+    assert.deepStrictEqual(declaration.effectiveOracleDeps, CANONICAL_DEP, literal);
+  }
+
+  // (4) the decoded StringValue decides, not the raw token. The source really does carry a
+  // backslash escape -- asserted on the bytes -- and \x2e decodes to ".".
+  const escapedLiteral = `"${String.raw`\x2e`}/fixtures/golden.txt"`;
+  const escapedFiles = snapshotControl(snapshotRead(escapedLiteral));
+  const sourceBytes = B(escapedFiles["a.test.mjs"]);
+  assert.ok(sourceBytes.includes(B(String.raw`\x2e`)), "the fixture must really contain a backslash escape in its source");
+  assert.strictEqual(sourceBytes.indexOf(0x5c) >= 0, true, "a literal U+005C must be present in the source bytes");
+  assert.deepStrictEqual((await only(escapedFiles)).effectiveOracleDeps, CANONICAL_DEP, "decoded StringValue is ./fixtures/golden.txt");
+
+  // (5) both allowlisted APIs, through every supported binding form, still resolve.
+  const apis = [
+    [FS_DEFAULT, snapshotRead('"./fixtures/golden.txt"')],
+    ['import * as fs from "node:fs";', 'fs.readFile(new URL("./fixtures/golden.txt", import.meta.url), () => {});'],
+    ['import { readFileSync } from "node:fs";', 'readFileSync(new URL("./fixtures/golden.txt", import.meta.url));'],
+    ['import { readFile } from "node:fs/promises";', 'await readFile(new URL("./fixtures/golden.txt", import.meta.url));'],
+    ['import { readFile as read } from "node:fs/promises";', 'await read(new URL("./fixtures/golden.txt", import.meta.url));'],
   ];
-  for (const [importLine, call] of cases) {
-    const declaration = await only({
-      "a.test.mjs": src('import test from "node:test";', 'import assert from "node:assert";', importLine, `test("n", async () => { ${call} assert.ok(1); });`),
-      "fixtures/golden.txt": "golden\n",
-    });
-    assert.deepStrictEqual(declaration.effectiveOracleDeps, [{ path: "fixtures/golden.txt", span: { kind: "whole-file" } }], call);
+  for (const [importLine, call] of apis) {
+    assert.deepStrictEqual((await only(snapshotControl(call, {}, importLine))).effectiveOracleDeps, CANONICAL_DEP, call);
   }
 });
 
-test("snapshot-golden negatives", async () => {
+test("AC153 negatives 1-13: StringValue cases, each fail-closed on its own", async () => {
+  // Every literal here would, under some wrong reading, name a real file; none of them is rescued
+  // by the target being absent, because fixtures/golden.txt is in the view for all of them.
+  const specifierCases = [
+    ['"fixtures/golden.txt"', "(1) no ./ or ../ prefix"],
+    ['"fix%74ures/golden.txt"', "(2) percent escape, unprefixed"],
+    ['"./fix%74ures/golden.txt"', "(3) percent escape, prefixed"],
+    ['"C:/golden.txt"', "(4) drive-letter spelling"],
+    ['"file:fixtures/golden.txt"', "(5) file: scheme"],
+    ['"mailto:golden"', "(6) non-file scheme"],
+    ['"/absolute/golden.txt"', "(7) absolute path"],
+    ['"./a//golden.txt"', "(8) empty segment"],
+    ['"./golden.txt?x"', "(9) query"],
+    ['"./golden.txt#x"', "(10) fragment"],
+    [`"./dir${String.raw`\\`}golden.txt"`, "(11) backslash in the decoded StringValue"],
+    ['"../../../outside.txt"', "(12) pop past the repo root"],
+  ];
+  for (const [literal, label] of specifierCases) {
+    assert.strictEqual(await rejects(snapshotControl(snapshotRead(literal))), "E_SPECIFIER", label);
+  }
+  // (11) again, on the bytes: two U+005C in the source token, exactly one after decoding.
+  const backslashFixture = snapshotControl(snapshotRead(`"./dir${String.raw`\\`}golden.txt"`));
+  const bytes = B(backslashFixture["a.test.mjs"]);
+  let backslashes = 0;
+  for (const byte of bytes) if (byte === 0x5c) backslashes += 1;
+  assert.strictEqual(backslashes, 2, "the source token must carry two consecutive U+005C");
+  assert.ok(bytes.includes(Buffer.from([0x5c, 0x5c])), "and they must be adjacent");
+  assert.strictEqual(JSON.parse(`"./dir${String.raw`\\`}golden.txt"`), `./dir${String.fromCharCode(0x5c)}golden.txt`,
+    "which decodes to exactly one U+005C");
+
+  // (13) a perfectly canonical path whose target is not in the view. This is the ONLY case that
+  // fails for absence, and it carries its own code.
+  assert.strictEqual(await rejects(snapshotControl(snapshotRead('"./fixtures/absent.txt"'))), "E_SNAPSHOT_PATH", "(13) target absent");
+});
+
+test("AC153 negatives 14-17: carrier, shadowing and non-literal argument", async () => {
+  // (14) new.target is a MetaProperty too, so a type-only check would let this resolve.
+  assert.strictEqual(await rejects(snapshotControl(
+    "outer();", { "a.test.mjs": src('import test from "node:test";', 'import assert from "node:assert";', FS_DEFAULT,
+      'function outer() { fs.readFileSync(new URL("./fixtures/golden.txt", new.target.url)); }',
+      'test("n", () => { outer(); assert.ok(1); });') },
+  )), "E_SNAPSHOT_FORM", "(14) new.target.url");
+
+  // (15) import.meta["url"] is a computed member, which the vendored parse rejects for the whole
+  // module before the component sees a tree. Still fail-closed, one layer earlier, and the parser
+  // is not relaxed to move it.
+  assert.strictEqual(await rejects(snapshotControl('fs.readFileSync(new URL("./fixtures/golden.txt", import.meta["url"]));')),
+    "E_UNSUPPORTED_SYNTAX", "(15) import.meta[\"url\"]");
+
+  // (16) URL shadowed by a local, an import and a parameter.
+  assert.strictEqual(await rejects(snapshotControl(snapshotRead('"./fixtures/golden.txt"'), {
+    "a.test.mjs": src('import test from "node:test";', 'import assert from "node:assert";', FS_DEFAULT,
+      "const URL = null;", `test("n", () => { ${snapshotRead('"./fixtures/golden.txt"')} assert.ok(1); });`),
+  })), "E_SNAPSHOT_FORM", "(16a) local binding shadows URL");
+  assert.strictEqual(await rejects({
+    "a.test.mjs": src('import test from "node:test";', 'import assert from "node:assert";', FS_DEFAULT,
+      'import { URL } from "./shim.mjs";', `test("n", () => { ${snapshotRead('"./fixtures/golden.txt"')} assert.ok(1); });`),
+    "shim.mjs": src("export const URL = null;"),
+    [GOLDEN]: "golden\n",
+  }), "E_SNAPSHOT_FORM", "(16b) import binding shadows URL");
+  assert.strictEqual(await rejects({
+    "a.test.mjs": src('import test from "node:test";', 'import assert from "node:assert";', FS_DEFAULT,
+      `function outer(URL) { ${snapshotRead('"./fixtures/golden.txt"')} assert.ok(1); }`,
+      'test("n", () => { outer(null); });'),
+    [GOLDEN]: "golden\n",
+  }), "E_SNAPSHOT_FORM", "(16c) parameter shadows URL");
+
+  // (17) an uninterpolated template literal and a variable are both non-literal arguments.
+  assert.strictEqual(await rejects(snapshotControl("fs.readFileSync(new URL(`./fixtures/golden.txt`, import.meta.url));")),
+    "E_SNAPSHOT_FORM", "(17a) uninterpolated template literal");
+  assert.strictEqual(await rejects(snapshotControl(
+    'const where = "./fixtures/golden.txt"; fs.readFileSync(new URL(where, import.meta.url));')),
+  "E_SNAPSHOT_FORM", "(17b) variable argument");
+});
+
+test("AC153 discriminators: what each negative can and cannot prove", async () => {
+  // (1) is the one that separates a literal-as-POSIX writer with no prefix gate: read as ordinary
+  // POSIX text it lands on the control's own target, which exists, so such a writer accepts it.
+  const control = viewOf(snapshotControl(snapshotRead('"./fixtures/golden.txt"')));
+  assert.strictEqual(control.has(GOLDEN), true);
+  assert.strictEqual(await rejects(snapshotControl(snapshotRead('"fixtures/golden.txt"'))), "E_SPECIFIER");
+
+  // (2), (3) and (5) are the three that separate a WHATWG/percent-decoding writer: each resolves,
+  // under WHATWG file-URL semantics, onto that same existing target. This asserts the premise
+  // rather than asserting it in prose.
+  const moduleUrl = "file:///repo/a.test.mjs";
+  for (const literal of ["fix%74ures/golden.txt", "./fix%74ures/golden.txt", "file:fixtures/golden.txt"]) {
+    const resolved = decodeURIComponent(new URL(literal, moduleUrl).pathname);
+    assert.strictEqual(resolved, `/repo/${GOLDEN}`, `${literal} would resolve onto the existing target`);
+  }
+  // (4), (6) and (7) are mandatory negatives but do NOT separate that writer on their own: under
+  // the same semantics (4) and (6) stop being file URLs at all, and (7) is a repo-boundary case a
+  // compliant writer and a guarded WHATWG writer both reject.
+  assert.notStrictEqual(new URL("C:/golden.txt", moduleUrl).protocol, "file:");
+  assert.notStrictEqual(new URL("mailto:golden", moduleUrl).protocol, "file:");
+  assert.strictEqual(new URL("/absolute/golden.txt", moduleUrl).pathname, "/absolute/golden.txt");
+});
+
+test("snapshot-golden negatives that are about the API and the binding, not the path", async () => {
+  // Each of these carries a legal ./ prefix, so the prefix gate cannot be what rejects it.
   const build = (importLine, call, files = {}) => ({
     "a.test.mjs": src('import test from "node:test";', 'import assert from "node:assert";', importLine, `test("n", async () => { ${call} assert.ok(1); });`),
-    "fixtures/golden.txt": "golden\n",
+    [GOLDEN]: "golden\n",
     ...files,
   });
-  const FS = 'import fs from "node:fs";';
-  assert.strictEqual(await rejects(build(FS, 'fs.readdirSync(new URL("fixtures", import.meta.url));')), "E_SNAPSHOT_FORM", "API off the allowlist");
-  assert.strictEqual(await rejects(build('import { readFileSync } from "node:fs/promises";', 'readFileSync(new URL("fixtures/golden.txt", import.meta.url));')), "E_SNAPSHOT_FORM", "readFileSync is not a node:fs/promises API here");
-  assert.strictEqual(await rejects(build(FS, 'fs.readFileSync("fixtures/golden.txt");')), "E_SNAPSHOT_FORM", "bare cwd-relative literal");
-  assert.strictEqual(await rejects(build(FS, "fs.readFileSync(target);", {})), "E_SNAPSHOT_FORM", "variable path");
-  assert.strictEqual(await rejects(build(FS, "fs.readFileSync(new URL(`fixtures/${name}.txt`, import.meta.url));")), "E_SNAPSHOT_FORM", "template path");
-  assert.strictEqual(await rejects(build(FS, 'fs.readFileSync(new URL("../../../outside.txt", import.meta.url));')), "E_SPECIFIER", "escapes the repo root");
-  assert.strictEqual(await rejects(build(FS, 'fs.readFileSync(new URL("fixtures/absent.txt", import.meta.url));')), "E_SNAPSHOT_PATH", "not a blob in the view");
-  assert.strictEqual(await rejects(build(FS, 'fs.readFileSync(new URL("fixtures/golden.txt", "file:///elsewhere/"));')), "E_SNAPSHOT_FORM", "resolution root is not import.meta.url");
-  assert.strictEqual(await rejects(build('import { readFile } from "node:fs";', 'readFile.call(null, new URL("fixtures/golden.txt", import.meta.url));')), "E_SNAPSHOT_FORM", "member call on an fs function binding");
+  assert.strictEqual(await rejects(build(FS_DEFAULT, 'fs.readdirSync(new URL("./fixtures", import.meta.url));')), "E_SNAPSHOT_FORM", "API off the allowlist");
+  assert.strictEqual(await rejects(build('import { readFileSync } from "node:fs/promises";', 'readFileSync(new URL("./fixtures/golden.txt", import.meta.url));')), "E_SNAPSHOT_FORM", "readFileSync is not a node:fs/promises API here");
+  assert.strictEqual(await rejects(build(FS_DEFAULT, 'fs.readFileSync("./fixtures/golden.txt");')), "E_SNAPSHOT_FORM", "bare literal with no URL carrier");
+  assert.strictEqual(await rejects(build(FS_DEFAULT, 'fs.readFileSync(new URL("./fixtures/golden.txt", "file:///elsewhere/"));')), "E_SNAPSHOT_FORM", "resolution root is not import.meta.url");
+  assert.strictEqual(await rejects(build('import { readFile } from "node:fs";', 'readFile.call(null, new URL("./fixtures/golden.txt", import.meta.url));')), "E_SNAPSHOT_FORM", "member call on an fs function binding");
+  assert.strictEqual(await rejects(build(FS_DEFAULT, 'fs.readFileSync(new URL("./fixtures/golden.txt"));')), "E_SNAPSHOT_FORM", "new URL with one argument");
   // A JSON import is no longer an edge kind at all, so it falls into unsupported rather than being
   // read as expected data.
   assert.strictEqual(await rejects({
     "a.test.mjs": src('import test from "node:test";', 'import assert from "node:assert";', 'import expected from "./expected.json";', 'test("n", () => { assert.ok(expected); });'),
     "expected.json": "{}\n",
   }), "E_UNSUPPORTED_IMPORT");
-});
-
-test("a snapshot path resolves against the module's own directory", async () => {
-  const declaration = await only({
-    "deep/nest/a.test.mjs": src('import test from "node:test";', 'import assert from "node:assert";', 'import fs from "node:fs";',
-      'test("n", () => { fs.readFileSync(new URL("../golden.txt", import.meta.url)); assert.ok(1); });'),
-    "deep/golden.txt": "golden\n",
-  }, "deep/nest/a.test.mjs");
-  assert.deepStrictEqual(declaration.effectiveOracleDeps, [{ path: "deep/golden.txt", span: { kind: "whole-file" } }]);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -943,7 +1100,7 @@ test("depRefs come back sorted by path then span, de-duplicated, and independent
       'import { m } from "./m.mjs";',
       'import fs from "node:fs";',
       "before(() => { assert.ok(1); });",
-      `test("n", () => { ${first}(); ${second}(); ${first}(); fs.readFileSync(new URL("golden.txt", import.meta.url)); });`,
+      `test("n", () => { ${first}(); ${second}(); ${first}(); fs.readFileSync(new URL("./golden.txt", import.meta.url)); });`,
     ),
     "z.mjs": helper("z"),
     "m.mjs": helper("m"),
@@ -966,6 +1123,159 @@ test("two hook depRefs in one file are ordered by their canonical span encoding"
   const spans = declaration.effectiveOracleDeps.map((d) => JSON.stringify(d.span));
   assert.strictEqual(spans.length, 2);
   assert.deepStrictEqual(spans, [...spans].sort(), "the order is the canonical encoding's, not the discovery order");
+});
+
+// ---------------------------------------------------------------------------------------------
+// Named function expressions, optional calls, zero-specifier relative imports, view identity
+// ---------------------------------------------------------------------------------------------
+
+test("a named function expression binds its own name inside itself, and self-reference resolves", async () => {
+  const declaration = await only(simple(
+    "const helper = function recur() {",
+    "  assert.ok(1);",
+    "  if (false) { recur(); }",
+    "};",
+    'test("x", () => { helper(); });',
+  ));
+  // One callable, reached twice, counted once: the self-call resolves to the same node the outer
+  // binding reaches, so the visited set terminates it and the module gets one whole-file depRef.
+  assert.deepStrictEqual(declaration.effectiveOracleDeps, [{ path: "a.test.mjs", span: { kind: "whole-file" } }]);
+  assert.strictEqual(declaration.effectiveOracleDeps.length, 1, "the contributor is not counted twice");
+});
+
+test("the function expression's name is invisible outside it", async () => {
+  assert.strictEqual(await rejects(simple(
+    "const helper = function recur() { assert.ok(1); };",
+    'test("x", () => { recur(); });',
+  )), "E_ORACLE_UNCLASSIFIED", "recur does not exist in the enclosing scope");
+  // And it does not leak as a module binding either: a second declaration of the same name at
+  // module scope is what wins for anyone outside.
+  const declaration = await only(simple(
+    "function recur() { assert.ok(1); }",
+    "const helper = function recur2() { assert.ok(2); };",
+    'test("x", () => { recur(); helper(); });',
+  ));
+  assert.deepStrictEqual(declaration.effectiveOracleDeps, [{ path: "a.test.mjs", span: { kind: "whole-file" } }]);
+});
+
+test("parameters and body bindings still shadow the function expression's own name", async () => {
+  // The name lives outside the parameter scope, so a parameter of the same name shadows it and the
+  // call resolves to a parameter -- which is not a supported callable, hence fail-closed.
+  assert.strictEqual(await rejects(simple(
+    "const helper = function recur(recur) { recur(); assert.ok(1); };",
+    'test("x", () => { helper(null); });',
+  )), "E_ORACLE_BINDING", "the parameter wins over the function expression name");
+  assert.strictEqual(await rejects(simple(
+    "const helper = function recur() { let recur2 = 1; recur2(); assert.ok(1); };",
+    'test("x", () => { helper(); });',
+  )), "E_ORACLE_BINDING", "a body binding is resolved normally");
+});
+
+test("existing recursion, cross-call cycles and de-duplication do not regress", async () => {
+  const selfRecursive = await only(simple(
+    "function walk(n) { if (n > 0) { walk(n - 1); } assert.ok(1); }",
+    'test("x", () => { walk(2); });',
+  ));
+  assert.deepStrictEqual(selfRecursive.effectiveOracleDeps, [{ path: "a.test.mjs", span: { kind: "whole-file" } }]);
+  const crossModule = await only({
+    "a.test.mjs": src(...HEAD, 'import { a } from "./cycle.mjs";', 'test("x", () => { a(); });'),
+    "cycle.mjs": src('import assert from "node:assert";', "export function a() { b(); }", "function b() { a(); assert.ok(1); }"),
+  });
+  assert.deepStrictEqual(crossModule.effectiveOracleDeps, [{ path: "cycle.mjs", span: { kind: "whole-file" } }]);
+});
+
+test("every optional call on the traversal path is fail-closed", async () => {
+  const cases = [
+    ["assert?.ok(1);", "optional member on an assert binding"],
+    ["assert.ok?.(1);", "optional call on an allowlisted assertion"],
+    ["ok?.(1);", "optional call on an assertion-function binding"],
+    ["helper?.();", "optional call on a local callable"],
+    ['readFileSync?.(new URL("./fixtures/golden.txt", import.meta.url));', "optional call on a snapshot API"],
+    ["imported?.();", "optional call on a relative imported callable"],
+    ["assert?.ok?.(1);", "both spellings at once"],
+  ];
+  for (const [call, label] of cases) {
+    const code = await rejects({
+      "a.test.mjs": src(
+        'import test from "node:test";',
+        'import assert, { ok } from "node:assert";',
+        'import { readFileSync } from "node:fs";',
+        'import { imported } from "./h.mjs";',
+        "function helper() { assert.ok(1); }",
+        `test("n", () => { ${call} });`,
+      ),
+      "h.mjs": src('import assert from "node:assert";', "export function imported() { assert.ok(1); }"),
+      "fixtures/golden.txt": "golden\n",
+    });
+    assert.strictEqual(code, "E_ORACLE_UNCLASSIFIED", label);
+  }
+  // The same calls without the question mark keep working exactly as before.
+  const plain = await only({
+    "a.test.mjs": src(
+      'import test from "node:test";',
+      'import assert, { ok } from "node:assert";',
+      'import { readFileSync } from "node:fs";',
+      'import { imported } from "./h.mjs";',
+      "function helper() { assert.ok(1); }",
+      'test("n", () => { assert.ok(1); ok(1); helper(); imported(); readFileSync(new URL("./fixtures/golden.txt", import.meta.url)); });',
+    ),
+    "h.mjs": src('import assert from "node:assert";', "export function imported() { assert.ok(1); }"),
+    "fixtures/golden.txt": "golden\n",
+  });
+  assert.deepStrictEqual(plain.effectiveOracleDeps.map((d) => d.path), ["a.test.mjs", "fixtures/golden.txt", "h.mjs"]);
+});
+
+test("a relative import with no binding is unsupported for its form, target present or not", async () => {
+  for (const form of ['import "./h.mjs";', 'import {} from "./h.mjs";']) {
+    // Present in the view -- so this cannot be an accidental pass on a missing file.
+    assert.strictEqual(await rejects({
+      "a.test.mjs": src('import test from "node:test";', 'import assert from "node:assert";', form, 'test("n", () => { assert.ok(1); });'),
+      "h.mjs": src("export const x = 1;"),
+    }), "E_UNSUPPORTED_IMPORT", `${form} with the target present`);
+    assert.strictEqual(await rejects({
+      "a.test.mjs": src('import test from "node:test";', 'import assert from "node:assert";', form, 'test("n", () => { assert.ok(1); });'),
+    }), "E_UNSUPPORTED_IMPORT", `${form} with the target absent`);
+  }
+  // A named or default relative import that nothing on the oracle path touches is still fine.
+  const unused = await only({
+    "a.test.mjs": src('import test from "node:test";', 'import assert from "node:assert";', 'import { sut } from "./sut.mjs";',
+      'test("n", () => { assert.ok(1); });'),
+    "sut.mjs": src("export function sut() { return 1; }"),
+  });
+  assert.deepStrictEqual(unused.effectiveOracleDeps, [], "an unused SUT import produces no depRef and no failure");
+  const usedDefault = await only({
+    "a.test.mjs": src('import test from "node:test";', 'import assert from "node:assert";', 'import sut from "./sut.mjs";',
+      'test("n", () => { sut(); assert.ok(1); });'),
+    "sut.mjs": src("export default function () { return 1; }"),
+  });
+  assert.deepStrictEqual(usedDefault.effectiveOracleDeps, [], "and a used non-assertion SUT still contributes nothing");
+});
+
+test("only the exact object createContentView returned is a view", async () => {
+  const files = simple('test("n", () => { assert.ok(1); });');
+  const real = viewOf(files);
+  assert.deepStrictEqual((await analyzeModule({ view: real, path: "a.test.mjs" })).declarations.length, 1);
+
+  const impostors = [
+    ["a duck-typed look-alike", { size: real.size, has: (p) => real.has(p), read: (p) => real.read(p), paths: () => real.paths() }],
+    ["a spread copy", { ...real }],
+    ["a frozen spread copy", Object.freeze({ ...real })],
+    ["a prototype-delegating clone", Object.create(real)],
+    ["a plain object", {}],
+    ["null", null],
+    ["a function", () => {}],
+  ];
+  for (const [label, impostor] of impostors) {
+    assert.strictEqual(await failureOf(() => analyzeModule({ view: impostor, path: "a.test.mjs" })), "E_VIEW_INPUT", `analyzeModule: ${label}`);
+    assert.strictEqual(await failureOf(() => analyzeView({ view: impostor, modulePaths: ["a.test.mjs"] })), "E_VIEW_INPUT", `analyzeView: ${label}`);
+  }
+  // The factory's own guarantees survive the branding.
+  assert.ok(Object.isFrozen(real));
+  assert.ok(Object.isFrozen(real.paths()));
+  const first = real.read("a.test.mjs");
+  first.fill(0x20);
+  assert.notDeepStrictEqual(real.read("a.test.mjs"), first, "reads stay stable after a caller mutates one");
+  assert.strictEqual((await analyzeView({ view: real, modulePaths: ["a.test.mjs"] })).modules.length, 1);
 });
 
 // ---------------------------------------------------------------------------------------------
