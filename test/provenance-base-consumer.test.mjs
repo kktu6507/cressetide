@@ -2,8 +2,8 @@
 // entry point (`contract-check --provenance`) rather than by calling a validator helper.
 //
 // Spec anchors:
-//   SM  = docs/superpowers/specs/2026-07-25-shared-decision-provenance-model.md (approved v1.12)
-//   TP  = docs/superpowers/specs/2026-07-25-test-provenance-spec.md (approved v1.5)
+//   SM  = docs/superpowers/specs/2026-07-25-shared-decision-provenance-model.md (approved v1.14)
+//   TP  = docs/superpowers/specs/2026-07-25-test-provenance-spec.md (approved v1.10)
 //
 // Every fixture builds a real Git object database and a real on-disk store, so the base tree the
 // checker reads is a genuine immutable tree rather than a stand-in.
@@ -20,6 +20,7 @@ import {
 } from "../cressetide/skills/vigil/scripts/provenance-store.mjs";
 import {
   INVENTORY_PATH, computeInventoryDigest, parseInventory,
+  computeInventoryV2Digest, parseCanonicalInventoryV2,
 } from "../cressetide/skills/vigil/scripts/changed-test-inventory.mjs";
 
 const NOW = Date.UTC(2026, 6, 26);
@@ -451,6 +452,18 @@ test("TP AC60: an inventory outside the canonical §6 schema fails closed", () =
 // The downstream guard in contract-check is defence in depth. It cannot stand in for the parser's
 // own contract: a module named changed-test-inventory must not hand back a populated inventory as a
 // parsed canonical artifact and leave the refusal to whoever happens to consume it next.
+//
+// Two layers now exist, and the distinction matters:
+//   parseCanonicalInventoryV2()  IS implemented, and reads a populated ChangedTestInventoryV2
+//                                completely against shared v1.14 + test-provenance v1.10. Its own
+//                                behaviour is covered by test/changed-test-inventory.test.mjs.
+//   parseInventory()             is the PRODUCT entry point, and still refuses to hand a populated
+//                                inventory to a consumer -- because reading one correctly says
+//                                nothing about the producer that wrote it, the base/head matcher,
+//                                the governance reverse closure or the S3 recomputation a consumer
+//                                owes, none of which exists.
+// The fixtures below are LEGACY v1 documents, which have no discriminator and no v2 entry contract;
+// the v2 discriminator case is the separate test at the end of this section.
 
 function inventoryText(baseTreeOid, entries) {
   const body = { baseTreeOid, entries };
@@ -507,6 +520,56 @@ test("TP §6 parser boundary: the empty envelope is still parsed and its digest 
     parseInventory(JSON.stringify({ ...body, inventoryDigest: computeInventoryDigest(body), storePath: ".ctide/provenance.json" }));
   } catch (e) { err2 = e; }
   assert.ok(err2 && /undeclared: storePath/.test(err2.message), "no second authority for the canonical store path");
+});
+
+// --- the discriminator: readable is NOT the same as accepted ------------------------------------
+// Every populated fixture above is a LEGACY v1 document, so "refused" could always be explained by
+// "this build understands no v2 entry contract". That explanation is gone: the entry contract IS
+// implemented. This case therefore uses a fully canonical v2 inventory whose every field, ordering
+// rule and digest the isolated reader accepts, and shows the PRODUCT entry point still failing
+// closed on the very same bytes. Nothing here is malformed; the refusal is a policy boundary.
+
+function writeInventoryText(cwd, text) {
+  const file = path.join(cwd, INVENTORY_PATH);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${text}\n`, "utf8");
+  return file;
+}
+
+test("TP AC158: a fully canonical POPULATED v2 inventory is readable, and the product entry point still fails closed", () => {
+  const bytes = v2Bytes();
+  const { cwd, treeOid } = repoWithBaseTree(bytes);
+  const { bytes: currentBefore } = seedTask(cwd, treeOid, sha256Hex(bytes));
+  const ctx = { cwd, treeOid, currentBefore, baseBefore: bytes };
+
+  const body = {
+    inventoryVersion: 2,
+    baseTreeOid: treeOid,
+    registryDigest: sha256Hex("registry preimage"),
+    headViewDigest: sha256Hex("S1 canonical map"),
+    inputProvenanceStoreDigest: sha256Hex("current store"),
+    entries: [{
+      testRef: { path: "test/a.test.mjs", adapterId: "node-test", structuralId: "s:[\"a\"]" },
+      status: "modified",
+      reason: "content-change",
+      tagBefore: { clauseRef: "REQ-00000000000000000000000000" },
+      tagAfter: { clauseRef: "REQ-00000000000000000000000000" },
+      baseBodyDigest: sha256Hex("base body"),
+      headBodyDigest: sha256Hex("head body"),
+      framework: "node:test",
+      implementationIdentity: { implementationId: "node-test-v1", parserId: "acorn", parserVersion: "8.18.0" },
+    }],
+  };
+  // canonicalJson emits every object with its members in code-point order, which is exactly what the
+  // v1.10 entry source-key ordering gate requires.
+  const text = canonicalJson({ ...body, inventoryDigest: computeInventoryV2Digest(body) });
+  writeInventoryText(cwd, text);
+
+  const read = parseCanonicalInventoryV2(text);
+  assert.strictEqual(read.entries.length, 1, "the isolated canonical reader accepts the very bytes on disk");
+  assert.strictEqual(read.inventoryDigest, computeInventoryV2Digest(body), "including its recomputed digest");
+
+  assertFailure(runChecker(cwd), ctx, "a canonical populated v2 inventory", /unsupported-populated-inventory/);
 });
 
 // --- the witness names an EXACT tree, not something Git can peel into one ----------------------
