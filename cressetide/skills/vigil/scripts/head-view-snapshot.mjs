@@ -22,7 +22,6 @@
 import cp from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -91,22 +90,31 @@ const EMPTY_GIT_CONFIG_FILE = "/dev/null";
 //
 // So the controlled home is a fresh, valid, absolute path that does NOT exist and is never
 // created. Git canonicalises it happily, "~" expands under it, and nothing can be found there. The
-// name carries a UUID minted per capture, so it is not a fixed location a caller could fill in
-// beforehand, and because nothing is created there is nothing to clean up on any path, successful
-// or not.
+// name carries a UUID minted per capture, so nothing inside it is a location a caller could fill
+// in beforehand, and because nothing is created there is nothing to clean up on any path.
 //
-// The BASE it sits under has to exist, though: Git canonicalises the home's parent, and a path
-// whose whole chain is missing fails with the same `Invalid path` error. os.tmpdir() reads TMPDIR,
-// TEMP and TMP from the environment -- caller-controlled, and this is a function about not
-// trusting the caller's environment -- so it is verified rather than assumed, falling back to the
-// filesystem root, which cannot be missing.
-function newControlledHome() {
-  const name = `ctide-head-view-no-home-${crypto.randomUUID()}`;
-  const filesystemRoot = path.parse(process.cwd()).root;
-  for (const base of [os.tmpdir(), filesystemRoot]) {
-    try { if (fs.statSync(base).isDirectory()) return path.join(base, name); } catch { /* try the next base */ }
-  }
-  return path.join(filesystemRoot, name);
+// WHERE it sits is the part that has to be argued rather than assumed. Two constraints pull
+// against each other:
+//
+//   the BASE must exist   -- Git canonicalises the home's parent, and a path whose whole chain is
+//                            missing fails with the same `Invalid path` error, so the home has to
+//                            be a direct child of a directory that is really there
+//   the base must not be  -- an unpredictable leaf only protects what is INSIDE it. A config
+//   caller-controlled        saying `[include] path = ~/../poison.gitconfig` climbs straight out
+//                            of the leaf into its parent, so if that parent were os.tmpdir() the
+//                            caller would choose it through TEMP, TMP or TMPDIR and could put the
+//                            file there. Measured on ed5b109: switching only those three variables
+//                            between two temp bases flipped the entry from symlink to blob.
+//
+// The base is therefore the filesystem root of the CANONICAL repository path the caller asked for
+// -- derived from the repository, not from the process. It cannot be moved by TEMP, TMP, TMPDIR,
+// HOME, USERPROFILE, XDG_CONFIG_HOME or the working directory, and it cannot be missing.
+//
+// What `..` can still reach is exactly that filesystem root, and nothing above it. Reaching a file
+// there is not an environment question any more: it needs write access to the root of the volume
+// the repository lives on, the same standing the system config we already switch off would have.
+function newControlledHome(canonicalRepoRoot) {
+  return path.join(path.parse(canonicalRepoRoot).root, `ctide-head-view-no-home-${crypto.randomUUID()}`);
 }
 
 // The variables Git can take a home directory from. All of them are pinned rather than deleted,
@@ -241,9 +249,12 @@ function isExcluded(candidate) {
 
 // --- repository root ------------------------------------------------------------------------------
 
-// The caller must name the working tree's own top level. A subdirectory is rejected rather than
-// silently widened to the enclosing repository, and a bare repository has no worktree to snapshot.
-async function resolveRepoRoot(repoRoot, environment) {
+// The filesystem half, which needs no Git and therefore no environment: what absolute path did the
+// caller actually name? A relative path is resolved against the working directory here, once, and
+// only this canonical result is used afterwards -- including for the controlled home, so the home
+// follows the repository rather than the ambient cwd. An alias, a junction or a drive-relative
+// spelling all collapse to the same canonical path, so they all pick the same home root.
+function canonicalRequestedRoot(repoRoot) {
   if (typeof repoRoot !== "string" || repoRoot === "") throw fail("E_REPO_ROOT", "repoRoot must be a non-empty path string");
   let requested;
   try { requested = path.resolve(fs.realpathSync.native(repoRoot)); } catch {
@@ -254,7 +265,13 @@ async function resolveRepoRoot(repoRoot, environment) {
     throw fail("E_REPO_ROOT", `repoRoot is not readable: ${repoRoot}`);
   }
   if (!stat.isDirectory()) throw fail("E_REPO_ROOT", `repoRoot is not a directory: ${repoRoot}`);
+  return requested;
+}
 
+// The Git half, unchanged in what it demands: the caller must name the working tree's own top
+// level. A subdirectory is rejected rather than silently widened to the enclosing repository, and a
+// bare repository has no worktree to snapshot.
+async function resolveRepoRoot(requested, repoRoot, environment) {
   const bare = (await git(requested, ["rev-parse", "--is-bare-repository"], environment)).toString("utf8").trim();
   if (bare !== "false") throw fail("E_REPO_ROOT", `${repoRoot} is a bare repository; there is no working tree to snapshot`);
   const reported = (await git(requested, ["rev-parse", "--show-toplevel"], environment)).toString("utf8").trim();
@@ -541,9 +558,12 @@ export async function captureHeadViewSnapshot(request) {
     throw fail("E_API_ARGUMENTS", "captureHeadViewSnapshot takes exactly one argument; a git executable, an environment, an ignore matcher, a filesystem adapter or a capture hook cannot be supplied");
   }
   requireRequest(request, "captureHeadViewSnapshot", ["repoRoot"]);
-    // One controlled home for the whole capture, so every Git call below resolves "~" the same way.
-  const environment = gitEnvironment(newControlledHome());
-  const root = await resolveRepoRoot(request.repoRoot, environment);
+  // Canonicalise with the filesystem first, because the controlled home is derived from the
+  // repository's own filesystem root and must be settled before any Git call is made. One
+  // environment for the whole capture, so every Git call below resolves "~" the same way.
+  const requested = canonicalRequestedRoot(request.repoRoot);
+  const environment = gitEnvironment(newControlledHome(requested));
+  const root = await resolveRepoRoot(requested, request.repoRoot, environment);
 
   // allSettled, not all: if one Git call fails the others must still be waited on rather than left
   // running against a directory the caller may be about to clean up.

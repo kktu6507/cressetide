@@ -988,6 +988,7 @@ const RELEVANT_ENVIRONMENT_KEYS = [
   "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0",
   "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1",
   "HOME", "USERPROFILE", "XDG_CONFIG_HOME", "HOMEDRIVE", "HOMEPATH",
+  "TEMP", "TMP", "TMPDIR",
 ];
 
 // Presence AND value, so restoration can be checked against what the runner actually started with
@@ -1288,6 +1289,51 @@ test("a repo-local includeIf on gitdir:~ is neither honoured nor able to break t
     assertEnvironmentRestored(before, RELEVANT_ENVIRONMENT_KEYS);
   } finally {
     fs.rmSync(fakeHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
+
+// An unpredictable leaf only protects what is INSIDE it. `~/../…` climbs out of the leaf into its
+// parent, so wherever that parent comes from becomes the thing that has to be uncontrollable: a
+// temporary-directory base would hand the choice straight back through TEMP, TMP and TMPDIR.
+test("a repo-local include reaching above the home cannot be aimed by TEMP", async () => {
+  const before = captureEnvironment(RELEVANT_ENVIRONMENT_KEYS);
+  const cleanBase = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ctide-hvs-tmpA-")));
+  const poisonBase = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ctide-hvs-tmpB-")));
+  try {
+    // Only one of the two bases holds the file the include would climb out to.
+    fs.writeFileSync(path.join(poisonBase, "poison.gitconfig"), "[core]\n\tsymlinks = true\n");
+    assert.strictEqual(fs.existsSync(path.join(cleanBase, "poison.gitconfig")), false);
+
+    await inRepo(async (repo) => {
+      const body = symlinkCarrierRepo(repo);
+      fs.appendFileSync(path.join(repo.root, ".git", "config"), "[include]\n\tpath = ~/../poison.gitconfig\n");
+
+      const baseline = await repo.capture();
+      assert.deepStrictEqual(baseline.entry("switcher"),
+        { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from(body, "utf8")) },
+        "the index carrier decides while nothing overrides it");
+
+      // Only the three temporary-directory variables change between these two captures.
+      const viaClean = await withEnvironment({ TEMP: cleanBase, TMP: cleanBase, TMPDIR: cleanBase }, () => repo.capture());
+      const viaPoison = await withEnvironment({ TEMP: poisonBase, TMP: poisonBase, TMPDIR: poisonBase }, () => repo.capture());
+      sameSnapshot(viaClean, baseline, "TEMP pointing at the clean base");
+      sameSnapshot(viaPoison, baseline, "TEMP pointing at the base holding the poison");
+      sameSnapshot(viaPoison, viaClean, "the two temp bases against each other");
+      for (const [label, snapshot] of [["clean base", viaClean], ["poison base", viaPoison]]) {
+        assert.strictEqual(snapshot.entry("switcher").type, "symlink", `${label}: the entry is still the index carrier`);
+        assert.strictEqual(snapshot.entry("switcher").mode, "120000", label);
+      }
+
+      // And .git/config itself is still read: no tilde, no condition, still observed.
+      repo.git("config", "core.symlinks", "true");
+      const asBlob = await repo.capture();
+      assert.deepStrictEqual(asBlob.entry("switcher"),
+        { mode: "100644", type: "blob", contentDigest: sha256(Buffer.from(body, "utf8")) });
+      assert.notStrictEqual(asBlob.headViewDigest, baseline.headViewDigest);
+    });
+    assertEnvironmentRestored(before, RELEVANT_ENVIRONMENT_KEYS);
+  } finally {
+    for (const dir of [cleanBase, poisonBase]) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
