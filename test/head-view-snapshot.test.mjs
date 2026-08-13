@@ -712,6 +712,35 @@ test("a gitlink, an unsupported working-tree type and skip-worktree are each fai
   });
 });
 
+// On a case-SENSITIVE tree the two spellings are two files, and both belong in the universe. This
+// only runs where the filesystem measurably holds both, because pretending otherwise would prove
+// nothing about Linux from a Windows run.
+test("two paths differing only by case are two entries where the filesystem holds both", { skip: CASE_INSENSITIVE }, async () => {
+  await inRepo(async (repo) => {
+    repo.write("Case.txt", "upper\n");
+    repo.write("case.txt", "lower\n");
+    assert.strictEqual(fs.readdirSync(repo.root).filter((n) => n.toLowerCase() === "case.txt").length, 2,
+      "the filesystem really does hold both spellings");
+    repo.commit("both spellings");
+    assert.deepStrictEqual(repo.git("ls-files").trim().split("\n").sort(), ["Case.txt", "case.txt"]);
+
+    const s1 = await repo.capture();
+    assert.strictEqual(s1.has("Case.txt"), true);
+    assert.strictEqual(s1.has("case.txt"), true);
+    assert.strictEqual(s1.size, 2);
+    assert.strictEqual(s1.read("Case.txt").toString("utf8"), "upper\n");
+    assert.strictEqual(s1.read("case.txt").toString("utf8"), "lower\n");
+    assert.notStrictEqual(s1.entry("Case.txt").contentDigest, s1.entry("case.txt").contentDigest);
+
+    const map = Object.create(null);
+    for (const p of s1.paths()) {
+      const e = s1.entry(p);
+      map[p] = { mode: e.mode, type: e.type, contentDigest: e.contentDigest };
+    }
+    assert.strictEqual(sha256Hex(canonicalJson(map)), s1.headViewDigest, "both spellings are inside the digest");
+  });
+});
+
 // Two index entries whose paths differ only by case name one file on a case-insensitive
 // filesystem, so the universe cannot say which spelling the tree holds.
 test("a case-only path collision is fail-closed", { skip: !CASE_INSENSITIVE }, async () => {
@@ -853,18 +882,34 @@ test("a tracked child under an ancestor junction is fail-closed and never reads 
   assert.ok(linkKind !== null, `this platform created no junction or directory symlink, so the case did not run`);
 });
 
-test("a tracked file whose ancestor is an ordinary file is fail-closed", async () => {
+// Replacing a tracked directory with an ordinary file is a legal Git state, not a broken one: the
+// old children become deleted and the new file becomes untracked, and the head view already has
+// words for both. It must not be confused with the junction case above, where the danger is that
+// the OS would walk out of the repository.
+test("a tracked directory replaced by an ordinary file: children absent, the file included", async () => {
   await inRepo(async (repo) => {
     seed(repo);
-    repo.write("box/f.txt", "inside\n");
+    repo.write("box/child.txt", "inside the directory\n");
     repo.commit("box");
-    fs.rmSync(path.join(repo.root, "box"), { recursive: true, force: true });
-    fs.writeFileSync(path.join(repo.root, "box"), "now a file, not a directory\n");
+    const before = await repo.capture();
+    assert.strictEqual(before.has("box/child.txt"), true);
+    assert.strictEqual(before.has("box"), false);
 
-    const error = await errorOf(() => repo.capture());
-    assert.strictEqual(error && error.code, "E_UNSUPPORTED_ENTRY");
-    assert.strictEqual(error.detail.reason, "ancestor-not-a-directory");
-    assert.strictEqual(error.detail.ancestor, "box");
+    fs.rmSync(path.join(repo.root, "box"), { recursive: true, force: true });
+    fs.writeFileSync(path.join(repo.root, "box"), "REPLACEMENT BLOB\n");
+
+    // What Git itself says, before asserting what the snapshot should say.
+    const rawDiff = repo.git("diff-files", "--raw").trim();
+    assert.match(rawDiff, /^:100644 000000 \S+ \S+ D\tbox\/child\.txt$/, `expected a deletion, got ${JSON.stringify(rawDiff)}`);
+    assert.deepStrictEqual(repo.git("ls-files", "--others").trim().split("\n"), ["box"]);
+
+    const after = await repo.capture();
+    assert.strictEqual(after.has("box/child.txt"), false, "the old child is deleted, so it does not exist");
+    assert.strictEqual(after.has("box"), true, "and the replacement is an ordinary untracked blob");
+    assert.strictEqual(after.read("box").toString("utf8"), "REPLACEMENT BLOB\n");
+    assert.deepStrictEqual(after.entry("box"), { mode: "100644", type: "blob", contentDigest: sha256(Buffer.from("REPLACEMENT BLOB\n", "utf8")) });
+    assert.notStrictEqual(after.headViewDigest, before.headViewDigest);
+    assert.strictEqual(after.has("lib/helper.mjs"), true, "the rest of the universe is unaffected");
   });
 });
 

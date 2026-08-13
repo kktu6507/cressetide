@@ -263,18 +263,24 @@ function parseUntracked(buffer) {
 
 const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 
-// Every ancestor of a leaf must be a real directory in this working tree. lstat and readFile
-// resolve the WHOLE path, so a junction or a directory symlink anywhere above the leaf would be
-// walked through by the OS before either call ever looks at the leaf itself -- and the bytes that
-// came back would be from wherever that link points, which may be outside the repository
-// entirely. Each component is therefore checked from the root DOWNWARDS and the walk stops at the
-// first one that is not a plain directory, before the leaf is touched.
+// Walks a leaf's ancestors and answers one question: can this leaf exist here at all? lstat and
+// readFile resolve the WHOLE path, so a junction or a directory symlink anywhere above the leaf
+// would be walked through by the OS before either call ever looks at the leaf -- and the bytes
+// that came back would be from wherever that link points, possibly outside the repository. Each
+// component is therefore checked from the root DOWNWARDS and the walk stops at the first one that
+// is not a plain directory, before the leaf is touched.
+//
+// Two outcomes, and only one of them is an error:
+//   an ancestor is a symlink or junction  -> throw, because following it leaves the repository
+//   an ancestor is missing, or is a file  -> false, because the leaf simply is not there
+// The second case is an ordinary Git state, not a broken one. Replacing a directory with a file
+// leaves the old children reported as deleted and the new file reported as untracked, and both of
+// those the head view already knows how to say.
 //
 // This is a real lstat per component, not a string comparison against the root: a prefix test
 // proves nothing about what the filesystem will do with the path. Nothing is remembered between
 // leaves either -- the tree can change underneath a capture, and that is what S1/S2 is for.
-// Returns false when an ancestor simply does not exist, which means the leaf does not either.
-function assertAncestorsAreDirectories(root, relative) {
+function leafCanExistUnderAncestors(root, relative) {
   const segments = relative.split("/");
   let absolute = root;
   for (let i = 0; i < segments.length - 1; i += 1) {
@@ -282,15 +288,33 @@ function assertAncestorsAreDirectories(root, relative) {
     const ancestor = segments.slice(0, i + 1).join("/");
     let stat;
     try { stat = fs.lstatSync(absolute); } catch (error) {
-      if (error && error.code === "ENOENT") return false;
+      if (error && error.code === "ENOENT" || error && error.code === "ENOTDIR") return false;
       throw fail("E_READ_FAILED", `an ancestor of ${relative} could not be examined: ${error && error.code}`, { path: relative, ancestor });
     }
     if (stat.isSymbolicLink()) {
       throw fail("E_UNSUPPORTED_ENTRY", `${relative} sits under ${ancestor}, which is a symlink or junction; following it could read bytes from outside this repository`, { path: relative, ancestor, reason: "ancestor-symlink" });
     }
-    if (!stat.isDirectory()) {
-      throw fail("E_UNSUPPORTED_ENTRY", `${relative} sits under ${ancestor}, which is not a directory`, { path: relative, ancestor, reason: "ancestor-not-a-directory" });
-    }
+    // Not a directory and not a link: the path this leaf needs does not lead anywhere. The
+    // ancestor itself is judged on its own terms when it turns up as a leaf of its own.
+    if (!stat.isDirectory()) return false;
+  }
+  return true;
+}
+
+// Is this exact spelling really a directory entry, segment by segment? readdir returns what the
+// filesystem stores, so a spelling it does not return is not a separate file however happily
+// lstat resolves it. This is the only thing that separates "two files whose names differ by case"
+// from "one file reached through two spellings", and it answers it per directory rather than per
+// platform. Called only when a fold collision has already been seen, so it costs nothing
+// otherwise.
+function isSpelledVerbatim(root, relative) {
+  const segments = relative.split("/");
+  let absolute = root;
+  for (const segment of segments) {
+    let listing;
+    try { listing = fs.readdirSync(absolute); } catch { return false; }
+    if (!listing.includes(segment)) return false;
+    absolute = path.join(absolute, segment);
   }
   return true;
 }
@@ -302,7 +326,7 @@ function assertAncestorsAreDirectories(root, relative) {
 // diff-files reports an observed mode, that is what the worktree holds NOW, so a 120000 -> 100644
 // type change is a blob and not a link.
 function readEntry(root, absolute, relative, indexMode, observedMode) {
-  if (!assertAncestorsAreDirectories(root, relative)) return null;
+  if (!leafCanExistUnderAncestors(root, relative)) return null;
   let stat;
   try { stat = fs.lstatSync(absolute); } catch (error) {
     if (error && error.code === "ENOENT") return null;
@@ -343,7 +367,7 @@ function untrackedMode(stat, fileMode) {
 }
 
 function readUntracked(root, absolute, relative, fileMode) {
-  if (!assertAncestorsAreDirectories(root, relative)) return null;
+  if (!leafCanExistUnderAncestors(root, relative)) return null;
   let stat;
   try { stat = fs.lstatSync(absolute); } catch (error) {
     if (error && error.code === "ENOENT") return null;
@@ -510,16 +534,27 @@ export async function captureHeadViewSnapshot(request) {
     entries.set(verdict.path, untracked.get(verdict.path));
   });
 
-  // Two spellings of one path would make the universe ambiguous, and on a case-insensitive
-  // filesystem they would also name one file twice. Neither is guessed at.
+  // Two paths that differ only by case are two files on a case-sensitive filesystem and one file
+  // seen twice on a case-insensitive one. Only the second is ambiguous, and which one applies is a
+  // question for the filesystem rather than for process.platform -- Windows can be case-sensitive
+  // per directory, and a case-sensitive tree is entitled to hold Case.txt beside case.txt.
+  //
+  // The question is asked by listing: a directory entry is only really there under a given
+  // spelling if readdir returns that spelling. If both spellings are listed verbatim, both files
+  // exist and there is nothing ambiguous; if one is not, the two index paths are naming one entry
+  // and the head view cannot say which spelling the tree holds.
   const folded = new Map();
   for (const relative of entries.keys()) {
     const key = relative.toLowerCase();
-    const previous = folded.get(key);
-    if (previous !== undefined && previous !== relative) {
-      throw fail("E_PATH_COLLISION", `${previous} and ${relative} differ only by case; the head view cannot tell which one the filesystem holds`);
+    const group = folded.get(key);
+    if (group === undefined) { folded.set(key, [relative]); continue; }
+    if (group.includes(relative)) continue;
+    for (const other of [...group, relative]) {
+      if (isSpelledVerbatim(root, other)) continue;
+      throw fail("E_PATH_COLLISION", `${group[0]} and ${relative} differ only by case and the filesystem does not list ${other} verbatim; the head view cannot tell which spelling the tree holds`,
+        { paths: [...group, relative], missing: other });
     }
-    folded.set(key, relative);
+    group.push(relative);
   }
 
   return buildSnapshot(entries);
