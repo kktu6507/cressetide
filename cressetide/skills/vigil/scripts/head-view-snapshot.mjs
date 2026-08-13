@@ -76,43 +76,62 @@ const GIT_REDIRECT_VARIABLES = new Set([
   "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CEILING_DIRECTORIES",
 ]);
 
-// An empty configuration file for the global slot. Git for Windows and POSIX Git both accept
-// "/dev/null" here and read it as a file with no settings in it; os.devNull is NOT usable, because
-// on Windows it expands to \\.\nul and Git rejects that path with "Invalid argument", exit 128.
-// Nothing is created on disk for this, in the repository or anywhere else.
-const EMPTY_GIT_CONFIG = "/dev/null";
+// One controlled path used for both the empty global-config slot and the no-home value. Git for
+// Windows and POSIX Git both accept "/dev/null" as a configuration file and read it as a file with
+// no settings in it, and as a home directory it makes "~" expand somewhere nothing can be found.
+// os.devNull is NOT usable: on Windows it expands to \\.\nul and Git rejects that path with
+// "Invalid argument", exit 128. Nothing is created on disk for any of this.
+const CONTROLLED_EMPTY_PATH = "/dev/null";
+
+// The variables Git can take a home directory from, which is where "~" comes from. All of them are
+// pinned rather than deleted, because deleting one only moves the question to the next: measured on
+// git 2.55.0.windows.3, with HOME deleted and the rest hostile, HOMEDRIVE + HOMEPATH still supplied
+// the home and the include was found.
+const HOME_VARIABLES = ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "HOMEDRIVE", "HOMEPATH"];
 
 // Every Git child runs in a controlled environment. 11b.10 says the process environment must not
 // influence the output, and the head view's canonical map is made of things Git configuration can
 // move: core.filemode decides whether an untracked file is 100644 or 100755, and core.symlinks
-// decides whether a 120000 index entry is reported as a type change. So the caller's configuration
-// surfaces are not filtered by name-and-index, they are removed wholesale and replaced:
+// decides whether a 120000 index entry is reported as a type change. The caller's configuration
+// surfaces are therefore not filtered by name-and-index, they are removed wholesale and replaced:
 //
 //   inherited GIT_CONFIG and GIT_CONFIG_*  -> dropped, matched case-insensitively so a lowercase
 //                                             or mixed-case spelling cannot slip through on a
 //                                             platform where environment names are case-blind, and
 //                                             so a stale KEY_n left behind by a smaller COUNT is
 //                                             dropped too
-//   system configuration                   -> switched off with GIT_CONFIG_NOSYSTEM
-//   global configuration                   -> pinned to an empty file, which ALSO closes the
-//                                             discovery path: with GIT_CONFIG_GLOBAL set, Git
-//                                             stops consulting HOME, USERPROFILE and
-//                                             XDG_CONFIG_HOME, so deleting one variable cannot be
-//                                             undone by another one pointing somewhere else
+//   SYSTEM configuration                   -> switched off with GIT_CONFIG_NOSYSTEM
+//   GLOBAL configuration DISCOVERY         -> closed by pinning GIT_CONFIG_GLOBAL to an empty file,
+//                                             so the per-user config is neither read from its usual
+//                                             place nor from anywhere a variable points at
+//   the HOME a "~" expands to              -> pinned, see below
 //
-// Repository-local configuration is deliberately untouched: .git/config is repo-controlled state,
-// which is exactly the authority 11b.10 keeps. What is closed is process, system and global.
+// The global pin alone is not enough, and the distinction matters. Closing global DISCOVERY does
+// not stop Git from READING the repository's own config -- which is the point -- but a repository's
+// own config may contain `[include] path = ~/…` or an `includeIf`, and that "~" is resolved through
+// the caller's environment at read time. So an environment can still reach inside a local config it
+// does not control. Pinning every home variable closes that: "~" resolves under the controlled path
+// and the include finds nothing. Measured: pinning HOME alone was enough on this Git because HOME
+// outranks the rest, but all five are pinned so the closure does not rest on that ordering.
+//
+// What deliberately stays open is repository-LOCAL config itself. `.git/config` is repository-local
+// interpretation state -- untracked, not part of the snapshot, and not committed bytes -- and
+// 11b.10 keeps it as the authority for things like core.symlinks and core.filemode. What is closed
+// is process, system, global, and the environment-dependent home expansion a local config can
+// reach through. A value written directly into `.git/config` is still observed.
 function gitEnvironment() {
   const env = {};
   for (const [key, value] of Object.entries(process.env)) {
     const upper = key.toUpperCase();
     if (GIT_REDIRECT_VARIABLES.has(upper)) continue;
     if (upper === "GIT_CONFIG" || upper.startsWith("GIT_CONFIG_")) continue;
+    if (HOME_VARIABLES.includes(upper)) continue;
     env[key] = value;
   }
   env.GIT_OPTIONAL_LOCKS = "0";
   env.GIT_CONFIG_NOSYSTEM = "1";
-  env.GIT_CONFIG_GLOBAL = EMPTY_GIT_CONFIG;
+  env.GIT_CONFIG_GLOBAL = CONTROLLED_EMPTY_PATH;
+  for (const key of HOME_VARIABLES) env[key] = CONTROLLED_EMPTY_PATH;
   return env;
 }
 

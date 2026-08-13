@@ -981,6 +981,34 @@ test("an observed mode change on an ordinary blob is respected over the index mo
 // -- so capture has to be closed to it while repo-local .git/config keeps working.
 // ---------------------------------------------------------------------------------------------
 
+// Every variable these tests touch, including the ones the production code now pins. HOMEDRIVE and
+// HOMEPATH are in the list because they are a measured home fallback on Git for Windows.
+const RELEVANT_ENVIRONMENT_KEYS = [
+  "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
+  "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0",
+  "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1",
+  "HOME", "USERPROFILE", "XDG_CONFIG_HOME", "HOMEDRIVE", "HOMEPATH",
+];
+
+// Presence AND value, so restoration can be checked against what the runner actually started with
+// rather than against an assumption that these variables were unset.
+const captureEnvironment = (keys) => {
+  const snapshot = new Map();
+  for (const key of keys) {
+    snapshot.set(key, Object.prototype.hasOwnProperty.call(process.env, key) ? process.env[key] : undefined);
+  }
+  return snapshot;
+};
+
+function assertEnvironmentRestored(before, keys) {
+  for (const key of keys) {
+    const had = before.get(key) !== undefined;
+    const present = Object.prototype.hasOwnProperty.call(process.env, key);
+    assert.strictEqual(present, had, had ? `${key} was present before and must still be` : `${key} was absent before and must still be`);
+    if (had) assert.strictEqual(process.env[key], before.get(key), `${key} must hold its original value`);
+  }
+}
+
 // Sets variables for exactly one call and restores each key to what it was. A key that did not
 // exist is deleted again rather than left holding the string "undefined".
 async function withEnvironment(overrides, body) {
@@ -1077,6 +1105,7 @@ test("repository-local config is still the authority it always was", async () =>
 });
 
 test("external Git config discovery and redirection cannot reach the capture", async () => {
+  const before = captureEnvironment(RELEVANT_ENVIRONMENT_KEYS);
   const side = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ctide-hvs-config-")));
   try {
     // Two kinds of hostile carrier: one that would change a value, one that would make Git refuse
@@ -1126,13 +1155,66 @@ test("external Git config discovery and redirection cannot reach the capture", a
       }
     });
 
-    // The environment is back to what it was: none of the keys the cases set are still around.
-    for (const key of ["GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
-      "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "XDG_CONFIG_HOME"]) {
-      assert.strictEqual(Object.prototype.hasOwnProperty.call(process.env, key), false, `${key} leaked out of a test`);
-    }
+    // The environment is back to what it WAS, which is not the same as "empty": a runner may well
+    // start with HOME or USERPROFILE set, and asserting absence would fail for the wrong reason.
+    // The snapshot taken before the cases ran is the thing to compare against.
+    assertEnvironmentRestored(before, RELEVANT_ENVIRONMENT_KEYS);
   } finally {
     fs.rmSync(side, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
+
+// Closing global-config DISCOVERY is not the same as closing the home a "~" expands to. A
+// repository's own config may say `[include] path = ~/…`, and that tilde is resolved through the
+// caller's environment when the local config is read -- so an environment can reach inside a local
+// config it does not control unless every home variable is pinned.
+test("a repo-local include.path with ~ cannot be redirected by the caller's home", async () => {
+  const before = captureEnvironment(RELEVANT_ENVIRONMENT_KEYS);
+  const fakeHome = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ctide-hvs-home-")));
+  try {
+    await inRepo(async (repo) => {
+      const body = symlinkCarrierRepo(repo);
+      // The include lives in .git/config -- repository-local bytes -- and names its target with ~.
+      fs.appendFileSync(path.join(repo.root, ".git", "config"), "[include]\n\tpath = ~/ctide-unique-poison.gitconfig\n");
+      assert.ok(fs.readFileSync(path.join(repo.root, ".git", "config"), "utf8").includes("~/ctide-unique-poison.gitconfig"),
+        "the include really is written into the repository's own config");
+
+      const baseline = await repo.capture();
+      assert.deepStrictEqual(baseline.entry("switcher"),
+        { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from(body, "utf8")) },
+        "with nothing at the include target the index carrier decides");
+
+      fs.writeFileSync(path.join(fakeHome, "ctide-unique-poison.gitconfig"), "[core]\n\tsymlinks = true\n");
+      const drive = fakeHome.slice(0, 2);
+      const rest = fakeHome.slice(2);
+
+      // Every variable Git can take a home from, hostile at once. Deleting one is not enough:
+      // measured on git 2.55.0.windows.3, HOMEDRIVE + HOMEPATH supplies the home when HOME is gone.
+      const cases = [
+        ["HOME and USERPROFILE", { HOME: fakeHome, USERPROFILE: fakeHome }],
+        ["HOME, USERPROFILE and XDG_CONFIG_HOME", { HOME: fakeHome, USERPROFILE: fakeHome, XDG_CONFIG_HOME: fakeHome }],
+        ["HOMEDRIVE and HOMEPATH with HOME removed", { HOME: undefined, USERPROFILE: undefined, HOMEDRIVE: drive, HOMEPATH: rest }],
+        ["every home variable at once", { HOME: fakeHome, USERPROFILE: fakeHome, XDG_CONFIG_HOME: fakeHome, HOMEDRIVE: drive, HOMEPATH: rest }],
+      ];
+      for (const [label, overrides] of cases) {
+        const poisoned = await withEnvironment(overrides, () => repo.capture());
+        sameSnapshot(poisoned, baseline, `include.path via ${label}`);
+        assert.strictEqual(poisoned.entry("switcher").type, "symlink", `${label}: the entry is still the index carrier`);
+        assert.strictEqual(poisoned.entry("switcher").mode, "120000", label);
+      }
+
+      // And the repository's own config is still read: a value written directly into .git/config,
+      // with no tilde in sight, must still be observed.
+      repo.git("config", "core.symlinks", "true");
+      const asBlob = await repo.capture();
+      assert.deepStrictEqual(asBlob.entry("switcher"),
+        { mode: "100644", type: "blob", contentDigest: sha256(Buffer.from(body, "utf8")) },
+        "closing the home expansion must not have closed .git/config itself");
+      assert.notStrictEqual(asBlob.headViewDigest, baseline.headViewDigest);
+    });
+    assertEnvironmentRestored(before, RELEVANT_ENVIRONMENT_KEYS);
+  } finally {
+    fs.rmSync(fakeHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 
