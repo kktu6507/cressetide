@@ -974,6 +974,168 @@ test("an observed mode change on an ordinary blob is respected over the index mo
   });
 });
 
+// ---------------------------------------------------------------------------------------------
+// The process environment is not an authority (11b.10). Git configuration reachable from the
+// environment can move things the canonical map is made of -- core.symlinks decides whether a
+// 120000 index entry is reported as a type change, core.filemode decides an untracked file's mode
+// -- so capture has to be closed to it while repo-local .git/config keeps working.
+// ---------------------------------------------------------------------------------------------
+
+// Sets variables for exactly one call and restores each key to what it was. A key that did not
+// exist is deleted again rather than left holding the string "undefined".
+async function withEnvironment(overrides, body) {
+  const saved = new Map();
+  for (const key of Object.keys(overrides)) {
+    saved.set(key, Object.prototype.hasOwnProperty.call(process.env, key) ? process.env[key] : undefined);
+  }
+  try {
+    for (const [key, value] of Object.entries(overrides)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    return await body();
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+}
+
+// A repo whose 120000 index entry is carried by an ordinary working-tree file, so core.symlinks is
+// exactly the switch that decides symlink-vs-blob. makeRepo pins it to false locally.
+function symlinkCarrierRepo(repo) {
+  const body = "target.txt";
+  repo.write("target.txt", "the target\n");
+  repo.write("switcher", body);
+  const oid = cp.execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd: repo.root, input: Buffer.from(body, "utf8"), encoding: "utf8" }).trim();
+  repo.git("add", "target.txt");
+  repo.git("update-index", "--add", "--cacheinfo", `120000,${oid},switcher`);
+  repo.git("commit", "-qm", "carrier");
+  try { repo.git("update-index", "--refresh"); } catch { /* reported paths needing update */ }
+  return body;
+}
+
+const sameSnapshot = (actual, expected, label) => {
+  assert.deepStrictEqual(actual.paths(), expected.paths(), `${label}: paths`);
+  for (const p of expected.paths()) {
+    assert.deepStrictEqual(actual.entry(p), expected.entry(p), `${label}: entry ${p}`);
+  }
+  assert.strictEqual(actual.size, expected.size, `${label}: size`);
+  assert.strictEqual(actual.headViewDigest, expected.headViewDigest, `${label}: headViewDigest`);
+};
+
+test("inline Git config injected through the environment cannot move an entry or the digest", async () => {
+  await inRepo(async (repo) => {
+    const body = symlinkCarrierRepo(repo);
+    assert.strictEqual(repo.git("config", "--local", "core.symlinks").trim(), "false", "the repo-local value is what should win");
+
+    const baseline = await repo.capture();
+    assert.deepStrictEqual(baseline.entry("switcher"),
+      { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from(body, "utf8")) },
+      "the index carrier decides while nothing overrides it");
+
+    // Only the production call runs poisoned. Setup, the git helper and cleanup all run outside.
+    const poisoned = await withEnvironment({
+      GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.symlinks", GIT_CONFIG_VALUE_0: "true",
+    }, () => repo.capture());
+    sameSnapshot(poisoned, baseline, "GIT_CONFIG_COUNT inline injection");
+    assert.strictEqual(poisoned.entry("switcher").type, "symlink", "the entry is still the index carrier, not a blob");
+    assert.strictEqual(poisoned.entry("switcher").mode, "120000");
+
+    // The other inline surface, and a spelling that only matters where names are case-blind.
+    const viaParameters = await withEnvironment({ GIT_CONFIG_PARAMETERS: "'core.symlinks=true'" }, () => repo.capture());
+    sameSnapshot(viaParameters, baseline, "GIT_CONFIG_PARAMETERS");
+    const viaLowercase = await withEnvironment({
+      git_config_count: "1", git_config_key_0: "core.symlinks", git_config_value_0: "true",
+    }, () => repo.capture());
+    sameSnapshot(viaLowercase, baseline, "lowercase git_config_count");
+
+    // A stale KEY_n left behind by a smaller COUNT must not survive either.
+    const stale = await withEnvironment({
+      GIT_CONFIG_COUNT: "0", GIT_CONFIG_KEY_0: "core.symlinks", GIT_CONFIG_VALUE_0: "true",
+      GIT_CONFIG_KEY_1: "core.symlinks", GIT_CONFIG_VALUE_1: "true",
+    }, () => repo.capture());
+    sameSnapshot(stale, baseline, "stale KEY_n beyond COUNT");
+  });
+});
+
+test("repository-local config is still the authority it always was", async () => {
+  await inRepo(async (repo) => {
+    const body = symlinkCarrierRepo(repo);
+    const asCarrier = await repo.capture();
+    assert.strictEqual(asCarrier.entry("switcher").type, "symlink");
+
+    // Flipping the repo's OWN config must still be observed: closing the process, system and
+    // global surfaces must not have closed .git/config with them.
+    repo.git("config", "core.symlinks", "true");
+    const raw = repo.git("diff-files", "--raw").trim();
+    assert.match(raw, /^:120000 100644 \S+ \S+ T\tswitcher$/, `expected Git to report a type change, got ${JSON.stringify(raw)}`);
+    const asBlob = await repo.capture();
+    assert.deepStrictEqual(asBlob.entry("switcher"),
+      { mode: "100644", type: "blob", contentDigest: sha256(Buffer.from(body, "utf8")) });
+    assert.notStrictEqual(asBlob.headViewDigest, asCarrier.headViewDigest);
+  });
+});
+
+test("external Git config discovery and redirection cannot reach the capture", async () => {
+  const side = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ctide-hvs-config-")));
+  try {
+    // Two kinds of hostile carrier: one that would change a value, one that would make Git refuse
+    // to start at all. The second is what proves the file was never read.
+    //
+    // Measured against the pre-fix module on git 2.55.0.windows.3, eight of the eleven cases in
+    // this file really do fail without the fix. THREE DO NOT, and are kept for other Git versions
+    // and platforms rather than because they were shown to bite here:
+    //   - a stale GIT_CONFIG_KEY_n beyond GIT_CONFIG_COUNT: this Git ignores indices past the count
+    //   - GIT_CONFIG_GLOBAL pointing at a VALID hostile config: `git init` writes core.symlinks
+    //     into .git/config on Windows, and repo-local always outranks global
+    //   - exact GIT_CONFIG: modern Git honours it for `git config` only, not for plumbing
+    // The malformed carriers are what make the global, system, HOME and XDG cases bite, because a
+    // file Git refuses to parse cannot be mistaken for a file Git never opened.
+    const hostile = path.join(side, "hostile.gitconfig");
+    fs.writeFileSync(hostile, "[core]\n\tsymlinks = true\n");
+    const malformed = path.join(side, "malformed.gitconfig");
+    fs.writeFileSync(malformed, "this is not a config file\n[[[\n");
+    const fakeHome = path.join(side, "home");
+    fs.mkdirSync(fakeHome, { recursive: true });
+    fs.writeFileSync(path.join(fakeHome, ".gitconfig"), "this is not a config file\n[[[\n");
+    const fakeXdg = path.join(side, "xdg");
+    fs.mkdirSync(path.join(fakeXdg, "git"), { recursive: true });
+    fs.writeFileSync(path.join(fakeXdg, "git", "config"), "this is not a config file\n[[[\n");
+
+    await inRepo(async (repo) => {
+      symlinkCarrierRepo(repo);
+      const baseline = await repo.capture();
+
+      const cases = [
+        ["GIT_CONFIG_GLOBAL -> a hostile config", { GIT_CONFIG_GLOBAL: hostile }],
+        ["GIT_CONFIG_GLOBAL -> a malformed config", { GIT_CONFIG_GLOBAL: malformed }],
+        ["GIT_CONFIG_SYSTEM with GIT_CONFIG_NOSYSTEM=0", { GIT_CONFIG_SYSTEM: malformed, GIT_CONFIG_NOSYSTEM: "0" }],
+        ["HOME and USERPROFILE -> a home holding a malformed config", { HOME: fakeHome, USERPROFILE: fakeHome }],
+        ["XDG_CONFIG_HOME -> an xdg tree holding a malformed config", { XDG_CONFIG_HOME: fakeXdg, HOME: path.join(side, "absent"), USERPROFILE: path.join(side, "absent") }],
+        ["exact GIT_CONFIG -> a malformed config", { GIT_CONFIG: malformed }],
+        ["every surface at once", {
+          GIT_CONFIG: malformed, GIT_CONFIG_GLOBAL: malformed, GIT_CONFIG_SYSTEM: malformed,
+          GIT_CONFIG_NOSYSTEM: "0", GIT_CONFIG_PARAMETERS: "'core.symlinks=true'",
+          GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.symlinks", GIT_CONFIG_VALUE_0: "true",
+          HOME: fakeHome, USERPROFILE: fakeHome, XDG_CONFIG_HOME: fakeXdg,
+        }],
+      ];
+      for (const [label, overrides] of cases) {
+        const poisoned = await withEnvironment(overrides, () => repo.capture());
+        sameSnapshot(poisoned, baseline, label);
+      }
+    });
+
+    // The environment is back to what it was: none of the keys the cases set are still around.
+    for (const key of ["GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
+      "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "XDG_CONFIG_HOME"]) {
+      assert.strictEqual(Object.prototype.hasOwnProperty.call(process.env, key), false, `${key} leaked out of a test`);
+    }
+  } finally {
+    fs.rmSync(side, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
+
 test("paths with spaces and non-ASCII survive the NUL-delimited plumbing", async () => {
   await inRepo(async (repo) => {
     seed(repo);

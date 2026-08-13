@@ -70,16 +70,49 @@ function requireRequest(request, name, keys) {
 
 // --- git ----------------------------------------------------------------------------------------
 
-// The environment is scrubbed of everything that could point Git at a different repository. Ignore
-// results cannot depend on it either way -- --exclude-standard is never passed and check-ignore is
-// never run -- but a redirected GIT_DIR would silently snapshot the wrong tree.
+// Variables that would point Git at a different repository or object store.
+const GIT_REDIRECT_VARIABLES = new Set([
+  "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+  "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CEILING_DIRECTORIES",
+]);
+
+// An empty configuration file for the global slot. Git for Windows and POSIX Git both accept
+// "/dev/null" here and read it as a file with no settings in it; os.devNull is NOT usable, because
+// on Windows it expands to \\.\nul and Git rejects that path with "Invalid argument", exit 128.
+// Nothing is created on disk for this, in the repository or anywhere else.
+const EMPTY_GIT_CONFIG = "/dev/null";
+
+// Every Git child runs in a controlled environment. 11b.10 says the process environment must not
+// influence the output, and the head view's canonical map is made of things Git configuration can
+// move: core.filemode decides whether an untracked file is 100644 or 100755, and core.symlinks
+// decides whether a 120000 index entry is reported as a type change. So the caller's configuration
+// surfaces are not filtered by name-and-index, they are removed wholesale and replaced:
+//
+//   inherited GIT_CONFIG and GIT_CONFIG_*  -> dropped, matched case-insensitively so a lowercase
+//                                             or mixed-case spelling cannot slip through on a
+//                                             platform where environment names are case-blind, and
+//                                             so a stale KEY_n left behind by a smaller COUNT is
+//                                             dropped too
+//   system configuration                   -> switched off with GIT_CONFIG_NOSYSTEM
+//   global configuration                   -> pinned to an empty file, which ALSO closes the
+//                                             discovery path: with GIT_CONFIG_GLOBAL set, Git
+//                                             stops consulting HOME, USERPROFILE and
+//                                             XDG_CONFIG_HOME, so deleting one variable cannot be
+//                                             undone by another one pointing somewhere else
+//
+// Repository-local configuration is deliberately untouched: .git/config is repo-controlled state,
+// which is exactly the authority 11b.10 keeps. What is closed is process, system and global.
 function gitEnvironment() {
-  const env = { ...process.env };
-  for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
-    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CEILING_DIRECTORIES"]) {
-    delete env[key];
+  const env = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    const upper = key.toUpperCase();
+    if (GIT_REDIRECT_VARIABLES.has(upper)) continue;
+    if (upper === "GIT_CONFIG" || upper.startsWith("GIT_CONFIG_")) continue;
+    env[key] = value;
   }
   env.GIT_OPTIONAL_LOCKS = "0";
+  env.GIT_CONFIG_NOSYSTEM = "1";
+  env.GIT_CONFIG_GLOBAL = EMPTY_GIT_CONFIG;
   return env;
 }
 
