@@ -22,6 +22,7 @@
 import cp from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -76,17 +77,41 @@ const GIT_REDIRECT_VARIABLES = new Set([
   "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CEILING_DIRECTORIES",
 ]);
 
-// One controlled path used for both the empty global-config slot and the no-home value. Git for
-// Windows and POSIX Git both accept "/dev/null" as a configuration file and read it as a file with
-// no settings in it, and as a home directory it makes "~" expand somewhere nothing can be found.
-// os.devNull is NOT usable: on Windows it expands to \\.\nul and Git rejects that path with
-// "Invalid argument", exit 128. Nothing is created on disk for any of this.
-const CONTROLLED_EMPTY_PATH = "/dev/null";
+// The empty configuration FILE for the global slot. Git for Windows and POSIX Git both accept
+// "/dev/null" here and read it as a file with no settings in it. os.devNull is NOT usable: on
+// Windows it expands to \\.\nul and Git rejects that path with "Invalid argument", exit 128.
+const EMPTY_GIT_CONFIG_FILE = "/dev/null";
 
-// The variables Git can take a home directory from, which is where "~" comes from. All of them are
-// pinned rather than deleted, because deleting one only moves the question to the next: measured on
-// git 2.55.0.windows.3, with HOME deleted and the rest hostile, HOMEDRIVE + HOMEPATH still supplied
-// the home and the include was found.
+// A home DIRECTORY is a different job, and "/dev/null" cannot do it. A config file only has to be
+// readable, but a home has to be a path Git can canonicalise: measured on git 2.55.0.windows.3, a
+// repository whose config carries `[includeIf "gitdir:~/…"]` fails with
+// `fatal: Invalid path '/dev': No such file or directory` when HOME is /dev/null -- and it fails
+// under a perfectly ordinary environment too, because expanding the pattern is what breaks, not
+// anything the caller did.
+//
+// So the controlled home is a fresh, valid, absolute path that does NOT exist and is never
+// created. Git canonicalises it happily, "~" expands under it, and nothing can be found there. The
+// name carries a UUID minted per capture, so it is not a fixed location a caller could fill in
+// beforehand, and because nothing is created there is nothing to clean up on any path, successful
+// or not.
+//
+// The BASE it sits under has to exist, though: Git canonicalises the home's parent, and a path
+// whose whole chain is missing fails with the same `Invalid path` error. os.tmpdir() reads TMPDIR,
+// TEMP and TMP from the environment -- caller-controlled, and this is a function about not
+// trusting the caller's environment -- so it is verified rather than assumed, falling back to the
+// filesystem root, which cannot be missing.
+function newControlledHome() {
+  const name = `ctide-head-view-no-home-${crypto.randomUUID()}`;
+  const filesystemRoot = path.parse(process.cwd()).root;
+  for (const base of [os.tmpdir(), filesystemRoot]) {
+    try { if (fs.statSync(base).isDirectory()) return path.join(base, name); } catch { /* try the next base */ }
+  }
+  return path.join(filesystemRoot, name);
+}
+
+// The variables Git can take a home directory from. All of them are pinned rather than deleted,
+// because deleting one only moves the question to the next: measured on git 2.55.0.windows.3, with
+// HOME deleted and the rest hostile, HOMEDRIVE + HOMEPATH still supplied the home.
 const HOME_VARIABLES = ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "HOMEDRIVE", "HOMEPATH"];
 
 // Every Git child runs in a controlled environment. 11b.10 says the process environment must not
@@ -108,18 +133,23 @@ const HOME_VARIABLES = ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "HOMEDRIVE", "
 //
 // The global pin alone is not enough, and the distinction matters. Closing global DISCOVERY does
 // not stop Git from READING the repository's own config -- which is the point -- but a repository's
-// own config may contain `[include] path = ~/…` or an `includeIf`, and that "~" is resolved through
-// the caller's environment at read time. So an environment can still reach inside a local config it
-// does not control. Pinning every home variable closes that: "~" resolves under the controlled path
-// and the include finds nothing. Measured: pinning HOME alone was enough on this Git because HOME
-// outranks the rest, but all five are pinned so the closure does not rest on that ordering.
+// own config may contain `[include] path = ~/…` or `[includeIf "gitdir:~/…"]`, and that "~" is
+// resolved through the caller's environment at read time. So an environment can still reach inside
+// a local config it does not control. Pointing every home variable at the controlled home closes
+// that: "~" expands under a directory that does not exist, so an include finds nothing and an
+// includeIf pattern matches nothing. Measured: HOME alone was enough on this Git because HOME
+// outranks the rest, but all five are set so the closure does not rest on that ordering.
 //
 // What deliberately stays open is repository-LOCAL config itself. `.git/config` is repository-local
 // interpretation state -- untracked, not part of the snapshot, and not committed bytes -- and
 // 11b.10 keeps it as the authority for things like core.symlinks and core.filemode. What is closed
 // is process, system, global, and the environment-dependent home expansion a local config can
 // reach through. A value written directly into `.git/config` is still observed.
-function gitEnvironment() {
+//
+// The environment is built once per capture and handed to every Git call, so `rev-parse`,
+// `ls-files`, `diff-files` and `config` all read the same home. A home minted per call would let an
+// includeIf resolve one way while the index is listed and another way while the diff is taken.
+function gitEnvironment(controlledHome) {
   const env = {};
   for (const [key, value] of Object.entries(process.env)) {
     const upper = key.toUpperCase();
@@ -130,17 +160,24 @@ function gitEnvironment() {
   }
   env.GIT_OPTIONAL_LOCKS = "0";
   env.GIT_CONFIG_NOSYSTEM = "1";
-  env.GIT_CONFIG_GLOBAL = CONTROLLED_EMPTY_PATH;
-  for (const key of HOME_VARIABLES) env[key] = CONTROLLED_EMPTY_PATH;
+  env.GIT_CONFIG_GLOBAL = EMPTY_GIT_CONFIG_FILE;
+  env.HOME = controlledHome;
+  env.USERPROFILE = controlledHome;
+  env.XDG_CONFIG_HOME = controlledHome;
+  // Windows Git joins HOMEDRIVE and HOMEPATH, so they are split rather than both set to the whole
+  // path: if that fallback is ever consulted it lands on the same controlled home.
+  const drive = /^[A-Za-z]:/.test(controlledHome) ? controlledHome.slice(0, 2) : "";
+  env.HOMEDRIVE = drive;
+  env.HOMEPATH = drive === "" ? controlledHome : controlledHome.slice(2);
   return env;
 }
 
-async function git(cwd, args) {
+async function git(cwd, args, environment) {
   let result;
   try {
     result = await execFile("git", args, {
       cwd,
-      env: gitEnvironment(),
+      env: environment,
       encoding: "buffer",
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: GIT_MAX_BUFFER,
@@ -206,7 +243,7 @@ function isExcluded(candidate) {
 
 // The caller must name the working tree's own top level. A subdirectory is rejected rather than
 // silently widened to the enclosing repository, and a bare repository has no worktree to snapshot.
-async function resolveRepoRoot(repoRoot) {
+async function resolveRepoRoot(repoRoot, environment) {
   if (typeof repoRoot !== "string" || repoRoot === "") throw fail("E_REPO_ROOT", "repoRoot must be a non-empty path string");
   let requested;
   try { requested = path.resolve(fs.realpathSync.native(repoRoot)); } catch {
@@ -218,9 +255,9 @@ async function resolveRepoRoot(repoRoot) {
   }
   if (!stat.isDirectory()) throw fail("E_REPO_ROOT", `repoRoot is not a directory: ${repoRoot}`);
 
-  const bare = (await git(requested, ["rev-parse", "--is-bare-repository"])).toString("utf8").trim();
+  const bare = (await git(requested, ["rev-parse", "--is-bare-repository"], environment)).toString("utf8").trim();
   if (bare !== "false") throw fail("E_REPO_ROOT", `${repoRoot} is a bare repository; there is no working tree to snapshot`);
-  const reported = (await git(requested, ["rev-parse", "--show-toplevel"])).toString("utf8").trim();
+  const reported = (await git(requested, ["rev-parse", "--show-toplevel"], environment)).toString("utf8").trim();
   if (reported === "") throw fail("E_REPO_ROOT", `git reported no working tree top level for ${repoRoot}`);
   let toplevel;
   try { toplevel = path.resolve(fs.realpathSync.native(reported)); } catch {
@@ -504,17 +541,19 @@ export async function captureHeadViewSnapshot(request) {
     throw fail("E_API_ARGUMENTS", "captureHeadViewSnapshot takes exactly one argument; a git executable, an environment, an ignore matcher, a filesystem adapter or a capture hook cannot be supplied");
   }
   requireRequest(request, "captureHeadViewSnapshot", ["repoRoot"]);
-  const root = await resolveRepoRoot(request.repoRoot);
+    // One controlled home for the whole capture, so every Git call below resolves "~" the same way.
+  const environment = gitEnvironment(newControlledHome());
+  const root = await resolveRepoRoot(request.repoRoot, environment);
 
   // allSettled, not all: if one Git call fails the others must still be waited on rather than left
   // running against a directory the caller may be about to clean up.
   const settled = await Promise.allSettled([
-    git(root, ["ls-files", "--stage", "-z"]),
-    git(root, ["ls-files", "-v", "-z"]),
-    git(root, ["diff-files", "--raw", "-z"]),
+    git(root, ["ls-files", "--stage", "-z"], environment),
+    git(root, ["ls-files", "-v", "-z"], environment),
+    git(root, ["diff-files", "--raw", "-z"], environment),
     // Deliberately WITHOUT --exclude-standard: this must be the full untracked universe, and the
     // only ignore authority is the tracked .gitignore bytes fed to the vendored engine below.
-    git(root, ["ls-files", "--others", "-z"]),
+    git(root, ["ls-files", "--others", "-z"], environment),
   ]);
   const rejected = settled.find((r) => r.status === "rejected");
   if (rejected !== undefined) throw rejected.reason;
@@ -529,7 +568,7 @@ export async function captureHeadViewSnapshot(request) {
 
   let fileMode = process.platform !== "win32";
   try {
-    fileMode = (await git(root, ["config", "--bool", "core.filemode"])).toString("utf8").trim() === "true";
+    fileMode = (await git(root, ["config", "--bool", "core.filemode"], environment)).toString("utf8").trim() === "true";
   } catch { /* unset: keep the platform default Git itself would use */ }
 
   // One enumeration pass, one read per entry. Nothing below this point touches the filesystem.

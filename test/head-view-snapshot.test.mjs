@@ -1218,6 +1218,79 @@ test("a repo-local include.path with ~ cannot be redirected by the caller's home
   }
 });
 
+// includeIf is the harder half of the same problem. `[include] path = ~/…` only needs the home to
+// find a file; `[includeIf "gitdir:~/…"]` needs Git to canonicalise the home to decide whether the
+// condition matches at all -- so a home that is not a real directory-like path makes Git refuse to
+// run, on an ordinary environment as much as a hostile one.
+test("a repo-local includeIf on gitdir:~ is neither honoured nor able to break the capture", async () => {
+  const before = captureEnvironment(RELEVANT_ENVIRONMENT_KEYS);
+  // The repository has to live UNDER the fake home for `gitdir:~/project/.git` to match it.
+  const fakeHome = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ctide-hvs-ifhome-")));
+  const repoRoot = path.join(fakeHome, "project");
+  try {
+    fs.mkdirSync(repoRoot, { recursive: true });
+    const git = (...args) => cp.execFileSync("git", args, { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    git("init", "-q", "-b", "main");
+    git("config", "user.email", "scratch@example.invalid");
+    git("config", "user.name", "scratch");
+    git("config", "commit.gpgsign", "false");
+    git("config", "core.autocrlf", "false");
+    git("config", "core.symlinks", "false");
+
+    const body = "target.txt";
+    fs.writeFileSync(path.join(repoRoot, "target.txt"), "the target\n");
+    fs.writeFileSync(path.join(repoRoot, "switcher"), Buffer.from(body, "utf8"));
+    const oid = cp.execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd: repoRoot, input: Buffer.from(body, "utf8"), encoding: "utf8" }).trim();
+    git("add", "target.txt");
+    git("update-index", "--add", "--cacheinfo", `120000,${oid},switcher`);
+    git("commit", "-qm", "carrier");
+    try { git("update-index", "--refresh"); } catch { /* reported paths needing update */ }
+
+    const poison = path.join(fakeHome, "poison.gitconfig");
+    fs.writeFileSync(poison, "[core]\n\tsymlinks = true\n");
+    fs.appendFileSync(path.join(repoRoot, ".git", "config"),
+      `[includeIf "gitdir:~/project/.git"]\n\tpath = ${poison.replaceAll("\\", "/")}\n`);
+
+    // Prove the fixture with Git itself before asserting anything about the snapshot: this is a
+    // legal config that Git honours under a hostile home and ignores under an ordinary one.
+    const askGit = (env) => cp.execFileSync("git", ["config", "--bool", "core.symlinks"], {
+      cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env },
+    }).trim();
+    assert.strictEqual(askGit({}), "false", "under an ordinary home the includeIf does not match");
+    assert.strictEqual(askGit({ HOME: fakeHome, USERPROFILE: fakeHome }), "true", "under the fake home it does");
+
+    const baseline = await captureHeadViewSnapshot({ repoRoot });
+    assert.deepStrictEqual(baseline.entry("switcher"),
+      { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from(body, "utf8")) },
+      "the capture must succeed on a repository whose config carries a gitdir:~ condition");
+
+    const drive = fakeHome.slice(0, 2);
+    const rest = fakeHome.slice(2);
+    const cases = [
+      ["HOME and USERPROFILE", { HOME: fakeHome, USERPROFILE: fakeHome }],
+      ["every home variable at once", { HOME: fakeHome, USERPROFILE: fakeHome, XDG_CONFIG_HOME: fakeHome, HOMEDRIVE: drive, HOMEPATH: rest }],
+      ["HOMEDRIVE and HOMEPATH with HOME removed", { HOME: undefined, USERPROFILE: undefined, HOMEDRIVE: drive, HOMEPATH: rest }],
+    ];
+    for (const [label, overrides] of cases) {
+      const poisoned = await withEnvironment(overrides, () => captureHeadViewSnapshot({ repoRoot }));
+      sameSnapshot(poisoned, baseline, `includeIf via ${label}`);
+      assert.strictEqual(poisoned.entry("switcher").type, "symlink", `${label}: the index carrier still decides`);
+      assert.strictEqual(poisoned.entry("switcher").mode, "120000", label);
+    }
+
+    // And a value written directly into .git/config, with no condition and no tilde, still wins.
+    git("config", "core.symlinks", "true");
+    const asBlob = await captureHeadViewSnapshot({ repoRoot });
+    assert.deepStrictEqual(asBlob.entry("switcher"),
+      { mode: "100644", type: "blob", contentDigest: sha256(Buffer.from(body, "utf8")) });
+    assert.notStrictEqual(asBlob.headViewDigest, baseline.headViewDigest);
+
+    assertEnvironmentRestored(before, RELEVANT_ENVIRONMENT_KEYS);
+  } finally {
+    fs.rmSync(fakeHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});
+
 test("paths with spaces and non-ASCII survive the NUL-delimited plumbing", async () => {
   await inRepo(async (repo) => {
     seed(repo);
