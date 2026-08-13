@@ -38,6 +38,10 @@ function makeRepo() {
   run("config", "user.name", "scratch");
   run("config", "commit.gpgsign", "false");
   run("config", "core.autocrlf", "false");
+  // Pinned so the index-mode symlink carrier means the same thing on every platform. Windows has
+  // it false already; pinning it makes the POSIX runs exercise the same carrier rather than a
+  // different one, and the symlink-to-blob test below flips it back on deliberately.
+  run("config", "core.symlinks", "false");
   return {
     root,
     git: run,
@@ -61,12 +65,16 @@ async function inRepo(body) {
   }
 }
 
-const failureOf = async (fn) => {
+const errorOf = async (fn) => {
   try { await fn(); } catch (e) {
     assert.strictEqual(e && e.name, "HeadViewSnapshotError", `expected a HeadViewSnapshotError, got ${e && e.name}: ${e && e.message}`);
-    return e.code;
+    return e;
   }
   return null;
+};
+const failureOf = async (fn) => {
+  const e = await errorOf(fn);
+  return e === null ? null : e.code;
 };
 
 // A baseline repository every single-variable case starts from.
@@ -734,6 +742,190 @@ test("an empty repository and an index-only repository both capture cleanly", as
     const staged = await repo.capture();
     assert.strictEqual(staged.has("staged-only.txt"), true);
     assert.notStrictEqual(staged.headViewDigest, empty.headViewDigest);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Integrity: paths that can subvert the map, ancestors that can leave the repository, and a type
+// change Git reports but the index still spells the old way
+// ---------------------------------------------------------------------------------------------
+
+test("a path named __proto__ is an own key of the digest map, not a prototype write", async () => {
+  await inRepo(async (repo) => {
+    repo.write("__proto__", "prototype trap\n");
+    repo.write("ordinary.txt", "ordinary\n");
+    repo.commit("proto");
+
+    const s1 = await repo.capture();
+    assert.strictEqual(s1.size, 2);
+    assert.ok(s1.paths().includes("__proto__"));
+    assert.strictEqual(s1.read("__proto__").toString("utf8"), "prototype trap\n");
+
+    // Rebuild the map from what the snapshot reports, exactly as 11b.10 states the formula, and on
+    // a null-prototype object so the rebuild itself cannot lose the key it is checking for.
+    const rebuild = (snapshot) => {
+      const map = Object.create(null);
+      for (const p of snapshot.paths()) {
+        const e = snapshot.entry(p);
+        map[p] = { mode: e.mode, type: e.type, contentDigest: e.contentDigest };
+      }
+      assert.ok(Object.keys(map).includes("__proto__"), "the rebuilt map must hold __proto__ as an own key");
+      assert.strictEqual(Object.getPrototypeOf(map), null);
+      return sha256Hex(canonicalJson(map));
+    };
+    assert.strictEqual(s1.headViewDigest, rebuild(s1), "the digest must match the spec formula");
+    assert.notStrictEqual(s1.headViewDigest, sha256Hex(canonicalJson({})), "and must not be the empty-map digest");
+    // The isolated root cause, both ways round: on a plain object the assignment runs the
+    // prototype setter and leaves no own key; on a null-prototype object it is an ordinary write,
+    // and canonicalJson serialises it like any other key.
+    const plain = {};
+    plain.__proto__ = { mode: "100644" };
+    assert.deepStrictEqual(Object.keys(plain), [], "a plain object silently swallows the key");
+    const safe = Object.create(null);
+    safe.__proto__ = { mode: "100644" };
+    assert.deepStrictEqual(Object.keys(safe), ["__proto__"]);
+    assert.ok(canonicalJson(safe).includes("__proto__"), "canonicalJson serialises the key rather than dropping it");
+
+    // The file is inside the fingerprint, so both of its single-variable changes move it.
+    const before = s1.headViewDigest;
+    repo.write("__proto__", "prototype trap, edited\n");
+    const edited = await repo.capture();
+    assert.notStrictEqual(edited.headViewDigest, before, "changing its bytes must change the digest");
+    assert.strictEqual(edited.headViewDigest, rebuild(edited));
+
+    repo.remove("__proto__");
+    const deleted = await repo.capture();
+    assert.strictEqual(deleted.has("__proto__"), false);
+    assert.notStrictEqual(deleted.headViewDigest, edited.headViewDigest, "deleting it must change the digest");
+    assert.strictEqual(deleted.size, 1);
+  });
+});
+
+// An ancestor that is a junction or a directory symlink is walked through by the OS before lstat or
+// readFile ever reaches the leaf, so the bytes would come from wherever it points.
+test("a tracked child under an ancestor junction is fail-closed and never reads outside the repo", async () => {
+  const SENTINEL = "OUTSIDE SECRET, MUST NEVER BE READ\n";
+  const outside = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ctide-hvs-outside-")));
+  fs.writeFileSync(path.join(outside, "f.txt"), SENTINEL);
+  let linkKind = null;
+  try {
+    await inRepo(async (repo) => {
+      seed(repo);
+      repo.write("dir/f.txt", "inside the repository\n");
+      repo.commit("dir");
+      const clean = await repo.capture();
+      assert.strictEqual(clean.read("dir/f.txt").toString("utf8"), "inside the repository\n", "the control reads the real file");
+
+      fs.rmSync(path.join(repo.root, "dir"), { recursive: true, force: true });
+      const link = path.join(repo.root, "dir");
+      for (const kind of ["junction", "dir"]) {
+        try { fs.symlinkSync(outside, link, kind); linkKind = kind; break; } catch { /* try the next form */ }
+      }
+      if (linkKind === null) return;
+
+      try {
+        assert.strictEqual(fs.lstatSync(path.join(link, "f.txt")).isFile(), true,
+          "the OS really does resolve the leaf through the link, which is the hazard being closed");
+        const error = await errorOf(() => repo.capture());
+        assert.strictEqual(error && error.code, "E_UNSUPPORTED_ENTRY");
+        assert.strictEqual(error.detail.path, "dir/f.txt");
+        assert.strictEqual(error.detail.ancestor, "dir");
+        assert.strictEqual(error.detail.reason, "ancestor-symlink");
+        assert.ok(!error.message.includes("SECRET"), "the sentinel never reached the failure path either");
+      } finally {
+        // Detach the link, never its target, before the scratch repo is removed.
+        try { fs.unlinkSync(link); } catch { fs.rmdirSync(link); }
+      }
+
+      // An untracked child under the same kind of ancestor is refused too.
+      const otherLink = path.join(repo.root, "untracked-dir");
+      fs.symlinkSync(outside, otherLink, linkKind);
+      try {
+        assert.strictEqual(await failureOf(() => repo.capture()), "E_UNSUPPORTED_ENTRY", "untracked side");
+      } finally { try { fs.unlinkSync(otherLink); } catch { fs.rmdirSync(otherLink); } }
+    });
+    // Cleanup walked the repo, and the external directory came through untouched.
+    assert.strictEqual(fs.readFileSync(path.join(outside, "f.txt"), "utf8"), SENTINEL, "the external target was neither read nor deleted");
+    assert.deepStrictEqual(fs.readdirSync(outside), ["f.txt"]);
+  } finally {
+    fs.rmSync(outside, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+  assert.ok(linkKind !== null, `this platform created no junction or directory symlink, so the case did not run`);
+});
+
+test("a tracked file whose ancestor is an ordinary file is fail-closed", async () => {
+  await inRepo(async (repo) => {
+    seed(repo);
+    repo.write("box/f.txt", "inside\n");
+    repo.commit("box");
+    fs.rmSync(path.join(repo.root, "box"), { recursive: true, force: true });
+    fs.writeFileSync(path.join(repo.root, "box"), "now a file, not a directory\n");
+
+    const error = await errorOf(() => repo.capture());
+    assert.strictEqual(error && error.code, "E_UNSUPPORTED_ENTRY");
+    assert.strictEqual(error.detail.reason, "ancestor-not-a-directory");
+    assert.strictEqual(error.detail.ancestor, "box");
+  });
+});
+
+test("a missing ancestor means the leaf does not exist, not that capture fails", async () => {
+  await inRepo(async (repo) => {
+    seed(repo);
+    repo.write("gone/f.txt", "inside\n");
+    repo.commit("gone");
+    fs.rmSync(path.join(repo.root, "gone"), { recursive: true, force: true });
+
+    const s1 = await repo.capture();
+    assert.strictEqual(s1.has("gone/f.txt"), false, "a deleted subtree is simply absent");
+    assert.strictEqual(s1.has("lib/helper.mjs"), true, "and the rest of the universe is unaffected");
+  });
+});
+
+test("an observed symlink-to-blob change is a blob, and the index carrier only speaks when Git is silent", async () => {
+  await inRepo(async (repo) => {
+    seed(repo);
+    const body = "lib/helper.mjs";
+    repo.write("switcher", body);
+    const oid = cp.execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd: repo.root, input: Buffer.from(body, "utf8"), encoding: "utf8" }).trim();
+    repo.git("update-index", "--add", "--cacheinfo", `120000,${oid},switcher`);
+
+    // --cacheinfo leaves zeroed stat data behind, so diff-files reports a stale entry until the
+    // index is refreshed. Refresh first, or "Git is silent" would not actually be the premise
+    // being tested. It exits non-zero when it does find work to do, which is not a failure here.
+    try { repo.git("update-index", "--refresh"); } catch { /* reported paths needing update */ }
+
+    // core.symlinks=false: Git has nothing to report, so the index carrier stands. This is the
+    // Windows pseudo-symlink positive and it must keep working.
+    assert.strictEqual(repo.git("diff-files", "--raw").trim(), "", "Git reports no change while symlinks are off");
+    const asLink = await repo.capture();
+    assert.deepStrictEqual(asLink.entry("switcher"), { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from(body, "utf8")) });
+
+    // Single variable: turn symlinks on. Now Git can see that the worktree holds a regular file.
+    repo.git("config", "core.symlinks", "true");
+    const raw = repo.git("diff-files", "--raw").trim();
+    assert.match(raw, /^:120000 100644 \S+ \S+ T\tswitcher$/, `expected a 120000 -> 100644 type change, got ${JSON.stringify(raw)}`);
+
+    const asBlob = await repo.capture();
+    assert.deepStrictEqual(asBlob.entry("switcher"), { mode: "100644", type: "blob", contentDigest: sha256(Buffer.from(body, "utf8")) });
+    assert.strictEqual(asBlob.read("switcher").toString("utf8"), body, "the raw bytes are unchanged");
+    assert.strictEqual(asBlob.entry("switcher").contentDigest, asLink.entry("switcher").contentDigest, "same bytes, same contentDigest");
+    assert.notStrictEqual(asBlob.headViewDigest, asLink.headViewDigest, "so only mode and type can be carrying the change");
+  });
+});
+
+test("an observed mode change on an ordinary blob is respected over the index mode", async () => {
+  await inRepo(async (repo) => {
+    seed(repo);
+    repo.write("plain.txt", "plain\n");
+    repo.commit("plain");
+    const before = await repo.capture();
+    assert.strictEqual(before.entry("plain.txt").mode, "100644");
+
+    // Stage an executable bit; with no observed change the index mode is what stands.
+    repo.git("update-index", "--chmod=+x", "plain.txt");
+    const staged = await repo.capture();
+    assert.strictEqual(staged.entry("plain.txt").mode, "100755");
+    assert.notStrictEqual(staged.headViewDigest, before.headViewDigest);
   });
 });
 

@@ -263,11 +263,46 @@ function parseUntracked(buffer) {
 
 const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 
+// Every ancestor of a leaf must be a real directory in this working tree. lstat and readFile
+// resolve the WHOLE path, so a junction or a directory symlink anywhere above the leaf would be
+// walked through by the OS before either call ever looks at the leaf itself -- and the bytes that
+// came back would be from wherever that link points, which may be outside the repository
+// entirely. Each component is therefore checked from the root DOWNWARDS and the walk stops at the
+// first one that is not a plain directory, before the leaf is touched.
+//
+// This is a real lstat per component, not a string comparison against the root: a prefix test
+// proves nothing about what the filesystem will do with the path. Nothing is remembered between
+// leaves either -- the tree can change underneath a capture, and that is what S1/S2 is for.
+// Returns false when an ancestor simply does not exist, which means the leaf does not either.
+function assertAncestorsAreDirectories(root, relative) {
+  const segments = relative.split("/");
+  let absolute = root;
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    absolute = path.join(absolute, segments[i]);
+    const ancestor = segments.slice(0, i + 1).join("/");
+    let stat;
+    try { stat = fs.lstatSync(absolute); } catch (error) {
+      if (error && error.code === "ENOENT") return false;
+      throw fail("E_READ_FAILED", `an ancestor of ${relative} could not be examined: ${error && error.code}`, { path: relative, ancestor });
+    }
+    if (stat.isSymbolicLink()) {
+      throw fail("E_UNSUPPORTED_ENTRY", `${relative} sits under ${ancestor}, which is a symlink or junction; following it could read bytes from outside this repository`, { path: relative, ancestor, reason: "ancestor-symlink" });
+    }
+    if (!stat.isDirectory()) {
+      throw fail("E_UNSUPPORTED_ENTRY", `${relative} sits under ${ancestor}, which is not a directory`, { path: relative, ancestor, reason: "ancestor-not-a-directory" });
+    }
+  }
+  return true;
+}
+
 // Reads one entry, once. A symlink is never followed: its bytes ARE its target string. On a
 // platform where Git cannot materialise symlinks, a tracked 120000 entry lands as a regular file
-// whose CONTENT is that same target string, so index mode carries the symlink meaning and the
-// bytes come out identical either way.
-function readEntry(absolute, relative, indexMode, observedMode) {
+// whose CONTENT is that same target string, so the index mode carries the symlink meaning and the
+// bytes come out identical either way -- but only while Git has nothing newer to say. When
+// diff-files reports an observed mode, that is what the worktree holds NOW, so a 120000 -> 100644
+// type change is a blob and not a link.
+function readEntry(root, absolute, relative, indexMode, observedMode) {
+  if (!assertAncestorsAreDirectories(root, relative)) return null;
   let stat;
   try { stat = fs.lstatSync(absolute); } catch (error) {
     if (error && error.code === "ENOENT") return null;
@@ -290,11 +325,13 @@ function readEntry(absolute, relative, indexMode, observedMode) {
     if (error && error.code === "ENOENT") return null;
     throw fail("E_READ_FAILED", `${relative} could not be read: ${error && error.code}`);
   }
-  if (indexMode === "120000") return { mode: "120000", type: "symlink", bytes };
+  // Observed first, index second. The index carrier only speaks for a path Git has not reported a
+  // newer mode for.
   const mode = observedMode !== null && observedMode !== undefined ? observedMode : indexMode;
-  if (!SUPPORTED_MODES.has(mode) || mode === "120000") {
+  if (!SUPPORTED_MODES.has(mode)) {
     throw fail("E_UNSUPPORTED_ENTRY", `${relative} resolves to mode ${mode}, which is outside the closed model`, { path: relative, mode });
   }
+  if (mode === "120000") return { mode: "120000", type: "symlink", bytes };
   return { mode, type: "blob", bytes };
 }
 
@@ -305,7 +342,8 @@ function untrackedMode(stat, fileMode) {
   return (stat.mode & 0o111) !== 0 ? "100755" : "100644";
 }
 
-function readUntracked(absolute, relative, fileMode) {
+function readUntracked(root, absolute, relative, fileMode) {
+  if (!assertAncestorsAreDirectories(root, relative)) return null;
   let stat;
   try { stat = fs.lstatSync(absolute); } catch (error) {
     if (error && error.code === "ENOENT") return null;
@@ -337,7 +375,12 @@ const SNAPSHOTS = new WeakSet();
 
 function buildSnapshot(entries) {
   const paths = [...entries.keys()].sort(compareCodePoint);
-  const map = {};
+  // A null-prototype object, because "__proto__" is a perfectly legal Git path. On a plain {} the
+  // assignment below would invoke the prototype setter instead of creating an own property, and
+  // the file would sit in the snapshot while staying outside the digest that is supposed to cover
+  // it. With no prototype there is no setter, so every legal path becomes an own data property and
+  // canonicalJson serialises it like any other key.
+  const map = Object.create(null);
   const metadata = new Map();
   const bytes = new Map();
   for (const p of paths) {
@@ -419,7 +462,7 @@ export async function captureHeadViewSnapshot(request) {
     if (isExcluded(relative)) continue;
     const change = unstaged.get(relative);
     const observed = change !== undefined && change.dstMode !== "000000" ? change.dstMode : null;
-    const read = readEntry(path.join(root, relative), relative, entry.mode, observed);
+    const read = readEntry(root, path.join(root, relative), relative, entry.mode, observed);
     if (read === null) continue; // deleted in the working tree: the path does not exist in the head view
     tracked.set(relative, read);
   }
@@ -430,7 +473,7 @@ export async function captureHeadViewSnapshot(request) {
     if (tracked.has(relative) || index.has(relative)) {
       throw fail("E_PATH_COLLISION", `${relative} is reported as both tracked and untracked`);
     }
-    const read = readUntracked(path.join(root, relative), relative, fileMode);
+    const read = readUntracked(root, path.join(root, relative), relative, fileMode);
     if (read === null) continue;
     untracked.set(relative, read);
   }
