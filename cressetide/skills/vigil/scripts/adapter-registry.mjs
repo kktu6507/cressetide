@@ -260,7 +260,17 @@ function buildRegistry() {
     byImplementationAndFramework.add(pair);
   }
 
-  return deepFreeze({ registryPath: REGISTRY_PATH, registryVersion: parsed.registryVersion, adapters });
+  // Two views of ONE read. The descriptor is the validated, reconstructed shape callers have always
+  // had. `root` is the exact parsed test-adapters.json root -- exactly {registryVersion, adapters},
+  // nothing added -- because §11b.9c's registryDigest preimage is the whole file root and the
+  // descriptor is not it: it carries a loader-only registryPath and its adapters are rebuilt objects
+  // that are only incidentally equal to the file. Both come from the single readFileSync above, so a
+  // digest taken from `root` covers precisely the bytes this function validated. Re-reading the file
+  // somewhere else to hash it would open exactly the TOCTOU window that separation invites.
+  return {
+    descriptor: deepFreeze({ registryPath: REGISTRY_PATH, registryVersion: parsed.registryVersion, adapters }),
+    root: deepFreeze(parsed),
+  };
 }
 
 let cached = null;
@@ -275,7 +285,20 @@ export function loadTestAdapterRegistry() {
   // The cache is only written once every check has passed, so a rejected registry leaves the next
   // call to try again from the file rather than inheriting a half-validated result.
   if (cached === null) cached = buildRegistry();
-  return cached;
+  return cached.descriptor;
+}
+
+// The exact parsed registry root -- {registryVersion, adapters} and nothing else -- from the SAME
+// validated read the descriptor came from. It exists for §11b.9c's registryDigest preimage, which is
+// the whole file root; the descriptor cannot stand in for it. Validation is unconditional and comes
+// first: there is no path here that hands back a root the §11b.3 schema rejected, so a digest is
+// never taken over a registry that is not a registry. Same no-argument surface as the loader.
+export function loadTestAdapterRegistryRoot() {
+  if (arguments.length > 0) {
+    throw fail("E_API_ARGUMENTS", "loadTestAdapterRegistryRoot takes no arguments; supplying a registry path, a registry object, a manifest, a vendor capability or a module path is not supported");
+  }
+  if (cached === null) cached = buildRegistry();
+  return cached.root;
 }
 
 // Resolution by lookup in a closed table, never by turning a name into a path. The argument is an

@@ -25,7 +25,9 @@ import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 
-import { TestAdapterRegistryError, loadTestAdapterRegistry } from "../cressetide/skills/vigil/scripts/adapter-registry.mjs";
+import {
+  TestAdapterRegistryError, loadTestAdapterRegistry, loadTestAdapterRegistryRoot,
+} from "../cressetide/skills/vigil/scripts/adapter-registry.mjs";
 import { loadVendorCapability } from "../cressetide/skills/vigil/scripts/parser-ignore-wrapper.mjs";
 import { root } from "./support.mjs";
 import { temporary } from "./helpers.mjs";
@@ -155,6 +157,45 @@ test("registry: caller mutation attempts change nothing on the next read", () =>
   assert.deepStrictEqual([...again.adapters[0].discovery.importSpecifiers], ["node:test"]);
   assert.strictEqual(again.adapters[0].discovery.explicitConfigPath, ".ctide/test-adapters-config.json");
   assert.strictEqual(again.adapters[0].attachmentRule, "leading-line-comments");
+});
+
+// The exact parsed root exists for §11b.9c's registryDigest preimage, which is the whole file root.
+// The descriptor cannot stand in for it: it carries a loader-only registryPath and its adapters are
+// rebuilt objects. Both come from ONE read, so the digest covers the bytes the loader validated
+// rather than whatever a second read might find.
+test("registry: the exact parsed root is the file root, from the same validated read", async () => {
+  const rootObject = loadTestAdapterRegistryRoot();
+  assert.deepStrictEqual(Object.keys(rootObject).sort(), ["adapters", "registryVersion"],
+    "exactly the file root -- no registryPath, nothing added");
+  assert.deepStrictEqual(rootObject, SHIPPED, "and it equals the shipped file as parsed");
+  assert.notStrictEqual(rootObject, loadTestAdapterRegistry(), "it is not the descriptor");
+  assert.strictEqual("registryPath" in rootObject, false);
+  assert.strictEqual(loadTestAdapterRegistry().registryPath, REGISTRY_PATH, "which still has one");
+
+  assert.ok(Object.isFrozen(rootObject) && Object.isFrozen(rootObject.adapters)
+    && Object.isFrozen(rootObject.adapters[0]) && Object.isFrozen(rootObject.adapters[0].implementationIdentity),
+  "frozen all the way down");
+  try { rootObject.adapters[0].adapterId = "smuggled"; } catch { /* frozen: rejection is the point */ }
+  assert.strictEqual(loadTestAdapterRegistryRoot().adapters[0].adapterId, SHIPPED.adapters[0].adapterId,
+    "a caller's mutation attempt changes nothing on the next read");
+  assert.strictEqual(loadTestAdapterRegistryRoot(), rootObject, "one cached read serves both accessors");
+
+  assert.strictEqual(loadTestAdapterRegistryRoot.length, 0, "it declares no parameter");
+  for (const override of [{ registryPath: REGISTRY_PATH }, { registry: SHIPPED }, { modulePath: "./elsewhere.mjs" }]) {
+    assert.strictEqual(await codeOf(() => loadTestAdapterRegistryRoot(override)), "E_API_ARGUMENTS", JSON.stringify(Object.keys(override)));
+  }
+});
+
+// Validation is unconditional and comes first, so there is no path that hands back a root the
+// §11b.3 schema rejected -- a digest is never taken over a registry that is not a registry.
+test("registry: an invalid registry yields no root at all, rather than an unvalidated one", async () => {
+  const { dir, url } = scratchLayout((registry) => { registry.registryVersion = 2; });
+  try {
+    const scratch = await import(url);
+    assert.strictEqual(await codeOf(() => scratch.loadTestAdapterRegistryRoot()), "E_REGISTRY_UNSUPPORTED");
+    assert.strictEqual(await codeOf(() => scratch.loadTestAdapterRegistry()), "E_REGISTRY_UNSUPPORTED",
+      "both accessors fail the same way, because both come from the same validated build");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("registry: the loader has no override surface", async () => {
