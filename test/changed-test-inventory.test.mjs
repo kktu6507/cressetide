@@ -14,11 +14,11 @@ import { test } from "node:test";
 import assert from "node:assert";
 import fs from "node:fs";
 import path from "node:path";
-import { root } from "./helpers.mjs";
+import { root, temporary } from "./helpers.mjs";
 import { canonicalJson, compareCodePoint, sha256Hex } from "../cressetide/skills/vigil/scripts/provenance-store.mjs";
 import {
   V2_INVENTORY_KEYS, computeInventoryV2Digest, parseCanonicalInventoryV2,
-  computeInventoryDigest, parseInventory, UNSUPPORTED_POPULATED,
+  computeInventoryDigest, parseInventory, loadInventory, UNSUPPORTED_POPULATED,
 } from "../cressetide/skills/vigil/scripts/changed-test-inventory.mjs";
 
 const MODULE = path.join(root, "cressetide", "skills", "vigil", "scripts", "changed-test-inventory.mjs");
@@ -525,7 +525,15 @@ test("TP AC65 + 11b: path, adapterId and structuralId are held to their canonica
     ["test//a.test.mjs", "an empty segment"],
     ["test/a.test.mjs/", "a trailing separator"],
     ["", "an empty path"],
-  ]) refused(withPath(p), `path with ${label}`, "E_ENTRY_FIELD");
+    ["C:/x.test.mjs", "an uppercase drive prefix"],
+    ["z:/x", "a lowercase drive prefix"],
+    ["a\u0000b.test.mjs", "an embedded U+0000"],
+    ["test/a\u0000.test.mjs", "U+0000 inside a segment"],
+  ]) {
+    const err = refused(withPath(p), `path with ${label}`, "E_ENTRY_FIELD");
+    assert.ok(!/inventoryDigest/.test(err.message),
+      `path with ${label}: the refusal names the path, not a digest mismatch -- got ${err.message}`);
+  }
 
   for (const [id, label] of [["Node-Test", "uppercase"], ["node_test", "an underscore"], ["-node", "a leading dash"], ["", "empty"]]) {
     refused(withEntries([{ ...e, testRef: { ...e.testRef, adapterId: id } }]), `adapterId ${label}`, "E_ENTRY_FIELD");
@@ -585,33 +593,72 @@ test("TP section 2 + IS section 8: the tag grammar and the canonical ULID are en
 // The two layers: the isolated reader reads it, the product entry point still refuses to act on it
 // =================================================================================================
 
-test("the isolated reader parses a populated v2 inventory that the product entry point still refuses", () => {
-  const text = withEntries([entry()]);
-
-  const read = parseCanonicalInventoryV2(text);
-  assert.strictEqual(read.entries.length, 1, "the isolated component reads it completely");
-
+function productRefuses(text, what) {
   let err = null;
   try { parseInventory(text); } catch (e) { err = e; }
-  assert.ok(err, "the product entry point refuses the SAME bytes");
-  assert.strictEqual(err.name, "InventoryError");
-  assert.match(err.message, new RegExp(UNSUPPORTED_POPULATED), "under the same stable marker as before");
-  assert.match(err.message, /validated completely/, "and it says the refusal is a policy boundary, not a parse failure");
+  assert.ok(err, `${what}: the product entry point must refuse it`);
+  assert.strictEqual(err.name, "InventoryError", `${what}: refused as an InventoryError`);
+  return err;
+}
+
+test("the isolated reader parses a v2 inventory that the product entry point refuses, empty or populated", () => {
+  for (const [text, label] of [
+    [docText(seal({})), "an EMPTY canonical v2 envelope"],
+    [withEntries([entry()]), "a POPULATED canonical v2 envelope"],
+  ]) {
+    const read = parseCanonicalInventoryV2(text);
+    assert.ok(Array.isArray(read.entries), `${label}: the isolated component reads it completely`);
+
+    const err = productRefuses(text, label);
+    assert.match(err.message, new RegExp(UNSUPPORTED_POPULATED), `${label}: under the same stable marker`);
+    assert.match(err.message, /validated completely/, `${label}: the refusal is a policy boundary, not a parse failure`);
+  }
+
+  // and the empty case is refused for a stated reason, not by accident
+  const empty = productRefuses(docText(seal({})), "the empty envelope");
+  assert.match(empty.message, /an EMPTY one is refused for the same reason a populated one is/,
+    "the message says why an empty v2 envelope gets no exemption");
+});
+
+test("loadInventory refuses a v2 envelope on disk under the same marker", () => {
+  const dir = temporary("ctide-inv-v2-");
+  try {
+    for (const [text, label] of [
+      [docText(seal({})), "empty v2 on disk"],
+      [withEntries([entry()]), "populated v2 on disk"],
+    ]) {
+      const file = path.join(dir, "changed-test-inventory.json");
+      fs.writeFileSync(file, `${text}\n`, "utf8");
+      let err = null;
+      try { loadInventory(file); } catch (e) { err = e; }
+      assert.ok(err, `${label}: refused`);
+      assert.strictEqual(err.name, "InventoryError", `${label}: as an InventoryError`);
+      assert.match(err.message, new RegExp(UNSUPPORTED_POPULATED), `${label}: under the stable marker`);
+    }
+
+    // a legacy v1 clean slice on the same path still loads
+    const v1Body = { baseTreeOid: OID40, entries: [] };
+    const file = path.join(dir, "changed-test-inventory.json");
+    fs.writeFileSync(file, JSON.stringify({ ...v1Body, inventoryDigest: computeInventoryDigest(v1Body) }), "utf8");
+    assert.strictEqual(loadInventory(file).baseTreeOid, OID40, "legacy v1 still loads through the product path");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("parseInventory dispatches on the envelope version and fails closed in between", () => {
-  // v2, empty: accepted through the product path
-  const empty = parseInventory(docText(seal({})));
-  assert.strictEqual(empty.inventoryVersion, 2);
-  assert.deepStrictEqual(empty.entries, []);
-
-  // a malformed populated v2 fails for its OWN defect, not under the unsupported marker
-  const broken = withEntries([{ ...entry(), status: "renamed" }]);
-  let e1 = null;
-  try { parseInventory(broken); } catch (e) { e1 = e; }
-  assert.ok(e1 && !new RegExp(UNSUPPORTED_POPULATED).test(e1.message),
-    `a malformed populated v2 must fail for the malformation, got: ${e1 && e1.message}`);
-  assert.strictEqual(e1.code, "E_ENTRY_FIELD");
+  // a malformed v2 fails for its OWN defect, not under the unsupported marker -- empty or populated
+  for (const [text, label, code] of [
+    [withEntries([{ ...entry(), status: "renamed" }]), "a populated v2 with an unknown status", "E_ENTRY_FIELD"],
+    [docText({ ...seal({}), inventoryDigest: sha256Hex("wrong") }), "an empty v2 with the wrong digest", "E_DIGEST"],
+    [docText(seal({ baseTreeOid: OID40.toUpperCase() })), "an empty v2 with an uppercase OID", "E_ROOT_FIELD"],
+    [`${docText(seal({}))}`.replace(/^\{/, "{\"entries\":[],"), "an empty v2 with a duplicate root member", "E_DUPLICATE_MEMBER"],
+  ]) {
+    const err = productRefuses(text, label);
+    assert.ok(!new RegExp(UNSUPPORTED_POPULATED).test(err.message),
+      `${label}: must fail for the malformation, got: ${err.message}`);
+    assert.strictEqual(err.code, code, `${label}: reports its own canonical error`);
+  }
 
   // legacy v1 clean slice: still parsed, still digest-checked
   const v1Body = { baseTreeOid: OID40, entries: [] };

@@ -5,14 +5,18 @@
 //                                       It validates a POPULATED entries[] completely and hands the
 //                                       validated value back.
 //   parseInventory(text)             -- the PRODUCT entry point. It dispatches on the envelope
-//                                       version and still refuses a populated inventory, because
+//                                       version, keeps the legacy v1 clean slice working, and
+//                                       refuses EVERY v2 envelope -- empty or populated -- because
 //                                       reading one correctly is not the same as being allowed to
 //                                       act on one.
 //
 // The second layer is the point. A canonical reader proves a document says what it says; it proves
 // nothing about the producer that wrote it, the matcher that would pair base against head, the
 // governance reverse closure, or the S3 recomputation a consumer owes. None of those exist, so the
-// product path keeps refusing populated inventories under the same stable marker it always used.
+// product path refuses v2 under the same stable marker it always used. An empty v2 envelope gets no
+// exemption: it still asserts a registryDigest, a headViewDigest and an inputProvenanceStoreDigest
+// that only an S3 consumer could check, so letting one through would let "the universe was empty"
+// pass unproven -- which is exactly the bypass TP AC117 names.
 //
 // WHAT THE ISOLATED READER DELIBERATELY DOES NOT DO (SM v1.14 "isolated canonical reader", TP AC156):
 //   - it does not look up a Git object, so passing the baseTreeOid grammar proves neither that the
@@ -311,6 +315,15 @@ function checkPath(value, where) {
   nonEmptyString(value, where);
   if (value.includes("\\")) reject("E_ENTRY_FIELD", `${where} contains a backslash; the separator is "/"`);
   if (value.startsWith("/")) reject("E_ENTRY_FIELD", `${where} is absolute; the path is repo-relative`);
+  // "C:/x" has no backslash and no leading slash, but it is still an absolute Windows path and a Git
+  // tree records nothing of the sort. Refusing it here keeps one platform's absolute spelling from
+  // reading as a legal relative path on another.
+  if (/^[A-Za-z]:/.test(value)) {
+    reject("E_ENTRY_FIELD", `${where} begins with a drive letter; the path is repo-relative, not platform-absolute`);
+  }
+  // A Git tree entry name cannot contain U+0000. It survives a JSON document as \u0000, so it has to
+  // be refused explicitly rather than assumed impossible.
+  if (value.includes("\u0000")) reject("E_ENTRY_FIELD", `${where} contains U+0000, which no Git tree path may carry`);
   for (const segment of value.split("/")) {
     if (segment === "") reject("E_ENTRY_FIELD", `${where} has an empty path segment`);
     if (segment === "." || segment === "..") {
@@ -565,20 +578,24 @@ export function parseInventory(text) {
   // recognised only by its exact absence shape, so anything in between is fail-closed rather than
   // being read as whichever version it most resembles.
   if (sameKeys(raw, V2_INVENTORY_KEYS)) {
-    // Canonical validation runs FIRST and in full: a populated v2 inventory that is also malformed
-    // must fail for the malformation, not be waved past under the unsupported marker.
+    // Canonical validation runs FIRST and in full, so a malformed v2 document fails for its own
+    // defect and reports it, rather than disappearing behind the rollout marker.
     const envelope = parseCanonicalInventoryV2(text);
-    if (envelope.entries.length !== 0) {
-      refuse(
-        `${UNSUPPORTED_POPULATED}: the canonical v2 envelope validated completely -- root, entries, `
-        + `ordering and digest -- but this build does not ACT on a populated inventory; got `
-        + `${envelope.entries.length} ${envelope.entries.length === 1 ? "entry" : "entries"}. Accepting one needs `
-        + "the §6 producer, the base/head one-to-one matcher, the governance reverse closure and S3 consumer "
-        + "freshness, none of which is implemented. parseCanonicalInventoryV2() reads the same bytes as an "
-        + "isolated component, which is not the same as this build accepting them",
-      );
-    }
-    return envelope;
+    // And then it is refused ANYWAY, empty or populated alike. An empty v2 envelope is not a
+    // harmless subset of a populated one: it still asserts a registryDigest, a headViewDigest and an
+    // inputProvenanceStoreDigest that only an S3 consumer can check, and handing one to a consumer
+    // that cannot check them would let "the universe was empty" pass unproven. The rollout order is
+    // reader before writer, and this build has the reader only.
+    const count = envelope.entries.length;
+    refuse(
+      `${UNSUPPORTED_POPULATED}: the canonical v2 envelope validated completely -- root, entries, ordering `
+      + `and digest -- but this build does not CONSUME a v2 inventory at all; it carries ${count} `
+      + `${count === 1 ? "entry" : "entries"}, and an EMPTY one is refused for the same reason a populated `
+      + "one is. Consuming either needs the §6 producer, the base/head one-to-one matcher, the governance "
+      + "reverse closure and S3 consumer freshness (which is what would recompute registryDigest and "
+      + "headViewDigest), none of which is implemented. parseCanonicalInventoryV2() reads the same bytes as "
+      + "an isolated component, which is not the same as this build acting on them",
+    );
   }
 
   if (Object.prototype.hasOwnProperty.call(raw, "inventoryVersion")) {

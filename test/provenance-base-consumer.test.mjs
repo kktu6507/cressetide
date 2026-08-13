@@ -572,6 +572,41 @@ test("TP AC158: a fully canonical POPULATED v2 inventory is readable, and the pr
   assertFailure(runChecker(cwd), ctx, "a canonical populated v2 inventory", /unsupported-populated-inventory/);
 });
 
+test("TP AC117: an EMPTY canonical v2 inventory is refused too — empty is not a proof that the universe was empty", () => {
+  const bytes = v2Bytes();
+  const { cwd, treeOid } = repoWithBaseTree(bytes);
+
+  // Every field is well-formed, and the three upstream digests are exactly the problem: they are
+  // legal 64-hex carriers that NOTHING here recomputed. Only an S3 consumer could check them, and
+  // there is no S3 consumer, so "entries: []" asserts a covered-and-unchanged universe it cannot
+  // back up. That is the bypass AC117 names, and it is why empty gets no exemption.
+  const body = {
+    inventoryVersion: 2,
+    baseTreeOid: treeOid,
+    registryDigest: sha256Hex("a well-formed registry digest nobody recomputed"),
+    headViewDigest: sha256Hex("a well-formed head-view digest nobody recomputed"),
+    inputProvenanceStoreDigest: sha256Hex("a well-formed store digest nobody recomputed"),
+    entries: [],
+  };
+  const inventoryDigest = computeInventoryV2Digest(body);
+
+  // The committed batch is deliberately consistent with THIS inventory, so the refusal cannot be a
+  // stale batch, a digest mismatch or a missing witness wearing the marker's name.
+  const { bytes: currentBefore } = seedTask(cwd, treeOid, sha256Hex(bytes), { inventoryDigest });
+  const ctx = { cwd, treeOid, currentBefore, baseBefore: bytes };
+
+  const text = canonicalJson({ ...body, inventoryDigest });
+  const file = writeInventoryText(cwd, text);
+  const inventoryBefore = fs.readFileSync(file, "utf8");
+
+  const read = parseCanonicalInventoryV2(text);
+  assert.deepStrictEqual(read.entries, [], "the isolated canonical reader accepts the empty envelope");
+  assert.strictEqual(read.inventoryDigest, inventoryDigest, "including its recomputed digest");
+
+  assertFailure(runChecker(cwd), ctx, "a canonical EMPTY v2 inventory", /unsupported-populated-inventory/);
+  assert.strictEqual(fs.readFileSync(file, "utf8"), inventoryBefore, "and no artifact was rewritten");
+});
+
 // --- the witness names an EXACT tree, not something Git can peel into one ----------------------
 
 test("TP AC60: a commit OID standing in for the base tree is refused — the witness must BE a tree", () => {
