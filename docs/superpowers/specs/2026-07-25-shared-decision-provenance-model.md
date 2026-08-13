@@ -1,6 +1,6 @@
 # Shared Decision & Provenance Model（共同決策與溯源模型）
 
-- 狀態：**approved v1.13**（2026-08-09 panel 放行；前一放行版本 approved v1.12，2026-08-08 panel 放行）。實作以本文為準；變更需重新過 panel。本版與 **intent-scan v1.9**、**test-provenance v1.6** 為 **coupled set**，2026-08-09 panel 同輪一併放行；三者不得分開採用。 **本次放行只核准規格本身**，不代表 implementation、populated inventory、migration、push 或 Phase 2 已就緒；AC138 的限制持續有效 —— AC128 的 legacy boundary 尚未實作並通過前，不得宣稱 Phase 1／2A 完全不受影響。 v1.13 一處，來自下游 test-provenance draft v1.6 的 direct inspect：`provenance-batch` 只持久化 opaque 的 `inventoryDigest`，**證明不了該 digest 的 preimage 用的是哪一個 store pre-state** —— caller 可以讓 payload 的 expected 值追上實際 pre-state（D1），卻仍送出以 D0 為 preimage 的舊 digest，writer 兩邊都驗得過，事後也查不出來。因此 `batchSnapshot` 新增完整 typed **`inventorySnapshot: ChangedTestInventoryV2`**（保存 exact v2 envelope，而非只有 digest），`record.inventoryDigest` 改為由它**派生**、不得由 caller 獨立提供，並要求 writer 在同一筆交易內重算並比對；**明確拒絕**把 pre-state digest 複製到 record top-level 的替代做法（那會製造第三個 authority 且仍無法證明 preimage）。上游本身不新增任何交易命令，`inventorySnapshot` 的**最小 authoritative envelope（exact key set ＋ `inventoryDigest` 唯一公式）由本文自持**，下游只補各 digest 的計算語義 —— 前一稿把型別整個委派給下游，顛倒了權威方向，已修正。同輪另新增 **`batchRecordVersion` discriminator** 與 legacy boundary（legacy 記錄的可讀範圍、不得冒充 Phase 2 proof、v2 缺 snapshot／未知版本／malformed 一律 fail-closed、chain 版本單調不減、reader-before-writer 的 rollout 順序與不支援回退）。v1.13 新增契約在 draft 期間不得實作；該限制已隨 v1.13 核准解除。前一放行版本說明：approved v1.12（2026-08-08 panel 放行；前一放行版本 approved v1.11）。實作以本文為準；變更需重新過 panel。v1.12 一處：§2 DP 新增 **`reopenCauseRef`**（TransitionRef | null）作為 reopen 成因的 **persisted causal witness**，並在 §9 新增 `Reopen cause coherence` 一列；同時於 typed refs 區正式定義可重用的 **TransitionRef** exact shape，並寫明 **legacy absence 的 upgrade boundary**（採 normalize-absent-to-null，附「不存在 durable pre-v1.12 source-2 state」的證據與適用範圍）。下游 IS v1.7 曾以 `status=open ∧ prior 有 effective Transition ∧ successor != null` 從 snapshot **反推**來源 2 的成因；該推斷不成立，且擋掉兩條合法收斂（明示 `reopen-dp` 後 prior 日後才被 supersede；兩個 DP 對同一 prior deferred reopen）。成因是歷史事實，只能讀持久化 witness，不得由 current graph 形狀反推。v1.11 內容不變：實作以本文為準；變更需重新過 panel。v1.11 關閉兩個**型別缺口** —— 下游已被要求驗證的東西，上游 schema 卻無法表示（下游不得自行補欄位，故一律回上游）：(1) `Transition.compatibility` 原限定 `僅 subject=REQ ∧ action=supersede`，但 matrix 早已允許 `ASSUM|DEC supersede → REQ` 走 kind=user，該路徑的 impact／disposition **無處存放**；適用條件改綁 **successor**（`action=supersede ∧ successor 為 REQ`），相容性義務來自「一條 REQ 開始生效」而非「被取代的是不是 REQ」。(2) plan-gate payload 無 `successor`，故一筆核准「取代 ASSUM-x」的 record 可授權換成**任何** REQ；新增 typed `successor: ClauseRef | null` 並定義必填條件，§7 proposal 的 target 放寬為 clause ref、新增具名 successor，witness binding 與 §9 機械比對由三欄擴為**四欄**。v1.10 一處：§9 檢查分層新增 **`Carrier coherence`** 一列 —— v1.9 把 carrier 宣告為 loader／final-snapshot invariant，但 §9 的 `DP 完整性` 只驗 terminal／status／successor，該 invariant 從未進入正式 gate contract，繞過交易入口構造的不一致狀態不會被擋。v1.9 修 v1.8 草案自身的三個缺口：carrier 與 `status` 的關係改寫為精確蘊含（「同生同滅」是錯的 —— row 1 direct citation 允許 `resolvedBy` 非空而 carrier 為 null）；`unrelated re-adopt` 收窄為 **binding-policy 驅動**，direct citation 改為清除並保持 null；`packetBasisRef` 補上完整 **total-order tuple**（原本無 `digest` tie-break，同 `sourceId` 不同 `digest` 的兩筆無法定序）。v1.8 變更四處，皆為下游實作暴露的 carrier／契約缺口：§2 `ASSUM` 新增三值 `routingOrigin`（authored、immutable，附 loader-level 全生命週期 invariant）；§2 `DP` 新增 `resolutionRulingRef` **current application carrier**（取代對歷史 binding-policy ruling 的全稱量化 —— 那條規則會永久凍結 `resolvedBy` 並牴觸「歷史 ruling 只驗 snapshot 自洽」）；§2 補上 `ObservationalRef` 與 Governance Packet `basisRefs` 的 **exact discriminated union**；§4 `materialReasons` 補 closed member set 並宣告本文為定序的**唯一** authoritative 定義。草案審閱期間，本版新增契約不得由下游實作；該限制已隨 v1.11 核准解除。
+- 狀態：**draft v1.14 — 未審核**（2026-08-13 起草；**尚未經任何 panel 放行，也未經使用者核准**）。**最後 approved baseline 仍為 approved v1.13，未撤回、未取代。** candidate coupled set ＝ **shared draft v1.14 ＋ intent-scan approved v1.10（內容不變）＋ test-provenance draft v1.10**；三者為同一候選集合，不得分開採用，且在核准前**一律不得實作**。 **v1.14 delta**：只有兩處，皆為 `ChangedTestInventoryV2` **canonical reader** 的 authority 缺口 —— 兩個都說得通的 reader 會對同一份文件得出**不同的 accept／reject 結果**，而既有 approved 文字無法唯一決定。(1) **carrier lexical grammar**：`baseTreeOid` 與四個 digest carrier 先前只寫「Git tree oid」「digest 字串」，整套 approved spec 沒有任何一行定義其長度、字母表或大小寫；本版把兩者的 canonical spelling 定案，並把「四個 digest 欄位是不透明字串」收斂為「**preimage** 對本文不透明，**serialization** 的不透明性撤回」。(2) **raw JSON duplicate-member contract**：先前三份 spec 對 duplicate member name 完全沉默，於是「`JSON.parse` last-write-wins 之後再驗」與「在 source 層拒絕」兩種 reader 都成立；本版明定 duplicate 一律 fail-closed、比較對象為 escape 解碼後的 StringValue、且檢查必須發生在**仍保有全部 member occurrence** 的階段。本版**不**定義 downstream 的 entry 欄位 —— `entries[]` 的 exact schema 與 entry 內的 source-key ordering 由 **test-provenance draft v1.10** 擁有。 **本版只閉合 reader authority（規格），不是 reader 實作**：不代表 canonical v2 inventory parser 已實作，不接受 populated inventory，不解除 `unsupported-populated-inventory`，不代表 producer、matcher、governance reverse closure、S3 或 artifact wiring 已完成；**AC118／AC136／AC137／AC138 一律不得宣稱已滿足**，**Phase 2 不得宣稱 READY**。 **以下為 approved v1.13 及更早的既有狀態敘述，原文保留：** **approved v1.13**（2026-08-09 panel 放行；前一放行版本 approved v1.12，2026-08-08 panel 放行）。實作以本文為準；變更需重新過 panel。本版與 **intent-scan v1.9**、**test-provenance v1.6** 為 **coupled set**，2026-08-09 panel 同輪一併放行；三者不得分開採用。 **本次放行只核准規格本身**，不代表 implementation、populated inventory、migration、push 或 Phase 2 已就緒；AC138 的限制持續有效 —— AC128 的 legacy boundary 尚未實作並通過前，不得宣稱 Phase 1／2A 完全不受影響。 v1.13 一處，來自下游 test-provenance draft v1.6 的 direct inspect：`provenance-batch` 只持久化 opaque 的 `inventoryDigest`，**證明不了該 digest 的 preimage 用的是哪一個 store pre-state** —— caller 可以讓 payload 的 expected 值追上實際 pre-state（D1），卻仍送出以 D0 為 preimage 的舊 digest，writer 兩邊都驗得過，事後也查不出來。因此 `batchSnapshot` 新增完整 typed **`inventorySnapshot: ChangedTestInventoryV2`**（保存 exact v2 envelope，而非只有 digest），`record.inventoryDigest` 改為由它**派生**、不得由 caller 獨立提供，並要求 writer 在同一筆交易內重算並比對；**明確拒絕**把 pre-state digest 複製到 record top-level 的替代做法（那會製造第三個 authority 且仍無法證明 preimage）。上游本身不新增任何交易命令，`inventorySnapshot` 的**最小 authoritative envelope（exact key set ＋ `inventoryDigest` 唯一公式）由本文自持**，下游只補各 digest 的計算語義 —— 前一稿把型別整個委派給下游，顛倒了權威方向，已修正。同輪另新增 **`batchRecordVersion` discriminator** 與 legacy boundary（legacy 記錄的可讀範圍、不得冒充 Phase 2 proof、v2 缺 snapshot／未知版本／malformed 一律 fail-closed、chain 版本單調不減、reader-before-writer 的 rollout 順序與不支援回退）。v1.13 新增契約在 draft 期間不得實作；該限制已隨 v1.13 核准解除。前一放行版本說明：approved v1.12（2026-08-08 panel 放行；前一放行版本 approved v1.11）。實作以本文為準；變更需重新過 panel。v1.12 一處：§2 DP 新增 **`reopenCauseRef`**（TransitionRef | null）作為 reopen 成因的 **persisted causal witness**，並在 §9 新增 `Reopen cause coherence` 一列；同時於 typed refs 區正式定義可重用的 **TransitionRef** exact shape，並寫明 **legacy absence 的 upgrade boundary**（採 normalize-absent-to-null，附「不存在 durable pre-v1.12 source-2 state」的證據與適用範圍）。下游 IS v1.7 曾以 `status=open ∧ prior 有 effective Transition ∧ successor != null` 從 snapshot **反推**來源 2 的成因；該推斷不成立，且擋掉兩條合法收斂（明示 `reopen-dp` 後 prior 日後才被 supersede；兩個 DP 對同一 prior deferred reopen）。成因是歷史事實，只能讀持久化 witness，不得由 current graph 形狀反推。v1.11 內容不變：實作以本文為準；變更需重新過 panel。v1.11 關閉兩個**型別缺口** —— 下游已被要求驗證的東西，上游 schema 卻無法表示（下游不得自行補欄位，故一律回上游）：(1) `Transition.compatibility` 原限定 `僅 subject=REQ ∧ action=supersede`，但 matrix 早已允許 `ASSUM|DEC supersede → REQ` 走 kind=user，該路徑的 impact／disposition **無處存放**；適用條件改綁 **successor**（`action=supersede ∧ successor 為 REQ`），相容性義務來自「一條 REQ 開始生效」而非「被取代的是不是 REQ」。(2) plan-gate payload 無 `successor`，故一筆核准「取代 ASSUM-x」的 record 可授權換成**任何** REQ；新增 typed `successor: ClauseRef | null` 並定義必填條件，§7 proposal 的 target 放寬為 clause ref、新增具名 successor，witness binding 與 §9 機械比對由三欄擴為**四欄**。v1.10 一處：§9 檢查分層新增 **`Carrier coherence`** 一列 —— v1.9 把 carrier 宣告為 loader／final-snapshot invariant，但 §9 的 `DP 完整性` 只驗 terminal／status／successor，該 invariant 從未進入正式 gate contract，繞過交易入口構造的不一致狀態不會被擋。v1.9 修 v1.8 草案自身的三個缺口：carrier 與 `status` 的關係改寫為精確蘊含（「同生同滅」是錯的 —— row 1 direct citation 允許 `resolvedBy` 非空而 carrier 為 null）；`unrelated re-adopt` 收窄為 **binding-policy 驅動**，direct citation 改為清除並保持 null；`packetBasisRef` 補上完整 **total-order tuple**（原本無 `digest` tie-break，同 `sourceId` 不同 `digest` 的兩筆無法定序）。v1.8 變更四處，皆為下游實作暴露的 carrier／契約缺口：§2 `ASSUM` 新增三值 `routingOrigin`（authored、immutable，附 loader-level 全生命週期 invariant）；§2 `DP` 新增 `resolutionRulingRef` **current application carrier**（取代對歷史 binding-policy ruling 的全稱量化 —— 那條規則會永久凍結 `resolvedBy` 並牴觸「歷史 ruling 只驗 snapshot 自洽」）；§2 補上 `ObservationalRef` 與 Governance Packet `basisRefs` 的 **exact discriminated union**；§4 `materialReasons` 補 closed member set 並宣告本文為定序的**唯一** authoritative 定義。草案審閱期間，本版新增契約不得由下游實作；該限制已隨 v1.11 核准解除。
 - 前一版狀態：**approved v1.7**（2026-07-26 panel 放行；前一放行版本 approved v1.6）。v1.7 變更：§9 gate scope 改為具名 closed set（含 body／oracle 變更）＋ `lifecycleAffectedClauses` 反向閉包；綁定拆 **pre-change／post-change 兩相**；§9 新增 **base provenance witness**（inline、storePath 固定、immutable）；§2 新增 **TaskState**（tracked canonical task membership 與 committed head）與 `provenance-batch` RecordRef kind（canonical `batchDigest` total order、derived `relatedRefs`、chain 連結約束、committed head 三分）；review-ruling／plan-gate 新增 `resolutionGroupDigest` 作為 witness coverage 的 carrier。本文件為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念，可附加實作欄位但不得改變本文欄位語義。
 - 日期：2026-07-25
 - 範圍：只定義模型 —— 物件、權威、分流、狀態、不變量。scan 觸發與流程、檢查器實作、reviewer prompt 調整、hook 接線屬於下游 spec。
@@ -284,20 +284,39 @@ canonicalJson 沿用本文既有規則（UTF-8 無 BOM、LF、object key 依 cod
 batchSnapshot.inventorySnapshot : ChangedTestInventoryV2
   exact key set（恰七欄，缺一或多一皆 fail-closed）:
     inventoryVersion            : 整數，恰為 2
-    baseTreeOid                 : Git tree oid
-    registryDigest              : digest 字串
-    headViewDigest              : digest 字串
-    inputProvenanceStoreDigest  : digest 字串
+    baseTreeOid                 : Git tree oid（canonical lexical grammar 見下，v1.14）
+    registryDigest              : digest 字串（canonical serialization grammar 見下，v1.14）
+    headViewDigest              : digest 字串（canonical serialization grammar 見下，v1.14）
+    inputProvenanceStoreDigest  : digest 字串（canonical serialization grammar 見下，v1.14）
     entries                     : 陣列（可為空）
-    inventoryDigest             : digest 字串
+    inventoryDigest             : digest 字串（canonical serialization grammar 見下，v1.14）
 
   inventoryDigest 唯一公式（本文定案）:
     sha256(canonicalJson({ inventoryVersion, baseTreeOid, registryDigest,
                            headViewDigest, inputProvenanceStoreDigest, entries }))
 
-  對本文而言，四個 digest 欄位是**不透明字串**：它們各自的計算語義
-  （head universe 範圍、registry preimage、store digest 記法、entry 形狀與定序）
-  由 test-provenance §2／§11b.9c 定義。本文定義的是 envelope 與綁定，不是計算方式。
+  carrier lexical grammar（v1.14 定案；唯一規則，reader 一律照此 accept／reject）:
+    baseTreeOid : ^(?:[0-9a-f]{40}|[0-9a-f]{64})$
+                  完整且 lowercase hex 的 Git object ID —— 40 個文字 byte 對應
+                  SHA-1 object format，64 個文字 byte 對應 Git SHA-256 object format。
+                  abbreviated OID、uppercase、非 hex 字元、其他長度 → 各自 fail-closed。
+    四個 digest : ^[0-9a-f]{64}$
+                  適用 registryDigest、headViewDigest、
+                  inputProvenanceStoreDigest、inventoryDigest。
+                  這是 SHA-256 digest 在本 envelope 內的**唯一** carrier spelling：
+                  64 個 lowercase hex。uppercase、縮寫、prefix（如 "sha256:"）、
+                  任何 whitespace、其他長度 → 各自 fail-closed。
+                  inventoryDigest 仍必須依上列唯一公式重算並相等 ——
+                  **通過 lexical grammar 不能取代重算。**
+
+  「opaque」的唯一所指（v1.14 收斂）:
+    registryDigest／headViewDigest／inputProvenanceStoreDigest 的 **preimage**
+    對本文不透明：它們各自的計算語義（head universe 範圍、registry preimage、
+    store digest 記法、entry 形狀與定序）由 test-provenance §2／§11b.9c 定義。
+    **先前「四個 digest 欄位是不透明字串」的敘述，就 serialization 而言撤回** ——
+    carrier 的字面拼法由上式定案，不是實作可自由選擇的細節。
+    isolated reader 同樣**不得**只憑這三個字串證明其 preimage 或 freshness。
+    本文定義的是 envelope、carrier 拼法與綁定，仍不定義計算方式。
 
 writer 於**同一筆交易內**必須驗（任一不符 → 整筆 no-write）:
   exact key set 完整
@@ -306,6 +325,40 @@ writer 於**同一筆交易內**必須驗（任一不符 → 整筆 no-write）:
   entries 已依下游 canonicalization 定序
   inputProvenanceStoreDigest 的 digest 記法符合下游規定
 ```
+
+**`baseTreeOid` 的 lexical validation 不等於 repository-semantic validation（v1.14 新增）** —— 上列 grammar 只保證**字面形狀**。它**不**證明該 object 存在，也**不**證明它的 type 是 tree：
+
+```
+有 captured repository context 的 consumer 必須另驗（缺一 → fail-closed）:
+  該長度符合該 repository 實際採用的 object format
+  該 object 確實存在
+  該 object 自身的 type **恰為** tree
+    —— **不得**只驗它可以 peel 成 tree（commit／tag 都 peel 得到 tree）
+isolated canonical reader（無 repository context）:
+  只驗 lexical grammar；**不得**因通過 grammar 而宣稱已完成上列任一項
+```
+
+**Raw JSON duplicate-member contract（v1.14 新增；適用於完整 `ChangedTestInventoryV2` 文件）** —— 先前本文與兩份下游對 duplicate member name 完全沉默，於是「`JSON.parse` 之後再驗」與「在 source 層拒絕」兩種 reader 對同一份 bytes 得出不同結果。本版定案：
+
+```
+適用範圍   : 該文件內的**每一個** JSON object —— root、每一筆 entry、
+             以及所有 nested object。
+規則       : 同一個 object 內**不得**出現 duplicate member name。
+比較對象   : member name 經 JSON escape 解碼後的 StringValue。
+比較方式   : exact Unicode code points；不做 normalization、不 case-fold。
+             ⇒ "a" 與 "\u0061" 是 duplicate。
+任一 duplicate → fail-closed。
+
+reader 義務: 必須在**仍保有全部 member occurrence** 的階段完成本檢查。
+             單獨使用會 last-write-wins 的 JSON.parse、再對其結果檢查，
+             **不能**滿足本義務 —— 被覆蓋的 occurrence 在那個階段已不可觀察。
+本規則只處理 duplicate:
+             root member 的 source order 與一般 JSON whitespace
+             本身**不**構成拒絕理由；
+             root 的 canonical digest order 仍由 canonicalJson 決定。
+```
+
+本文**不**自行定義 downstream 的 entry 欄位：`entries[]` 的 exact schema、body-digest 的 conditional presence，以及 entry 內的 source-key ordering，其 authority 仍在 **test-provenance draft v1.10**。
 
 **Legacy boundary（`batchRecordVersion`；沿用本文對「新增 persisted field 必須有 discriminator」的既有要求）**
 
