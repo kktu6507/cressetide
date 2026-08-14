@@ -27,6 +27,7 @@ import { pathToFileURL } from "node:url";
 
 import {
   TestAdapterRegistryError, loadTestAdapterRegistry, loadTestAdapterRegistryRoot,
+  readTestAdapterRegistryRootFresh,
 } from "../cressetide/skills/vigil/scripts/adapter-registry.mjs";
 import { loadVendorCapability } from "../cressetide/skills/vigil/scripts/parser-ignore-wrapper.mjs";
 import { root } from "./support.mjs";
@@ -62,7 +63,9 @@ function scratchLayout(mutate, mutateManifest) {
   // The loader's whole static import graph has to come along, or the scratch copy fails to load for
   // a reason that has nothing to do with the registry rule under test.
   for (const file of ["adapter-registry.mjs", "test-adapters.json", "parser-ignore-wrapper.mjs", "parser-ignore-worker.mjs",
-    "parser-ignore-worker-runner.mjs", "node-test-adapter.mjs", "provenance-store.mjs"]) {
+    "parser-ignore-worker-runner.mjs", "node-test-adapter.mjs", "provenance-store.mjs",
+    // the shared raw duplicate-member scanner is part of the loader's static import graph
+    "json-unique-members.mjs"]) {
     fs.cpSync(path.join(root, SCRIPTS_REL, file), path.join(vigil, "scripts", file));
   }
   if (mutateManifest) {
@@ -369,4 +372,117 @@ test("registry: no scratch failure ever reached the production registry or capab
   assert.strictEqual(registry.adapters[0].adapterId, SHIPPED.adapters[0].adapterId);
   assert.deepStrictEqual({ ...registry.adapters[0].implementationIdentity }, MANIFEST.implementationIdentity);
   assert.deepStrictEqual({ ...loadVendorCapability().identities.parser }, MANIFEST.implementationIdentity);
+});
+
+// =================================================================================================
+// v1.11: the uncached fresh accessor, and raw duplicate members on the registry document.
+// =================================================================================================
+
+test("registry: readTestAdapterRegistryRootFresh re-reads, and leaves the ordinary cache alone", async () => {
+  // The cached accessors keep their accepted contract: one read serves both, and repeated calls
+  // return the very same object.
+  const cachedRoot = loadTestAdapterRegistryRoot();
+  assert.strictEqual(loadTestAdapterRegistryRoot(), cachedRoot, "the cached accessor is still cached");
+  assert.strictEqual(loadTestAdapterRegistry(), loadTestAdapterRegistry(), "and so is the descriptor accessor");
+
+  const first = readTestAdapterRegistryRootFresh();
+  const second = readTestAdapterRegistryRootFresh();
+  assert.deepStrictEqual(first, second, "two fresh reads of an unchanged file agree");
+  assert.notStrictEqual(first, second, "but they are not the same object -- each call really re-read");
+  assert.notStrictEqual(first, cachedRoot, "and neither is the cached root");
+  assert.deepStrictEqual(first, SHIPPED, "the fresh root is the file root exactly");
+  assert.deepStrictEqual(Object.keys(first).sort(), ["adapters", "registryVersion"], "no registryPath, nothing added");
+
+  assert.ok(Object.isFrozen(first) && Object.isFrozen(first.adapters) && Object.isFrozen(first.adapters[0])
+    && Object.isFrozen(first.adapters[0].implementationIdentity), "frozen all the way down");
+
+  // Reading fresh neither populated nor replaced the cache.
+  assert.strictEqual(loadTestAdapterRegistryRoot(), cachedRoot, "the cached root is untouched afterwards");
+
+  assert.strictEqual(readTestAdapterRegistryRootFresh.length, 0, "it declares no parameter");
+  for (const override of [{ registryPath: REGISTRY_PATH }, { registry: SHIPPED }, { modulePath: "./elsewhere.mjs" }]) {
+    assert.strictEqual(await codeOf(() => readTestAdapterRegistryRootFresh(override)), "E_API_ARGUMENTS",
+      JSON.stringify(Object.keys(override)));
+  }
+});
+
+test("registry: a fresh read of a MUTATED file is seen by the same module instance", async () => {
+  const { dir, url } = scratchLayout(() => {});
+  try {
+    const scratch = await import(url);
+    const before = scratch.readTestAdapterRegistryRootFresh();
+    assert.strictEqual(before.adapters[0].adapterId, SHIPPED.adapters[0].adapterId);
+    // Prime the cache too, so the fresh path cannot be accidentally satisfied by a cold cache.
+    assert.strictEqual(scratch.loadTestAdapterRegistryRoot().adapters[0].adapterId, SHIPPED.adapters[0].adapterId);
+
+    const file = path.join(dir, "cressetide", "skills", "vigil", "scripts", "test-adapters.json");
+    const mutated = JSON.parse(fs.readFileSync(file, "utf8"));
+    mutated.adapters[0].adapterId = "node-test-renamed";
+    fs.writeFileSync(file, JSON.stringify(mutated, null, 2));
+
+    const after = scratch.readTestAdapterRegistryRootFresh();
+    assert.strictEqual(after.adapters[0].adapterId, "node-test-renamed", "the SAME module instance sees the new root");
+    assert.strictEqual(scratch.loadTestAdapterRegistryRoot().adapters[0].adapterId, SHIPPED.adapters[0].adapterId,
+      "while the cached accessor still serves the root it read first -- its contract is unchanged");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("registry: a fresh read validates before it hands anything back", async () => {
+  const { dir, url } = scratchLayout(() => {});
+  try {
+    const scratch = await import(url);
+    assert.ok(scratch.readTestAdapterRegistryRootFresh(), "valid to begin with");
+
+    const file = path.join(dir, "cressetide", "skills", "vigil", "scripts", "test-adapters.json");
+    const broken = JSON.parse(fs.readFileSync(file, "utf8"));
+    broken.registryVersion = 2;
+    fs.writeFileSync(file, JSON.stringify(broken, null, 2));
+
+    assert.strictEqual(await codeOf(() => scratch.readTestAdapterRegistryRootFresh()), "E_REGISTRY_UNSUPPORTED",
+      "a schema-invalid current root yields no root at all -- nothing downstream can hash it");
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("registry: raw duplicate member names are refused before any schema or value check", async () => {
+  const identity = JSON.stringify(SHIPPED.adapters[0].implementationIdentity);
+  const adapter = JSON.stringify(SHIPPED.adapters[0]);
+  const cases = [
+    // The legal value is deliberately LAST: a reader that checks after JSON.parse sees registryVersion 1
+    // and waves it through.
+    ["root registryVersion, illegal first and legal last",
+      `{"registryVersion":9,"registryVersion":1,"adapters":[${adapter}]}`],
+    ["an adapter object repeating adapterId",
+      `{"registryVersion":1,"adapters":[${adapter.replace(/^\{/, `{"adapterId":"other",`)}]}`],
+    ["implementationIdentity repeating a member",
+      `{"registryVersion":1,"adapters":[${adapter.replace(identity, identity.replace(/^\{/, `{"parserId":"other",`))}]}`],
+    // Same decoded name, different raw spelling.
+    ["an escaped-name alias for registryVersion",
+      `{"\\u0072egistryVersion":9,"registryVersion":1,"adapters":[${adapter}]}`],
+    ["an escaped-name alias inside implementationIdentity",
+      `{"registryVersion":1,"adapters":[${adapter.replace(identity, identity.replace(/^\{/, `{"\\u0070arserId":"other",`))}]}`],
+  ];
+  for (const [label, body] of cases) {
+    // eslint-disable-next-line no-await-in-loop
+    const { dir, url } = scratchLayout(() => body);
+    try {
+      // JSON.parse alone would accept every one of these, which is exactly why the check cannot live
+      // after it.
+      assert.ok(JSON.parse(body), `${label}: JSON.parse itself is perfectly happy`);
+      // eslint-disable-next-line no-await-in-loop
+      const scratch = await import(url);
+      const file = path.join(dir, "cressetide", "skills", "vigil", "scripts", "test-adapters.json");
+      const before = fs.readFileSync(file, "utf8");
+      // eslint-disable-next-line no-await-in-loop
+      assert.strictEqual(await codeOf(() => scratch.loadTestAdapterRegistry()), "E_REGISTRY_DUPLICATE_MEMBER", label);
+      // eslint-disable-next-line no-await-in-loop
+      assert.strictEqual(await codeOf(() => scratch.readTestAdapterRegistryRootFresh()), "E_REGISTRY_DUPLICATE_MEMBER",
+        `${label}: the fresh accessor refuses it too`);
+      assert.strictEqual(fs.readFileSync(file, "utf8"), before, `${label}: the carrier bytes are untouched`);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  }
+});
+
+test("registry: malformed JSON still uses the shape error family, not the duplicate one", async () => {
+  await expectScratch("E_REGISTRY_SHAPE", () => "{ not json", "a malformed registry");
+  await expectScratch("E_REGISTRY_SHAPE", () => '{"registryVersion":1,"adapters":[]}extra', "trailing content");
 });

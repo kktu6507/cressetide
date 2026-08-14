@@ -25,6 +25,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { JsonMemberScanError, assertUniqueJsonMembers } from "./json-unique-members.mjs";
 import { nodeTestV1Component } from "./node-test-adapter.mjs";
 import { loadVendorCapability } from "./parser-ignore-wrapper.mjs";
 
@@ -230,6 +231,19 @@ function buildRegistry() {
   try { raw = fs.readFileSync(REGISTRY_PATH, "utf8"); } catch {
     throw fail("E_REGISTRY_UNREADABLE", `the shipped adapter registry is unreadable: ${REGISTRY_PATH}`);
   }
+  // §11b.3 v1.11: duplicate member names are refused on the RAW document, before JSON.parse can drop
+  // an occurrence, and before any exact-key, value or identity check runs. A registry whose root says
+  // registryVersion 9 and then registryVersion 1 is not a registry that happens to be valid.
+  try {
+    assertUniqueJsonMembers(raw, "the shipped adapter registry");
+  } catch (e) {
+    if (e instanceof JsonMemberScanError && e.kind === "duplicate") {
+      throw fail("E_REGISTRY_DUPLICATE_MEMBER", e.message, e.detail);
+    }
+    if (e instanceof JsonMemberScanError) throw fail("E_REGISTRY_SHAPE", e.message, e.detail);
+    throw e;
+  }
+
   let parsed;
   try { parsed = JSON.parse(raw); } catch (e) {
     throw fail("E_REGISTRY_SHAPE", `the shipped adapter registry is not valid JSON: ${e.message}`);
@@ -299,6 +313,22 @@ export function loadTestAdapterRegistryRoot() {
   }
   if (cached === null) cached = buildRegistry();
   return cached.root;
+}
+
+// The UNCACHED accessor, for §11b.9c's rule that every S3 verification observes the CURRENT shipped
+// registry. It re-reads the file, re-runs the duplicate scan, the §11b.3 schema and the vendor
+// identity comparison, and only then hands back a freshly frozen root -- validate before hash, on
+// one read, with no second read between the bytes that were checked and the bytes that get hashed.
+//
+// It neither reads nor writes the cache above. That cache is the accepted contract of the ordinary
+// adapter-resolution accessors and is deliberately left alone; it simply may not stand in for a
+// current-registry observation. Two consecutive calls over an unchanged file therefore deep-equal
+// but are never the same object -- which is exactly how a caller can tell it really re-read.
+export function readTestAdapterRegistryRootFresh() {
+  if (arguments.length > 0) {
+    throw fail("E_API_ARGUMENTS", "readTestAdapterRegistryRootFresh takes no arguments; supplying a registry path, a registry object, a manifest, a vendor capability or a module path is not supported");
+  }
+  return buildRegistry().root;
 }
 
 // Resolution by lookup in a closed table, never by turning a name into a path. The argument is an

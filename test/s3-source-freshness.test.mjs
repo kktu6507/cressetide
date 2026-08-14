@@ -1,10 +1,12 @@
 // S3 source freshness, driven through the real public API against real temporary Git repositories.
 //
 // Spec anchors:
-//   TP = docs/superpowers/specs/2026-07-25-test-provenance-spec.md (approved v1.10)
-//        11b.3 registry exact schema, 11b.4 explicit config exact schema, 11b.9c registryDigest and
-//        the consumer protocol's step 1, 11b.9d source vs store freshness, 11b.10 head view universe,
-//        AC118, AC119, AC127, AC131, AC135, AC138
+//   TP = docs/superpowers/specs/2026-07-25-test-provenance-spec.md (approved v1.11)
+//        11b.3 registry exact schema and its raw duplicate-member rule, 11b.4 explicit config exact
+//        schema, the tracked carrier requirement and its duplicate-member rule, 11b.9c registryDigest
+//        with a fresh registry observation per S3, the consumer protocol's step 1, 11b.9d source vs
+//        store freshness, 11b.10 head view universe and the exact config-path observability
+//        exception, AC92, AC118, AC119, AC127, AC131, AC135, AC138, AC159-AC162
 //   SM = docs/superpowers/specs/2026-07-25-shared-decision-provenance-model.md (approved v1.14)
 //
 // The current digests are never recomputed by this file from a copy of the production algorithm.
@@ -132,7 +134,8 @@ function scratchScripts(mutateRegistry) {
   for (const file of ["s3-source-freshness.mjs", "adapter-registry.mjs", "test-adapters.json",
     "head-view-snapshot.mjs", "changed-test-inventory.mjs", "parser-ignore-wrapper.mjs",
     "parser-ignore-worker.mjs", "parser-ignore-worker-runner.mjs", "node-test-adapter.mjs",
-    "provenance-store.mjs"]) {
+    // the shared raw duplicate-member scanner is part of both the registry loader's and S3's graph
+    "provenance-store.mjs", "json-unique-members.mjs"]) {
     fs.cpSync(path.join(root, SCRIPTS_REL, file), path.join(vigil, "scripts", file));
   }
   const registryFile = path.join(vigil, "scripts", "test-adapters.json");
@@ -307,34 +310,51 @@ test("AC118 (c): mutating test-adapters.json in a scratch shipped layout is fail
   // very same validated read, so a SCHEMA-VALID mutation surfaces as a registryDigest mismatch and a
   // SCHEMA-INVALID one surfaces as a §11b.3 registry error. Both are fail-closed; neither is a
   // digest taken over a registry that is not a registry.
+  // THE FAILURE FACE THIS CASE EXISTS FOR: the registry is mutated AFTER a successful S3, and the
+  // second verification runs on the SAME module instance -- no re-import, no new process, no query
+  // string. A cached root would still be sitting there, and the second call would report fresh
+  // against a registry that has already changed. Re-importing after the mutation would give every
+  // instance a cold cache and would never touch this.
   const cwd = repoWith();
-  const valid = scratchScripts((registry) => { registry.adapters[0].adapterId = "node-test-renamed"; });
+  const scratch = scratchScripts(() => {});
   const invalid = scratchScripts((registry) => { registry.registryVersion = 2; });
+  const registryFile = path.join(scratch.dir, "cressetide", "skills", "vigil", "scripts", "test-adapters.json");
   try {
-    const pristine = await currentDigests(cwd);
+    const module = await import(scratch.url);
+    const verify = module.verifySourceFreshness;
 
-    const scratchValid = await import(valid.url);
-    const moved = await currentDigests(cwd, scratchValid.verifySourceFreshness);
-    assert.strictEqual(moved.headViewDigest, pristine.headViewDigest, "the head view did not move");
-    assert.notStrictEqual(moved.registryDigest, pristine.registryDigest,
-      "a schema-valid registry edit changes registryDigest");
+    // 1. first S3 succeeds against the pristine scratch registry
+    const pristine = await currentDigests(cwd, verify);
+    const fresh = envelopeText(pristine);
+    await verify({ repoRoot: cwd, inventoryText: fresh });
 
-    // an envelope sealed against the pristine registry is stale for the mutated one
-    const err = await refused(
-      scratchValid.verifySourceFreshness({ repoRoot: cwd, inventoryText: envelopeText(pristine) }),
-      "a mutated adapterId", "E_STALE");
-    assert.strictEqual(err.detail.registryDigest.matches, false);
+    // 2. schema-VALID mutation of that same layout
+    const mutated = JSON.parse(fs.readFileSync(registryFile, "utf8"));
+    mutated.adapters[0].adapterId = "node-test-renamed";
+    fs.writeFileSync(registryFile, JSON.stringify(mutated, null, 2));
+
+    // 3. second call on the SAME exported function must see the new root
+    const err = await refused(verify({ repoRoot: cwd, inventoryText: fresh }),
+      "a schema-valid registry edit seen by the same module instance", "E_STALE");
+    assert.strictEqual(err.detail.registryDigest.matches, false, "the registry moved and S3 noticed");
     assert.strictEqual(err.detail.headViewDigest.matches, true, "only the registry moved");
 
+    const moved = await currentDigests(cwd, verify);
+    assert.strictEqual(moved.headViewDigest, pristine.headViewDigest, "the head view did not move");
+    assert.notStrictEqual(moved.registryDigest, pristine.registryDigest,
+      "and the current registryDigest really is a different value now");
+
+    // schema-INVALID mutation fails at validation, before any digest comparison
     const scratchInvalid = await import(invalid.url);
     const registryError = await refused(
       scratchInvalid.verifySourceFreshness({ repoRoot: cwd, inventoryText: envelopeText(pristine) }),
       "a schema-invalid registry", "E_REGISTRY_UNSUPPORTED");
     assert.strictEqual(registryError.name, "TestAdapterRegistryError",
       "validation comes first: no digest is taken over a registry the §11b.3 schema rejects");
+    assert.strictEqual(registryError.detail, undefined, "and it never reached the stale comparison");
   } finally {
     fs.rmSync(cwd, { recursive: true, force: true });
-    fs.rmSync(valid.dir, { recursive: true, force: true });
+    fs.rmSync(scratch.dir, { recursive: true, force: true });
     fs.rmSync(invalid.dir, { recursive: true, force: true });
   }
 });
@@ -505,4 +525,152 @@ test("verifying freshness does not make a v2 inventory acceptable to the product
     assert.ok(loadErr && new RegExp(UNSUPPORTED_POPULATED).test(loadErr.message),
       "and so does loadInventory, freshness or no freshness");
   } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+});
+
+// =================================================================================================
+// v1.11 §11b.4: only a TRACKED carrier is a legal explicit config, and the exact config path is
+// observable even when the project ignores the whole of .ctide/.
+// =================================================================================================
+
+// A repository that ignores .ctide/ wholesale -- the normal shape of a consuming project, and the
+// one that makes the distinction below testable at all.
+function repoIgnoringCtide(configBody = null, stage = "none") {
+  const cwd = temporary("ctide-s3-carrier-");
+  git(["init", "-q", "--initial-branch=main"], cwd);
+  git(["config", "user.email", "t@example.com"], cwd);
+  git(["config", "user.name", "t"], cwd);
+  writeFile(cwd, ".gitignore", "/.ctide/\n");
+  writeFile(cwd, "test/a.test.mjs", "import { test } from \"node:test\";\ntest(\"a\", () => {});\n");
+  git(["add", "-A"], cwd);
+  git(["commit", "-qm", "base"], cwd);
+  if (configBody !== null) {
+    writeFile(cwd, EXPLICIT_CONFIG_PATH, configBody);
+    if (stage === "tracked") git(["add", "-f", EXPLICIT_CONFIG_PATH], cwd);
+  }
+  return cwd;
+}
+
+test("v1.11 §11b.4: a tracked config is accepted even though the project ignores .ctide/", async () => {
+  const cwd = repoIgnoringCtide(`${CONFIG}\n`, "tracked");
+  try {
+    // The fixture really is the awkward one: Git ignores that path.
+    assert.notStrictEqual(git(["check-ignore", "-v", "--no-index", EXPLICIT_CONFIG_PATH], cwd), "",
+      "the tracked .gitignore really covers the config path");
+
+    const text = await freshText(cwd);
+    const result = await verifySourceFreshness({ repoRoot: cwd, inventoryText: text });
+    assert.strictEqual(result.explicitConfigPresent, true, "the tracked carrier is used");
+
+    // and its parsed object is what entered the preimage
+    const registry = loadTestAdapterRegistryRoot();
+    assert.strictEqual((await currentDigests(cwd)).registryDigest,
+      sha256Hex(canonicalJson({ registry, explicitConfig: JSON.parse(CONFIG) })));
+  } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("v1.11 §11b.4: an UNTRACKED config with identical bytes is an invalid carrier, not absence", async () => {
+  const tracked = repoIgnoringCtide(`${CONFIG}\n`, "tracked");
+  const untracked = repoIgnoringCtide(`${CONFIG}\n`, "none");
+  try {
+    // Same bytes on both sides; the ONLY difference is the index.
+    assert.strictEqual(
+      fs.readFileSync(path.join(tracked, EXPLICIT_CONFIG_PATH), "utf8"),
+      fs.readFileSync(path.join(untracked, EXPLICIT_CONFIG_PATH), "utf8"), "byte-identical carriers");
+
+    const before = {
+      bytes: fs.readFileSync(path.join(untracked, EXPLICIT_CONFIG_PATH), "utf8"),
+      status: git(["status", "--porcelain", "--untracked-files=all"], untracked),
+    };
+
+    const err = await refused(
+      verifySourceFreshness({ repoRoot: untracked, inventoryText: envelopeText(PLACEHOLDER) }),
+      "an untracked config carrier", "E_CONFIG_CARRIER");
+    assert.strictEqual(err.name, "SourceFreshnessError");
+    assert.match(err.message, /NOT tracked/, "the refusal names the reason");
+    assert.strictEqual(err.detail.tracked, false);
+
+    // It is NOT read as absence: an absent config would have produced a registryDigest, and this
+    // produced no digest at all.
+    assert.notStrictEqual(err.code, "E_STALE", "it never reached the freshness comparison");
+
+    assert.strictEqual(fs.readFileSync(path.join(untracked, EXPLICIT_CONFIG_PATH), "utf8"), before.bytes,
+      "the config bytes are untouched");
+    assert.strictEqual(git(["status", "--porcelain", "--untracked-files=all"], untracked), before.status,
+      "and nothing was staged, created or removed");
+  } finally {
+    fs.rmSync(tracked, { recursive: true, force: true });
+    fs.rmSync(untracked, { recursive: true, force: true });
+  }
+});
+
+test("v1.11 §11b.4: only a genuinely absent path yields explicitConfig null", async () => {
+  const cwd = repoIgnoringCtide(null);
+  try {
+    assert.strictEqual(fs.existsSync(path.join(cwd, EXPLICIT_CONFIG_PATH)), false);
+    const text = await freshText(cwd);
+    const result = await verifySourceFreshness({ repoRoot: cwd, inventoryText: text });
+    assert.strictEqual(result.explicitConfigPresent, false, "absent means absent");
+
+    const registry = loadTestAdapterRegistryRoot();
+    assert.strictEqual((await currentDigests(cwd)).registryDigest,
+      sha256Hex(canonicalJson({ registry, explicitConfig: null })), "and the preimage carries null");
+    assert.strictEqual(fs.existsSync(path.join(cwd, EXPLICIT_CONFIG_PATH)), false, "no config was created");
+  } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("v1.11 §11b.10: an unsupported slot at the exact config path is never read as absence", async () => {
+  const cwd = repoIgnoringCtide(null);
+  try {
+    fs.mkdirSync(path.join(cwd, EXPLICIT_CONFIG_PATH), { recursive: true });
+    fs.writeFileSync(path.join(cwd, EXPLICIT_CONFIG_PATH, "inner.json"), `${CONFIG}\n`);
+
+    const err = await refused(
+      verifySourceFreshness({ repoRoot: cwd, inventoryText: envelopeText(PLACEHOLDER) }),
+      "a directory occupying the config path", "E_UNSUPPORTED_ENTRY");
+    assert.strictEqual(err.name, "HeadViewSnapshotError", "capture itself refuses it");
+    assert.notStrictEqual(err.code, "E_STALE", "it is not quietly treated as 'no config'");
+  } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("v1.11 §11b.4: raw duplicate members in the explicit config are fail-closed", async () => {
+  const assignment = "{\"path\":\"test/a.test.mjs\",\"adapterId\":\"node-test\"}";
+  for (const [label, body] of [
+    // legal value LAST, so a reader that checks after JSON.parse sees configVersion 1 and passes
+    ["root configVersion, illegal first and legal last",
+      `{"configVersion":0,"configVersion":1,"assignments":[]}`],
+    ["an assignment repeating path",
+      `{"configVersion":1,"assignments":[${assignment.replace(/^\{/, "{\"path\":\"test/other.test.mjs\",")}]}`],
+    ["an escaped-name alias for configVersion",
+      `{"\\u0063onfigVersion":0,"configVersion":1,"assignments":[]}`],
+    ["an escaped-name alias inside an assignment",
+      `{"configVersion":1,"assignments":[${assignment.replace(/^\{/, "{\"\\u0070ath\":\"test/other.test.mjs\",")}]}`],
+  ]) {
+    // JSON.parse alone is perfectly happy with every one of these.
+    assert.ok(JSON.parse(body), `${label}: JSON.parse accepts it`);
+    // eslint-disable-next-line no-await-in-loop
+    const cwd = repoIgnoringCtide(body, "tracked");
+    try {
+      const before = fs.readFileSync(path.join(cwd, EXPLICIT_CONFIG_PATH), "utf8");
+      // eslint-disable-next-line no-await-in-loop
+      await refused(verifySourceFreshness({ repoRoot: cwd, inventoryText: envelopeText(PLACEHOLDER) }),
+        label, "E_CONFIG_DUPLICATE_MEMBER");
+      assert.strictEqual(fs.readFileSync(path.join(cwd, EXPLICIT_CONFIG_PATH), "utf8"), before,
+        `${label}: the carrier bytes are untouched`);
+    } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+  }
+});
+
+test("v1.11 §11b.4: malformed config JSON still uses the shape error family", async () => {
+  for (const [label, body] of [
+    ["not JSON at all", "{ not json"],
+    ["trailing content", "{\"configVersion\":1,\"assignments\":[]}extra"],
+  ]) {
+    // eslint-disable-next-line no-await-in-loop
+    const cwd = repoIgnoringCtide(body, "tracked");
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await refused(verifySourceFreshness({ repoRoot: cwd, inventoryText: envelopeText(PLACEHOLDER) }),
+        label, "E_CONFIG_SHAPE");
+    } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+  }
 });

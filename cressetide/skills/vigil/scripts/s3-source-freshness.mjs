@@ -24,8 +24,9 @@
 // those is rejected by name.
 import { TextDecoder } from "node:util";
 
-import { loadTestAdapterRegistryRoot } from "./adapter-registry.mjs";
+import { readTestAdapterRegistryRootFresh } from "./adapter-registry.mjs";
 import { captureHeadViewSnapshot } from "./head-view-snapshot.mjs";
+import { JsonMemberScanError, assertUniqueJsonMembers } from "./json-unique-members.mjs";
 import { parseCanonicalInventoryV2 } from "./changed-test-inventory.mjs";
 import { canonicalJson, sha256Hex } from "./provenance-store.mjs";
 
@@ -86,6 +87,19 @@ function requireCanonicalPath(value, what) {
 // legal is refused as written, because a config the reader silently fixed is a config whose digest no
 // longer describes the file the project committed.
 function parseExplicitConfig(text, registryRoot) {
+  // §11b.4 v1.11: duplicate member names go first, on the raw bytes, before JSON.parse can drop an
+  // occurrence and before any shape, value or digest work. A config whose root says configVersion 0
+  // and then configVersion 1 is refused, not read as 1.
+  try {
+    assertUniqueJsonMembers(text, EXPLICIT_CONFIG_PATH);
+  } catch (e) {
+    if (e instanceof JsonMemberScanError && e.kind === "duplicate") {
+      throw fail("E_CONFIG_DUPLICATE_MEMBER", e.message, e.detail);
+    }
+    if (e instanceof JsonMemberScanError) throw fail("E_CONFIG_SHAPE", e.message, e.detail);
+    throw e;
+  }
+
   let raw;
   try { raw = JSON.parse(text); } catch (e) {
     throw fail("E_CONFIG_SHAPE", `${EXPLICIT_CONFIG_PATH} is not valid JSON: ${e.message}`);
@@ -121,8 +135,22 @@ function parseExplicitConfig(text, registryRoot) {
 // absent from the head view, which §11b.9c says is exactly `null` -- not `{}`, whose canonicalJson
 // differs and would silently produce another digest.
 function explicitConfigFrom(snapshot, registryRoot) {
+  // Absent from the snapshot is the ONLY case that yields null. Because §11b.10 step 2 puts the
+  // exact config path into the snapshot whenever it exists in the worktree -- even when a tracked
+  // .gitignore covers it -- "not in the snapshot" now means "not there", nothing else.
   if (!snapshot.has(EXPLICIT_CONFIG_PATH)) return null;
   const entry = snapshot.entry(EXPLICIT_CONFIG_PATH);
+  // §11b.4: only a TRACKED carrier is a legal explicit config. An untracked file at the same path
+  // with byte-identical contents is refused -- not accepted, not read as absent, not continued with
+  // null -- and nothing here stages, creates, deletes or repairs it. The decision comes from the
+  // snapshot's own metadata; there is no second Git or filesystem lookup after the capture.
+  if (entry.tracked !== true) {
+    throw fail("E_CONFIG_CARRIER",
+      `${EXPLICIT_CONFIG_PATH} is present in the head view but is NOT tracked; only a tracked committed `
+      + "config is a legal explicit-config carrier. It is refused rather than treated as absent, and this "
+      + "component neither stages nor modifies it",
+      { path: EXPLICIT_CONFIG_PATH, tracked: false });
+  }
   if (entry.type !== "blob") {
     throw fail("E_CONFIG_CARRIER",
       `${EXPLICIT_CONFIG_PATH} is a ${entry.type} in the head view, not a blob; a config carrier that is not a `
@@ -171,8 +199,11 @@ export async function verifySourceFreshness(request) {
   // protocol no approved text defines.
   const snapshot = await captureHeadViewSnapshot({ repoRoot: request.repoRoot });
 
-  // Validated first, unconditionally, and hashed from the very same read.
-  const registryRoot = loadTestAdapterRegistryRoot();
+  // §11b.9c v1.11: the CURRENT shipped registry, re-read once for this invocation. A cached root
+  // would let a second verification report fresh against a registry that has already changed, so
+  // the ordinary cached accessors -- which keep their own cache, untouched by this call -- are not
+  // used here. Validation runs inside that same read, before any digest is taken from it.
+  const registryRoot = readTestAdapterRegistryRootFresh();
   const explicitConfig = explicitConfigFrom(snapshot, registryRoot);
 
   const headViewDigest = snapshot.headViewDigest;

@@ -386,7 +386,7 @@ test("AC133 a tracked mode 120000 entry is a symlink whose bytes are its target"
     repo.write("link-to-helper", target);
 
     const s1 = await repo.capture();
-    assert.deepStrictEqual(s1.entry("link-to-helper"), { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from(target, "utf8")) });
+    assert.deepStrictEqual(s1.entry("link-to-helper"), { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from(target, "utf8")), tracked: true });
     assert.strictEqual(s1.read("link-to-helper").toString("utf8"), target, "the bytes are the target string, not the target's content");
     assert.notStrictEqual(s1.entry("link-to-helper").contentDigest, s1.entry(target).contentDigest, "the target's content was not read through the link");
   });
@@ -401,7 +401,7 @@ test("AC133 a link whose target does not exist still captures", async () => {
     repo.write("dangling", target);
 
     const s1 = await repo.capture();
-    assert.deepStrictEqual(s1.entry("dangling"), { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from(target, "utf8")) });
+    assert.deepStrictEqual(s1.entry("dangling"), { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from(target, "utf8")), tracked: true });
     assert.strictEqual(s1.has(target), false);
   });
 });
@@ -413,7 +413,7 @@ test("AC133 an actual working-tree symlink is read with readlink and never follo
     seed(repo);
     fs.symlinkSync("lib/helper.mjs", path.join(repo.root, "real-link"));
     const s1 = await repo.capture();
-    assert.deepStrictEqual(s1.entry("real-link"), { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from("lib/helper.mjs", "utf8")) });
+    assert.deepStrictEqual(s1.entry("real-link"), { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from("lib/helper.mjs", "utf8")), tracked: true });
     assert.strictEqual(s1.read("real-link").toString("utf8"), "lib/helper.mjs");
   });
 });
@@ -907,7 +907,7 @@ test("a tracked directory replaced by an ordinary file: children absent, the fil
     assert.strictEqual(after.has("box/child.txt"), false, "the old child is deleted, so it does not exist");
     assert.strictEqual(after.has("box"), true, "and the replacement is an ordinary untracked blob");
     assert.strictEqual(after.read("box").toString("utf8"), "REPLACEMENT BLOB\n");
-    assert.deepStrictEqual(after.entry("box"), { mode: "100644", type: "blob", contentDigest: sha256(Buffer.from("REPLACEMENT BLOB\n", "utf8")) });
+    assert.deepStrictEqual(after.entry("box"), { mode: "100644", type: "blob", contentDigest: sha256(Buffer.from("REPLACEMENT BLOB\n", "utf8")), tracked: false });
     assert.notStrictEqual(after.headViewDigest, before.headViewDigest);
     assert.strictEqual(after.has("lib/helper.mjs"), true, "the rest of the universe is unaffected");
   });
@@ -943,7 +943,7 @@ test("an observed symlink-to-blob change is a blob, and the index carrier only s
     // Windows pseudo-symlink positive and it must keep working.
     assert.strictEqual(repo.git("diff-files", "--raw").trim(), "", "Git reports no change while symlinks are off");
     const asLink = await repo.capture();
-    assert.deepStrictEqual(asLink.entry("switcher"), { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from(body, "utf8")) });
+    assert.deepStrictEqual(asLink.entry("switcher"), { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from(body, "utf8")), tracked: true });
 
     // Single variable: turn symlinks on. Now Git can see that the worktree holds a regular file.
     repo.git("config", "core.symlinks", "true");
@@ -951,7 +951,7 @@ test("an observed symlink-to-blob change is a blob, and the index carrier only s
     assert.match(raw, /^:120000 100644 \S+ \S+ T\tswitcher$/, `expected a 120000 -> 100644 type change, got ${JSON.stringify(raw)}`);
 
     const asBlob = await repo.capture();
-    assert.deepStrictEqual(asBlob.entry("switcher"), { mode: "100644", type: "blob", contentDigest: sha256(Buffer.from(body, "utf8")) });
+    assert.deepStrictEqual(asBlob.entry("switcher"), { mode: "100644", type: "blob", contentDigest: sha256(Buffer.from(body, "utf8")), tracked: true });
     assert.strictEqual(asBlob.read("switcher").toString("utf8"), body, "the raw bytes are unchanged");
     assert.strictEqual(asBlob.entry("switcher").contentDigest, asLink.entry("switcher").contentDigest, "same bytes, same contentDigest");
     assert.notStrictEqual(asBlob.headViewDigest, asLink.headViewDigest, "so only mode and type can be carrying the change");
@@ -1059,7 +1059,7 @@ test("inline Git config injected through the environment cannot move an entry or
 
     const baseline = await repo.capture();
     assert.deepStrictEqual(baseline.entry("switcher"),
-      { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from(body, "utf8")) },
+      { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from(body, "utf8")), tracked: true },
       "the index carrier decides while nothing overrides it");
 
     // Only the production call runs poisoned. Setup, the git helper and cleanup all run outside.
@@ -1100,7 +1100,7 @@ test("repository-local config is still the authority it always was", async () =>
     assert.match(raw, /^:120000 100644 \S+ \S+ T\tswitcher$/, `expected Git to report a type change, got ${JSON.stringify(raw)}`);
     const asBlob = await repo.capture();
     assert.deepStrictEqual(asBlob.entry("switcher"),
-      { mode: "100644", type: "blob", contentDigest: sha256(Buffer.from(body, "utf8")) });
+      { mode: "100644", type: "blob", contentDigest: sha256(Buffer.from(body, "utf8")), tracked: true });
     assert.notStrictEqual(asBlob.headViewDigest, asCarrier.headViewDigest);
   });
 });
@@ -1182,7 +1182,7 @@ test("a repo-local include.path with ~ cannot be redirected by the caller's home
 
       const baseline = await repo.capture();
       assert.deepStrictEqual(baseline.entry("switcher"),
-        { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from(body, "utf8")) },
+        { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from(body, "utf8")), tracked: true },
         "with nothing at the include target the index carrier decides");
 
       fs.writeFileSync(path.join(fakeHome, "ctide-unique-poison.gitconfig"), "[core]\n\tsymlinks = true\n");
@@ -1209,7 +1209,7 @@ test("a repo-local include.path with ~ cannot be redirected by the caller's home
       repo.git("config", "core.symlinks", "true");
       const asBlob = await repo.capture();
       assert.deepStrictEqual(asBlob.entry("switcher"),
-        { mode: "100644", type: "blob", contentDigest: sha256(Buffer.from(body, "utf8")) },
+        { mode: "100644", type: "blob", contentDigest: sha256(Buffer.from(body, "utf8")), tracked: true },
         "closing the home expansion must not have closed .git/config itself");
       assert.notStrictEqual(asBlob.headViewDigest, baseline.headViewDigest);
     });
@@ -1262,7 +1262,7 @@ test("a repo-local includeIf on gitdir:~ is neither honoured nor able to break t
 
     const baseline = await captureHeadViewSnapshot({ repoRoot });
     assert.deepStrictEqual(baseline.entry("switcher"),
-      { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from(body, "utf8")) },
+      { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from(body, "utf8")), tracked: true },
       "the capture must succeed on a repository whose config carries a gitdir:~ condition");
 
     const drive = fakeHome.slice(0, 2);
@@ -1283,7 +1283,7 @@ test("a repo-local includeIf on gitdir:~ is neither honoured nor able to break t
     git("config", "core.symlinks", "true");
     const asBlob = await captureHeadViewSnapshot({ repoRoot });
     assert.deepStrictEqual(asBlob.entry("switcher"),
-      { mode: "100644", type: "blob", contentDigest: sha256(Buffer.from(body, "utf8")) });
+      { mode: "100644", type: "blob", contentDigest: sha256(Buffer.from(body, "utf8")), tracked: true });
     assert.notStrictEqual(asBlob.headViewDigest, baseline.headViewDigest);
 
     assertEnvironmentRestored(before, RELEVANT_ENVIRONMENT_KEYS);
@@ -1310,7 +1310,7 @@ test("a repo-local include reaching above the home cannot be aimed by TEMP", asy
 
       const baseline = await repo.capture();
       assert.deepStrictEqual(baseline.entry("switcher"),
-        { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from(body, "utf8")) },
+        { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from(body, "utf8")), tracked: true },
         "the index carrier decides while nothing overrides it");
 
       // Only the three temporary-directory variables change between these two captures.
@@ -1328,7 +1328,7 @@ test("a repo-local include reaching above the home cannot be aimed by TEMP", asy
       repo.git("config", "core.symlinks", "true");
       const asBlob = await repo.capture();
       assert.deepStrictEqual(asBlob.entry("switcher"),
-        { mode: "100644", type: "blob", contentDigest: sha256(Buffer.from(body, "utf8")) });
+        { mode: "100644", type: "blob", contentDigest: sha256(Buffer.from(body, "utf8")), tracked: true });
       assert.notStrictEqual(asBlob.headViewDigest, baseline.headViewDigest);
     });
     assertEnvironmentRestored(before, RELEVANT_ENVIRONMENT_KEYS);
@@ -1351,4 +1351,161 @@ test("paths with spaces and non-ASCII survive the NUL-delimited plumbing", async
     }
     assert.deepStrictEqual(s1.paths(), [...s1.paths()].sort(compareCodePoint));
   });
+});
+
+// =================================================================================================
+// v1.11 §11b.10: the exact config-path observability exception, `tracked` metadata, and the
+// configCarrierState half of the S1/S2 stability gate.
+//
+// The exception exists because a consuming project normally ignores the whole of .ctide/. Without
+// it a purely untracked config never reaches the snapshot, "present but untracked" becomes
+// indistinguishable from "absent", and force-staging the file moves headViewDigest. Every fixture
+// below therefore carries a real tracked .gitignore with /.ctide/ in it.
+// =================================================================================================
+
+const CONFIG_PATH = ".ctide/test-adapters-config.json";
+const CONFIG_BODY = '{ "configVersion": 1, "assignments": [] }\n';
+
+// A repository that ignores .ctide/ wholesale, exactly as a real consuming project does.
+function seedIgnoringCtide(repo) {
+  repo.write(".gitignore", "/.ctide/\n");
+  repo.write("test/a.test.mjs", "// a test\n");
+  repo.commit("base");
+}
+
+test("v1.11 §11b.10 step 2: an IGNORED, untracked exact config is still in the snapshot, tracked:false", async () => {
+  await inRepo(async (repo) => {
+    seedIgnoringCtide(repo);
+    // Git really does ignore it: the ignore rule is tracked and covers the whole directory.
+    assert.ok(repo.git("check-ignore", "-v", "--no-index", CONFIG_PATH).trim().length > 0,
+      "the fixture's tracked .gitignore really covers the config path");
+
+    repo.write(CONFIG_PATH, CONFIG_BODY);
+    const s = await repo.capture();
+    assert.strictEqual(s.has(CONFIG_PATH), true, "step 2 beats the ignore exclusion of step 3");
+    assert.strictEqual(s.entry(CONFIG_PATH).tracked, false, "and it is observably UNtracked");
+    assert.strictEqual(s.entry(CONFIG_PATH).type, "blob");
+    assert.strictEqual(s.read(CONFIG_PATH).toString("utf8"), CONFIG_BODY, "its bytes are the bytes on disk");
+    assert.ok(Object.isFrozen(s.entry(CONFIG_PATH)), "the entry is frozen");
+    assert.ok(Object.isFrozen(s), "and so is the snapshot");
+  });
+});
+
+test("v1.11 §11b.10 step 2 is ONE exact path: hard exclusions and the rest of .ctide/ are unaffected", async () => {
+  await inRepo(async (repo) => {
+    seedIgnoringCtide(repo);
+    repo.write(CONFIG_PATH, CONFIG_BODY);
+    repo.write(".ctide/provenance.json", '{ "version": 1 }\n');
+    repo.write(".ctide/output/inventory.json", '{ "entries": [] }\n');
+    repo.write(".ctide/memory/notes.md", "notes\n");
+    repo.write(".ctide/test-adapters-config.json.bak", CONFIG_BODY);
+
+    const s = await repo.capture();
+    assert.strictEqual(s.has(CONFIG_PATH), true, "the one exact path is in");
+    for (const p of [".ctide/provenance.json", ".ctide/output/inventory.json"]) {
+      assert.strictEqual(s.has(p), false, `${p} is a hard exclusion and the exception never reaches it`);
+    }
+    for (const p of [".ctide/memory/notes.md", ".ctide/test-adapters-config.json.bak"]) {
+      assert.strictEqual(s.has(p), false, `${p} is ignored like any other path: the exception is not a prefix`);
+    }
+  });
+});
+
+test("AC160: staging the exact config flips tracked without touching headViewDigest", async () => {
+  await inRepo(async (repo) => {
+    seedIgnoringCtide(repo);
+    repo.write(CONFIG_PATH, CONFIG_BODY);
+
+    const untracked = await repo.capture();
+    assert.strictEqual(untracked.entry(CONFIG_PATH).tracked, false);
+
+    // -f because the path is ignored; this is an index operation only. The worktree bytes, mode and
+    // type are untouched.
+    repo.git("add", "-f", CONFIG_PATH);
+    const staged = await repo.capture();
+
+    assert.strictEqual(staged.entry(CONFIG_PATH).tracked, true, "tracked flips false -> true");
+    assert.strictEqual(staged.headViewDigest, untracked.headViewDigest,
+      "and headViewDigest is IDENTICAL: tracked is metadata, not a fourth column of the canonical map");
+    assert.strictEqual(staged.entry(CONFIG_PATH).mode, untracked.entry(CONFIG_PATH).mode);
+    assert.strictEqual(staged.entry(CONFIG_PATH).type, untracked.entry(CONFIG_PATH).type);
+    assert.strictEqual(staged.entry(CONFIG_PATH).contentDigest, untracked.entry(CONFIG_PATH).contentDigest);
+    assert.deepStrictEqual(staged.paths(), untracked.paths(), "and the universe is the same universe");
+  });
+});
+
+test("v1.11 §11b.10: the exact config path must be observable, so an unsupported slot is fail-closed", async () => {
+  await inRepo(async (repo) => {
+    seedIgnoringCtide(repo);
+    // A directory occupying the exact config path. Git lists its CONTENTS as untracked, never the
+    // directory, so without this check the snapshot would simply not hold the path and §11b.4 would
+    // read that as "there is no config".
+    fs.mkdirSync(path.join(repo.root, CONFIG_PATH), { recursive: true });
+    fs.writeFileSync(path.join(repo.root, CONFIG_PATH, "inner.json"), CONFIG_BODY);
+
+    const code = await failureOf(() => repo.capture());
+    assert.strictEqual(code, "E_UNSUPPORTED_ENTRY", "a directory in that slot is refused, not reported as absent");
+  });
+});
+
+test("v1.11 §11b.10: a genuinely absent exact config is simply absent", async () => {
+  await inRepo(async (repo) => {
+    seedIgnoringCtide(repo);
+    const s = await repo.capture();
+    assert.strictEqual(s.has(CONFIG_PATH), false, "nothing occupies the slot, so the path is absent");
+  });
+});
+
+test("AC134: an index-only carrier flip is head-view-unstable even though the digest is identical", async () => {
+  await inRepo(async (repo) => {
+    seedIgnoringCtide(repo);
+    repo.write(CONFIG_PATH, CONFIG_BODY);
+    repo.git("add", "-f", CONFIG_PATH);
+
+    const before = fs.readFileSync(path.join(repo.root, CONFIG_PATH));
+    let leaked = null;
+    const error = await errorOf(() => withStableHeadView({
+      repoRoot: repo.root,
+      evaluate: (s1) => {
+        assert.strictEqual(s1.entry(CONFIG_PATH).tracked, true, "S1 sees a tracked carrier");
+        // Index only. The worktree file is left exactly as it was.
+        repo.git("rm", "--cached", "-q", CONFIG_PATH);
+        leaked = "evaluate produced this";
+        return leaked;
+      },
+    }));
+
+    assert.ok(error, "the run must fail");
+    assert.strictEqual(error.code, "E_HEAD_VIEW_UNSTABLE");
+    assert.strictEqual(error.detail.s1, error.detail.s2,
+      "the two headViewDigests are IDENTICAL -- an implementation comparing only them passes silently");
+    assert.deepStrictEqual(error.detail.configCarrierState, { s1: "tracked", s2: "untracked" },
+      "the carrier state is what moved, and both sides are reported");
+    assert.match(error.message, /configCarrierState/);
+    assert.strictEqual(leaked, "evaluate produced this", "evaluate did run");
+    assert.strictEqual(
+      fs.readFileSync(path.join(repo.root, CONFIG_PATH)).equals(before), true,
+      "the worktree bytes never changed, which is the whole point of the case");
+  });
+});
+
+test("AC134: a stable carrier state passes, for each of the three values", async () => {
+  for (const [label, prepare, expected] of [
+    ["absent", () => {}, "absent"],
+    ["untracked", (repo) => { repo.write(CONFIG_PATH, CONFIG_BODY); }, "untracked"],
+    ["tracked", (repo) => { repo.write(CONFIG_PATH, CONFIG_BODY); repo.git("add", "-f", CONFIG_PATH); }, "tracked"],
+  ]) {
+    // eslint-disable-next-line no-await-in-loop
+    await inRepo(async (repo) => {
+      seedIgnoringCtide(repo);
+      prepare(repo);
+      const result = await withStableHeadView({ repoRoot: repo.root, evaluate: (s) => s.headViewDigest });
+      assert.strictEqual(typeof result.value, "string", `${label}: the evaluate result is returned`);
+      assert.strictEqual(result.snapshot.headViewDigest, result.value);
+      const state = result.snapshot.has(CONFIG_PATH)
+        ? (result.snapshot.entry(CONFIG_PATH).tracked ? "tracked" : "untracked")
+        : "absent";
+      assert.strictEqual(state, expected, `${label}: the carrier state is what the fixture set up`);
+    });
+  }
 });

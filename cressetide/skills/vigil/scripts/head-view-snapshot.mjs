@@ -51,6 +51,12 @@ const EXCLUDED_EXACT = new Set([".ctide/provenance.json"]);
 const EXCLUDED_PREFIXES = [".git/", ".ctide/output/"];
 const EXCLUDED_ROOTS = new Set([".git"]);
 
+// §11b.10 step 2, approved v1.11: ONE exact path, never a prefix and never a glob. A consuming
+// project that ignores the whole of .ctide/ -- which is the normal case -- would otherwise keep this
+// file out of the snapshot entirely, and then "present but untracked" would be indistinguishable
+// from "absent", which is the distinction §11b.4 rests on.
+const EXPLICIT_CONFIG_PATH = ".ctide/test-adapters-config.json";
+
 const SUPPORTED_MODES = new Set(["100644", "100755", "120000"]);
 const GITIGNORE = ".gitignore";
 
@@ -242,7 +248,16 @@ function requireCanonicalPath(value, what) {
   return value;
 }
 
-function isExcluded(candidate) {
+// §11b.10 (approved v1.11) judges a path in four ordered steps, first match wins:
+//   1. hard exclusion -- unconditional, and NOTHING below may override it
+//   2. exact config-path observability exception -- ONE exact path, which beats step 3
+//   3. tracked .gitignore exclusion -- for every remaining path
+//   4. closed inclusion -- whatever survives
+// Step 1 lives here. Step 2 is EXPLICIT_CONFIG_PATH, which is deliberately not one of the hard
+// exclusions -- it is neither .ctide/provenance.json nor under .ctide/output/ -- so the exception can
+// never reach past step 1. Step 3 is applied in the ignore-verdict loop, where the exception is
+// honoured; step 4 is the remainder.
+function isHardExcluded(candidate) {
   if (EXCLUDED_EXACT.has(candidate) || EXCLUDED_ROOTS.has(candidate)) return true;
   return EXCLUDED_PREFIXES.some((prefix) => candidate.startsWith(prefix));
 }
@@ -515,7 +530,13 @@ function buildSnapshot(entries) {
   const bytes = new Map();
   for (const p of paths) {
     const entry = entries.get(p);
-    const record = Object.freeze({ mode: entry.mode, type: entry.type, contentDigest: sha256(entry.bytes) });
+    // The public entry carries `tracked`; the canonical map does NOT. §11b.10 fixes the map value at
+    // exactly three columns, and AC160 turns that into an observable requirement: staging a file
+    // whose bytes, mode and type are unchanged must leave headViewDigest identical. `tracked` is
+    // carrier-validity metadata, not source content, so it is read from the entry and never hashed.
+    const record = Object.freeze({
+      mode: entry.mode, type: entry.type, contentDigest: sha256(entry.bytes), tracked: entry.tracked === true,
+    });
     map[p] = { mode: record.mode, type: record.type, contentDigest: record.contentDigest };
     metadata.set(p, record);
     bytes.set(p, entry.bytes);
@@ -592,25 +613,27 @@ export async function captureHeadViewSnapshot(request) {
   } catch { /* unset: keep the platform default Git itself would use */ }
 
   // One enumeration pass, one read per entry. Nothing below this point touches the filesystem.
+  // `tracked` is metadata, decided HERE by index membership: every path in this loop came from
+  // `ls-files --stage`, whose records this reader already refuses unless they are stage 0.
   const tracked = new Map();
   for (const [relative, entry] of index) {
-    if (isExcluded(relative)) continue;
+    if (isHardExcluded(relative)) continue;
     const change = unstaged.get(relative);
     const observed = change !== undefined && change.dstMode !== "000000" ? change.dstMode : null;
     const read = readEntry(root, path.join(root, relative), relative, entry.mode, observed);
     if (read === null) continue; // deleted in the working tree: the path does not exist in the head view
-    tracked.set(relative, read);
+    tracked.set(relative, { ...read, tracked: true });
   }
 
   const untracked = new Map();
   for (const relative of untrackedPaths) {
-    if (isExcluded(relative)) continue;
+    if (isHardExcluded(relative)) continue;
     if (tracked.has(relative) || index.has(relative)) {
       throw fail("E_PATH_COLLISION", `${relative} is reported as both tracked and untracked`);
     }
     const read = readUntracked(root, path.join(root, relative), relative, fileMode);
     if (read === null) continue;
-    untracked.set(relative, read);
+    untracked.set(relative, { ...read, tracked: false });
   }
 
   // Ignore authority: the tracked .gitignore bytes ALREADY IN S1, and nothing else. No
@@ -638,10 +661,13 @@ export async function captureHeadViewSnapshot(request) {
     }
   }
 
+  // Step 3 applied, with step 2 taking precedence over it for the one exact config path: an ignored
+  // config is still enumerated, still read, and still lands in the snapshot -- carrying
+  // tracked:false, which is what makes "present but untracked" sayable at all.
   const entries = new Map(tracked);
   verdicts.forEach((verdict, i) => {
     if (verdict.path !== candidatePaths[i]) throw fail("E_IGNORE_FAILED", `ignore verdict ${i} is out of order`);
-    if (verdict.ignored) return;
+    if (verdict.ignored && verdict.path !== EXPLICIT_CONFIG_PATH) return;
     entries.set(verdict.path, untracked.get(verdict.path));
   });
 
@@ -668,7 +694,35 @@ export async function captureHeadViewSnapshot(request) {
     group.push(relative);
   }
 
+  assertConfigSlotObservable(root, entries);
   return buildSnapshot(entries);
+}
+
+// The exact config path carries a decision, so its ABSENCE from the snapshot carries one too:
+// §11b.4 reads "not in the snapshot" as "there is no config" and continues with null. A slot the
+// closed model cannot represent -- a directory, a junction, a socket -- must therefore not be
+// allowed to look like absence. Ancestors are walked first, so a junction above the leaf is refused
+// before any lstat could read through it into another tree.
+function assertConfigSlotObservable(root, entries) {
+  if (entries.has(EXPLICIT_CONFIG_PATH)) return;
+  if (!leafCanExistUnderAncestors(root, EXPLICIT_CONFIG_PATH)) return;
+  let stat;
+  try {
+    stat = fs.lstatSync(path.join(root, EXPLICIT_CONFIG_PATH));
+  } catch (error) {
+    if (error && (error.code === "ENOENT" || error.code === "ENOTDIR")) return; // genuinely absent
+    throw fail("E_READ_FAILED", `${EXPLICIT_CONFIG_PATH} could not be examined: ${error && error.code}`,
+      { path: EXPLICIT_CONFIG_PATH, reason: error && error.code });
+  }
+  const kind = stat.isDirectory() ? "a directory"
+    : stat.isSymbolicLink() ? "a symlink"
+      : stat.isFile() ? "a regular file"
+        : "an entry of a kind this model does not cover";
+  throw fail("E_UNSUPPORTED_ENTRY",
+    `${EXPLICIT_CONFIG_PATH} is occupied by ${kind} in the working tree but did not reach the head view; `
+    + "the exact config path must be observable, and reporting it as absent would let an unreadable slot "
+    + "read as \"there is no config\"",
+    { path: EXPLICIT_CONFIG_PATH, kind });
 }
 
 // --- stability -----------------------------------------------------------------------------------
@@ -696,10 +750,35 @@ export async function withStableHeadView(request) {
   if (!isSnapshot(first) || !isSnapshot(second)) {
     throw fail("E_SNAPSHOT_BRAND", "a head view snapshot did not come from captureHeadViewSnapshot; its digest cannot be trusted");
   }
-  if (first.headViewDigest !== second.headViewDigest) {
+  // TWO comparisons, because one is not enough. The fingerprint IS headViewDigest and `tracked` is
+  // deliberately outside it, so flipping the config between tracked and untracked with a pure index
+  // operation -- bytes, mode and type untouched -- leaves the digests identical while the config's
+  // carrier validity goes from legal to fail-closed. That change has to stop the run too.
+  const firstState = configCarrierState(first);
+  const secondState = configCarrierState(second);
+  const digestMoved = first.headViewDigest !== second.headViewDigest;
+  const carrierMoved = firstState !== secondState;
+  if (digestMoved || carrierMoved) {
+    const moved = [digestMoved ? "headViewDigest" : null, carrierMoved ? "configCarrierState" : null].filter(Boolean);
     throw fail("E_HEAD_VIEW_UNSTABLE",
-      `head-view-unstable: the head view changed while it was being read (S1 ${first.headViewDigest}, S2 ${second.headViewDigest}); no artifact may be produced from this run`,
-      { s1: first.headViewDigest, s2: second.headViewDigest });
+      `head-view-unstable: ${moved.join(" and ")} changed while the head view was being read `
+      + `(headViewDigest S1 ${first.headViewDigest}, S2 ${second.headViewDigest}; `
+      + `configCarrierState S1 ${firstState}, S2 ${secondState}); no artifact may be produced from this run`,
+      {
+        s1: first.headViewDigest,
+        s2: second.headViewDigest,
+        configCarrierState: { s1: firstState, s2: secondState },
+      });
   }
   return Object.freeze({ snapshot: first, value });
+}
+
+// Internal only, and deliberately so: §11b.10 makes this a SECOND stability comparison, not a
+// persisted contract. It is not exported, never written to an artifact, never added to
+// headViewDigest, and needs no probe of its own -- it reads metadata the capture already took.
+// The comparison is closed to the one config path: every other path's tracked state is
+// semantically irrelevant here, and widening it would turn unrelated index work into instability.
+function configCarrierState(snapshot) {
+  if (!snapshot.has(EXPLICIT_CONFIG_PATH)) return "absent";
+  return snapshot.entry(EXPLICIT_CONFIG_PATH).tracked === true ? "tracked" : "untracked";
 }
