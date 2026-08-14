@@ -66,7 +66,7 @@ function scratchLayout(mutate, mutateManifest) {
     "parser-ignore-worker-runner.mjs", "node-test-adapter.mjs", "provenance-store.mjs",
     // the shared raw duplicate-member scanner is part of the loader's static import graph, and the
     // shared content view is now part of the node-test component's
-    "json-unique-members.mjs", "adapter-content-view.mjs"]) {
+    "json-unique-members.mjs", "adapter-content-view.mjs", "head-view-snapshot.mjs"]) {
     fs.cpSync(path.join(root, SCRIPTS_REL, file), path.join(vigil, "scripts", file));
   }
   if (mutateManifest) {

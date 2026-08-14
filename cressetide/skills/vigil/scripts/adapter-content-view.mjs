@@ -28,6 +28,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import { requireHeadViewSnapshot } from "./head-view-snapshot.mjs";
 import { compareCodePoint } from "./provenance-store.mjs";
 
 const execFile = promisify(cp.execFile);
@@ -192,14 +193,34 @@ export function requireAdapterContentView(value, what) {
 // config include expanded through "~" can reach into a repository-local config the caller does not
 // own. The scrub below mirrors the principles HeadViewSnapshot established for the head side.
 //
-// KNOWN DUPLICATION, deliberately not resolved here: head-view-snapshot.mjs holds an equivalent
-// scrub as module-private code, and unifying the two would mean editing that accepted component,
-// which this round is not authorised to do. Recorded as a follow-up rather than hidden.
+// KNOWN DUPLICATION, deliberately not resolved here: head-view-snapshot.mjs holds a related scrub as
+// module-private code. The two are no longer identical -- the base side additionally has to close
+// object REPLACEMENT and lazy fetching, neither of which can reach a head view built from worktree
+// bytes -- so unifying them now would mean merging two rule sets that have genuinely diverged.
+// Recorded as a follow-up rather than hidden.
 const GIT_REDIRECT_VARIABLES = new Set([
   "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
   "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CEILING_DIRECTORIES",
 ]);
 const HOME_VARIABLES = ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "HOMEDRIVE", "HOMEPATH"];
+
+// Variables this module PINS rather than inherits. They are dropped case-insensitively during the
+// copy below and then written back with the one value that is correct here, so an inherited "",
+// "0", "false" or a lower/mixed-case spelling cannot survive to weaken the setting. Windows treats
+// environment names case-blind, so dropping by name alone would leave a second key behind and let
+// the child pick either one.
+//
+// GIT_NO_REPLACE_OBJECTS closes refs/replace. Without it, `baseTreeOid` names a tree and Git hands
+//   back a DIFFERENT one: a replacement ref installed for that object silently redirects every
+//   cat-file and ls-tree, so the "exact immutable Git tree" §11b.10 requires would be whatever the
+//   repository's replace refs currently point at. Measured on git 2.55.0.windows.3: with tree A
+//   replaced by tree B, capturing A returned B's paths and bytes end to end.
+// GIT_NO_LAZY_FETCH closes partial-clone demand fetching. Without it, a missing promisor object
+//   makes Git contact the remote, download it and WRITE it into .git/objects -- turning a read of
+//   the object database into a network operation and a mutation of the repository. A base capture
+//   that has to fetch has not observed the repository; it has changed it. Measured: two extra packs
+//   appeared and a blob that was provably absent became present.
+const PINNED_VARIABLES = ["GIT_OPTIONAL_LOCKS", "GIT_NO_REPLACE_OBJECTS", "GIT_NO_LAZY_FETCH"];
 const EMPTY_GIT_CONFIG_FILE = "/dev/null";
 
 // A fresh, valid, absolute path that does not exist and is never created, rooted at the filesystem
@@ -215,9 +236,14 @@ function gitEnvironment(controlledHome) {
     if (GIT_REDIRECT_VARIABLES.has(upper)) continue;
     if (upper === "GIT_CONFIG" || upper.startsWith("GIT_CONFIG_")) continue;
     if (HOME_VARIABLES.includes(upper)) continue;
+    if (PINNED_VARIABLES.includes(upper)) continue;
     env[key] = value;
   }
   env.GIT_OPTIONAL_LOCKS = "0";
+  // Pinned to "1", never merely "set": Git reads both as booleans, and an inherited "0" or "false"
+  // left in place would read as OFF.
+  env.GIT_NO_REPLACE_OBJECTS = "1";
+  env.GIT_NO_LAZY_FETCH = "1";
   env.GIT_CONFIG_NOSYSTEM = "1";
   env.GIT_CONFIG_GLOBAL = EMPTY_GIT_CONFIG_FILE;
   env.HOME = controlledHome;
@@ -366,7 +392,21 @@ export async function captureBaseAdapterContentView(request) {
   // in the working tree is ever opened, so a dirty worktree cannot change what the base view says.
   const built = new Map();
   for (const [entryPath, entry] of entries) {
-    const bytes = await git(root, ["cat-file", "blob", entry.oid], environment);
+    let bytes;
+    try {
+      bytes = await git(root, ["cat-file", "blob", entry.oid], environment);
+    } catch (error) {
+      // Structural, not string-matched: ls-tree has just named this OID as a leaf of this tree, and
+      // replacement and lazy fetching are both closed above. A read that still fails therefore means
+      // the local object database will not yield the object -- the ordinary case being a partial
+      // clone whose promisor blob was never downloaded. That is reported as its own fact, because
+      // "the repository does not have these bytes" and "we fetched them for you" must never be the
+      // same outcome. The underlying git stderr is preserved rather than replaced.
+      throw fail("E_OBJECT_UNAVAILABLE",
+        `the local object database does not yield ${entry.oid} for ${entryPath}; the base capture will not fetch it, `
+        + "so a partial clone missing this promisor object is refused rather than completed over the network",
+        { path: entryPath, oid: entry.oid, stderr: error && error.detail ? error.detail.stderr : undefined });
+    }
     built.set(entryPath, { mode: entry.mode, bytes });
   }
   return createAdapterContentView(built);
@@ -384,9 +424,20 @@ export async function captureBaseAdapterContentView(request) {
  */
 export function projectHeadAdapterContentView(snapshot) {
   if (arguments.length !== 1) throw fail("E_API_ARGUMENTS", "projectHeadAdapterContentView takes exactly one argument");
-  if (snapshot === null || typeof snapshot !== "object"
-    || typeof snapshot.paths !== "function" || typeof snapshot.entry !== "function" || typeof snapshot.read !== "function") {
-    throw fail("E_VIEW_INPUT", "projectHeadAdapterContentView expects a captured head-view snapshot");
+  // IDENTITY, NOT SHAPE. This function turns whatever it is handed into a branded
+  // AdapterContentView, so accepting a look-alike here would be a laundering step: a caller could
+  // write out size, headViewDigest, paths(), has(), entry() and read() by hand and have their own
+  // bytes come back as captured repository content, which an adapter would then analyse as if it
+  // had been read from the repository. The check is delegated to head-view-snapshot's own brand --
+  // membership of a WeakSet this module cannot see, mint or extend -- so passing it requires having
+  // really captured a snapshot.
+  try {
+    requireHeadViewSnapshot(snapshot, "the head-view snapshot");
+  } catch {
+    // The AdapterContentView boundary keeps its own error class and code; only the reason changes.
+    throw fail("E_VIEW_INPUT",
+      "projectHeadAdapterContentView expects the exact object captureHeadViewSnapshot returned; a caller-crafted "
+      + "object with the same members, a spread copy or a clone is not a captured snapshot, however complete it looks");
   }
   const built = new Map();
   for (const entryPath of snapshot.paths()) {

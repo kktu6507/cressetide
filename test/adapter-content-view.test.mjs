@@ -24,6 +24,7 @@ import {
 } from "../cressetide/skills/vigil/scripts/adapter-content-view.mjs";
 import { captureHeadViewSnapshot, withStableHeadView } from "../cressetide/skills/vigil/scripts/head-view-snapshot.mjs";
 import { createContentView, nodeTestV1Component } from "../cressetide/skills/vigil/scripts/node-test-adapter.mjs";
+import { compareCodePoint } from "../cressetide/skills/vigil/scripts/provenance-store.mjs";
 
 const B = (text) => Buffer.from(text, "utf8");
 const NUL = String.fromCharCode(0);
@@ -432,6 +433,140 @@ test("11b.10 head: the projection refuses anything that is not a captured snapsh
   }
   refusedSync(() => projectHeadAdapterContentView({ paths: () => [], entry: () => ({}), read: () => Buffer.alloc(0) }, "second"),
     "a second argument", "E_API_ARGUMENTS");
+});
+
+// --- Git isolation the base projection depends on --------------------------------------------------------
+
+test("11b.10 base: a replacement ref cannot redirect the exact tree the OID names", async () => {
+  await withRepo(async (repo) => {
+    repo.write("a.mjs", "the A side\n");
+    const treeA = repo.commit("A");
+    fs.rmSync(path.join(repo.root, "a.mjs"));
+    repo.write("b.mjs", "the B side\n");
+    const treeB = repo.commit("B");
+    assert.notStrictEqual(treeA, treeB);
+
+    // refs/replace is repository state, not caller input: anyone who can write a ref can install one,
+    // and Git then serves the replacement everywhere without saying so. §11b.10 says baseTreeOid names
+    // an EXACT immutable tree, so the capture has to see through it.
+    repo.git("replace", treeA, treeB);
+    assert.strictEqual(repo.git("replace", "-l"), treeA, "the fixture really installed a replacement ref");
+    // Proof the replacement is live for ordinary Git in this repository.
+    assert.match(repo.git("ls-tree", "-r", "--name-only", treeA), /b\.mjs/);
+
+    const view = await captureBaseAdapterContentView({ repoRoot: repo.root, baseTreeOid: treeA });
+    assert.deepStrictEqual(view.paths(), ["a.mjs"], "the capture read tree A, not its replacement");
+    assert.strictEqual(view.read("a.mjs").toString("utf8"), "the A side\n");
+    assert.strictEqual(view.has("b.mjs"), false);
+    // And the ref is still there: the capture saw through it rather than deleting it.
+    assert.strictEqual(repo.git("replace", "-l"), treeA);
+  });
+});
+
+test("11b.10 base: a partial clone is fail-closed, never completed over the network", async () => {
+  // Entirely local: a source repository, a bare file:// remote, and a blob-filtered clone. Nothing
+  // here reaches the network, and the only URL used is the scratch file:// remote.
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-acv-src-"));
+  const bare = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-acv-bare-"));
+  const partial = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-acv-partial-"));
+  try {
+    const git = (cwd, ...args) => cp.execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    git(source, "init", "-q", "--initial-branch=main");
+    git(source, "config", "user.email", "t@example.com");
+    git(source, "config", "user.name", "t");
+    git(source, "config", "commit.gpgsign", "false");
+    fs.writeFileSync(path.join(source, "a.mjs"), "bytes that were never downloaded\n", "utf8");
+    git(source, "add", "-A");
+    git(source, "commit", "-qm", "seed");
+    const blobOid = git(source, "rev-parse", "HEAD:a.mjs");
+
+    fs.rmSync(bare, { recursive: true, force: true });
+    git(os.tmpdir(), "clone", "-q", "--bare", source, bare);
+    git(bare, "config", "uploadpack.allowFilter", "true");
+    git(bare, "config", "uploadpack.allowAnySHA1InWant", "true");
+
+    fs.rmSync(partial, { recursive: true, force: true });
+    git(os.tmpdir(), "clone", "-q", "--filter=blob:none", "--no-checkout", "file:///" + bare.replace(/\\/g, "/"), partial);
+    const tree = git(partial, "rev-parse", "HEAD^{tree}");
+
+    // The probe disables lazy fetching itself, so it reports what is LOCAL rather than what Git could
+    // obtain -- otherwise the "before" reading would fetch the very object it is asking about.
+    const localHas = () => cp.spawnSync("git", ["cat-file", "-e", blobOid], {
+      cwd: partial, encoding: "utf8", env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+    }).status === 0;
+    const packs = () => {
+      const dir = path.join(partial, ".git", "objects", "pack");
+      return fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith(".pack")).length : 0;
+    };
+    const loose = () => {
+      const dir = path.join(partial, ".git", "objects");
+      let n = 0;
+      for (const d of fs.readdirSync(dir)) if (/^[0-9a-f]{2}$/.test(d)) n += fs.readdirSync(path.join(dir, d)).length;
+      return n;
+    };
+
+    const before = { local: localHas(), packs: packs(), loose: loose() };
+    assert.strictEqual(before.local, false, "the fixture requires the blob to be genuinely absent before the call");
+
+    const error = await refused(captureBaseAdapterContentView({ repoRoot: partial, baseTreeOid: tree }),
+      "a promisor blob that is not local", "E_OBJECT_UNAVAILABLE");
+    assert.strictEqual(error.detail.oid, blobOid);
+    assert.match(error.message, /will not fetch it/);
+
+    // The refusal is not a download that happened to fail: nothing arrived and nothing was written.
+    assert.strictEqual(localHas(), false, "the blob is still not local");
+    assert.strictEqual(packs(), before.packs, "no pack was added");
+    assert.strictEqual(loose(), before.loose, "no loose object was added");
+  } finally {
+    for (const d of [source, bare, partial]) fs.rmSync(d, { recursive: true, force: true });
+  }
+});
+
+// --- the head-view brand bridge ------------------------------------------------------------------------
+
+test("11b.10 head: a COMPLETE caller-crafted snapshot cannot be laundered into a branded view", async () => {
+  await withRepo(async (repo) => {
+    repo.write("package.json", '{"type":"module"}\n');
+    repo.write("real.test.mjs", 'import { test } from "node:test";\ntest("really captured", () => {});\n');
+    repo.commit();
+
+    // Nothing partial about this object: every member a real snapshot exposes is present, with
+    // plausible values and working behaviour. Shape is not evidence of provenance.
+    const forged = new Map([
+      ["package.json", Buffer.from('{"type":"module"}\n', "utf8")],
+      ["forged.test.mjs", Buffer.from('import { test } from "node:test";\ntest("written by the caller", () => {});\n', "utf8")],
+    ]);
+    const duck = {
+      size: forged.size,
+      headViewDigest: "f".repeat(64),
+      paths: () => [...forged.keys()].sort(compareCodePoint),
+      has: (p) => forged.has(p),
+      entry: () => ({ mode: "100644", type: "blob", contentDigest: "0".repeat(64), tracked: true }),
+      read: (p) => Buffer.from(forged.get(p)),
+    };
+    // Every member the real snapshot has, so this is not a partial-duck test.
+    const genuine = await captureHeadViewSnapshot({ repoRoot: repo.root });
+    for (const key of Object.keys(genuine)) {
+      assert.ok(key in duck, `the forgery must carry ${key} for this test to mean anything`);
+    }
+
+    refusedSync(() => projectHeadAdapterContentView(duck), "a complete forgery", "E_VIEW_INPUT");
+    // The laundering path specifically: no branded view may exist for those bytes.
+    let laundered = null;
+    try { laundered = projectHeadAdapterContentView(duck); } catch { /* expected */ }
+    assert.strictEqual(laundered, null);
+    assert.strictEqual(isAdapterContentView(laundered), false);
+
+    // A spread of a REAL snapshot is refused too: the brand is identity, and a copy is a new object.
+    refusedSync(() => projectHeadAdapterContentView({ ...genuine }), "a spread of a real snapshot", "E_VIEW_INPUT");
+    refusedSync(() => projectHeadAdapterContentView(Object.assign(Object.create(null), genuine)), "a clone", "E_VIEW_INPUT");
+
+    // ...while the genuine article still projects, so the guard costs nothing legitimate.
+    const view = projectHeadAdapterContentView(genuine);
+    assert.ok(isAdapterContentView(view));
+    assert.ok(view.has("real.test.mjs"));
+    assert.strictEqual(view.has("forged.test.mjs"), false);
+  });
 });
 
 test("the error class is this module's own, with a code on every refusal", () => {

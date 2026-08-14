@@ -577,6 +577,24 @@ function buildSnapshot(entries) {
 
 const isSnapshot = (value) => value !== null && typeof value === "object" && SNAPSHOTS.has(value);
 
+// The minimum a downstream consumer needs to establish that the object it was handed really came
+// from captureHeadViewSnapshot. Identity is decided by the module-private WeakSet above and by
+// nothing else: shape is not evidence, because every member of the snapshot -- size, headViewDigest,
+// paths(), has(), entry(), read() -- can be written out by hand, and a consumer that accepts a
+// complete look-alike is accepting caller-authored bytes as captured repository content.
+//
+// The set itself, its membership token and the builder stay private. This function hands back only
+// the argument it was given, so it adds no way to mint, forge or extend a snapshot; the only way to
+// obtain one is still to capture it.
+export function requireHeadViewSnapshot(value, what) {
+  if (!isSnapshot(value)) {
+    throw fail("E_SNAPSHOT_BRAND",
+      `${what} must be the exact object captureHeadViewSnapshot returned; a caller-crafted object with the same `
+      + "members, a spread copy or a clone is not a captured snapshot, however complete it looks");
+  }
+  return value;
+}
+
 // --- capture ---------------------------------------------------------------------------------------
 
 export async function captureHeadViewSnapshot(request) {
@@ -748,10 +766,11 @@ export async function withStableHeadView(request) {
   // An error from evaluate propagates unchanged: it is the caller's failure, not a stability one.
   const value = await request.evaluate(first);
   const second = await captureHeadViewSnapshot({ repoRoot: request.repoRoot });
-  // The brand is what says these two digests came from this module's builder. There is no public
-  // API that consumes a snapshot yet, so this is the one place it is load-bearing today: a future
-  // refactor that returned anything else from capture would fail here rather than silently compare
-  // two numbers of unknown provenance.
+  // The brand is what says these two digests came from this module's builder: a refactor that
+  // returned anything else from capture would fail here rather than silently compare two numbers of
+  // unknown provenance. It is no longer the only place the brand is load-bearing -- consumers
+  // outside this module now establish the same identity through requireHeadViewSnapshot, because a
+  // snapshot's shape is trivial to imitate and its provenance is not.
   if (!isSnapshot(first) || !isSnapshot(second)) {
     throw fail("E_SNAPSHOT_BRAND", "a head view snapshot did not come from captureHeadViewSnapshot; its digest cannot be trusted");
   }

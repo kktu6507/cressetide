@@ -17,11 +17,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import cp from "node:child_process";
+import { pathToFileURL } from "node:url";
+
+import { root as repoRoot } from "./helpers.mjs";
 
 import {
   DiscoveryPreimageError, buildDiscoveryAnalysisPreimage,
 } from "../cressetide/skills/vigil/scripts/adapter-discovery-preimage.mjs";
 import { createAdapterContentView } from "../cressetide/skills/vigil/scripts/adapter-content-view.mjs";
+import { nodeTestV1Component } from "../cressetide/skills/vigil/scripts/node-test-adapter.mjs";
 import { captureHeadViewSnapshot } from "../cressetide/skills/vigil/scripts/head-view-snapshot.mjs";
 import { loadTestAdapterRegistryRoot } from "../cressetide/skills/vigil/scripts/adapter-registry.mjs";
 import { canonicalJson, sha256Hex } from "../cressetide/skills/vigil/scripts/provenance-store.mjs";
@@ -29,6 +33,9 @@ import { canonicalJson, sha256Hex } from "../cressetide/skills/vigil/scripts/pro
 const CONFIG_PATH = ".ctide/test-adapters-config.json";
 const ADAPTER_ID = "node-test";
 const NODE_TEST = 'import { test } from "node:test";\n';
+
+let counterState = 0;
+const counter = () => { counterState += 1; return counterState; };
 
 // --- fixtures ---------------------------------------------------------------------------------------
 
@@ -541,4 +548,220 @@ test("11b.10b the cross-view adapter invariant is implemented but is NOT reachab
   const sides = new Set([...preimage.baseModules, ...preimage.headModules].map((m) => m.adapterId));
   assert.deepStrictEqual([...sides], [ADAPTER_ID], "both sides resolve through the one binding");
   // The check has NOT been exercised end to end, and this file does not claim it has.
+});
+
+// ---------------------------------------------------------------------------------------------
+// AC165 mandatory executable evidence, all three through the public preimage operation
+// ---------------------------------------------------------------------------------------------
+
+// A repo-external copy of the shipped layout, so a case can mutate test-adapters.json without
+// touching the shipped one. Every module resolves from its own location, so the copy is a fully
+// independent registry, component table and vendor capability.
+const SCRIPTS_REL = path.join("cressetide", "skills", "vigil", "scripts");
+const VENDOR_REL = path.join("cressetide", "skills", "vigil", "vendor");
+const SCRATCH_GRAPH = [
+  "adapter-discovery-preimage.mjs", "adapter-content-view.mjs", "adapter-registry.mjs", "test-adapters.json",
+  "changed-test-inventory.mjs", "explicit-config.mjs", "head-view-snapshot.mjs", "json-unique-members.mjs",
+  "node-test-adapter.mjs", "parser-ignore-wrapper.mjs", "parser-ignore-worker.mjs",
+  "parser-ignore-worker-runner.mjs", "provenance-store.mjs",
+];
+
+function scratchShippedLayout() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-preimage-shipped-"));
+  const vigil = path.join(dir, "cressetide", "skills", "vigil");
+  fs.mkdirSync(path.join(vigil, "scripts"), { recursive: true });
+  fs.cpSync(path.join(repoRoot, VENDOR_REL), path.join(vigil, "vendor"), { recursive: true });
+  for (const file of SCRATCH_GRAPH) {
+    fs.cpSync(path.join(repoRoot, SCRIPTS_REL, file), path.join(vigil, "scripts", file));
+  }
+  return {
+    dir,
+    registryFile: path.join(vigil, "scripts", "test-adapters.json"),
+    url: pathToFileURL(path.join(vigil, "scripts", "adapter-discovery-preimage.mjs")).href,
+  };
+}
+
+test("AC165 the fresh registry root serves discovery, identity and registryDigest, per invocation", async () => {
+  const scratch = scratchShippedLayout();
+  const repo = makeRepo();
+  try {
+    // No explicit config anywhere: the old adapterId must not survive in a config carrier, or the
+    // second invocation would fail on an unknown adapterId instead of showing the new one.
+    repo.write("a.test.mjs", NODE_TEST + 'test("a", () => {});\n');
+    const baseTreeOid = repo.commit();
+    assert.strictEqual(fs.existsSync(path.join(repo.root, CONFIG_PATH)), false, "this fixture uses no explicit config");
+
+    // ONE module instance, imported once. Everything below calls through this same namespace object:
+    // no re-import, no cache-busting query string, no second process.
+    const preimageModule = await import(scratch.url);
+    const build = preimageModule.buildDiscoveryAnalysisPreimage;
+
+    const first = await build({ repoRoot: repo.root, baseTreeOid });
+    assert.deepStrictEqual(first.baseModules.map((m) => m.adapterId), ["node-test"]);
+    assert.deepStrictEqual(first.headModules.map((m) => m.adapterId), ["node-test"]);
+
+    // A schema-valid, authority-consistent single-variable change: adapterId is bound only by the ID
+    // token grammar and by uniqueness, while the closed component binding is keyed on
+    // implementationId -- which, with framework, the semantic tokens and implementationIdentity, is
+    // left exactly as it was, so the vendor manifest still authorises it unchanged.
+    const before = JSON.parse(fs.readFileSync(scratch.registryFile, "utf8"));
+    const mutated = JSON.parse(JSON.stringify(before));
+    mutated.adapters[0].adapterId = "node-test-alt";
+    fs.writeFileSync(scratch.registryFile, JSON.stringify(mutated, null, 2));
+    assert.strictEqual(mutated.adapters[0].implementationId, before.adapters[0].implementationId);
+    assert.strictEqual(mutated.adapters[0].framework, before.adapters[0].framework);
+    assert.deepStrictEqual(mutated.adapters[0].implementationIdentity, before.adapters[0].implementationIdentity);
+
+    // The SAME module instance, called again.
+    assert.strictEqual(preimageModule.buildDiscoveryAnalysisPreimage, build, "the same function object is reused");
+    const second = await build({ repoRoot: repo.root, baseTreeOid });
+
+    // Discovery output moved: the second invocation really re-read the registry rather than serving
+    // a cached root.
+    assert.deepStrictEqual(second.baseModules.map((m) => m.adapterId), ["node-test-alt"]);
+    assert.deepStrictEqual(second.headModules.map((m) => m.adapterId), ["node-test-alt"]);
+    assert.notStrictEqual(second.registryDigest, first.registryDigest);
+
+    // ...and registryDigest is taken over THAT SAME root, not some other observation of the file:
+    // the digest is reproduced here from the exact bytes that produced the adapterId above.
+    const expected = (body) => sha256Hex(canonicalJson({ registry: body, explicitConfig: null }));
+    assert.strictEqual(first.registryDigest, expected(before), "invocation 1's digest covers the pre-edit root");
+    assert.strictEqual(second.registryDigest, expected(mutated), "invocation 2's digest covers the post-edit root");
+
+    // The closed component mapping and the identity projection are untouched by the rename.
+    for (const preimage of [first, second]) {
+      for (const module of [...preimage.baseModules, ...preimage.headModules]) {
+        assert.deepStrictEqual(module.implementationIdentity, before.adapters[0].implementationIdentity);
+        assert.strictEqual(module.framework, "node:test");
+      }
+    }
+
+    // Nothing shipped was touched: the production registry still says what it always said.
+    assert.strictEqual(loadTestAdapterRegistryRoot().adapters[0].adapterId, "node-test");
+  } finally {
+    fs.rmSync(scratch.dir, { recursive: true, force: true });
+    fs.rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
+test("AC165 a local assertion helper is a body discriminator on its own", async () => {
+  await withRepo(async (repo) => {
+    // The declaration module is written ONCE and never rewritten, so "the declaration source is
+    // identical" is a property of the fixture rather than a claim about it.
+    const declarationModule = NODE_TEST
+      + 'import { expectOk } from "./h.mjs";\n'
+      + "// @src REQ-01ARZ3NDEKTSV4RRFFQ69G5FAV\n"
+      + 'test("n", () => { expectOk(); });\n';
+    repo.write("a.test.mjs", declarationModule);
+    repo.write("h.mjs", 'import assert from "node:assert";\nexport function expectOk() { assert.ok(1); }\n');
+    const baseTreeOid = repo.commit("base");
+    const declarationOidBase = repo.git("rev-parse", baseTreeOid + ":a.test.mjs");
+
+    // ONE variable: the helper's canonical bytes. Nothing else in either view changes.
+    repo.write("h.mjs", 'import assert from "node:assert";\nexport function expectOk() { assert.ok(1, "a different message"); }\n');
+    repo.commit("only the helper moved");
+    const declarationOidHead = repo.git("rev-parse", "HEAD:a.test.mjs");
+    assert.strictEqual(declarationOidHead, declarationOidBase, "the declaration module is byte-identical on both sides");
+    assert.notStrictEqual(repo.git("rev-parse", "HEAD:h.mjs"), repo.git("rev-parse", baseTreeOid + ":h.mjs"));
+
+    // The fixture's premise, checked through the component's own API: the closure is exactly the
+    // helper, as a whole-file dependency. If it were empty, the assertion below would prove nothing.
+    const closure = await nodeTestV1Component.analyzeModule({
+      view: createAdapterContentView({
+        "a.test.mjs": Buffer.from(declarationModule, "utf8"),
+        "h.mjs": Buffer.from(fs.readFileSync(path.join(repo.root, "h.mjs"))),
+      }),
+      path: "a.test.mjs",
+    });
+    assert.deepStrictEqual(closure.declarations[0].effectiveOracleDeps,
+      [{ path: "h.mjs", span: { kind: "whole-file" } }]);
+
+    const preimage = await buildDiscoveryAnalysisPreimage({ repoRoot: repo.root, baseTreeOid });
+    // h.mjs imports node:assert and not node:test, so it is not a candidate of its own -- one module
+    // record per side, and it is the same declaration on both.
+    assert.deepStrictEqual(pathsOf(preimage.baseModules), ["a.test.mjs"]);
+    assert.deepStrictEqual(pathsOf(preimage.headModules), ["a.test.mjs"]);
+    const base = preimage.baseModules[0];
+    const head = preimage.headModules[0];
+    assert.strictEqual(head.path, base.path);
+    assert.strictEqual(head.adapterId, base.adapterId);
+    assert.strictEqual(base.declarations.length, 1);
+    assert.strictEqual(head.declarations.length, 1);
+    assert.strictEqual(head.declarations[0].structuralId, base.declarations[0].structuralId);
+    assert.deepStrictEqual(head.declarations[0].tag, base.declarations[0].tag);
+    assert.deepStrictEqual(base.declarations[0].tag, { clauseRef: "REQ-01ARZ3NDEKTSV4RRFFQ69G5FAV" });
+
+    // The one thing that may differ, and does.
+    assert.notStrictEqual(head.declarations[0].bodyDigest, base.declarations[0].bodyDigest,
+      "a change confined to the assertion helper must still move the body digest");
+  });
+});
+
+test("AC165 a head that moves during the operation is head-view-unstable, with no partial result", async () => {
+  const repo = makeRepo();
+  const actorFile = path.join(os.tmpdir(), "ctide-preimage-actor-" + process.pid + "-" + counter() + ".mjs");
+  let actor = null;
+  try {
+    repo.write("a.test.mjs", NODE_TEST + 'test("a", () => {});\n');
+    const baseTreeOid = repo.commit();
+
+    // A genuinely separate process, so nothing here depends on this test's own event loop yielding.
+    // It adds a NEW uniquely-named path every tick and never removes or reverts one, so the head
+    // view can only move forwards: S1 and S2 could agree only if the whole operation between them
+    // took less than one tick, which cannot happen -- the analysis spawns a parser worker.
+    // ".txt" keeps every churn path out of the discovery probe universe while leaving it inside the
+    // head universe, which is what makes it move headViewDigest.
+    fs.writeFileSync(actorFile, [
+      'import fs from "node:fs";',
+      'import path from "node:path";',
+      "const root = process.argv[2];",
+      "let n = 0;",
+      "const tick = () => {",
+      "  n += 1;",
+      '  fs.writeFileSync(path.join(root, "churn-" + String(n).padStart(6, "0") + ".txt"), "");',
+      "};",
+      "tick();",
+      'process.stdout.write("READY\\n");',
+      "setInterval(tick, 10);",
+    ].join("\n"), "utf8");
+
+    actor = cp.spawn(process.execPath, [actorFile, repo.root], { stdio: ["ignore", "pipe", "pipe"] });
+    // Ready handshake: the actor has really started and has already produced its first path.
+    await new Promise((resolve, reject) => {
+      let seen = "";
+      const failed = setTimeout(() => reject(new Error("the churn actor never signalled READY")), 20000);
+      actor.stdout.on("data", (chunk) => {
+        seen += chunk.toString("utf8");
+        if (seen.includes("READY")) { clearTimeout(failed); resolve(); }
+      });
+      actor.on("error", (e) => { clearTimeout(failed); reject(e); });
+      actor.on("exit", (code) => { clearTimeout(failed); reject(new Error("the churn actor exited early with " + code)); });
+    });
+    const churn = () => fs.readdirSync(repo.root).filter((f) => f.startsWith("churn-")).length;
+    const churnBefore = churn();
+    assert.ok(churnBefore >= 1, "the handshake guarantees at least one churn path already exists");
+
+    let error = null;
+    let value = null;
+    try { value = await buildDiscoveryAnalysisPreimage({ repoRoot: repo.root, baseTreeOid }); } catch (e) { error = e; }
+
+    assert.strictEqual(value, null, "no preimage may be returned at all");
+    assert.ok(error, "the operation must refuse");
+    assert.strictEqual(error.code, "E_HEAD_VIEW_UNSTABLE", error.message);
+    assert.match(error.message, /head-view-unstable/);
+    assert.notStrictEqual(error.detail.s1, error.detail.s2, "S1 and S2 saw different head views");
+    // Not a partial answer wearing an error's clothes.
+    assert.strictEqual(error.baseModules, undefined);
+    assert.strictEqual(error.headModules, undefined);
+    assert.ok(churn() > churnBefore, "the actor really kept adding paths across the call");
+    // Beyond the fixture's own churn, nothing was written: no artifact, no output directory.
+    assert.strictEqual(fs.existsSync(path.join(repo.root, ".ctide")), false);
+  } finally {
+    if (actor !== null) {
+      actor.kill();
+      await new Promise((resolve) => { actor.on("exit", resolve); actor.on("error", resolve); setTimeout(resolve, 5000); });
+    }
+    fs.rmSync(actorFile, { force: true });
+    fs.rmSync(repo.root, { recursive: true, force: true });
+  }
 });

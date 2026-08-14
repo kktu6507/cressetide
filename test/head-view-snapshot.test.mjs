@@ -22,6 +22,7 @@ import test from "node:test";
 import {
   HeadViewSnapshotError,
   captureHeadViewSnapshot,
+  requireHeadViewSnapshot,
   withStableHeadView,
 } from "../cressetide/skills/vigil/scripts/head-view-snapshot.mjs";
 import { canonicalJson, compareCodePoint, sha256Hex } from "../cressetide/skills/vigil/scripts/provenance-store.mjs";
@@ -1508,4 +1509,53 @@ test("AC134: a stable carrier state passes, for each of the three values", async
       assert.strictEqual(state, expected, `${label}: the carrier state is what the fixture set up`);
     });
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// The snapshot brand, as a contract a consumer outside this module can rely on
+// ---------------------------------------------------------------------------------------------
+
+test("requireHeadViewSnapshot decides identity by the capture brand, never by shape", async () => {
+  await inRepo(async (repo) => {
+    seed(repo);
+    const genuine = await repo.capture();
+    // The captured object passes and is handed straight back, so a consumer can use the result.
+    assert.strictEqual(requireHeadViewSnapshot(genuine, "the snapshot"), genuine);
+
+    // A COMPLETE look-alike -- every member of the real object, with working behaviour -- is refused.
+    // A consumer that accepted this would be taking caller-authored bytes as captured repository
+    // content, which is the whole reason the brand exists.
+    const forged = new Map([["lib/helper.mjs", Buffer.from("export const helper = 99;\n", "utf8")]]);
+    const duck = {
+      size: forged.size,
+      headViewDigest: "f".repeat(64),
+      paths: () => [...forged.keys()],
+      has: (p) => forged.has(p),
+      entry: () => ({ mode: "100644", type: "blob", contentDigest: "0".repeat(64), tracked: true }),
+      read: (p) => Buffer.from(forged.get(p)),
+    };
+    for (const key of Object.keys(genuine)) {
+      assert.ok(key in duck, `the forgery must carry ${key} for this case to mean anything`);
+    }
+    for (const [label, value] of [
+      ["a complete forgery", duck],
+      ["a spread of a real snapshot", { ...genuine }],
+      ["a clone of a real snapshot", Object.assign(Object.create(null), genuine)],
+      ["null", null],
+      ["a number", 7],
+      ["an empty object", {}],
+    ]) {
+      let error = null;
+      try { requireHeadViewSnapshot(value, "the snapshot"); } catch (e) { error = e; }
+      assert.ok(error, `${label}: must be refused`);
+      assert.strictEqual(error.name, "HeadViewSnapshotError", label);
+      assert.strictEqual(error.code, "E_SNAPSHOT_BRAND", label);
+    }
+
+    // The guard exposes no brand material: it returns only its own argument, and there is no export
+    // through which a caller could mint, register or extend a snapshot.
+    const exported = await import("../cressetide/skills/vigil/scripts/head-view-snapshot.mjs");
+    assert.deepStrictEqual(Object.keys(exported).sort(),
+      ["HeadViewSnapshotError", "captureHeadViewSnapshot", "requireHeadViewSnapshot", "withStableHeadView"]);
+  });
 });
