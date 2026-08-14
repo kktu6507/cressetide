@@ -522,6 +522,80 @@ test("11b.10 base: a partial clone is fail-closed, never completed over the netw
   }
 });
 
+test("11b.10 base: the isolation closures are passed as command-line options, not only as variables", async () => {
+  // WHY THIS EXISTS. An environment variable a Git build does not recognise is ignored in silence,
+  // so a version that predates GIT_NO_LAZY_FETCH would happily demand-fetch while the variable sat
+  // there doing nothing. The options cannot be ignored, so the capture has to really pass them --
+  // and this asserts on the argv the component itself reports having run, through the public API.
+  const notARepo = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-acv-norepo-"));
+  try {
+    const error = await refused(captureBaseAdapterContentView({ repoRoot: notARepo, baseTreeOid: "a".repeat(40) }),
+      "a directory that is not a repository", "E_GIT_FAILED");
+    assert.deepStrictEqual(error.detail.args.slice(0, 3), ["--no-replace-objects", "--no-lazy-fetch", "rev-parse"],
+      "both closures are global options, and they come BEFORE the subcommand");
+  } finally { fs.rmSync(notARepo, { recursive: true, force: true }); }
+});
+
+test("11b.10 base: a Git that does not know an isolation option fails closed, it does not fetch", async () => {
+  // The cross-version half of the claim, evidenced without pretending to have run an old Git.
+  //
+  // Two facts are measured here on the Git actually in use. First, the options this component passes
+  // ARE understood by it, so they are doing their job rather than being tolerated. Second -- and
+  // this is the part that speaks about older builds -- an unrecognised global option makes Git exit
+  // non-zero with "unknown option" BEFORE the subcommand runs, so a build that does not know
+  // --no-lazy-fetch refuses rather than running with fetching quietly re-enabled. The second case
+  // uses a deliberately unknown option as the stand-in: no Git older than the flag was installed to
+  // produce it, and this file does not claim otherwise.
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-acv-flag-src-"));
+  const bare = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-acv-flag-bare-"));
+  const partial = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-acv-flag-partial-"));
+  try {
+    const git = (cwd, ...args) => cp.execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    git(source, "init", "-q", "--initial-branch=main");
+    git(source, "config", "user.email", "t@example.com");
+    git(source, "config", "user.name", "t");
+    git(source, "config", "commit.gpgsign", "false");
+    fs.writeFileSync(path.join(source, "a.mjs"), "never downloaded\n", "utf8");
+    git(source, "add", "-A");
+    git(source, "commit", "-qm", "seed");
+    const blobOid = git(source, "rev-parse", "HEAD:a.mjs");
+
+    fs.rmSync(bare, { recursive: true, force: true });
+    git(os.tmpdir(), "clone", "-q", "--bare", source, bare);
+    git(bare, "config", "uploadpack.allowFilter", "true");
+    fs.rmSync(partial, { recursive: true, force: true });
+    git(os.tmpdir(), "clone", "-q", "--filter=blob:none", "--no-checkout", "file:///" + bare.replace(/\\/g, "/"), partial);
+
+    const localHas = () => cp.spawnSync("git", ["cat-file", "-e", blobOid], {
+      cwd: partial, encoding: "utf8", env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+    }).status === 0;
+    const packs = () => {
+      const dir = path.join(partial, ".git", "objects", "pack");
+      return fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith(".pack")).length : 0;
+    };
+    assert.strictEqual(localHas(), false, "the fixture needs the blob to start out absent");
+    const packsBefore = packs();
+
+    // 1. Both options are understood by the Git in use: no "unknown option", and the read of a
+    //    missing promisor object is refused rather than completed.
+    const supported = cp.spawnSync("git", ["--no-replace-objects", "--no-lazy-fetch", "cat-file", "blob", blobOid],
+      { cwd: partial, encoding: "utf8" });
+    assert.notStrictEqual(supported.status, 0, "the missing blob must not be produced");
+    assert.doesNotMatch(supported.stderr, /unknown option/, "the options are recognised by this Git");
+
+    // 2. An UNRECOGNISED global option -- what --no-lazy-fetch is on a Git that predates it -- makes
+    //    Git refuse before doing any work, so the fallback is a refusal and never a lazy fetch.
+    const unknown = cp.spawnSync("git", ["--no-such-isolation-option", "cat-file", "blob", blobOid],
+      { cwd: partial, encoding: "utf8" });
+    assert.notStrictEqual(unknown.status, 0);
+    assert.match(unknown.stderr, /unknown option/);
+    assert.strictEqual(localHas(), false, "the unknown-option run fetched nothing");
+    assert.strictEqual(packs(), packsBefore, "the unknown-option run wrote nothing");
+  } finally {
+    for (const d of [source, bare, partial]) fs.rmSync(d, { recursive: true, force: true });
+  }
+});
+
 // --- the head-view brand bridge ------------------------------------------------------------------------
 
 test("11b.10 head: a COMPLETE caller-crafted snapshot cannot be laundered into a branded view", async () => {

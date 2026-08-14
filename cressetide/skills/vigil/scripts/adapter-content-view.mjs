@@ -220,6 +220,9 @@ const HOME_VARIABLES = ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "HOMEDRIVE", "
 //   the object database into a network operation and a mutation of the repository. A base capture
 //   that has to fetch has not observed the repository; it has changed it. Measured: two extra packs
 //   appeared and a blob that was provably absent became present.
+//
+// Neither is trusted ON ITS OWN: both closures are ALSO passed as command-line options, because a
+// Git build that does not recognise a variable ignores it in silence. See GIT_GLOBAL_OPTIONS below.
 const PINNED_VARIABLES = ["GIT_OPTIONAL_LOCKS", "GIT_NO_REPLACE_OBJECTS", "GIT_NO_LAZY_FETCH"];
 const EMPTY_GIT_CONFIG_FILE = "/dev/null";
 
@@ -255,10 +258,33 @@ function gitEnvironment(controlledHome) {
   return env;
 }
 
+// The same two closures as command-line options, in front of every subcommand.
+//
+// WHY THE FLAGS AND NOT JUST THE ENVIRONMENT. An environment variable a Git build does not recognise
+// is silently ignored, so a version that predates GIT_NO_LAZY_FETCH would read GIT_NO_LAZY_FETCH=1,
+// do nothing with it, and go on to demand-fetch a missing promisor object over the network -- the
+// exact failure this component is supposed to make impossible. A command-line option cannot be
+// ignored: measured on git 2.55.0.windows.3, an unrecognised global option exits 129 with
+// "unknown option: …" BEFORE the subcommand runs and before any object is read. So the flag turns a
+// silent capability gap into a refusal, which is the direction this component fails in everywhere
+// else.
+//
+// The environment variables stay as defence in depth, for a Git that honours one spelling and not
+// the other.
+//
+// THE TRADE-OFF, taken deliberately: a Git old enough not to know one of these options now refuses
+// to capture at all rather than capturing under weaker guarantees. That is the correct direction --
+// reading a replaced tree, or silently completing a partial clone over the network, would each be a
+// wrong answer presented as a right one, while a refusal is merely an unavailable one.
+const GIT_GLOBAL_OPTIONS = ["--no-replace-objects", "--no-lazy-fetch"];
+
 async function git(cwd, args, environment) {
+  // Global options go first, because Git parses them before the subcommand; putting them after
+  // would make them the subcommand's arguments instead.
+  const argv = [...GIT_GLOBAL_OPTIONS, ...args];
   let result;
   try {
-    result = await execFile("git", args, {
+    result = await execFile("git", argv, {
       cwd,
       env: environment,
       encoding: "buffer",
@@ -269,8 +295,11 @@ async function git(cwd, args, environment) {
     });
   } catch (error) {
     const stderr = error && error.stderr ? error.stderr.toString("utf8").trim() : "";
+    // The WHOLE argv is reported, not a prefix of it: what this component actually ran is the only
+    // way a caller -- or a regression -- can establish that the isolation options were really passed
+    // rather than merely written down here.
     throw fail("E_GIT_FAILED", `git ${args[0]} failed: ${stderr || (error && error.message) || "unknown error"}`,
-      { args: args.slice(0, 2), stderr });
+      { args: argv, stderr });
   }
   return result.stdout;
 }
