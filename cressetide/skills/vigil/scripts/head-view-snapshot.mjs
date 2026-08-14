@@ -7,14 +7,19 @@
 // gate. A green run of this file does not satisfy AC118, AC136, AC137 or AC138 and does not mean
 // Phase 2 is ready.
 //
-// AUTHORITY: approved test-provenance v1.9 section 11b.10 and AC130-AC135. Gitignore matching is
+// AUTHORITY: approved test-provenance v1.11 -- section 11b.4 (the tracked explicit-config carrier),
+// section 11b.10 (the four-step head universe, the exact config-path observability exception, the
+// tracked metadata and configCarrierState), AC92, AC130-AC135 and AC160. Gitignore matching is
 // delegated whole to matchGitignoreSnapshot() in the vendored-dependency wrapper: no glob, no
 // regex and no `git check-ignore` stands in for it here.
 //
-// WHAT "IMMUTABLE" MEANS HERE: every path is enumerated once, every entry's mode, type and bytes
-// are read once, and after that nothing in this module stats or reads the live filesystem again.
-// A caller that mutates the worktree between S1 and S2 changes the S2 digest, which is the whole
-// point of the protocol -- it never changes what S1 reports.
+// WHAT "IMMUTABLE" MEANS HERE: the candidate universe is enumerated once, and each captured entry's
+// mode, type and bytes are read once. The one further filesystem touch is a bounded lstat-only
+// observability check, made before buildSnapshot returns and only when the exact config path did not
+// reach entries, to tell a genuinely absent path from an unsupported slot. It reads no carrier
+// bytes, runs no Git command, and follows no symlink or junction. Once the snapshot is returned
+// nothing in this module reads the live filesystem again; S2 is a separate, complete capture, and a
+// caller that mutates the worktree between the two changes the S2 digest -- never what S1 reports.
 //
 // WHAT evaluate() IS FOR: in-memory computation over S1 and nothing else. A future producer must
 // NOT write an artifact inside evaluate: the stability verdict is only known after S2, and an
