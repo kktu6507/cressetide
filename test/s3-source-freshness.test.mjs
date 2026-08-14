@@ -134,8 +134,10 @@ function scratchScripts(mutateRegistry) {
   for (const file of ["s3-source-freshness.mjs", "adapter-registry.mjs", "test-adapters.json",
     "head-view-snapshot.mjs", "changed-test-inventory.mjs", "parser-ignore-wrapper.mjs",
     "parser-ignore-worker.mjs", "parser-ignore-worker-runner.mjs", "node-test-adapter.mjs",
-    // the shared raw duplicate-member scanner is part of both the registry loader's and S3's graph
-    "provenance-store.mjs", "json-unique-members.mjs"]) {
+    // the shared raw duplicate-member scanner is part of both the registry loader's and S3's graph;
+    // the shared explicit-config module carries S3's own head carrier rule, and it in turn pulls in
+    // the shared content view through the adapter
+    "provenance-store.mjs", "json-unique-members.mjs", "explicit-config.mjs", "adapter-content-view.mjs"]) {
     fs.cpSync(path.join(root, SCRIPTS_REL, file), path.join(vigil, "scripts", file));
   }
   const registryFile = path.join(vigil, "scripts", "test-adapters.json");

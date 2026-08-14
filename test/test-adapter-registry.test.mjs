@@ -64,8 +64,9 @@ function scratchLayout(mutate, mutateManifest) {
   // a reason that has nothing to do with the registry rule under test.
   for (const file of ["adapter-registry.mjs", "test-adapters.json", "parser-ignore-wrapper.mjs", "parser-ignore-worker.mjs",
     "parser-ignore-worker-runner.mjs", "node-test-adapter.mjs", "provenance-store.mjs",
-    // the shared raw duplicate-member scanner is part of the loader's static import graph
-    "json-unique-members.mjs"]) {
+    // the shared raw duplicate-member scanner is part of the loader's static import graph, and the
+    // shared content view is now part of the node-test component's
+    "json-unique-members.mjs", "adapter-content-view.mjs"]) {
     fs.cpSync(path.join(root, SCRIPTS_REL, file), path.join(vigil, "scripts", file));
   }
   if (mutateManifest) {

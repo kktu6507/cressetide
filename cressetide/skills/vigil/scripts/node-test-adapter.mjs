@@ -23,6 +23,7 @@
 // exists to prevent.
 import crypto from "node:crypto";
 
+import { AdapterContentViewError, createAdapterContentView, isAdapterContentView } from "./adapter-content-view.mjs";
 import { parseModuleSource } from "./parser-ignore-wrapper.mjs";
 import { canonicalJson, compareCodePoint } from "./provenance-store.mjs";
 
@@ -135,53 +136,51 @@ function resolveRelativeLexically(fromDir, specifier, what) {
 
 // --- content view -------------------------------------------------------------------------------
 
-// Module-private identity brand. Membership is the ONLY thing that makes an object a view: it is
-// not a property, so it cannot be copied, spread, cloned or hand-written by a caller, and a
-// look-alike carrying the same four members is not the object this set holds.
-const VIEWS = new WeakSet();
-
-// The immutable view the caller captured. Bytes are copied in once, so a caller that mutates its
-// own buffer afterwards changes nothing here, and nothing below ever touches the live filesystem.
+// ONE brand, shared. The view this component accepts is the SAME branded AdapterContentView the base
+// and head projections build (§11b.10) -- there is no second WeakSet here. A private brand would
+// mean an object accepted by the projections and refused by this adapter, and "the adapter reads the
+// captured view" would stop being a statement about one object.
+//
+// createContentView keeps its name and its place on nodeTestV1Component because that is the accepted
+// public surface; it is now a thin delegate, so a view built through it and a view built by a
+// projection are indistinguishable, including to requireView below.
+// The shared carrier's refusals are re-raised as this component's error type, code, message and
+// detail unchanged: a caller who came in through this door still gets the error this door has always
+// thrown. The brand behind it is the shared one either way -- what is preserved is the error class at
+// the boundary, not a second implementation.
 export function createContentView(entries) {
   if (arguments.length > 1) throw fail("E_API_ARGUMENTS", "createContentView takes exactly one argument");
-  const source = entries instanceof Map ? entries.entries()
-    : Array.isArray(entries) ? entries
-      : entries !== null && typeof entries === "object" ? Object.entries(entries)
-        : null;
-  if (source === null) throw fail("E_VIEW_INPUT", "createContentView expects a Map, an array of [path, bytes] pairs, or a plain object");
-
-  const files = new Map();
-  for (const pair of source) {
-    if (!Array.isArray(pair) || pair.length !== 2) throw fail("E_VIEW_INPUT", "each view entry must be a [path, bytes] pair");
-    const [path, bytes] = pair;
-    requireCanonicalPath(path, "view entry path");
-    if (!(bytes instanceof Uint8Array)) throw fail("E_VIEW_INPUT", `view entry ${path} must carry Buffer or Uint8Array bytes`);
-    if (files.has(path)) throw fail("E_VIEW_INPUT", `duplicate view entry: ${path}`);
-    files.set(path, Buffer.from(bytes));
+  try {
+    return createAdapterContentView(entries);
+  } catch (error) {
+    if (error instanceof AdapterContentViewError) throw fail(error.code, error.message, error.detail);
+    throw error;
   }
-  const view = Object.freeze({
-    size: files.size,
-    has: (path) => files.has(path),
-    // A copy per read: a caller cannot reach into the view and edit what the next read returns.
-    read: (path) => {
-      const found = files.get(path);
-      if (found === undefined) throw fail("E_MODULE_MISSING", `the captured view holds no blob at ${path}`);
-      return Buffer.from(found);
-    },
-    paths: () => Object.freeze([...files.keys()].sort(compareCodePoint)),
-  });
-  // Branded only after it is fully built and frozen, so a half-made object is never a view.
-  VIEWS.add(view);
+}
+
+// Identity, not shape. A duck-typed object with the same members, a spread copy and a clone all fail
+// here, because none of them is an object the shared brand holds.
+function requireView(view, what) {
+  if (!isAdapterContentView(view)) {
+    throw fail("E_VIEW_INPUT", `${what} must be the exact object returned by createContentView or a base/head projection; a copy or a look-alike is not a captured view`);
+  }
   return view;
 }
 
-// Identity, not shape. A duck-typed object with the same four members, a spread copy and a clone
-// all fail here, because none of them is the object createContentView froze and branded.
-function requireView(view, what) {
-  if (view === null || typeof view !== "object" || !VIEWS.has(view)) {
-    throw fail("E_VIEW_INPUT", `${what} must be the exact object returned by createContentView; a copy or a look-alike is not a captured view`);
+// §11b.10 entry-type consumption rule. An executable test module, a helper module and a package
+// manifest must all hit type "blob". A symlink stays IN the view and stays recognisable as a symlink
+// -- omitting it would make "present but not a legal module" and "not there at all" the same
+// observation -- so it is refused here, by name, rather than followed or quietly skipped. Its raw
+// target bytes are never handed to the parser.
+function requireBlob(view, path, what) {
+  if (!view.has(path)) throw fail("E_MODULE_MISSING", `the captured view holds no blob at ${path}`);
+  const type = view.entry(path).type;
+  if (type !== "blob") {
+    throw fail("E_ENTRY_TYPE",
+      `${what} ${path} is a ${type} in the captured view, not a blob; a ${type} is never followed and its raw bytes are never parsed as JavaScript`,
+      { path, type });
   }
-  return view;
+  return path;
 }
 
 // --- module format ------------------------------------------------------------------------------
@@ -198,6 +197,10 @@ function requireEsm(view, path, what) {
   for (;;) {
     const manifestPath = dir === "" ? "package.json" : `${dir}/package.json`;
     if (view.has(manifestPath)) {
+      // §11b.10: a package manifest must be a blob. A symlink named package.json is refused rather
+      // than followed -- and it still ends the walk, because a nearer manifest that is not readable
+      // is not a reason to keep climbing to a further one that is.
+      requireBlob(view, manifestPath, "the package manifest");
       let manifest;
       try { manifest = JSON.parse(view.read(manifestPath).toString("utf8")); } catch (e) {
         throw fail("E_PACKAGE_BOUNDARY", `${manifestPath} is not valid JSON, so ${path} cannot be shown to be ESM: ${e.message}`);
@@ -546,6 +549,10 @@ async function loadModule(session, path, what) {
   if (cached !== undefined) return cached;
   requireCanonicalPath(path, what);
   if (!session.view.has(path)) throw fail("E_MODULE_MISSING", `${what} ${path} is not in the captured view`);
+  // §11b.10: an executable test module and a helper module must both be blobs. A symlink is present
+  // and identifiable in the view, and is refused here instead of having its link-target bytes parsed
+  // as JavaScript.
+  requireBlob(session.view, path, what);
   const manifestPath = requireEsm(session.view, path, what);
 
   const parsed = await parseModuleSource(session.view.read(path));
