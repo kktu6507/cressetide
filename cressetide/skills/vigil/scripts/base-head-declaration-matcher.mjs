@@ -309,26 +309,23 @@ function assertStableIdsUnique(locators, side) {
 // required, and no second adapter, registry override, caller injection or test-only seam was added
 // to reach it -- the unit test drives it with a synthetic preimage, which is this component's real
 // and only input.
-// `phase`, not `relation`: the value names WHICH pairing phase was attempting this pair, and calling
-// it a relation would read as a pairing record leaking out of a refusal. Nothing here returns a
-// pair -- the run is over.
-function assertPairAgrees(base, head, phase) {
+function assertPairAgrees(base, head, relation) {
   for (const field of ["adapterId", "framework"]) {
     if (base[field] !== head[field]) {
       throw fail("E_PAIR_IDENTITY",
-        `a potential ${phase} pair for ${JSON.stringify(base.structuralId)} disagrees on ${field} `
+        `a potential ${relation} pair for ${JSON.stringify(base.structuralId)} disagrees on ${field} `
         + `(base ${JSON.stringify(base[field])}, head ${JSON.stringify(head[field])}); a cross-view framework `
         + "migration is fail-closed and is never read as a move or a retag",
-        { phase, field, structuralId: base.structuralId, baseValue: base[field], headValue: head[field] });
+        { relation, field, structuralId: base.structuralId, base: base[field], head: head[field] });
     }
   }
   for (const field of IDENTITY_KEYS) {
     if (base.implementationIdentity[field] !== head.implementationIdentity[field]) {
       throw fail("E_PAIR_IDENTITY",
-        `a potential ${phase} pair for ${JSON.stringify(base.structuralId)} disagrees on `
+        `a potential ${relation} pair for ${JSON.stringify(base.structuralId)} disagrees on `
         + `implementationIdentity.${field} (base ${JSON.stringify(base.implementationIdentity[field])}, head `
         + `${JSON.stringify(head.implementationIdentity[field])}); identity drift across a pair is fail-closed`,
-        { phase, field: `implementationIdentity.${field}`, structuralId: base.structuralId });
+        { relation, field: `implementationIdentity.${field}`, structuralId: base.structuralId });
     }
   }
 }

@@ -775,11 +775,69 @@ test("AC167 (14) no fail-closed path emits a partial matching result, whatever t
     assert.strictEqual(value, "NOT-ASSIGNED", label + ": no value may be returned");
     assert.ok(error instanceof BaseHeadMatcherError, label);
     assert.ok(!Array.isArray(error), label);
+    // The error itself must carry no partial-result carrier.
     for (const key of ["relation", "base", "head", "pairs", "result", "entries"]) {
       assert.strictEqual(error[key], undefined, label + ": the error must not carry " + key);
     }
+    // What AC167 forbids is a partial MATCHING or inventory result, not the word "relation" in a
+    // diagnostic. E_PAIR_IDENTITY has always named the pairing it was attempting, alongside the two
+    // disagreeing VALUES -- that is context about what failed, not a pair that escaped -- so no
+    // generic ban on the word is asserted here. The detail simply may not be a result list, and the
+    // exact shape of that error's carrier is pinned by its own regression test below.
     if (error.detail !== undefined) {
-      assert.ok(!JSON.stringify(error.detail).includes("relation"), label + ": the detail must not carry a relation");
+      assert.strictEqual(Array.isArray(error.detail), false, label + ": the detail is not a result list");
+    }
+    // The drift refusal keeps the stricter contract: its detail is exactly the residual diagnostics.
+    if (error.code === "E_UNRESOLVED_IDENTITY_DRIFT") {
+      assert.deepStrictEqual(Object.keys(error.detail).sort(),
+        ["baseResidual", "baseResidualCount", "headResidual", "headResidualCount"], label);
+      const asText = JSON.stringify(error.detail);
+      for (const forbidden of ["relation", "same-path", "moved", "added", "deleted", "status", "reason", "alias"]) {
+        assert.ok(!asText.includes(forbidden), label + ": drift detail must not carry " + forbidden);
+      }
     }
   }
+});
+
+test("E_PAIR_IDENTITY keeps the exact carrier it has always had (regression against 5d169b1)", () => {
+  // a3ad6dd renamed this error's detail key from `relation` to `phase` and split base/head into
+  // baseValue/headValue. That was out of scope: the identity-disagreement carrier is not what §6
+  // rule 3 changed, and consumers read these fields. Both spellings are pinned here so the shape
+  // cannot drift again as a side effect of some later change.
+  const same = refused(() => matchBaseHeadDeclarations(preimageOf(
+    [{ path: "a.test.mjs", structuralId: 's:["n"]' }],
+    [{ path: "a.test.mjs", structuralId: 's:["n"]', framework: "some-other-framework" }],
+  )), "same-path adapter/framework disagreement", "E_PAIR_IDENTITY");
+  assert.deepStrictEqual(same.detail, {
+    relation: "same-path",
+    field: "framework",
+    structuralId: 's:["n"]',
+    base: "node:test",
+    head: "some-other-framework",
+  });
+  assert.match(same.message, /^a potential same-path pair for /);
+
+  const moved = refused(() => matchBaseHeadDeclarations(preimageOf(
+    [{ path: "old/a.test.mjs", structuralId: 's:["n"]' }],
+    [{ path: "new/a.test.mjs", structuralId: 's:["n"]', adapterId: "other-adapter" }],
+  )), "moved adapterId disagreement", "E_PAIR_IDENTITY");
+  assert.deepStrictEqual(moved.detail, {
+    relation: "moved",
+    field: "adapterId",
+    structuralId: 's:["n"]',
+    base: "node-test",
+    head: "other-adapter",
+  });
+  assert.match(moved.message, /^a potential moved pair for /);
+
+  // The implementationIdentity branch carries three keys and no values, also unchanged.
+  const identity = refused(() => matchBaseHeadDeclarations(preimageOf(
+    [{ path: "a.test.mjs", structuralId: 's:["n"]' }],
+    [{ path: "a.test.mjs", structuralId: 's:["n"]', implementationIdentity: { ...IDENTITY, parserVersion: "9.0.0" } }],
+  )), "implementationIdentity disagreement", "E_PAIR_IDENTITY");
+  assert.deepStrictEqual(identity.detail, {
+    relation: "same-path",
+    field: "implementationIdentity.parserVersion",
+    structuralId: 's:["n"]',
+  });
 });
