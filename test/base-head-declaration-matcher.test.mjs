@@ -154,17 +154,24 @@ test("§6 rule 2 / AC27 move+retag and move+body-change are each ONE moved pair,
 
 // --- 9-11: added, deleted, and exact-before-moved ------------------------------------------------------
 
-test("§6 rule 3 head-only is added and base-only is deleted", () => {
-  const result = matchBaseHeadDeclarations(preimageOf(
+test("§6 rule 3 head-only is added and base-only is deleted -- in SEPARATE runs", () => {
+  // v1.13: rule 3 fires only when the residual is one-sided. Putting a deleted and an added in one
+  // invocation is no longer a legal success case -- it is exactly the two-sided residual §6 refuses
+  // -- so the two halves are asserted as two runs. AC167 (6) covers the refusal that replaced the
+  // old combined expectation, so nothing is lost by splitting this.
+  const deletedOnly = matchBaseHeadDeclarations(preimageOf(
     [{ path: "gone.test.mjs", structuralId: 's:["g"]' }],
+    [],
+  ));
+  assert.deepStrictEqual(shapeOf(deletedOnly), [["deleted", "gone.test.mjs", null, 's:["g"]']]);
+  assert.strictEqual(deletedOnly[0].head, null);
+
+  const addedOnly = matchBaseHeadDeclarations(preimageOf(
+    [],
     [{ path: "new.test.mjs", structuralId: 's:["n"]' }],
   ));
-  assert.deepStrictEqual(shapeOf(result), [
-    ["deleted", "gone.test.mjs", null, 's:["g"]'],
-    ["added", null, "new.test.mjs", 's:["n"]'],
-  ]);
-  assert.strictEqual(result[0].head, null);
-  assert.strictEqual(result[1].base, null);
+  assert.deepStrictEqual(shapeOf(addedOnly), [["added", null, "new.test.mjs", 's:["n"]']]);
+  assert.strictEqual(addedOnly[0].base, null);
 });
 
 test("§6 the exact phase runs first: an exact pair is consumed before any move is considered", () => {
@@ -310,12 +317,28 @@ test("§2 output order is the code-point testRef tuple, not a locale collation",
 });
 
 test("§2 a deleted record is ordered by its BASE locator, the others by head", () => {
+  // One-sided residual (deleted only) plus a moved pair, so this is a legal success case under
+  // v1.13 -- and it discriminates BOTH halves of the ordering rule rather than fewer than before.
+  //
+  //   moved   : base a/old.test.mjs -> head z/new.test.mjs   (must be keyed on HEAD)
+  //   deleted : base k/gone.test.mjs                          (must be keyed on BASE)
+  //   deleted : base zz/gone2.test.mjs                        (sorts AFTER the moved head path)
+  //
+  // Keyed correctly the order is k/gone, z/new, zz/gone2. Keying the moved record on its base path
+  // instead would put a/old first; keying a deleted record on head would dereference null.
   const result = matchBaseHeadDeclarations(preimageOf(
-    [{ path: "a/gone.test.mjs", structuralId: 's:["g"]' }],
-    [{ path: "z/new.test.mjs", structuralId: 's:["n"]' }],
+    [
+      { path: "a/old.test.mjs", structuralId: 's:["m"]' },
+      { path: "k/gone.test.mjs", structuralId: 's:["g"]' },
+      { path: "zz/gone2.test.mjs", structuralId: 's:["g2"]' },
+    ],
+    [{ path: "z/new.test.mjs", structuralId: 's:["m"]' }],
   ));
-  // "a/gone" sorts before "z/new" only if the deleted record was keyed on its base path.
-  assert.deepStrictEqual(result.map((r) => r.relation), ["deleted", "added"]);
+  assert.deepStrictEqual(shapeOf(result), [
+    ["deleted", "k/gone.test.mjs", null, 's:["g"]'],
+    ["moved", "a/old.test.mjs", "z/new.test.mjs", 's:["m"]'],
+    ["deleted", "zz/gone2.test.mjs", null, 's:["g2"]'],
+  ]);
 });
 
 test("the result and every nested value are deeply frozen", () => {
@@ -473,10 +496,12 @@ test("the matcher consumes a preimage the real producer built, unmodified", asyn
     git("commit", "-qm", "base");
     const baseTreeOid = git("rev-parse", "HEAD^{tree}");
 
+    // The head deletes and moves but adds nothing, so the residual is one-sided (base only) and
+    // this stays a legal success case under v1.13's rule 3. Adding a file here as well would make
+    // it a two-sided residual, which AC167 (8) covers as a refusal instead.
     fs.rmSync(path.join(dir, "old/moved.test.mjs"));
     fs.rmSync(path.join(dir, "gone.test.mjs"));
     write("new/moved.test.mjs", 'import { test } from "node:test";\ntest("travels", () => {});\n');
-    write("fresh.test.mjs", 'import { test } from "node:test";\ntest("brand new", () => {});\n');
     git("add", "-A");
     git("commit", "-qm", "head");
 
@@ -486,7 +511,6 @@ test("the matcher consumes a preimage the real producer built, unmodified", asyn
     assert.strictEqual(JSON.stringify(preimage), before, "the producer's output is not modified");
 
     assert.deepStrictEqual(result.map((r) => [r.relation, r.base && r.base.path, r.head && r.head.path]), [
-      ["added", null, "fresh.test.mjs"],
       ["deleted", "gone.test.mjs", null],
       ["same-path", "kept.test.mjs", "kept.test.mjs"],
       ["moved", "old/moved.test.mjs", "new/moved.test.mjs"],
@@ -523,4 +547,239 @@ test("the product gate is untouched: a v2 envelope is still refused at the produ
   assert.ok(error.message.startsWith(UNSUPPORTED_POPULATED), error.message);
   assert.match(error.message, /the base\/head one-to-one matcher/,
     "the gate still names the matcher among what is missing, because a pairing component is not a producer");
+});
+
+// ---------------------------------------------------------------------------------------------
+// AC167: the residual-side exclusivity matrix, one executable case per numbered row.
+// ---------------------------------------------------------------------------------------------
+//
+// Every row below is its own test so it is identifiable in TAP. Rows 3-8 are the ones the matcher
+// as committed at 898f81c got wrong: it returned added + deleted where §6 rule 3 now refuses.
+
+const T = { clauseRef: "REQ-01ARZ3NDEKTSV4RRFFQ69G5FAV" };
+
+// Shared assertions for every two-sided-residual refusal.
+function refusedAsDrift(baseSpec, headSpec, what, counts) {
+  let error = null;
+  let value = "NOT-ASSIGNED";
+  try { value = matchBaseHeadDeclarations(preimageOf(baseSpec, headSpec)); } catch (e) { error = e; }
+  assert.strictEqual(value, "NOT-ASSIGNED", what + ": nothing may be returned");
+  assert.ok(error instanceof BaseHeadMatcherError, what + ": " + (error && error.name));
+  assert.strictEqual(error.code, "E_UNRESOLVED_IDENTITY_DRIFT", what + ": " + error.code + " -- " + error.message);
+  assert.ok(error.message.includes("unresolved-identity-drift"), what + ": the literal token is in the message");
+  // Not an ordinary ambiguity: that has its own code and its own meaning.
+  assert.notStrictEqual(error.code, "E_AMBIGUOUS_MATCH", what);
+  // The detail is diagnostics only. No pairing, no partial result, no invented alias.
+  assert.deepStrictEqual(Object.keys(error.detail).sort(),
+    ["baseResidual", "baseResidualCount", "headResidual", "headResidualCount"], what + ": detail keys");
+  assert.strictEqual(error.detail.baseResidualCount, counts[0], what);
+  assert.strictEqual(error.detail.headResidualCount, counts[1], what);
+  const asText = JSON.stringify(error.detail);
+  for (const forbidden of ["relation", "same-path", "moved", "added", "deleted", "status", "reason", "alias"]) {
+    assert.ok(!asText.includes(forbidden), what + ": detail must not carry " + forbidden);
+  }
+  for (const side of [...error.detail.baseResidual, ...error.detail.headResidual]) {
+    assert.deepStrictEqual(Object.keys(side).sort(), ["adapterId", "path", "structuralId"], what + ": residual entry shape");
+  }
+  return error;
+}
+
+test("AC167 (1) residual only on the head side -- every one is added", () => {
+  const result = matchBaseHeadDeclarations(preimageOf(
+    [{ path: "kept.test.mjs", structuralId: 's:["k"]' }],
+    [
+      { path: "kept.test.mjs", structuralId: 's:["k"]' },
+      { path: "a/new.test.mjs", structuralId: 's:["n1"]' },
+      { path: "b/new.test.mjs", structuralId: 's:["n2"]' },
+    ],
+  ));
+  assert.deepStrictEqual(shapeOf(result), [
+    ["added", null, "a/new.test.mjs", 's:["n1"]'],
+    ["added", null, "b/new.test.mjs", 's:["n2"]'],
+    ["same-path", "kept.test.mjs", "kept.test.mjs", 's:["k"]'],
+  ]);
+});
+
+test("AC167 (2) residual only on the base side -- every one is deleted", () => {
+  const result = matchBaseHeadDeclarations(preimageOf(
+    [
+      { path: "kept.test.mjs", structuralId: 's:["k"]' },
+      { path: "a/gone.test.mjs", structuralId: 's:["g1"]' },
+      { path: "b/gone.test.mjs", structuralId: 's:["g2"]' },
+    ],
+    [{ path: "kept.test.mjs", structuralId: 's:["k"]' }],
+  ));
+  assert.deepStrictEqual(shapeOf(result), [
+    ["deleted", "a/gone.test.mjs", null, 's:["g1"]'],
+    ["deleted", "b/gone.test.mjs", null, 's:["g2"]'],
+    ["same-path", "kept.test.mjs", "kept.test.mjs", 's:["k"]'],
+  ]);
+});
+
+test("AC167 (3) same path, identical tag and bodyDigest, different s: structuralId -- fail-closed", () => {
+  // The container rename that started all of this: the same test, and the model must not call it a
+  // delete plus an add.
+  refusedAsDrift(
+    [{ path: "a.test.mjs", structuralId: 's:["old-container","same-test"]', bodyDigest: digest("1"), tag: T }],
+    [{ path: "a.test.mjs", structuralId: 's:["new-container","same-test"]', bodyDigest: digest("1"), tag: T }],
+    "AC167 (3)", [1, 1]);
+});
+
+test("AC167 (4) different path, identical tag and bodyDigest, different structuralId -- fail-closed", () => {
+  refusedAsDrift(
+    [{ path: "old/a.test.mjs", structuralId: 's:["old-container","n"]', bodyDigest: digest("1"), tag: T }],
+    [{ path: "new/a.test.mjs", structuralId: 's:["new-container","n"]', bodyDigest: digest("1"), tag: T }],
+    "AC167 (4)", [1, 1]);
+});
+
+test("AC167 (5) same path, tag AND bodyDigest also changed, different structuralId -- still fail-closed", () => {
+  // Single variable against (3): the outcome must not depend on whether tag or body happen to match.
+  refusedAsDrift(
+    [{ path: "a.test.mjs", structuralId: 's:["old-container","n"]', bodyDigest: digest("1"), tag: { clauseRef: "REQ-1" } }],
+    [{ path: "a.test.mjs", structuralId: 's:["new-container","n"]', bodyDigest: digest("2"), tag: { clauseRef: "REQ-2" } }],
+    "AC167 (5)", [1, 1]);
+});
+
+test("AC167 (6) exactly one base residual and one head residual that look like a genuine delete + add -- fail-closed", () => {
+  // Nothing about these two suggests they are related, and that is the point: 1:1 is not evidence.
+  refusedAsDrift(
+    [{ path: "gone.test.mjs", structuralId: 's:["totally-unrelated-old"]', bodyDigest: digest("1") }],
+    [{ path: "fresh.test.mjs", structuralId: 's:["totally-unrelated-new"]', bodyDigest: digest("2") }],
+    "AC167 (6)", [1, 1]);
+});
+
+test("AC167 (7) several residuals on each side -- fail-closed", () => {
+  refusedAsDrift(
+    [
+      { path: "a/gone.test.mjs", structuralId: 's:["g1"]' },
+      { path: "b/gone.test.mjs", structuralId: 's:["g2"]' },
+      { path: "c/gone.test.mjs", structuralId: 's:["g3"]' },
+    ],
+    [
+      { path: "x/new.test.mjs", structuralId: 's:["n1"]' },
+      { path: "y/new.test.mjs", structuralId: 's:["n2"]' },
+    ],
+    "AC167 (7)", [3, 2]);
+});
+
+test("AC167 (8) successful exact and moved pairs alongside two-sided residual -- the WHOLE run fails, no partial result", () => {
+  // This is the case that most tempts a partial answer: two pairs are already established and only
+  // the leftovers are unresolvable. §6 says the whole operation refuses; the pairs must not escape.
+  const error = refusedAsDrift(
+    [
+      { path: "kept.test.mjs", structuralId: 's:["k"]' },
+      { path: "old/m.test.mjs", structuralId: 's:["m"]' },
+      { path: "a.test.mjs", structuralId: 's:["old-container","n"]' },
+    ],
+    [
+      { path: "kept.test.mjs", structuralId: 's:["k"]' },
+      { path: "new/m.test.mjs", structuralId: 's:["m"]' },
+      { path: "a.test.mjs", structuralId: 's:["new-container","n"]' },
+    ],
+    "AC167 (8)", [1, 1]);
+  // The established pairs appear nowhere in what came back.
+  const asText = JSON.stringify(error.detail);
+  assert.ok(!asText.includes("kept.test.mjs"), "the exact pair is not leaked into the detail");
+  assert.ok(!asText.includes("old/m.test.mjs") && !asText.includes("new/m.test.mjs"), "the moved pair is not leaked either");
+  assert.deepStrictEqual(error.detail.baseResidual.map((l) => l.path), ["a.test.mjs"]);
+  assert.deepStrictEqual(error.detail.headResidual.map((l) => l.path), ["a.test.mjs"]);
+});
+
+test("AC167 (9) the same tid: once per side at the same path -- a legal exact pair", () => {
+  const result = matchBaseHeadDeclarations(preimageOf(
+    [{ path: "a.test.mjs", structuralId: "tid:alpha", bodyDigest: digest("1") }],
+    [{ path: "a.test.mjs", structuralId: "tid:alpha", bodyDigest: digest("2") }],
+  ));
+  assert.deepStrictEqual(shapeOf(result), [["same-path", "a.test.mjs", "a.test.mjs", "tid:alpha"]]);
+});
+
+test("AC167 (10) the same tid: once per side at different paths -- a legal moved pair", () => {
+  const result = matchBaseHeadDeclarations(preimageOf(
+    [{ path: "old/a.test.mjs", structuralId: "tid:alpha" }],
+    [{ path: "new/a.test.mjs", structuralId: "tid:alpha" }],
+  ));
+  assert.deepStrictEqual(shapeOf(result), [["moved", "old/a.test.mjs", "new/a.test.mjs", "tid:alpha"]]);
+});
+
+test("AC167 (11) base is s:, head adds tid: for the first time -- fail-closed, never adopted", () => {
+  // Everything a bridge could have been built from is identical here -- path, tag, bodyDigest -- and
+  // none of it may build one. §11b.8b keeps @tid out of bodyDigest and the preimage carries no
+  // alias, so a head-only tid: cannot show which base declaration it is.
+  const error = refusedAsDrift(
+    [{ path: "a.test.mjs", structuralId: 's:["c","n"]', bodyDigest: digest("1"), tag: T }],
+    [{ path: "a.test.mjs", structuralId: "tid:alpha", bodyDigest: digest("1"), tag: T }],
+    "AC167 (11)", [1, 1]);
+  assert.deepStrictEqual(error.detail.baseResidual[0].structuralId, 's:["c","n"]');
+  assert.deepStrictEqual(error.detail.headResidual[0].structuralId, "tid:alpha");
+});
+
+test("AC167 (12) tid: already on BOTH sides survives a container rename underneath it", () => {
+  // The rescue §2 promises, with its exact precondition met: the identity was already established in
+  // base. The container name is not part of a tid: key, so the rename does not move it.
+  const result = matchBaseHeadDeclarations(preimageOf(
+    [{ path: "a.test.mjs", structuralId: "tid:alpha", bodyDigest: digest("1"), tag: T }],
+    [{ path: "a.test.mjs", structuralId: "tid:alpha", bodyDigest: digest("2"), tag: T }],
+  ));
+  assert.deepStrictEqual(shapeOf(result), [["same-path", "a.test.mjs", "a.test.mjs", "tid:alpha"]]);
+  assert.notStrictEqual(result[0].base.bodyDigest, result[0].head.bodyDigest);
+});
+
+test("AC167 (13) a genuine delete + add is reachable by splitting it into two runs", () => {
+  // Illegal in one run...
+  const b0 = [
+    { path: "kept.test.mjs", structuralId: 's:["k"]' },
+    { path: "gone.test.mjs", structuralId: 's:["g"]' },
+  ];
+  const h2 = [
+    { path: "kept.test.mjs", structuralId: 's:["k"]' },
+    { path: "fresh.test.mjs", structuralId: 's:["f"]' },
+  ];
+  refusedAsDrift(b0, h2, "AC167 (13) both at once", [1, 1]);
+
+  // ...and reachable as two runs bounded by different bases. Run 1 removes, run 2 adds, and the
+  // intermediate state is the new base.
+  const intermediate = [{ path: "kept.test.mjs", structuralId: 's:["k"]' }];
+  const run1 = matchBaseHeadDeclarations(preimageOf(b0, intermediate));
+  assert.deepStrictEqual(shapeOf(run1), [
+    ["deleted", "gone.test.mjs", null, 's:["g"]'],
+    ["same-path", "kept.test.mjs", "kept.test.mjs", 's:["k"]'],
+  ]);
+  const run2 = matchBaseHeadDeclarations(preimageOf(intermediate, h2));
+  assert.deepStrictEqual(shapeOf(run2), [
+    ["added", null, "fresh.test.mjs", 's:["f"]'],
+    ["same-path", "kept.test.mjs", "kept.test.mjs", 's:["k"]'],
+  ]);
+});
+
+test("AC167 (14) no fail-closed path emits a partial matching result, whatever the reason", () => {
+  // Every refusal this component can raise, checked for the same property: the call produces no
+  // value, and nothing that came back looks like a pairing record.
+  const cases = [
+    ["two-sided residual", () => matchBaseHeadDeclarations(preimageOf(
+      [{ path: "a.test.mjs", structuralId: 's:["x"]' }, { path: "keep.test.mjs", structuralId: 's:["k"]' }],
+      [{ path: "b.test.mjs", structuralId: 's:["y"]' }, { path: "keep.test.mjs", structuralId: 's:["k"]' }]))],
+    ["ambiguous move", () => matchBaseHeadDeclarations(preimageOf(
+      [{ path: "a/x.test.mjs", structuralId: 's:["n"]' }],
+      [{ path: "b/x.test.mjs", structuralId: 's:["n"]' }, { path: "c/x.test.mjs", structuralId: 's:["n"]' }]))],
+    ["duplicate stable ID", () => matchBaseHeadDeclarations(preimageOf(
+      [{ path: "a.test.mjs", structuralId: "tid:dup" }, { path: "b.test.mjs", structuralId: "tid:dup" }],
+      [{ path: "a.test.mjs", structuralId: "tid:dup" }]))],
+    ["pair identity disagreement", () => matchBaseHeadDeclarations(preimageOf(
+      [{ path: "a.test.mjs", structuralId: 's:["n"]' }],
+      [{ path: "a.test.mjs", structuralId: 's:["n"]', framework: "some-other-framework" }]))],
+  ];
+  for (const [label, run] of cases) {
+    let error = null;
+    let value = "NOT-ASSIGNED";
+    try { value = run(); } catch (e) { error = e; }
+    assert.strictEqual(value, "NOT-ASSIGNED", label + ": no value may be returned");
+    assert.ok(error instanceof BaseHeadMatcherError, label);
+    assert.ok(!Array.isArray(error), label);
+    for (const key of ["relation", "base", "head", "pairs", "result", "entries"]) {
+      assert.strictEqual(error[key], undefined, label + ": the error must not carry " + key);
+    }
+    if (error.detail !== undefined) {
+      assert.ok(!JSON.stringify(error.detail).includes("relation"), label + ": the detail must not carry a relation");
+    }
+  }
 });

@@ -1,6 +1,7 @@
 // The base/head one-to-one declaration matcher: §6's closed matching rules, and nothing past them.
-// Approved test-provenance v1.12 — §6 matching, §11b.7 stable-ID uniqueness scope, §11b.8 one-to-one
-// matching, §11b.9b implementationIdentity, §11b.10b DiscoveryAnalysisPreimage.
+// Approved test-provenance v1.13 — §2 structural-refactor boundary, §6 matching including rule 3's
+// residual-side exclusivity, §11b.7 stable-ID uniqueness scope, §11b.8 one-to-one matching and the
+// `@tid` boundary, §11b.9b implementationIdentity, §11b.10b DiscoveryAnalysisPreimage.
 //
 // WHAT IT PRODUCES: a pairing relation over declarations, and only that. Every pair says which base
 // declaration corresponds to which head declaration; nothing here says what the change MEANS.
@@ -8,16 +9,26 @@
 // WHY IT STOPS AT PAIRING, argued from the approved text rather than chosen for convenience. §6's
 // matching table reads:
 //
+//     0. stable-ID uniqueness, checked per view BEFORE matching
 //     1. (path, structuralId) 相等                    -> modified／retagged
 //     2. structuralId 相等但 path 不同                -> moved
-//     3. 其餘 head-only -> added；base-only -> deleted
+//     3. residual-side exclusivity, see below
 //
 // Rule 1's right-hand side is a DISJUNCTION. For a same-path pair whose bodyDigest and tag have both
 // moved, the approved text does not determine which of `modified` and `retagged` the eventual entry
 // carries, and two conforming writers would disagree. Choosing one here would be inventing authority.
 // So this component emits `same-path` for every rule-1 pair -- unchanged, body-changed, tag-changed
 // or both -- and leaves the classification to whatever gains the authority to make it. Rules 2 and 3
-// ARE uniquely determined, and are emitted as `moved`, `added` and `deleted`.
+// ARE uniquely determined, and are emitted as `moved`, `added`, `deleted` or a refusal.
+//
+// RULE 3 IS NOT UNCONDITIONAL (v1.13). Emitting added and deleted for whatever is left over turns a
+// container rename into a delete plus an add: base `s:["old","n"]` and head `s:["new","n"]` at the
+// same path, with tag and bodyDigest untouched, are the same test, and §2 and §11b.8 both forbid
+// degrading that into added + deleted. But the preimage cannot tell that case from a genuine delete
+// plus add either -- path, bodyDigest, tag, framework, implementationIdentity, declaration order and
+// count are all silent on it. So rule 3 fires only when the residual is ONE-SIDED, and residual on
+// both sides is a named refusal, E_UNRESOLVED_IDENTITY_DRIFT. A change that really does delete and
+// add must be split into two runs bounded by different bases, so each run's residual is one-sided.
 //
 // UNCHANGED PAIRS ARE KEPT ON PURPOSE. A pair whose bodyDigest and tag are identical on both sides
 // still appears in the output. §6's governance-affected status exists precisely for tests that did
@@ -298,23 +309,26 @@ function assertStableIdsUnique(locators, side) {
 // required, and no second adapter, registry override, caller injection or test-only seam was added
 // to reach it -- the unit test drives it with a synthetic preimage, which is this component's real
 // and only input.
-function assertPairAgrees(base, head, relation) {
+// `phase`, not `relation`: the value names WHICH pairing phase was attempting this pair, and calling
+// it a relation would read as a pairing record leaking out of a refusal. Nothing here returns a
+// pair -- the run is over.
+function assertPairAgrees(base, head, phase) {
   for (const field of ["adapterId", "framework"]) {
     if (base[field] !== head[field]) {
       throw fail("E_PAIR_IDENTITY",
-        `a potential ${relation} pair for ${JSON.stringify(base.structuralId)} disagrees on ${field} `
+        `a potential ${phase} pair for ${JSON.stringify(base.structuralId)} disagrees on ${field} `
         + `(base ${JSON.stringify(base[field])}, head ${JSON.stringify(head[field])}); a cross-view framework `
         + "migration is fail-closed and is never read as a move or a retag",
-        { relation, field, structuralId: base.structuralId, base: base[field], head: head[field] });
+        { phase, field, structuralId: base.structuralId, baseValue: base[field], headValue: head[field] });
     }
   }
   for (const field of IDENTITY_KEYS) {
     if (base.implementationIdentity[field] !== head.implementationIdentity[field]) {
       throw fail("E_PAIR_IDENTITY",
-        `a potential ${relation} pair for ${JSON.stringify(base.structuralId)} disagrees on `
+        `a potential ${phase} pair for ${JSON.stringify(base.structuralId)} disagrees on `
         + `implementationIdentity.${field} (base ${JSON.stringify(base.implementationIdentity[field])}, head `
         + `${JSON.stringify(head.implementationIdentity[field])}); identity drift across a pair is fail-closed`,
-        { relation, field: `implementationIdentity.${field}`, structuralId: base.structuralId });
+        { phase, field: `implementationIdentity.${field}`, structuralId: base.structuralId });
     }
   }
 }
@@ -434,9 +448,43 @@ export function matchBaseHeadDeclarations(preimage) {
     matchedHead.add(headLocator);
   }
 
-  // Phase 3 -- §6 rule 3.
-  for (const locator of head) if (!matchedHead.has(locator)) pairs.push({ relation: "added", base: null, head: locator });
-  for (const locator of base) if (!matchedBase.has(locator)) pairs.push({ relation: "deleted", base: locator, head: null });
+  // Phase 3 -- §6 rule 3, residual-side exclusivity (approved v1.13).
+  //
+  // Rule 3 applies ONLY when the leftovers are one-sided. When both sides still hold residual, the
+  // preimage cannot distinguish a structuralId drift -- a container rename or a nesting change -- from
+  // a genuine delete plus add, and §2, §11b.8 and AC36 all forbid guessing. So the whole operation
+  // refuses.
+  const residualBase = base.filter((l) => !matchedBase.has(l));
+  const residualHead = head.filter((l) => !matchedHead.has(l));
+
+  if (residualBase.length > 0 && residualHead.length > 0) {
+    // A NAMED refusal, not an ordinary ambiguity. E_AMBIGUOUS_MATCH means "one structuralId had more
+    // than one candidate"; this means "nothing in the carrier can relate these two sides at all",
+    // which is a different fact and gets a different code. Nothing computed so far is returned:
+    // §6 says the exact and moved pairs that already succeeded must not escape either, because a
+    // partial answer would read as a complete one.
+    throw fail("E_UNRESOLVED_IDENTITY_DRIFT",
+      `unresolved-identity-drift: ${residualBase.length} base and ${residualHead.length} head declaration(s) `
+      + "remain unmatched after the exact and moved phases. The same preimage can mean a container rename or "
+      + "nesting change that moved structuralId, or a genuine delete plus add, and path, bodyDigest, tag, "
+      + "framework, implementationIdentity, declaration order and count can none of them tell those apart. "
+      + "The whole operation is refused rather than guessed, and no partial pairing is returned. A change that "
+      + "genuinely deletes and adds must be split into two runs bounded by different bases, so each run has "
+      + "residual on one side only",
+      Object.freeze({
+        // Diagnostics only: which declarations were left over on each side. There is deliberately no
+        // pairing, no partial result and no invented alias between them -- naming a correspondence
+        // here would be the very guess this refusal exists to prevent.
+        baseResidualCount: residualBase.length,
+        headResidualCount: residualHead.length,
+        baseResidual: Object.freeze(residualBase.map((l) => Object.freeze({ path: l.path, adapterId: l.adapterId, structuralId: l.structuralId }))),
+        headResidual: Object.freeze(residualHead.map((l) => Object.freeze({ path: l.path, adapterId: l.adapterId, structuralId: l.structuralId }))),
+      }));
+  }
+
+  // One-sided residual is not ambiguous: there is nothing on the other side to have drifted from.
+  for (const locator of residualHead) pairs.push({ relation: "added", base: null, head: locator });
+  for (const locator of residualBase) pairs.push({ relation: "deleted", base: locator, head: null });
 
   // Ordering is the canonical testRef order the eventual entries[] will use (§2): the (path,
   // adapterId, structuralId) code-point tuple, strictly ascending, taken from the base side for a
