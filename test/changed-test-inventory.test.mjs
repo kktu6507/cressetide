@@ -6,9 +6,10 @@
 //   SM = docs/superpowers/specs/2026-07-25-shared-decision-provenance-model.md (approved v1.14)
 //        -- the seven-field root, the single inventoryDigest formula, the OID and digest carrier
 //           grammars, the repository-semantic boundary, the raw JSON duplicate-member contract
-//   TP = docs/superpowers/specs/2026-07-25-test-provenance-spec.md (approved v1.10)
+//   TP = docs/superpowers/specs/2026-07-25-test-provenance-spec.md (approved v1.14)
 //        -- section 2 entry source-key ordering and the canonical tag grammar, section 6 entry exact
-//           schema and invariants, 11b identity/path/structuralId authority, AC116, AC126, AC155-158
+//           schema and invariants including the two v1.14 reader-observable ones, 11b
+//           identity/path/structuralId authority, AC116, AC126, AC155-158, AC169 (16)-(20)
 //   IS = docs/superpowers/specs/2026-07-25-intent-scan-spec.md (approved v1.10) section 8 -- ULID
 import { test } from "node:test";
 import assert from "node:assert";
@@ -98,19 +99,27 @@ function docText(env, { entryTexts = null, rootOrder = null, gap = "", extraRoot
 
 // A syntactically complete section 6 entry for the given status, so every negative below fails for
 // the ONE variable it changes rather than for a shape fault it dragged along.
+//
+// TP approved v1.14 adds two reader invariants, and `retagged` is the one status whose old default
+// would now be doubly illegal: it had a changed body AND an unchanged tag. Its default is therefore
+// the legal shape -- body digests EQUAL and the tag genuinely changed -- while every other status
+// keeps exactly the defaults it had. `modified` still carries two different body digests, `moved` is
+// still free to differ in both, and `governance-affected` still holds both equal.
 function entry(over = {}) {
   const status = over.status ?? "modified";
+  const bodyEqual = status === "governance-affected" || status === "retagged";
   const built = {
     testRef: { path: "test/a.test.mjs", adapterId: "node-test", structuralId: "s:[\"a\"]" },
     status,
     reason: status === "governance-affected" ? "governance-affected" : "content-change",
     tagBefore: status === "added" ? null : { clauseRef: REQ },
-    tagAfter: status === "deleted" ? null : { clauseRef: REQ },
+    // retagged must actually retag; every other status keeps the tag it always had.
+    tagAfter: status === "deleted" ? null : { clauseRef: status === "retagged" ? DEC : REQ },
     framework: "node:test",
     implementationIdentity: { ...IDENTITY },
   };
-  if (status !== "added") built.baseBodyDigest = status === "governance-affected" ? BODY_BASE : BODY_BASE;
-  if (status !== "deleted") built.headBodyDigest = status === "governance-affected" ? BODY_BASE : BODY_HEAD;
+  if (status !== "added") built.baseBodyDigest = BODY_BASE;
+  if (status !== "deleted") built.headBodyDigest = bodyEqual ? BODY_BASE : BODY_HEAD;
   return { ...built, ...over };
 }
 
@@ -172,10 +181,16 @@ test("TP AC155 positives: every status carries exactly the body digests its stat
   const d = accepted(withEntries([deleted]), "status=deleted");
   assert.strictEqual(d.entries[0].tagAfter, null, "deleted has tagAfter == null");
 
-  for (const status of ["modified", "retagged", "moved"]) {
+  // All three carry BOTH body-digest keys and both values survive -- that is the exact-shape claim,
+  // and it is unchanged. Only the expected HEAD value is split, because v1.14 requires a retagged
+  // entry's two digests to be equal while modified requires them to differ.
+  for (const [status, expectedHead] of [["modified", BODY_HEAD], ["retagged", BODY_BASE], ["moved", BODY_HEAD]]) {
     const value = accepted(withEntries([entry({ status })]), `status=${status}`);
-    assert.strictEqual(value.entries[0].baseBodyDigest, BODY_BASE, `${status} keeps baseBodyDigest`);
-    assert.strictEqual(value.entries[0].headBodyDigest, BODY_HEAD, `${status} keeps headBodyDigest`);
+    const e = value.entries[0];
+    assert.ok(Object.prototype.hasOwnProperty.call(e, "baseBodyDigest"), `${status} carries a baseBodyDigest KEY`);
+    assert.ok(Object.prototype.hasOwnProperty.call(e, "headBodyDigest"), `${status} carries a headBodyDigest KEY`);
+    assert.strictEqual(e.baseBodyDigest, BODY_BASE, `${status} keeps baseBodyDigest`);
+    assert.strictEqual(e.headBodyDigest, expectedHead, `${status} keeps headBodyDigest`);
   }
 
   const governed = accepted(withEntries([entry({ status: "governance-affected" })]), "status=governance-affected");
@@ -683,4 +698,86 @@ test("parseInventory dispatches on the envelope version and fails closed in betw
     assert.strictEqual(err.name, "InventoryError", `${label}: as an InventoryError`);
     assert.ok(!new RegExp(UNSUPPORTED_POPULATED).test(err.message), `${label}: refused for its shape, not as unsupported`);
   }
+});
+
+test("TP AC169 (16)-(20): the two v1.14 reader invariants a single entry can carry", () => {
+  // Approved v1.14 section 6 gives the reader exactly two things it may decide from ONE persisted
+  // entry. Everything else about the classification -- the matcher relation, the governance closure,
+  // whether an unchanged pair was correctly omitted -- needs the preimage and stays with the producer.
+  //
+  //   status == modified  =>  baseBodyDigest != headBodyDigest
+  //   status == retagged  =>  baseBodyDigest == headBodyDigest
+  //                           and canonicalJson(tagBefore) != canonicalJson(tagAfter)
+
+  // (16) modified whose body did not move. A same-path pair with an unchanged body is a retag or is
+  // omitted; calling it modified contradicts the document itself.
+  const e16 = refused(
+    withEntries([entry({ status: "modified", baseBodyDigest: BODY_BASE, headBodyDigest: BODY_BASE })]),
+    "AC169 (16) modified with equal body digests", "E_ENTRY_INVARIANT");
+  assert.match(e16.message, /status == modified requires baseBodyDigest != headBodyDigest/);
+
+  // (17) retagged whose body DID move -- that is a modification, not a retag.
+  const e17 = refused(
+    withEntries([entry({ status: "retagged", tagBefore: { clauseRef: REQ }, tagAfter: { clauseRef: DEC },
+      baseBodyDigest: BODY_BASE, headBodyDigest: BODY_HEAD })]),
+    "AC169 (17) retagged with unequal body digests", "E_ENTRY_INVARIANT");
+  assert.match(e17.message, /status == retagged requires baseBodyDigest == headBodyDigest/);
+
+  // (18) retagged with no tag change at all. The comparison goes through canonicalJson, so a
+  // two-member tag counts as unchanged on its VALUE rather than on object identity -- these are two
+  // distinct objects carrying the same typed logical tag, and that is still not a retag.
+  const e18 = refused(
+    withEntries([entry({ status: "retagged", tagBefore: { clauseRef: REQ, dpRef: DP },
+      tagAfter: { clauseRef: REQ, dpRef: DP }, baseBodyDigest: BODY_BASE, headBodyDigest: BODY_BASE })]),
+    "AC169 (18) retagged whose tags are canonically equal", "E_ENTRY_INVARIANT");
+  assert.match(e18.message, /canonicalJson\(tagBefore\) != canonicalJson\(tagAfter\)/);
+
+  for (const [label, error] of [["(16)", e16], ["(17)", e17], ["(18)", e18]]) {
+    // Checked by name rather than by class, exactly as `refused` does: the test never imports the
+    // constructor, so nothing here depends on a second copy of the error type.
+    assert.strictEqual(error.name, "InventoryError", label + ": an InventoryError");
+    assert.strictEqual(error.code, "E_ENTRY_INVARIANT", label);
+    // Never reported as the product rollout gate: these are canonical-document faults, and the
+    // isolated reader is not where the gate lives.
+    assert.ok(!error.message.startsWith(UNSUPPORTED_POPULATED), label + ": not the populated gate");
+  }
+
+  // (19) modified with a moved body AND a changed tag -- accepted, and the tag change is kept. §6's
+  // precedence puts a body change ahead of a tag change, so the accompanying retag is preserved
+  // rather than erased.
+  const v19 = accepted(
+    withEntries([entry({ status: "modified", tagBefore: { clauseRef: REQ }, tagAfter: { clauseRef: DEC },
+      baseBodyDigest: BODY_BASE, headBodyDigest: BODY_HEAD })]),
+    "AC169 (19) modified with unequal body digests and a changed tag");
+  assert.deepStrictEqual(v19.entries[0].tagBefore, { clauseRef: REQ });
+  assert.deepStrictEqual(v19.entries[0].tagAfter, { clauseRef: DEC });
+  assert.strictEqual(v19.entries[0].baseBodyDigest, BODY_BASE);
+  assert.strictEqual(v19.entries[0].headBodyDigest, BODY_HEAD);
+
+  // (20) retagged with an unchanged body and a changed tag -- accepted, values preserved.
+  const v20 = accepted(
+    withEntries([entry({ status: "retagged", tagBefore: { clauseRef: REQ }, tagAfter: { clauseRef: DEC },
+      baseBodyDigest: BODY_BASE, headBodyDigest: BODY_BASE })]),
+    "AC169 (20) retagged with equal body digests and a changed tag");
+  assert.deepStrictEqual(v20.entries[0].tagBefore, { clauseRef: REQ });
+  assert.deepStrictEqual(v20.entries[0].tagAfter, { clauseRef: DEC });
+  assert.strictEqual(v20.entries[0].baseBodyDigest, v20.entries[0].headBodyDigest);
+
+  // The two invariants belong to modified and retagged ALONE. moved may differ or agree on either
+  // column, and governance-affected keeps the equality it always had -- neither gains a new rule.
+  accepted(withEntries([entry({ status: "moved", tagBefore: { clauseRef: REQ }, tagAfter: { clauseRef: REQ },
+    baseBodyDigest: BODY_BASE, headBodyDigest: BODY_BASE })]), "moved with equal body and equal tag");
+  accepted(withEntries([entry({ status: "moved", tagBefore: { clauseRef: REQ }, tagAfter: { clauseRef: DEC },
+    baseBodyDigest: BODY_BASE, headBodyDigest: BODY_HEAD })]), "moved with a moved body and a changed tag");
+  accepted(withEntries([entry({ status: "governance-affected" })]), "governance-affected keeps its own equality");
+
+  // And a document that satisfies v1.14 completely is STILL refused at the product entry point: the
+  // reader deciding a document is well formed is not the product being allowed to act on it.
+  const legal = withEntries([entry({ status: "retagged", tagBefore: { clauseRef: REQ }, tagAfter: { clauseRef: DEC },
+    baseBodyDigest: BODY_BASE, headBodyDigest: BODY_BASE })]);
+  accepted(legal, "the isolated reader accepts it");
+  let gate = null;
+  try { parseInventory(legal); } catch (e) { gate = e; }
+  assert.ok(gate, "the product entry point must still refuse it");
+  assert.ok(gate.message.startsWith(UNSUPPORTED_POPULATED), gate.message);
 });

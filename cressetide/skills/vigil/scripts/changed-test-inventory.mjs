@@ -1,7 +1,7 @@
 // ctide changed-test-inventory: TWO layers, deliberately not one.
 //
 //   parseCanonicalInventoryV2(text)  -- the ISOLATED canonical reader for ChangedTestInventoryV2,
-//                                       shared approved v1.14 + test-provenance approved v1.10.
+//                                       shared approved v1.14 + test-provenance approved v1.14.
 //                                       It validates a POPULATED entries[] completely and hands the
 //                                       validated value back.
 //   parseInventory(text)             -- the PRODUCT entry point. It dispatches on the envelope
@@ -11,12 +11,18 @@
 //                                       act on one.
 //
 // The second layer is the point. A canonical reader proves a document says what it says; it proves
-// nothing about the producer that wrote it, the matcher that would pair base against head, the
-// governance reverse closure, or the S3 recomputation a consumer owes. None of those exist, so the
-// product path refuses v2 under the same stable marker it always used. An empty v2 envelope gets no
-// exemption: it still asserts a registryDigest, a headViewDigest and an inputProvenanceStoreDigest
-// that only an S3 consumer could check, so letting one through would let "the universe was empty"
-// pass unproven -- which is exactly the bypass TP AC117 names.
+// nothing about the producer that wrote it, the matcher that paired base against head, the
+// governance reverse closure, or the S3 recomputation a consumer owes.
+//
+// Two of those now exist as accepted components and still change nothing here: the base/head
+// one-to-one matcher and the S3 source-freshness recomputation are implemented and accepted, but
+// NEITHER is product-wired, and neither is a producer. The populated inventory producer and the
+// governance reverse closure remain unimplemented, so no v2 document on this path has an author whose
+// work can be checked -- and the product path goes on refusing v2 under the same stable marker it
+// always used. An empty v2 envelope gets no exemption: it still asserts a registryDigest, a
+// headViewDigest and an inputProvenanceStoreDigest that only a wired S3 consumer could check, so
+// letting one through would let "the universe was empty" pass unproven -- which is exactly the bypass
+// TP AC117 names.
 //
 // WHAT THE ISOLATED READER DELIBERATELY DOES NOT DO (SM v1.14 "isolated canonical reader", TP AC156):
 //   - it does not look up a Git object, so passing the baseTreeOid grammar proves neither that the
@@ -498,6 +504,39 @@ function checkEntry(entry, shape, index) {
     }
     if (entry.baseBodyDigest !== entry.headBodyDigest) {
       reject("E_ENTRY_INVARIANT", `${where}: a governance-affected entry must have baseBodyDigest == headBodyDigest`);
+    }
+  }
+
+  // TP approved v1.14 section 6: the two invariants a reader can check from ONE entry. They run last,
+  // after the exact key set, the tag shape and the body digests' lexical form, so a document that
+  // fails an earlier rule still reports that rule rather than this one.
+  //
+  // These do NOT let the reader re-derive the producer's classification. §6's ordered table needs the
+  // matcher relation, the governance closure and the whole preimage, none of which survive into a
+  // persisted entry -- a reader cannot tell from one entry whether a moved pair's paths really differ,
+  // whether an unchanged pair was correctly omitted, or which precedence row fired. What it CAN do is
+  // refuse a document that contradicts itself, and that is all these two do.
+  if (status === "modified" && entry.baseBodyDigest === entry.headBodyDigest) {
+    reject("E_ENTRY_INVARIANT",
+      `${where}: status == modified requires baseBodyDigest != headBodyDigest; both are `
+      + `${JSON.stringify(entry.baseBodyDigest)}. A same-path pair whose body did not move is a retag or is `
+      + "omitted, never a modification");
+  }
+  if (status === "retagged") {
+    // Body equality first, then the tag inequality -- a retagged entry has to be BOTH, and reporting
+    // the body first keeps the two failures distinguishable.
+    if (entry.baseBodyDigest !== entry.headBodyDigest) {
+      reject("E_ENTRY_INVARIANT",
+        `${where}: status == retagged requires baseBodyDigest == headBodyDigest; got `
+        + `${JSON.stringify(entry.baseBodyDigest)} and ${JSON.stringify(entry.headBodyDigest)}. A body that moved `
+        + "makes the entry modified, not retagged");
+    }
+    // canonicalJson, not reference equality and not JSON.stringify: two tags that differ only in
+    // source key order are the same typed logical value, and must not read as a retag.
+    if (canonicalJson(entry.tagBefore) === canonicalJson(entry.tagAfter)) {
+      reject("E_ENTRY_INVARIANT",
+        `${where}: status == retagged requires canonicalJson(tagBefore) != canonicalJson(tagAfter); both are `
+        + `${canonicalJson(entry.tagAfter)}. A retag with no tag change is not a change at all`);
     }
   }
   return [testRef.path, testRef.adapterId, testRef.structuralId];
