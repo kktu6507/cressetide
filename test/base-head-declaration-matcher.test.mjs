@@ -633,7 +633,8 @@ test("AC167 (4) different path, identical tag and bodyDigest, different structur
 });
 
 test("AC167 (5) same path, tag AND bodyDigest also changed, different structuralId -- still fail-closed", () => {
-  // Single variable against (3): the outcome must not depend on whether tag or body happen to match.
+  // Compound payload-irrelevance stress against (3): both tag and bodyDigest change.
+  // Neither payload signal may be used to guess identity.
   refusedAsDrift(
     [{ path: "a.test.mjs", structuralId: 's:["old-container","n"]', bodyDigest: digest("1"), tag: { clauseRef: "REQ-1" } }],
     [{ path: "a.test.mjs", structuralId: 's:["new-container","n"]', bodyDigest: digest("2"), tag: { clauseRef: "REQ-2" } }],
