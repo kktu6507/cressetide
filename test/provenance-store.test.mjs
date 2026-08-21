@@ -22,6 +22,7 @@ import {
   storePath, CANONICAL_STORE_PATH, indexStore, statusOf, compareCodePoint, canonicalizeBatchSnapshot,
   validateAll, applyTransaction, runTransaction, clauseKindOf, ulid, encodeUlidTime,
   validateLegacyV1, PROVENANCE_VERSION,
+  parseCanonicalExpiry, isGregorianLeapYear, NON_CANONICAL_EXPIRY, mechanicallyApplicable, MIGRATION_COMMAND,
 } from "../cressetide/skills/vigil/scripts/provenance-store.mjs";
 
 const NOW = Date.UTC(2026, 6, 26);
@@ -1607,7 +1608,7 @@ test("panel 3 / SM §2: a malformed exception expiry is refused at Source level,
       grantAuthorityRef: { kind: "source-authority", ref: "R-owner" }, scope: "eu", expiry: "not-a-date",
     },
   }), "E_SHAPE", "unreferenced grant with a garbage expiry");
-  assert.match(e.message, /unparseable expiry/);
+  assert.match(e.message, new RegExp(NON_CANONICAL_EXPIRY));
 });
 
 test("SM §2 DEC row: arbiter may retire a DEC, and DEC has no revise action", () => {
@@ -3941,4 +3942,155 @@ test("clauseKindOf routes ids by prefix and rejects anything else", () => {
   assert.strictEqual(clauseKindOf("DEC-01J"), "DEC");
   assert.strictEqual(clauseKindOf("ASSUM-01J"), "ASSUM");
   assert.strictEqual(clauseKindOf("DP-01J"), null);
+});
+
+// --- shared approved v1.15 §2: Source.expiry exact grammar + direct-cutover boundary ---------------
+
+function grantWithExpiry(expiry, sourceId = "S-exc") {
+  return {
+    source: {
+      sourceId, contentKind: "exception-grant", driftMode: "snapshot-only", locator: "g#1",
+      excerpt: "grant", targetConstraintRef: "REQ-hc",
+      grantAuthorityRef: { kind: "source-authority", ref: "R-owner" }, scope: "eu", expiry,
+    },
+  };
+}
+
+test("SM v1.15 §2: expiry accepts exactly ASCII YYYY-MM-DD, through the real Source entry point", () => {
+  // Driven through append-source, not through the helper alone: the grammar has to hold at the
+  // product boundary, on a grant nothing cites.
+  const accepted = [
+    ["2026-01-01", "ordinary date"],
+    ["2000-02-29", "leap: divisible by 400"],
+    ["2024-02-29", "leap: divisible by 4, not by 100"],
+    ["0001-01-01", "the first legal year"],
+    ["9999-12-31", "the last legal year"],
+  ];
+  const rejected = [
+    ["1900-02-29", "divisible by 100 but not 400 -- not a leap year"],
+    ["2100-02-29", "same rule, next century"],
+    ["2023-02-29", "not a leap year at all"],
+    ["0000-01-01", "year 0000 is illegal"],
+    ["2026-13-01", "month 13"],
+    ["2026-00-10", "month 00"],
+    ["2026-02-30", "February never has 30 days"],
+    ["2026-04-31", "April has 30"],
+    ["2026-01-00", "day 00"],
+    ["2026-2-01", "not zero-padded -- and Date.parse read this as LOCAL time"],
+    ["2026-01-1", "day not zero-padded"],
+    ["226-01-01", "three-digit year"],
+    ["02026-01-01", "five-digit year"],
+    [" 2026-01-01", "leading space -- no trimming; Date.parse shifted it a day in UTC"],
+    ["2026-01-01 ", "trailing space"],
+    ["2026-01-01\n", "trailing newline"],
+    ["\t2026-01-01", "leading tab"],
+    ["2026-01-01T12:00:00Z", "time component"],
+    ["2026-01-01T00:00:00.000Z", "midnight is still a time component"],
+    ["2026-01-01+08:00", "timezone offset"],
+    ["2026-01-01Z", "zone designator"],
+    ["2026-01", "year-month only"],
+    ["January 1, 2099", "prose date"],
+    ["2026/01/01", "slashes"],
+    ["", "empty string"],
+    ["\uFF12\uFF10\uFF12\uFF16-01-01", "full-width digits are not ASCII"],
+    ["\u0662\u0660\u0662\u0666-01-01", "Arabic-Indic digits are not ASCII"],
+    ["\u0968\u0966\u0968\u096C-01-01", "Devanagari digits are not ASCII"],
+  ];
+
+  for (const [value, why] of accepted) {
+    const st = apply(withHardConstraint(), "append-source", grantWithExpiry(value));
+    assert.ok(st.sources.some((x) => x.sourceId === "S-exc" && x.expiry === value),
+      `${value} (${why}) must be stored verbatim`);
+    assert.notStrictEqual(parseCanonicalExpiry(value), null, `${value} parses`);
+  }
+  for (const [value, why] of rejected) {
+    const e = assertRejects(() => apply(withHardConstraint(), "append-source", grantWithExpiry(value)),
+      "E_SHAPE", `${JSON.stringify(value)} (${why})`);
+    assert.match(e.message, new RegExp(NON_CANONICAL_EXPIRY), `${JSON.stringify(value)}: stable marker`);
+    assert.match(e.message, /S-exc/, `${JSON.stringify(value)}: names the sourceId`);
+    assert.strictEqual(parseCanonicalExpiry(value), null, `${JSON.stringify(value)}: helper agrees`);
+  }
+  for (const v of [20260101, null, undefined, ["2026-01-01"], { y: 2026 }]) {
+    assert.strictEqual(parseCanonicalExpiry(v), null, "a non-string is not a date");
+  }
+  assert.deepStrictEqual([1900, 2000, 2024, 2100, 2023].map(isGregorianLeapYear), [false, true, true, false, false]);
+});
+
+test("SM v1.15 §2: the expiry instant is that day at 00:00:00.000Z, never a host-timezone reading", () => {
+  // The point of the exact grammar: the instant is a pure function of the string, so two machines
+  // in different timezones cannot disagree about whether a grant is live. Date.parse() could not
+  // promise that -- it read " 2026-01-01" and "2026-2-01" as local time.
+  for (const [value, y, mo, d] of [["2026-01-01", 2026, 0, 1], ["2024-02-29", 2024, 1, 29], ["9999-12-31", 9999, 11, 31]]) {
+    assert.strictEqual(parseCanonicalExpiry(value), Date.UTC(y, mo, d), value + " is exactly midnight UTC");
+    assert.strictEqual(new Date(parseCanonicalExpiry(value)).toISOString(), value + "T00:00:00.000Z");
+  }
+  // Date.UTC() folds years 0-99 into 1900-1999; the legal range starts at 0001, so the
+  // implementation must not use it. 0001-01-01 has to stay in year 1.
+  assert.strictEqual(new Date(parseCanonicalExpiry("0001-01-01")).getUTCFullYear(), 1);
+  assert.notStrictEqual(parseCanonicalExpiry("0001-01-01"), Date.UTC(1, 0, 1));
+});
+
+test("SM v1.15 §2: expiryInstant <= T0 is expired, and exact equality counts as expired", () => {
+  const at = parseCanonicalExpiry("2030-06-15");
+  // Mint the grant and the REQ while the grant is still live, then re-read the SAME store at three
+  // instants, so the only variable is T0.
+  let st = apply(withHardConstraint(), "append-source", grantWithExpiry("2030-06-15"));
+  st = apply(st, "append-record", { record: scopeRuling("R-scope", DP3) });
+  st = applyTransaction(st, "create-initial-outcome", {
+    dpId: "DP-3", scopeRulingRef: { kind: "review-ruling", ref: "R-scope" },
+    clause: { id: "REQ-exc", authority: "approved-requirement", kind: "specification", text: "t", sourceRef: "S-exc", taskRef: "TASK-1" },
+  }, { now: at - 1 });
+
+  const index = indexStore(st);
+  assert.strictEqual(mechanicallyApplicable(index, "REQ-exc", at - 1).ok, true, "one ms before: live");
+  const eq = mechanicallyApplicable(index, "REQ-exc", at);
+  assert.strictEqual(eq.ok, false, "exactly at T0: expired, not live");
+  assert.strictEqual(eq.reason, "exception-expired");
+  assert.strictEqual(mechanicallyApplicable(index, "REQ-exc", at + 1).reason, "exception-expired", "after: expired");
+});
+
+test("SM v1.15 §2 direct cutover: a non-canonical expiry is a no-write fail-closed on disk", () => {
+  const cwd = onDisk(withHardConstraint(), "prov-expiry-nowrite-");
+  const before = fs.readFileSync(storePath(cwd), "utf8");
+  for (const value of ["2099-01-01T12:00:00Z", " 2026-01-01", "1900-02-29", "2026-2-01"]) {
+    const e = assertRejects(() => runTransaction(cwd, "append-source", grantWithExpiry(value), OPTS),
+      "E_SHAPE", "on-disk " + JSON.stringify(value));
+    assert.match(e.message, new RegExp(NON_CANONICAL_EXPIRY));
+    assertNoWrite(cwd, before, "append-source " + JSON.stringify(value));
+  }
+  assert.strictEqual(fs.readFileSync(storePath(cwd), "utf8"), before, "canonical bytes bit-identical after all four");
+});
+
+test("SM v1.15 §2 direct cutover: a v1 store carrying a non-canonical expiry fails migration, no-write", () => {
+  // The boundary the spec calls the CORRECT outcome, not a defect: migration cannot repair this
+  // field, so the transaction aborts and the original bytes survive bit for bit.
+  const legacy = legacyStore();
+  legacy.sources = [...legacy.sources, {
+    sourceId: "S-legacy-bad", contentKind: "exception-grant", driftMode: "snapshot-only", locator: "g#1",
+    excerpt: "grant", digest: sha256Hex("grant"), targetConstraintRef: "REQ-1",
+    grantAuthorityRef: { kind: "source-authority", ref: "R-owner" }, scope: "eu", expiry: "2099-01-01T12:00:00Z",
+  }];
+  const cwd = onDisk(legacy, "prov-expiry-v1-");
+  const before = fs.readFileSync(storePath(cwd), "utf8");
+
+  const e = assertRejects(() => runTransaction(cwd, MIGRATION_COMMAND, {}, OPTS), "E_SHAPE", "v1 with bad expiry");
+  assert.match(e.message, new RegExp(NON_CANONICAL_EXPIRY));
+  assert.match(e.message, /S-legacy-bad/, "names the offending source");
+  // Layer, stated honestly: the migration lane runs its own v1 pre-validator, which calls
+  // validateStructure, so the refusal lands there rather than on the final v2 snapshot. Both are
+  // inside the transaction and both precede any write; nothing is normalised on the way through.
+  assertNoWrite(cwd, before, "migration on a v1 store with a non-canonical expiry");
+  assert.strictEqual(parseStore(fs.readFileSync(storePath(cwd), "utf8")).provenanceVersion, 1, "still v1");
+});
+
+test("SM v1.15 §2 direct cutover: migrate-store-v1-to-v2 keeps its own contract and is not a repair path", () => {
+  // Nothing in the expiry work may widen the migration: its v1-only precondition, its empty payload
+  // and its allowed changes all stand exactly as before.
+  const clean = legacyStore();
+  const migrated = apply(clean, MIGRATION_COMMAND, {});
+  assert.strictEqual(migrated.provenanceVersion, PROVENANCE_VERSION);
+  assertRejects(() => apply(migrated, MIGRATION_COMMAND, {}), "E_MIGRATION_NOT_NEEDED", "v2 re-call still fails closed");
+  assertRejects(() => apply(clean, MIGRATION_COMMAND, { fixExpiry: true }), "E_PAYLOAD_SHAPE", "payload still exactly empty");
+  // it does not touch sources at all, so it can never be the thing that normalises an expiry
+  assert.strictEqual(canonicalJson(migrated.sources), canonicalJson(clean.sources), "sources byte-identical across migration");
 });

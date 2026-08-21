@@ -429,6 +429,48 @@ export function checkSourceIntegrity(source) {
     : { ok: false, reason: "check-a-digest-mismatch" };
 }
 
+// shared approved v1.15 §2 `Source.expiry`: the ONE grammar, and deliberately the only one.
+// Reader and writer both come through here. Two copies is how the two sides drift into disagreeing
+// about whether a grant is still live, which is the failure the exact authority exists to remove.
+//
+// Exact ASCII "YYYY-MM-DD" and nothing else. No lenient parsing, no zero-padding, no trimming, no
+// timezone inference, no silent normalisation. Date.parse() -- the previous check -- is all four of
+// those at once: it accepted "2026-2-01" and " 2026-01-01" as LOCAL time (landing a day earlier in
+// UTC, and moving with the host timezone), silently rolled "1900-02-29" to 1900-03-01, and took
+// "2099-01-01T12:00:00Z", "2026-01" and "January 1, 2099". A store was therefore readable to
+// different expiry decisions on machines in different timezones.
+export const NON_CANONICAL_EXPIRY = "non-canonical expiry";
+
+// The single leap rule the spec names. No second predicate anywhere.
+export function isGregorianLeapYear(year) {
+  return year % 400 === 0 || (year % 4 === 0 && year % 100 !== 0);
+}
+
+// [0-9] rather than a digit shorthand, so the ASCII-only rule is visible in the pattern itself:
+// full-width "２０２６" and Arabic-Indic "٢٠٢٦" are rejected by shape, not by a separate check.
+// JS anchors are strict here: $ does not match before a trailing newline, so a value ending in a
+// line break fails on shape too.
+const EXPIRY_SHAPE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
+
+// Returns the unique instant (epoch ms at 00:00:00.000Z on that day) or null. null means
+// fail-closed at every call site; it never means "treat as not expired".
+export function parseCanonicalExpiry(value) {
+  if (typeof value !== "string" || !EXPIRY_SHAPE.test(value)) return null;
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(5, 7));
+  const day = Number(value.slice(8, 10));
+  if (year < 1 || year > 9999) return null;                     // 0000 is illegal; the shape caps at 9999
+  if (month < 1 || month > 12) return null;
+  const lengths = [31, isGregorianLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (day < 1 || day > lengths[month - 1]) return null;         // proleptic Gregorian, one formula
+  // Date.UTC() remaps years 0-99 into 1900-1999, so a year like 0001 would silently become 1901.
+  // setUTCFullYear() does not, and the spec's range starts at 0001.
+  const at = new Date(0);
+  at.setUTCFullYear(year, month - 1, day);
+  at.setUTCHours(0, 0, 0, 0);
+  return at.getTime();
+}
+
 // shared §2 mechanicallyApplicable, per clause kind. Deliberately NOT one shared predicate: the
 // spec spells out three different meanings so downstream cannot guess what "source check" means
 // for a DEC or an ASSUM.
@@ -444,10 +486,12 @@ export function mechanicallyApplicable(index, clauseId, now = Date.now()) {
     if (!integrity.ok) return { ok: false, reason: integrity.reason };
     if (src.contentKind === "exception-grant") {
       if (!index.clauses.get(src.targetConstraintRef)) return { ok: false, reason: "exception-target-unresolvable" };
-      // An unparseable expiry must NOT fail open: Date.parse returns NaN and every comparison with
-      // NaN is false, which would silently read as "not expired".
-      const expiresAt = Date.parse(src.expiry);
-      if (!Number.isFinite(expiresAt)) return { ok: false, reason: "exception-expiry-unparseable" };
+      // Defence in depth: validateStructure already refuses a non-canonical expiry at Source level,
+      // so this branch should be unreachable through the transaction entry points. It stays because
+      // failing OPEN here would be silent -- null must never read as "not expired".
+      const expiresAt = parseCanonicalExpiry(src.expiry);
+      if (expiresAt === null) return { ok: false, reason: "exception-expiry-non-canonical" };
+      // shared v1.15 §2: expiryInstant <= T0 is EXPIRED -- exactly equal counts as expired.
       if (expiresAt <= now) return { ok: false, reason: "exception-expired" };
     }
     return { ok: true };
@@ -673,11 +717,23 @@ function validateStructure(store) {
       for (const f of ["targetConstraintRef", "grantAuthorityRef", "scope", "expiry"]) {
         if (s[f] === undefined || s[f] === null) reject("E_SHAPE", `exception-grant source ${s.sourceId} missing ${f}`, s.sourceId);
       }
-      // Structural, not usage-gated: an unparseable expiry must never enter the canonical store,
+      // Structural, not usage-gated: a non-canonical expiry must never enter the canonical store,
       // even on a grant nothing currently cites. Rejecting it only where a terminal happens to use
       // it leaves an un-evaluatable grant sitting in tracked state waiting to be adopted.
-      if (!Number.isFinite(Date.parse(s.expiry))) {
-        reject("E_SHAPE", `exception-grant source ${s.sourceId} has an unparseable expiry ${JSON.stringify(s.expiry)}`, s.sourceId);
+      //
+      // This is the direct-cutover boundary from shared approved v1.15 §2, and it is a BOUNDARY, not
+      // a repair: every mutation path runs validateAll() on its final snapshot before anything is
+      // written, so a store carrying one of these fails here and the canonical bytes stay
+      // bit-identical. That includes the migration lane -- migrate-store-v1-to-v2 keeps its v1-only
+      // precondition, its empty payload and its two allowed changes, and must not be repurposed to
+      // normalise this field. No authorised transaction can rewrite it today; making such data
+      // acceptable again needs a separately approved migration/retirement/rebuild policy.
+      if (parseCanonicalExpiry(s.expiry) === null) {
+        reject(
+          "E_SHAPE",
+          `exception-grant source ${s.sourceId} has a ${NON_CANONICAL_EXPIRY} ${JSON.stringify(s.expiry)} — shared approved v1.15 §2 requires exact ASCII YYYY-MM-DD (year 0001-9999, proleptic Gregorian, real date); no lenient parsing, zero-padding, trimming, timezone inference or silent normalisation. Nothing is written: correct the source, or run a separately approved migration`,
+          s.sourceId,
+        );
       }
     }
   }
