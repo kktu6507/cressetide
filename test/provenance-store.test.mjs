@@ -1,9 +1,10 @@
 // Phase-1 tests for cressetide/skills/vigil/scripts/provenance-store.mjs.
 //
 // Spec anchors (all three approved):
-//   SM  = docs/superpowers/specs/2026-07-25-shared-decision-provenance-model.md (approved v1.12)
-//   IS  = docs/superpowers/specs/2026-07-25-intent-scan-spec.md (approved v1.8)
-//   TP  = docs/superpowers/specs/2026-07-25-test-provenance-spec.md (approved v1.5)
+//   SM  = docs/superpowers/specs/2026-07-25-shared-decision-provenance-model.md (approved v1.15)
+//   IS  = docs/superpowers/specs/2026-07-25-intent-scan-spec.md (approved v1.10)
+//   TP  = docs/superpowers/specs/2026-07-25-test-provenance-spec.md (approved v1.15)
+// Those three are the current approved coupled set and must be read as one effective set.
 // Each test names the section / acceptance-criterion it lands. This suite covers the STORE-LAYER
 // subset of the approved criteria only — the orchestrator, inventory, adapter, reviewer,
 // contract-derivation and ledger criteria belong to later phases and are NOT claimed here.
@@ -4061,26 +4062,94 @@ test("SM v1.15 §2 direct cutover: a non-canonical expiry is a no-write fail-clo
   assert.strictEqual(fs.readFileSync(storePath(cwd), "utf8"), before, "canonical bytes bit-identical after all four");
 });
 
-test("SM v1.15 §2 direct cutover: a v1 store carrying a non-canonical expiry fails migration, no-write", () => {
-  // The boundary the spec calls the CORRECT outcome, not a defect: migration cannot repair this
-  // field, so the transaction aborts and the original bytes survive bit for bit.
-  const legacy = legacyStore();
-  legacy.sources = [...legacy.sources, {
-    sourceId: "S-legacy-bad", contentKind: "exception-grant", driftMode: "snapshot-only", locator: "g#1",
-    excerpt: "grant", digest: sha256Hex("grant"), targetConstraintRef: "REQ-1",
-    grantAuthorityRef: { kind: "source-authority", ref: "R-owner" }, scope: "eu", expiry: "2099-01-01T12:00:00Z",
-  }];
+// A version 1 store holding exactly the data an older writer could have produced: the grant is
+// minted through the real transaction with a CANONICAL expiry (so every digest and ref is genuine),
+// then the store is downgraded to v1 and the expiry is replaced with a value only the pre-v1.15
+// Date.parse() check would have let through. That hand-edit is the scenario -- it is what "legacy
+// data that predates the grammar" means -- and it is the only part not built by a transaction.
+function legacyWithBadExpiry() {
+  const v2 = apply(withHardConstraint(), "append-source", grantWithExpiry("2099-01-01", "S-legacy-bad"));
+  const legacy = JSON.parse(JSON.stringify(v2));
+  legacy.provenanceVersion = 1;
+  legacy.taskStates = [];
+  for (const d of legacy.decisionPoints) delete d.reopenCauseRef;
+  const grant = legacy.sources.find((x) => x.sourceId === "S-legacy-bad");
+  grant.expiry = "2099-01-01T12:00:00Z"; // accepted by Date.parse, refused by the v1.15 grammar
+  return legacy;
+}
+
+test("SM v1.15 §2: the v1.15 expiry grammar is a CURRENT-store rule; legacy pre-validation keeps v1.11 semantics", () => {
+  // shared v1.15 §2 governs the current contract. The migration lane pre-validates its v1 pre-state
+  // against upstream approved v1.11, so applying the new grammar there would be this layer reaching
+  // back in time -- and it would move the refusal off the layer that owns it.
+  const legacy = legacyWithBadExpiry();
+  const pre = validateLegacyV1(legacy, OPTS);
+  assert.strictEqual(pre.ok, true, "v1 pre-validation still accepts the old data unchanged");
+
+  // The same Source inside a version 2 store is refused by the current contract.
+  const asV2 = JSON.parse(JSON.stringify(legacy));
+  asV2.provenanceVersion = PROVENANCE_VERSION;
+  for (const d of asV2.decisionPoints) d.reopenCauseRef = null;
+  const e = assertRejects(() => validateAll(asV2, OPTS), "E_SHAPE", "same source, v2 store");
+  assert.match(e.message, new RegExp(NON_CANONICAL_EXPIRY));
+
+  // The two layers are distinguishable by message, which is what lets the next test prove WHERE the
+  // migration failed: only the v2-keyed branch says "non-canonical expiry".
+  assert.doesNotMatch(String(pre.ok), new RegExp(NON_CANONICAL_EXPIRY));
+});
+
+test("SM v1.15 §2 direct cutover: a v1 store with a non-canonical expiry is refused by FINAL v2 validation, no-write", () => {
+  // The boundary the spec calls the CORRECT outcome, not a defect. Migration performs only its two
+  // allowed changes, leaves every Source untouched, and the resulting v2 snapshot is then refused --
+  // so the transaction aborts and the original bytes survive bit for bit.
+  const legacy = legacyWithBadExpiry();
+
+  // (a) pre-validation is NOT where this fails.
+  assert.strictEqual(validateLegacyV1(legacy, OPTS).ok, true, "v1 pre-validation passes on this store");
+
+  // (b) the whole migration still fails, and the message proves it came from the v2-keyed rule --
+  //     the legacy branch words its refusal "unparseable expiry" and never appears here.
   const cwd = onDisk(legacy, "prov-expiry-v1-");
   const before = fs.readFileSync(storePath(cwd), "utf8");
-
   const e = assertRejects(() => runTransaction(cwd, MIGRATION_COMMAND, {}, OPTS), "E_SHAPE", "v1 with bad expiry");
-  assert.match(e.message, new RegExp(NON_CANONICAL_EXPIRY));
+  assert.match(e.message, new RegExp(NON_CANONICAL_EXPIRY), "refused by the current-store rule");
+  assert.doesNotMatch(e.message, /unparseable expiry/, "not the legacy v1.11 branch");
   assert.match(e.message, /S-legacy-bad/, "names the offending source");
-  // Layer, stated honestly: the migration lane runs its own v1 pre-validator, which calls
-  // validateStructure, so the refusal lands there rather than on the final v2 snapshot. Both are
-  // inside the transaction and both precede any write; nothing is normalised on the way through.
+
+  // (c) nothing was written, the bytes are bit-identical, the store is still v1, no lock, no temp.
   assertNoWrite(cwd, before, "migration on a v1 store with a non-canonical expiry");
+  assert.strictEqual(fs.readFileSync(storePath(cwd), "utf8"), before, "bit-identical");
   assert.strictEqual(parseStore(fs.readFileSync(storePath(cwd), "utf8")).provenanceVersion, 1, "still v1");
+});
+
+test("SM v1.15 §2 direct cutover: persisted v2 bytes with a non-canonical expiry fail closed for every caller", () => {
+  // Not reachable through any transaction -- so plant it directly, which is the only way such a
+  // store can exist, and check the authoritative validation and an unrelated writer both refuse it.
+  const planted = withHardConstraint();
+  planted.sources = [...planted.sources, {
+    sourceId: "S-planted", contentKind: "exception-grant", driftMode: "snapshot-only", locator: "g#1",
+    excerpt: "grant", digest: sha256Hex("grant"), targetConstraintRef: "REQ-hc",
+    grantAuthorityRef: { kind: "source-authority", ref: "R-owner" }, scope: "eu", expiry: "2026-2-01",
+  }];
+  const cwd = onDisk(planted, "prov-expiry-badv2-");
+  const before = fs.readFileSync(storePath(cwd), "utf8");
+  assert.strictEqual(parseStore(before).provenanceVersion, PROVENANCE_VERSION, "the planted store really is v2");
+
+  // authoritative validation
+  const v = assertRejects(() => runTransaction(cwd, "validate", {}, OPTS), "E_SHAPE", "validate on planted v2");
+  assert.match(v.message, new RegExp(NON_CANONICAL_EXPIRY));
+  assert.match(v.message, /S-planted/);
+  assertNoWrite(cwd, before, "validate on planted v2");
+
+  // an unrelated writer that never touches the offending Source is refused just the same: the
+  // store as a whole is unreadable until the data is corrected, and no transaction can repair it.
+  const w = assertRejects(() => runTransaction(cwd, "append-record",
+    { record: { recordId: "R-unrelated", kind: "source-authority", authorityIdentity: "EU DPA 2" } }, OPTS),
+    "E_SHAPE", "unrelated writer on planted v2");
+  assert.match(w.message, new RegExp(NON_CANONICAL_EXPIRY));
+  assertNoWrite(cwd, before, "unrelated writer on planted v2");
+
+  assert.strictEqual(fs.readFileSync(storePath(cwd), "utf8"), before, "bytes bit-identical after both attempts");
 });
 
 test("SM v1.15 §2 direct cutover: migrate-store-v1-to-v2 keeps its own contract and is not a repair path", () => {

@@ -724,16 +724,31 @@ function validateStructure(store) {
       // This is the direct-cutover boundary from shared approved v1.15 §2, and it is a BOUNDARY, not
       // a repair: every mutation path runs validateAll() on its final snapshot before anything is
       // written, so a store carrying one of these fails here and the canonical bytes stay
-      // bit-identical. That includes the migration lane -- migrate-store-v1-to-v2 keeps its v1-only
-      // precondition, its empty payload and its two allowed changes, and must not be repurposed to
-      // normalise this field. No authorised transaction can rewrite it today; making such data
-      // acceptable again needs a separately approved migration/retirement/rebuild policy.
-      if (parseCanonicalExpiry(s.expiry) === null) {
+      // bit-identical. No authorised transaction can rewrite the field; making such data acceptable
+      // again needs a separately approved migration/retirement/rebuild policy.
+      //
+      // Keyed on the version, exactly like the v1.12 reopenCauseRef rule above. shared v1.15 §2 is a
+      // CURRENT-store contract, and the legacy migration pre-validator validates its v1 pre-state
+      // against upstream approved v1.11 -- applying the v1.15 grammar there would be this layer
+      // reaching back in time, and it would move the refusal off the layer that owns it. A v1 store
+      // carrying one of these therefore passes pre-validation, migrates ONLY version and
+      // reopenCauseRef with every Source untouched, and is refused by validateAll() on the final v2
+      // snapshot. Same outcome -- no write, bytes bit-identical -- reached at the correct layer, and
+      // migrate-store-v1-to-v2 stays what it is rather than becoming a normaliser.
+      const currentStore = store.provenanceVersion === PROVENANCE_VERSION;
+      if (currentStore && parseCanonicalExpiry(s.expiry) === null) {
         reject(
           "E_SHAPE",
           `exception-grant source ${s.sourceId} has a ${NON_CANONICAL_EXPIRY} ${JSON.stringify(s.expiry)} — shared approved v1.15 §2 requires exact ASCII YYYY-MM-DD (year 0001-9999, proleptic Gregorian, real date); no lenient parsing, zero-padding, trimming, timezone inference or silent normalisation. Nothing is written: correct the source, or run a separately approved migration`,
           s.sourceId,
         );
+      }
+      // Legacy lane only: upstream approved v1.11 semantics, preserved verbatim so migration
+      // pre-validation behaves exactly as it did before v1.15. This is NOT a second grammar --
+      // parseCanonicalExpiry() remains the only authority for the current contract, and this branch
+      // never runs against a version 2 store.
+      if (!currentStore && !Number.isFinite(Date.parse(s.expiry))) {
+        reject("E_SHAPE", `exception-grant source ${s.sourceId} has an unparseable expiry ${JSON.stringify(s.expiry)}`, s.sourceId);
       }
     }
   }
@@ -2802,7 +2817,7 @@ export function validateLegacyV1(store, options = {}) {
   if (store.provenanceVersion !== LEGACY_PROVENANCE_VERSION) {
     reject("E_STORE_VERSION", `legacy validation expects provenanceVersion ${LEGACY_PROVENANCE_VERSION}`);
   }
-  validateStructure(store); // the v2-only reopenCauseRef rule is keyed on provenanceVersion
+  validateStructure(store); // the v2-only reopenCauseRef and v1.15 expiry rules are keyed on provenanceVersion
   const index = indexStore(store);
   validateCarrierCoherence(index);
   validateRefs(index);
