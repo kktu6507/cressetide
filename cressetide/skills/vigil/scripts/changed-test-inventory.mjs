@@ -16,7 +16,16 @@
 //
 // Two of those now exist as accepted components and still change nothing here: the base/head
 // one-to-one matcher and the S3 source-freshness recomputation are implemented and accepted, but
-// NEITHER is product-wired, and neither is a producer. The populated inventory producer and the
+// NEITHER is product-wired, and neither is a producer.
+//
+// Acceptance is a CHAIN, never the introduction commit on its own -- the approved history says of
+// the matcher that 898f81c "單獨看仍是 provisional、known nonconforming、未 ACCEPT":
+//   base/head one-to-one matcher  introduced 898f81c, remediated a3ad6dd + 5f339a9
+//   canonical v2 reader           introduced 52fe0e0, product-gate remediation 4f44b6e,
+//                                 current invariants 9f42628
+//   S3 source-freshness verifier  introduced 711ec14, carrier remediation d2a5319
+// Cite the chain, or cite none; citing the first hash alone credits acceptance to a version that
+// was explicitly refused it. The populated inventory producer and the
 // governance reverse closure remain unimplemented, so no v2 document on this path has an author whose
 // work can be checked -- and the product path goes on refusing v2 under the same stable marker it
 // always used. An empty v2 envelope gets no exemption: it still asserts a registryDigest, a
@@ -632,12 +641,11 @@ export function parseInventory(text) {
       + `${count === 1 ? "entry" : "entries"}, and an EMPTY one is refused for the same reason a populated `
       + "one is. Consuming either needs the §6 producer, the base/head one-to-one matcher, the governance "
       + "reverse closure and S3 consumer freshness (which is what would recompute registryDigest and "
-      + "headViewDigest). Two of those four now exist as accepted components -- the matcher (898f81c) and "
-      + "the S3 source-freshness verifier (711ec14) -- but NEITHER is product-wired and neither is a "
+      + "headViewDigest). Two of those four are current accepted components -- the base/head one-to-one "
+      + "matcher and the S3 source-freshness verifier -- but NEITHER is product-wired and neither is a "
       + "producer; the §6 producer and the governance reverse closure are still unimplemented. The "
-      + "canonical v2 reader (52fe0e0, invariants tightened in 9f42628) is implemented and accepted too: "
-      + "parseCanonicalInventoryV2() reads the same bytes as an isolated component, which is not the same "
-      + "as this build acting on them",
+      + "canonical v2 reader is a current accepted component too: parseCanonicalInventoryV2() reads the "
+      + "same bytes as an isolated component, which is not the same as this build acting on them",
     );
   }
 

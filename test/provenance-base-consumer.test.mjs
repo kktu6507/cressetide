@@ -461,10 +461,16 @@ test("TP AC60: an inventory outside the canonical §6 schema fails closed", () =
 //                                inventory to a consumer -- because reading one correctly says
 //                                nothing about the producer that wrote it, the base/head matcher,
 //                                the governance reverse closure or the S3 recomputation a consumer
-//                                owes. The matcher (898f81c) and the S3 source-freshness verifier
-//                                (711ec14) are implemented and accepted, but neither is
-//                                product-wired and neither is a producer; the producer and the
-//                                governance reverse closure do not exist.
+//                                owes. The matcher and the S3 source-freshness verifier are
+//                                current accepted components, but neither is product-wired and
+//                                neither is a producer; the producer and the governance reverse
+//                                closure do not exist. Acceptance is the remediated chain, not
+//                                the introduction commit: matcher introduced 898f81c (provisional
+//                                and known nonconforming on its own, per the approved history),
+//                                remediated a3ad6dd + 5f339a9; S3 introduced 711ec14, carrier
+//                                remediation d2a5319; the canonical reader above introduced
+//                                52fe0e0, product-gate remediation 4f44b6e, current invariants
+//                                9f42628.
 // The fixtures below are LEGACY v1 documents, which have no discriminator and no v2 entry contract;
 // the v2 discriminator case is the separate test at the end of this section.
 

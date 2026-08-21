@@ -2,9 +2,13 @@
 // head-view-snapshot.mjs.
 //
 // SCOPE NOTE: this covers S1/S2 capture and headViewDigest and nothing else. Three neighbouring
-// components are implemented and accepted -- the canonical v2 parser/reader (52fe0e0), base/head
-// declaration matching (898f81c) and the S3 consumer freshness verifier (711ec14) -- but none of
-// them is product-wired and none is exercised here. No ChangedTestInventory producer, no governance
+// components are current accepted components -- but none of them is product-wired and none is
+// exercised here. Acceptance belongs to the remediated chain, not to the introduction commit
+// alone (the approved history calls 898f81c on its own provisional, known nonconforming, not
+// ACCEPT): canonical v2 parser/reader introduced 52fe0e0, product-gate remediation 4f44b6e,
+// current invariants 9f42628; base/head declaration matching introduced 898f81c, remediated
+// a3ad6dd + 5f339a9; S3 consumer freshness verifier introduced 711ec14, carrier remediation
+// d2a5319. No ChangedTestInventory producer, no governance
 // reverse closure and no artifact emission exists, here or anywhere. A green run
 // does not satisfy AC118, AC136, AC137 or AC138, does not lift the
 // unsupported-populated-inventory gate, and does not mean Phase 2 is ready.
