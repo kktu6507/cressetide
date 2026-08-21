@@ -1,9 +1,11 @@
 // Coverage for the immutable head-view snapshot: cressetide/skills/vigil/scripts/
 // head-view-snapshot.mjs.
 //
-// SCOPE NOTE: this covers S1/S2 capture and headViewDigest and nothing else. No ChangedTestInventory
-// producer, no v2 canonical parser, no base/head matching, no governance reverse closure, no S3
-// consumer freshness recomputation and no artifact emission exists, here or anywhere. A green run
+// SCOPE NOTE: this covers S1/S2 capture and headViewDigest and nothing else. Three neighbouring
+// components are implemented and accepted -- the canonical v2 parser/reader (52fe0e0), base/head
+// declaration matching (898f81c) and the S3 consumer freshness verifier (711ec14) -- but none of
+// them is product-wired and none is exercised here. No ChangedTestInventory producer, no governance
+// reverse closure and no artifact emission exists, here or anywhere. A green run
 // does not satisfy AC118, AC136, AC137 or AC138, does not lift the
 // unsupported-populated-inventory gate, and does not mean Phase 2 is ready.
 //

@@ -632,8 +632,12 @@ export function parseInventory(text) {
       + `${count === 1 ? "entry" : "entries"}, and an EMPTY one is refused for the same reason a populated `
       + "one is. Consuming either needs the §6 producer, the base/head one-to-one matcher, the governance "
       + "reverse closure and S3 consumer freshness (which is what would recompute registryDigest and "
-      + "headViewDigest), none of which is implemented. parseCanonicalInventoryV2() reads the same bytes as "
-      + "an isolated component, which is not the same as this build acting on them",
+      + "headViewDigest). Two of those four now exist as accepted components -- the matcher (898f81c) and "
+      + "the S3 source-freshness verifier (711ec14) -- but NEITHER is product-wired and neither is a "
+      + "producer; the §6 producer and the governance reverse closure are still unimplemented. The "
+      + "canonical v2 reader (52fe0e0, invariants tightened in 9f42628) is implemented and accepted too: "
+      + "parseCanonicalInventoryV2() reads the same bytes as an isolated component, which is not the same "
+      + "as this build acting on them",
     );
   }
 

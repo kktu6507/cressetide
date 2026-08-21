@@ -455,13 +455,16 @@ test("TP AC60: an inventory outside the canonical §6 schema fails closed", () =
 //
 // Two layers now exist, and the distinction matters:
 //   parseCanonicalInventoryV2()  IS implemented, and reads a populated ChangedTestInventoryV2
-//                                completely against shared v1.14 + test-provenance v1.10. Its own
+//                                completely against shared v1.14 + test-provenance v1.14. Its own
 //                                behaviour is covered by test/changed-test-inventory.test.mjs.
 //   parseInventory()             is the PRODUCT entry point, and still refuses to hand a populated
 //                                inventory to a consumer -- because reading one correctly says
 //                                nothing about the producer that wrote it, the base/head matcher,
 //                                the governance reverse closure or the S3 recomputation a consumer
-//                                owes, none of which exists.
+//                                owes. The matcher (898f81c) and the S3 source-freshness verifier
+//                                (711ec14) are implemented and accepted, but neither is
+//                                product-wired and neither is a producer; the producer and the
+//                                governance reverse closure do not exist.
 // The fixtures below are LEGACY v1 documents, which have no discriminator and no v2 entry contract;
 // the v2 discriminator case is the separate test at the end of this section.
 
