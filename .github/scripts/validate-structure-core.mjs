@@ -679,7 +679,7 @@ if (plugin && Array.isArray(plugin.agents)) {
 
 // 9d. Copy-sync guards for documented byte-identical infra copies (deterministic string/regex
 // extraction only): the per-hook copies in cressetide/hooks/, the map.mjs/ship.mjs skill-script
-// pair (d4, below), and the 14-site isInvokedDirectly() CLI entry-point cluster (d5, below). Each
+// pair (d4, below), and the 15-site isInvokedDirectly() CLI entry-point cluster (d5, below). Each
 // check fails CLOSED when it cannot locate what it guards, so a refactor cannot silently disarm it
 // — the message then says to re-point the guard.
 {
@@ -828,14 +828,14 @@ if (plugin && Array.isArray(plugin.agents)) {
     }
   }
 
-  // d5. isInvokedDirectly() entry-point self-check, byte-identical across 13 CLI scripts (the
+  // d5. isInvokedDirectly() entry-point self-check, byte-identical across 14 CLI scripts (the
   // fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url) forward-direction form)
-  // plus a 14th sibling, publish-release-core.mjs, which imports pathToFileURL rather than
+  // plus a 15th sibling, publish-release-core.mjs, which imports pathToFileURL rather than
   // fileURLToPath and so necessarily carries the reverse-direction pathToFileURL(fs.realpathSync(...))
   // .href === import.meta.url form — semantically identical, not a body match, so it is checked only
-  // for marker presence below, never body-compared against the 13. Reuses extractSkillFn (defined
+  // for marker presence below, never body-compared against the 14. Reuses extractSkillFn (defined
   // above, shared with d4) unmodified: isInvokedDirectly() needs no per-file substitution since the
-  // 13 forward bodies are already 100% textually identical.
+  // 14 forward bodies are already 100% textually identical.
   const ENTRY_POINT_FORWARD = [
     `${PLUGIN}/skills/doctor/scripts/doctor.mjs`,
     `${PLUGIN}/skills/map/scripts/map.mjs`,
@@ -848,6 +848,7 @@ if (plugin && Array.isArray(plugin.agents)) {
     `${PLUGIN}/skills/vigil/scripts/run-ledger.mjs`,
     `${PLUGIN}/skills/vigil/scripts/pack-review-diff.mjs`,
     `${PLUGIN}/skills/vigil/scripts/run-consolidate.mjs`,
+    `${PLUGIN}/skills/vigil/scripts/provenance-store.mjs`,
     "eval/check-model-provenance.mjs",
     ".github/scripts/publish-release.mjs",
   ];
@@ -862,7 +863,7 @@ if (plugin && Array.isArray(plugin.agents)) {
   const entryPointFound = entryPointBodies.filter(([, b]) => b !== null);
   for (let i = 1; i < entryPointFound.length; i++) {
     if (entryPointFound[i][1] !== entryPointFound[0][1])
-      fail(`garden 9d: isInvokedDirectly() drifted between ${entryPointFound[0][0]} and ${entryPointFound[i][0]} — these are documented byte-identical copies (13 of 14 — publish-release-core.mjs is the documented reverse-direction exception, checked separately below); change ALL 13 together`);
+      fail(`garden 9d: isInvokedDirectly() drifted between ${entryPointFound[0][0]} and ${entryPointFound[i][0]} — these are documented byte-identical copies (14 of 15 — publish-release-core.mjs is the documented reverse-direction exception, checked separately below); change ALL 14 together`);
   }
 
   for (const rel of [...ENTRY_POINT_FORWARD, ENTRY_POINT_REVERSE]) {

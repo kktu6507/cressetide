@@ -691,7 +691,7 @@ export async function diagnose(pluginRoot = resolvePluginRoot(), options = {}) {
   };
 }
 
-// isInvokedDirectly() kept in sync with the other 13 CLI entry points (documented copy — see garden hash guard)
+// isInvokedDirectly() kept in sync with the other 14 CLI entry points (documented copy — see garden hash guard)
 function isInvokedDirectly() {
   if (!process.argv[1]) return false;
   try {

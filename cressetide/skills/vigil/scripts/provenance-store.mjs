@@ -2899,7 +2899,7 @@ export function main(argv) {
   }
 }
 
-// isInvokedDirectly() kept in sync with the other CLI entry points (documented copy — see garden hash guard)
+// isInvokedDirectly() kept in sync with the other 14 CLI entry points (documented copy — see garden hash guard)
 function isInvokedDirectly() {
   if (!process.argv[1]) return false;
   try {
