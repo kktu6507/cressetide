@@ -186,6 +186,36 @@ export function resolutionGroupDigest({ subjectRef, action, successor, semanticE
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
+// The ONE canonical ULID / ClauseRef grammar, from intent-scan approved v1.10 §8. Every layer that
+// has to decide whether an authored or persisted id is well formed comes here; a second regex
+// anywhere else is a second grammar, and two grammars disagree eventually.
+//
+// 26 ASCII bytes exactly. Uppercase Crockford is this repo's only canonical serialization: lowercase
+// is refused outright rather than upper-cased first, because repairing input and then accepting it
+// is the same as having no grammar. Crockford's human-input aliases I, L, O and U are illegal --
+// they are not mapped to 1, 1, 0 or dropped. The first byte is 0-7 and nothing else: 26 x 5 = 130
+// bits carry a 128-bit value, so the top two bits of the leading character must be zero, and
+// "8..." through "Z..." are well-formed Base32 that overflow the 128-bit ceiling. That is exactly
+// why /^[0-9A-HJKMNP-TV-Z]{26}$/ must never be used as the rule: it accepts the overflow.
+//
+// No trimming, no Unicode normalisation, no percent decoding, no locale folding.
+export const CANONICAL_ULID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+
+export function isCanonicalUlid(value) {
+  return typeof value === "string" && CANONICAL_ULID.test(value);
+}
+
+// <PREFIX>-<ULID>, where PREFIX is one of the three clause namespaces. The split is on the FIRST
+// hyphen only: a ULID contains no hyphen, so anything after one is a suffix that makes the id
+// illegal rather than something to ignore.
+export function isCanonicalClauseRef(value) {
+  if (typeof value !== "string") return false;
+  const cut = value.indexOf("-");
+  // clauseKindOf() owns the prefix half; this function owns the ULID half. Neither re-spells the
+  // other, so there is still exactly one authority for each.
+  return cut >= 0 && clauseKindOf(value) !== null && isCanonicalUlid(value.slice(cut + 1));
+}
+
 export function encodeUlidTime(ms) {
   let out = "";
   let t = ms;
@@ -757,6 +787,16 @@ function validateStructure(store) {
     claim(c.id, c, "clause");
     const kind = clauseKindOf(c.id);
     if (!kind) reject("E_ID_PREFIX", `clause ${c.id} has no recognised REQ-/DEC-/ASSUM- prefix`, c.id);
+    // IS v1.10 §8, at the layer that owns "is this store legal": a clause id that is not
+    // <PREFIX>-<canonical ULID> never becomes readable state. A downstream reader can therefore
+    // rely on this having happened instead of carrying its own copy of the grammar -- and must
+    // not carry one, because a second copy is a second authority. Nothing is repaired here:
+    // lowercase is not upper-cased, aliases are not mapped, whitespace is not trimmed.
+    if (!isCanonicalClauseRef(c.id)) {
+      reject("E_CLAUSE_ID_GRAMMAR",
+        `clause id ${JSON.stringify(c.id)} is not <PREFIX>-<ULID>: the prefix must be REQ, DEC or ASSUM and the ULID exactly 26 uppercase Crockford bytes whose first byte is 0-7 (IS v1.10 §8). Lowercase, the aliases I/L/O/U, whitespace, a suffix and an overflowing leading byte are all illegal, and none of them is repaired`,
+        c.id);
+    }
     // INV-3: clauses carry NO authored lifecycle fields; status/revisedBy/supersededBy are derived.
     for (const forbidden of ["status", "revisedBy", "supersededBy"]) {
       if (c[forbidden] !== undefined) reject("E_INV3_AUTHORED_LIFECYCLE", `clause ${c.id} must not author ${forbidden} (INV-3: derived from Transitions)`, c.id);

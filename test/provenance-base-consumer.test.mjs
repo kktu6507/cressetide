@@ -93,7 +93,7 @@ function sampleEntry() {
   return {
     testRef: { path: "test/a.test.mjs", adapterId: "node-test", structuralId: "a::case" },
     status: "modified", reason: "content-change",
-    tagBefore: { clauseRef: "REQ-a" }, tagAfter: { clauseRef: "REQ-a" },
+    tagBefore: { clauseRef: "REQ-0000000000000000000000000A" }, tagAfter: { clauseRef: "REQ-0000000000000000000000000A" },
     baseBodyDigest: sha256Hex("base-body"), headBodyDigest: sha256Hex("head-body"),
     framework: "node:test",
   };
@@ -504,10 +504,10 @@ test("TP §6 parser boundary: a populated inventory is refused by parseInventory
   parserRefuses([{ ...sampleEntry(), testRef: { ...sampleEntry().testRef, path: "test\\a.test.mjs" } }], "a backslash in path");
   parserRefuses([{ ...sampleEntry(), testRef: { ...sampleEntry().testRef, path: "./test/a.test.mjs" } }], "a ./ dot-segment");
   parserRefuses([{ ...sampleEntry(), testRef: { ...sampleEntry().testRef, path: "../test/a.test.mjs" } }], "a ../ dot-segment");
-  parserRefuses([{ ...sampleEntry(), tagAfter: { clauseRef: "DEC-a", dpRef: "DP-1" } }], "DEC@DP");
-  parserRefuses([{ ...sampleEntry(), tagAfter: { clauseRef: "ASSUM-a", dpRef: "DP-1" } }], "ASSUM@DP");
+  parserRefuses([{ ...sampleEntry(), tagAfter: { clauseRef: "DEC-0000000000000000000000000A", dpRef: "DP-1" } }], "DEC@DP");
+  parserRefuses([{ ...sampleEntry(), tagAfter: { clauseRef: "ASSUM-0000000000000000000000000A", dpRef: "DP-1" } }], "ASSUM@DP");
   parserRefuses([{ ...sampleEntry(), tagAfter: { clauseRef: "whatever you like" } }], "an arbitrary clauseRef");
-  parserRefuses([{ ...sampleEntry(), tagAfter: { clauseRef: "REQ-a", dpRef: "not a dp" } }], "an arbitrary dpRef");
+  parserRefuses([{ ...sampleEntry(), tagAfter: { clauseRef: "REQ-0000000000000000000000000A", dpRef: "not a dp" } }], "an arbitrary dpRef");
 });
 
 test("TP §6 parser boundary: the empty envelope is still parsed and its digest still recomputed", () => {

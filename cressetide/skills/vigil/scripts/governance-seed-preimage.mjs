@@ -17,6 +17,7 @@ import {
   CANONICAL_STORE_PATH, PROVENANCE_VERSION, LEGACY_PROVENANCE_VERSION,
   emptyStore, canonicalStoreBytes, storeDigest, parseStore, canonicalJson, canonicalText,
   compareCodePoint, sha256Hex, validateAll, validateLegacyV1, parseCanonicalExpiry,
+  isCanonicalClauseRef,
 } from "./provenance-store.mjs";
 import { withStableHeadView } from "./head-view-snapshot.mjs";
 // The fixed internal store-loader import AC171 (vii)'s shape-B proxy points at. One import, one
@@ -51,10 +52,6 @@ const FORBIDDEN_KEYS = [
   "clock", "now", "timestamp", "date", "Date", "dateProvider", "clockProvider", "T0",
   "captureHook", "hook", "componentModulePath", "modulePath", "outputPath", "output",
 ];
-
-// shared §2 canonical ClauseRef grammar. The ULID authority stays in intent-scan §8; this only
-// spells the ("REQ"|"DEC"|"ASSUM") "-" ULID shape the carrier is allowed to carry.
-const CLAUSE_REF = /^(?:REQ|DEC|ASSUM)-[0-9A-HJKMNP-TV-Z]{26}$/;
 
 const IMMUTABLE_SECTIONS = ["sources", "clauses", "transitions", "records"];
 const ID_KEY = { sources: "sourceId", clauses: "id", transitions: "id", records: "recordId" };
@@ -365,9 +362,13 @@ function canonicalUnion(...sets) {
   for (const set of sets) for (const id of set) seen.add(id);
   const out = [...seen];
   for (const id of out) {
-    if (!CLAUSE_REF.test(id)) {
+    // Defence in depth ONLY, through the upstream authority -- never a second grammar of this
+    // component's own, and never the layer this relies on. An invalid persisted clause id is
+    // refused by store schema validation before the derivation ever sees it; if one reaches here,
+    // that layer has a hole and the run must still stop rather than emit a non-canonical carrier.
+    if (!isCanonicalClauseRef(id)) {
       throw fail("E_CLAUSE_REF_GRAMMAR",
-        `${JSON.stringify(id)} is not a canonical ClauseRef ("REQ"|"DEC"|"ASSUM" then "-" then a ULID)`,
+        `${JSON.stringify(id)} reached the carrier without being a canonical ClauseRef; store schema validation should already have refused it`,
         { clauseRef: id });
     }
   }

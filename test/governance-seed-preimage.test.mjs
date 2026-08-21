@@ -27,6 +27,7 @@ import cp from "node:child_process";
 import { root } from "./helpers.mjs";
 import {
   emptyStore, canonicalStoreBytes, storeDigest, sha256Hex, validateAll, compareCodePoint,
+  isCanonicalClauseRef,
 } from "../cressetide/skills/vigil/scripts/provenance-store.mjs";
 import {
   buildGovernanceSeedPreimage, GovernanceSeedPreimageError,
@@ -164,7 +165,7 @@ test("AC171 (A)(iii)-(v): the emitted clause array is grammar-conformant, strict
 
   const out = await build(repo, oid);
   const list = out.lifecycleAffectedClauses;
-  for (const id of list) assert.match(id, /^(?:REQ|DEC|ASSUM)-[0-9A-HJKMNP-TV-Z]{26}$/, `${id} is a canonical ClauseRef`);
+  for (const id of list) assert.ok(isCanonicalClauseRef(id), `${id} is a canonical ClauseRef`);
   const sorted = [...list].sort(compareCodePoint);
   assert.deepStrictEqual(list, sorted, "strictly increasing by Unicode code point");
   assert.strictEqual(new Set(list).size, list.length, "no duplicates");
