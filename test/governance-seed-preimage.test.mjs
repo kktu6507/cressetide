@@ -27,7 +27,7 @@ import cp from "node:child_process";
 import { root } from "./helpers.mjs";
 import {
   emptyStore, canonicalStoreBytes, storeDigest, sha256Hex, validateAll, compareCodePoint,
-  isCanonicalClauseRef,
+  isCanonicalClauseRef, digestOf,
 } from "../cressetide/skills/vigil/scripts/provenance-store.mjs";
 import {
   buildGovernanceSeedPreimage, GovernanceSeedPreimageError,
@@ -112,6 +112,65 @@ function withRepoFileClause(s, { clauseId = REQ("0C"), sourceId = "S-file", exce
 
 const NOW = Date.UTC(2026, 6, 26);
 const legal = (s) => { validateAll(s, { now: NOW }); return s; };
+const CODE = { kind: "discipline", discipline: "code" };
+
+// A DecisionPoint the DEC and ASSUM fixtures below hang off.
+function withDp(s) {
+  s.decisionPoints.push({
+    id: "DP-1", dimension: "data", scenario: "s", alternatives: ["A", "B"], layer: "implementation",
+    classificationBasis: "engineering standard", materialReasons: [], status: "open", reopenCauseRef: null,
+  });
+  return s;
+}
+
+function withSource(s, { sourceId, excerpt, driftMode = "repo-file", contentKind = "requirement" }) {
+  s.sources.push({ sourceId, contentKind, driftMode, locator: "d#1", excerpt, digest: sha256Hex(excerpt) });
+  return s;
+}
+
+// A legal ASSUM whose basisRefs carry a PLAIN "S-…" string -- the shape IS §4 actually defines.
+function withAssum(s, { clauseId, basisRefs }) {
+  s.clauses.push({
+    id: clauseId, authority: "approved-requirement", kind: "specification", text: "a",
+    derivedFrom: "DP-1", governedBy: CODE, basisRefs, layer: "implementation",
+    routingOrigin: "safe-default", alternative: "B", assumedAs: "A",
+  });
+  return s;
+}
+
+// A legal DEC needs a complete typed technical-decision ruling whose selectedAlternative matches
+// the clause. Built in full rather than skipped, so the DEC path is really exercised.
+function withDec(s, { clauseId, basisRefs, recordId = "R-dec" }) {
+  const packet = {
+    dpId: "DP-1", scenario: "s", alternatives: ["A", "B"], layer: "implementation",
+    classificationBasis: "engineering standard", materialReasons: [], requestedPrincipal: CODE, basisRefs: [],
+  };
+  s.records.push({
+    recordId, kind: "review-ruling", by: CODE, subjectRef: "DP-1", ruling: "ok",
+    rulingKind: "technical-decision", basis: "stated basis",
+    inputPacketSnapshot: packet, inputPacketDigest: digestOf(packet),
+    decision: "chose A", approvedBy: CODE, selectedAlternative: "A", rejectedAlternatives: ["B"],
+  });
+  s.clauses.push({
+    id: clauseId, authority: "approved-requirement", kind: "specification", text: "d",
+    derivedFrom: "DP-1", approvedBy: CODE, layer: "implementation", decision: "A", alternatives: ["A", "B"],
+    basisRefs: [...basisRefs, { kind: "review-ruling", ref: recordId }],
+  });
+  return s;
+}
+
+// A legal, effective retire Transition: user authority plus a plan-gate ack that resolves.
+function withTransition(s, { id, subject, ackId = "R-ack" }) {
+  s.records.push({
+    recordId: ackId, kind: "plan-gate", target: subject, successor: null,
+    impact: "no consumers", disposition: "no-affected-dependents", approvedBy: "user",
+  });
+  s.transitions.push({
+    id, subject, action: "retire", authorityRef: { kind: "user" },
+    effectiveAt: "2026-01-01T00:00:00.000Z", ackRef: { kind: "plan-gate", ref: ackId },
+  });
+  return s;
+}
 
 async function refused(promise, what, code) {
   let error = null;
@@ -340,27 +399,68 @@ test("AC171 (C)(xvi)-(xvii): expiry membership at the T0 boundary, and the exact
     const planted = withGrant(baseStore(), { expiry: "2099-01-01" });
     planted.sources.find((s) => s.sourceId === "S-exc").expiry = bad;
     repo.putStore(planted);
-    await refused(build(repo, oid), `planted expiry ${JSON.stringify(bad)}`, "E_SHAPE");
+    // The refusal is now at G1's CLOCK-FREE schema validation -- before T0 exists -- which is the
+    // layer that owns "is this store legal at all", not a membership answer.
+    await refused(build(repo, oid), `planted expiry ${JSON.stringify(bad)}`, "E_CURRENT_STORE_SCHEMA");
   }
 }));
 
-test("AC171 (C)(xviii): a DEC does not expire through a basisRefs exception-grant", () => withRepo(async (repo) => {
+test("AC171 (C)(xviii): a DEC and an ASSUM never expire through an exception-grant basis", () => withRepo(async (repo) => {
+  // Both clause kinds are built for real and asserted on. The earlier version of this test skipped
+  // when its fixture would not validate and then asserted a tautology, which is no evidence at all.
+  const inBase = legal(withDec(withAssum(withDp(withGrant(baseStore(), { expiry: "2020-01-01" })),
+    { clauseId: "ASSUM-" + U("0F"), basisRefs: ["S-exc"] }), { clauseId: DEC("0D"), basisRefs: ["S-exc"] }));
+  repo.write(".ctide/provenance.json", canonicalStoreBytes(inBase));
   repo.write("README.md", "hello\n");
   const oid = repo.commit();
-  const s = withGrant(baseStore(), { expiry: "2020-01-01" });
-  s.clauses.push({
-    id: DEC("0E"), authority: "approved-requirement", kind: "specification", text: "a decision",
-    derivedFrom: "DP-1", approvedBy: "code-reviewer", basisRefs: [{ kind: "source", ref: "S-exc" }],
-  });
-  // The DEC is only asserted absent from expiredClauses; whether this exact shape validates as a DEC
-  // is the store layer's business, so the fixture is only used when it is legal.
-  let ok = true;
-  try { validateAll(s, { now: NOW }); } catch { ok = false; }
-  if (!ok) return; // the store layer refuses this DEC shape; nothing to assert about membership
-  repo.putStore(s);
+  repo.putStore(inBase);
+
   const out = await build(repo, oid);
-  assert.ok(!out.lifecycleAffectedClauses.includes(DEC("0E")) || out.lifecycleAffectedClauses.includes(DEC("0E")),
-    "membership is decided by the four sets, not by this assertion");
+  // The grant is long expired, and the REQ that cites it IS a member -- so the set is live.
+  assert.ok(out.lifecycleAffectedClauses.includes(REQ("0B")), "the REQ on the expired grant is expired");
+  // The DEC and the ASSUM cite the SAME expired grant in basisRefs and must not be members.
+  assert.ok(!out.lifecycleAffectedClauses.includes(DEC("0D")), "a DEC does not expire through basisRefs");
+  assert.ok(!out.lifecycleAffectedClauses.includes("ASSUM-" + U("0F")), "nor does an ASSUM");
+}));
+
+test("AC171 (D)(xxiii): a DEC and an ASSUM drift through their DIRECT Source set", () => withRepo(async (repo) => {
+  // basisRefs carry a plain "S-…" string. The component used to look for { kind: "source", ref },
+  // which never matches anything in this model, so DEC/ASSUM drift was dead code that no test
+  // noticed. These two cases are what makes it live.
+  const excerpt = "the basis sentence";
+  const build2 = (s) => legal(withDec(withAssum(withDp(withSource(s, { sourceId: "S-basis", excerpt })),
+    { clauseId: "ASSUM-" + U("0F"), basisRefs: ["S-basis"] }), { clauseId: DEC("0D"), basisRefs: ["S-basis"] }));
+  const inBase = build2(baseStore());
+  repo.write(".ctide/provenance.json", canonicalStoreBytes(inBase));
+  repo.write("docs/policy.md", `intro\n${excerpt}\n`);
+  const oid = repo.commit();
+  repo.putStore(inBase);
+
+  assert.deepStrictEqual((await build(repo, oid)).lifecycleAffectedClauses, [], "present: neither drifts");
+
+  repo.write("docs/policy.md", "gone\n");
+  const drifted = (await build(repo, oid)).lifecycleAffectedClauses;
+  assert.ok(drifted.includes(DEC("0D")), "the DEC drifts through its direct Source");
+  assert.ok(drifted.includes("ASSUM-" + U("0F")), "and so does the ASSUM");
+
+  // A RecordRef in the same basisRefs is NOT followed: the DEC cites its ruling record too, and
+  // that must never turn into a Source lookup.
+  assert.strictEqual(drifted.filter((x) => x.startsWith("R-")).length, 0, "no record ever becomes a member");
+}));
+
+test("AC171 (D)(xxiii): one drifted Source referenced by two clauses puts BOTH in the set", () => withRepo(async (repo) => {
+  const excerpt = "the shared sentence";
+  // withRepoFileClause already mints the Source; adding it twice is a duplicate id, not a fixture.
+  const make = (s) => legal(withAssum(withDp(withRepoFileClause(s,
+    { clauseId: REQ("0C"), sourceId: "S-shared", excerpt })), { clauseId: "ASSUM-" + U("0F"), basisRefs: ["S-shared"] }));
+  const inBase = make(baseStore());
+  repo.write(".ctide/provenance.json", canonicalStoreBytes(inBase));
+  repo.write("docs/policy.md", "nothing matching\n");
+  const oid = repo.commit();
+  repo.putStore(inBase);
+  const out = (await build(repo, oid)).lifecycleAffectedClauses;
+  assert.ok(out.includes(REQ("0C")) && out.includes("ASSUM-" + U("0F")),
+    `both direct referrers of one drifted Source are members, got ${JSON.stringify(out)}`);
 }));
 
 // --- (D) the four sets and the union ------------------------------------------------------------
@@ -430,26 +530,40 @@ test("AC171 (D)(xxiii): Check B counts occurrences against the head view; snapsh
   } finally { fs.rmSync(repo2.root, { recursive: true, force: true }); }
 }));
 
-test("AC171 (D)(xxii): a new effective transition puts its SUBJECT in the seed, and duplicates fail closed", () => withRepo(async (repo) => {
+test("AC171 (D)(xxii): a new effective transition puts its SUBJECT in the seed; a duplicate fails closed", () => withRepo(async (repo) => {
+  // Built as a legal, effective retire -- user authority plus a resolving plan-gate ack -- so the
+  // positive really runs instead of being skipped when the fixture happens not to validate.
   const inBase = legal(withGrant(baseStore(), { expiry: "2099-01-01" }));
   repo.write(".ctide/provenance.json", canonicalStoreBytes(inBase));
   repo.write("README.md", "hello\n");
   const oid = repo.commit();
 
-  const withTransition = JSON.parse(JSON.stringify(inBase));
-  withTransition.transitions.push({ id: "T-1", subject: REQ("0B"), action: "retire", by: "user" });
-  let legalTransition = true;
-  try { validateAll(withTransition, { now: NOW }); } catch { legalTransition = false; }
-  if (legalTransition) {
-    repo.putStore(withTransition);
-    const out = await build(repo, oid);
-    assert.ok(out.lifecycleAffectedClauses.includes(REQ("0B")), "the transition subject is in the seed");
-    assert.ok(!out.lifecycleAffectedClauses.includes("T-1"), "the transition id itself is never a member");
-  }
+  const moved = legal(withTransition(JSON.parse(JSON.stringify(inBase)), { id: "T-1", subject: REQ("0B") }));
+  repo.putStore(moved);
+  const out = (await build(repo, oid)).lifecycleAffectedClauses;
+  assert.deepStrictEqual(out, [REQ("0B")], "the subject is a member, and only the subject");
+  assert.ok(!out.includes("T-1"), "the transition id itself is never a member");
 
-  // A transition naming a subject that is not a clause fails closed regardless of the store layer.
+  // Two newly effective transitions on the same clause: an integrity failure, not two members.
+  const twice = JSON.parse(JSON.stringify(moved));
+  twice.records.push({
+    recordId: "R-ack2", kind: "plan-gate", target: REQ("0B"), successor: null,
+    impact: "no consumers", disposition: "no-affected-dependents", approvedBy: "user",
+  });
+  twice.transitions.push({
+    id: "T-2", subject: REQ("0B"), action: "retire", authorityRef: { kind: "user" },
+    effectiveAt: "2026-01-02T00:00:00.000Z", ackRef: { kind: "plan-gate", ref: "R-ack2" },
+  });
+  repo.write(".ctide/provenance.json", JSON.stringify(twice));
+  const dup = await refused(build(repo, oid), "two effective transitions on one clause", undefined);
+  // The store layer gets there first with E_MULTIPLE_TRANSITIONS, which is the same fail-closed at
+  // an earlier layer; the component keeps its own check for a store that somehow reaches it.
+  assert.ok(["E_TRANSITION_DUPLICATE", "E_CURRENT_STORE_SCHEMA", "E_MULTIPLE_TRANSITIONS"].includes(dup.code),
+    `a duplicate effective transition must fail closed, got ${dup.code}`);
+
+  // A transition naming a subject that is not a clause fails closed too.
   const dangling = JSON.parse(JSON.stringify(inBase));
-  dangling.transitions.push({ id: "T-x", subject: REQ("9Z"), action: "retire", by: "user" });
+  dangling.transitions.push({ id: "T-x", subject: REQ("9Z"), action: "retire", authorityRef: { kind: "user" }, effectiveAt: "2026-01-01T00:00:00.000Z" });
   repo.write(".ctide/provenance.json", JSON.stringify(dangling));
   await refused(build(repo, oid), "a dangling transition subject", undefined);
 }));
@@ -674,4 +788,231 @@ test("AC171: a failing invocation returns nothing and writes nothing", () => wit
   assert.deepStrictEqual(listing(), beforeListing, "no output, lock or temp file appeared under .ctide");
   assert.ok(!fs.existsSync(path.join(repo.root, ".ctide", "output")), "no .ctide/output/** was created");
   void before;
+}));
+
+// --- remaining AC171 cases -------------------------------------------------------------------------
+
+test("AC171 (B)(xi): missing <-> explicitly-empty passes in BOTH directions, deterministically", () => withRepo(async (repo) => {
+  repo.write("README.md", "hello\n");
+  const oid = repo.commit();
+  const emptyBytes = canonicalStoreBytes(emptyStore());
+  const storeFile = path.join(repo.root, ".ctide", "provenance.json");
+
+  // Both directions are mid-invocation transitions, so both are produced with the shape-B loader
+  // proxy rather than by racing. Presence changes; the canonical digest does not; both must pass.
+  for (const [label, first, second] of [
+    ["G1 absent -> G2 explicit empty", null, emptyBytes],
+    ["G1 explicit empty -> G2 absent", emptyBytes, null],
+  ]) {
+    const scratch = scratchScripts("ctide-gsp-presence-");
+    try {
+      if (first === null) fs.rmSync(storeFile, { force: true });
+      else { fs.mkdirSync(path.dirname(storeFile), { recursive: true }); fs.writeFileSync(storeFile, first, "utf8"); }
+      const proxy = path.join(scratch, "scripts", "counting-proxy.mjs");
+      fs.writeFileSync(proxy, [
+        'import fs from "node:fs";',
+        'import path from "node:path";',
+        'import { readCurrentStoreFile as real } from "./current-store-load.mjs";',
+        "let calls = 0;",
+        "export function readCurrentStoreFile(repoRoot) {",
+        "  calls += 1;",
+        "  const text = real(repoRoot);",
+        "  if (calls === 1) {",
+        '    const f = path.join(repoRoot, ".ctide", "provenance.json");',
+        `    ${second === null ? 'fs.rmSync(f, { force: true });' : 'fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, ' + JSON.stringify(second) + ', "utf8");'}`,
+        "  }",
+        "  return text;",
+        "}",
+      ].join("\n"), "utf8");
+      patch(path.join(scratch, "scripts", "governance-seed-preimage.mjs"),
+        'from "./current-store-load.mjs"', 'from "./counting-proxy.mjs"');
+      const script = path.join(scratch, "run.mjs");
+      fs.writeFileSync(script, [
+        'const m = await import("./scripts/governance-seed-preimage.mjs");',
+        "try {",
+        `  const out = await m.buildGovernanceSeedPreimage({ repoRoot: ${JSON.stringify(repo.root)}, baseTreeOid: ${JSON.stringify(oid)} });`,
+        "  console.log(JSON.stringify({ ok: true, digest: out.inputProvenanceStoreDigest }));",
+        "} catch (e) { console.log(JSON.stringify({ ok: false, code: e.code, message: String(e.message) })); }",
+      ].join("\n"), "utf8");
+      const r = runChild(script);
+      assert.strictEqual(r.code, 0, r.err);
+      const result = JSON.parse(r.out);
+      assert.strictEqual(result.ok, true, `${label} must pass: ${result.code} ${result.message}`);
+      assert.strictEqual(result.digest, storeDigest(emptyStore()), `${label}: the canonical empty digest`);
+    } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+  }
+}));
+
+test("AC171 (B)(xi)+(xii): a JSON-valid but SCHEMA-invalid G2 is a schema failure, never E_STORE_MOVED", () => withRepo(async (repo) => {
+  repo.write("README.md", "hello\n");
+  const oid = repo.commit();
+  repo.putStore(legal(baseStore()));
+
+  // The two layers must not impersonate each other. A G2 that parses but is not a legal store has
+  // to be reported as version/schema, because "the store moved" is a different and more
+  // misleading fact -- and because a digest comparison against an illegal store means nothing.
+  const bad = JSON.parse(JSON.stringify(baseStore()));
+  bad.clauses.push({ id: REQ("0B"), authority: "approved-requirement", kind: "specification", text: "t", sourceRef: "S-does-not-exist", taskRef: "TASK-1" });
+  const scratch = scratchScripts("ctide-gsp-badg2-");
+  try {
+    const proxy = path.join(scratch, "scripts", "counting-proxy.mjs");
+    fs.writeFileSync(proxy, [
+      'import fs from "node:fs";',
+      'import path from "node:path";',
+      'import { readCurrentStoreFile as real } from "./current-store-load.mjs";',
+      "let calls = 0;",
+      "export function readCurrentStoreFile(repoRoot) {",
+      "  calls += 1;",
+      "  const text = real(repoRoot);",
+      "  if (calls === 1) {",
+      `    fs.writeFileSync(path.join(repoRoot, ".ctide", "provenance.json"), ${JSON.stringify(JSON.stringify(bad))}, "utf8");`,
+      "  }",
+      "  return text;",
+      "}",
+    ].join("\n"), "utf8");
+    patch(path.join(scratch, "scripts", "governance-seed-preimage.mjs"),
+      'from "./current-store-load.mjs"', 'from "./counting-proxy.mjs"');
+    const script = path.join(scratch, "run.mjs");
+    fs.writeFileSync(script, [
+      'const m = await import("./scripts/governance-seed-preimage.mjs");',
+      "try {",
+      `  await m.buildGovernanceSeedPreimage({ repoRoot: ${JSON.stringify(repo.root)}, baseTreeOid: ${JSON.stringify(oid)} });`,
+      '  console.log(JSON.stringify({ ok: true }));',
+      "} catch (e) { console.log(JSON.stringify({ ok: false, code: e.code, message: String(e.message) })); }",
+    ].join("\n"), "utf8");
+    const r = runChild(script);
+    assert.strictEqual(r.code, 0, r.err);
+    const result = JSON.parse(r.out);
+    assert.strictEqual(result.ok, false, "an illegal G2 must not produce a carrier");
+    assert.strictEqual(result.code, "E_CURRENT_STORE_SCHEMA", `expected a schema failure, got ${result.code}`);
+    assert.notStrictEqual(result.code, "E_STORE_MOVED", "and it must NOT be reported as a moved store");
+  } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+}));
+
+test("AC171 (C)(xv): an invalid G1 schema fails with the clock never read", () => withRepo(async (repo) => {
+  repo.write("README.md", "hello\n");
+  const oid = repo.commit();
+  // JSON-valid, store-illegal: a clause pointing at a Source that is not there.
+  const bad = JSON.parse(JSON.stringify(baseStore()));
+  bad.clauses.push({ id: REQ("0B"), authority: "approved-requirement", kind: "specification", text: "t", sourceRef: "S-does-not-exist", taskRef: "TASK-1" });
+  repo.write(".ctide/provenance.json", JSON.stringify(bad));
+
+  const scratch = scratchScripts("ctide-gsp-clock0-");
+  try {
+    const script = path.join(scratch, "run.mjs");
+    // Same two-stage probe as the positive: disarmed through the import, armed after. T0 is only
+    // sampled once G1 parse AND schema validation have succeeded, so an illegal G1 must fail with
+    // the armed count still at ZERO. A non-zero count would mean the clock was read first.
+    fs.writeFileSync(script, [
+      "let armed = false;",
+      "let count = 0;",
+      "const PRELUDE = Date.UTC(2000, 0, 1);",
+      "Date.now = () => { if (!armed) return PRELUDE; count += 1; return Date.UTC(2030, 5, 14); };",
+      'const m = await import("./scripts/governance-seed-preimage.mjs");',
+      "count = 0;",
+      "armed = true;",
+      "let result;",
+      "try {",
+      `  await m.buildGovernanceSeedPreimage({ repoRoot: ${JSON.stringify(repo.root)}, baseTreeOid: ${JSON.stringify(oid)} });`,
+      "  result = { ok: true };",
+      "} catch (e) { result = { ok: false, code: e.code }; }",
+      "console.log(JSON.stringify({ ...result, armedReads: count }));",
+    ].join("\n"), "utf8");
+    const r = runChild(script);
+    assert.strictEqual(r.code, 0, r.err);
+    const out = JSON.parse(r.out);
+    assert.strictEqual(out.ok, false, "an illegal G1 must not produce a carrier");
+    assert.strictEqual(out.code, "E_CURRENT_STORE_SCHEMA");
+    assert.strictEqual(out.armedReads, 0, `the clock must not have been read at all, got ${out.armedReads}`);
+  } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+}));
+
+test("AC171 (C)(xvi): expiryInstant exactly equal to T0 counts as EXPIRED", () => withRepo(async (repo) => {
+  repo.write("README.md", "hello\n");
+  const oid = repo.commit();
+  const at = Date.UTC(2030, 5, 15); // 2030-06-15T00:00:00.000Z
+  const store = legal(withGrant(baseStore(), { expiry: "2030-06-15" }));
+  repo.write(".ctide/provenance.json", canonicalStoreBytes(store));
+  const oid2 = repo.commit();
+  repo.putStore(store);
+
+  const scratch = scratchScripts("ctide-gsp-eq-");
+  try {
+    const script = path.join(scratch, "run.mjs");
+    // The clock is pinned to the expiry instant itself. Equality is the whole case: <= T0 is
+    // expired, so the clause must be a member even though not one millisecond has passed.
+    fs.writeFileSync(script, [
+      "let armed = false;",
+      `const AT = ${at};`,
+      "Date.now = () => (armed ? AT : Date.UTC(2000, 0, 1));",
+      'const m = await import("./scripts/governance-seed-preimage.mjs");',
+      "armed = true;",
+      `const out = await m.buildGovernanceSeedPreimage({ repoRoot: ${JSON.stringify(repo.root)}, baseTreeOid: ${JSON.stringify(oid2)} });`,
+      "console.log(JSON.stringify(out.lifecycleAffectedClauses));",
+    ].join("\n"), "utf8");
+    const r = runChild(script);
+    assert.strictEqual(r.code, 0, r.err);
+    assert.deepStrictEqual(JSON.parse(r.out), [REQ("0B")], "expiryInstant == T0 is expired, not live");
+
+    // One millisecond earlier it is still live, which is what makes the equality case meaningful.
+    fs.writeFileSync(script, fs.readFileSync(script, "utf8").replace(`const AT = ${at};`, `const AT = ${at - 1};`));
+    const r2 = runChild(script);
+    assert.strictEqual(r2.code, 0, r2.err);
+    assert.deepStrictEqual(JSON.parse(r2.out), [], "one ms before T0 the grant is live");
+  } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+  void oid;
+}));
+
+test("AC171 (B)(x): a replacement ref must not redirect the base tree read", () => withRepo(async (repo) => {
+  // Without --no-replace-objects (and the matching environment variable) Git answers "read tree A"
+  // with tree B whenever refs/replace has an entry for A. The component would then derive its seed
+  // against a base it was never asked about, and report the OID it was asked for -- a wrong answer
+  // presented as a right one. This is the regression that catches it.
+  const inBase = legal(baseStore());
+  repo.write(".ctide/provenance.json", canonicalStoreBytes(inBase));
+  repo.write("README.md", "hello\n");
+  const treeA = repo.commit();
+
+  // Tree B holds a DIFFERENT store: one extra clause. If the replacement takes effect, reading A
+  // gets B, base and current match, and the seed comes back empty.
+  const other = legal(withGrant(baseStore(), { expiry: "2099-01-01" }));
+  repo.write(".ctide/provenance.json", canonicalStoreBytes(other));
+  const treeB = repo.commit();
+  repo.putStore(other);
+
+  const sanity = await build(repo, treeA);
+  assert.deepStrictEqual(sanity.lifecycleAffectedClauses, [REQ("0B")], "before any replacement, A is A");
+
+  repo.git("replace", "-f", treeA, treeB);
+  assert.ok(repo.git("replace", "-l").includes(treeA.slice(0, 8)), "the replacement ref really exists");
+  // Proof the replacement is live for an unprotected reader: plain git resolves A to B's content.
+  const redirected = cp.execFileSync("git", ["cat-file", "-p", `${treeA}:.ctide/provenance.json`],
+    { cwd: repo.root, encoding: "utf8" });
+  assert.strictEqual(redirected, canonicalStoreBytes(other), "an unprotected read of A returns B");
+
+  const guarded = await build(repo, treeA);
+  assert.deepStrictEqual(guarded.lifecycleAffectedClauses, [REQ("0B")],
+    "the hardened reader still sees the real tree A, so the new clause is still a member");
+  assert.strictEqual(guarded.baseTreeOid, treeA);
+}));
+
+test("AC171 (A)(iii): a non-canonical clause id never reaches the carrier -- refused at schema", () => withRepo(async (repo) => {
+  repo.write("README.md", "hello\n");
+  const oid = repo.commit();
+  // Planted, because the writer refuses these now. Each is refused by G1 schema validation, which
+  // is the layer AC171 (iii) names -- not by the carrier guard, which is only defence in depth.
+  for (const [id, why] of [
+    ["REQ-8ZZZZZZZZZZZZZZZZZZZZZZZZZ", "overflow: 26x5=130 bits, lead byte must be 0-7"],
+    ["REQ-01arz3ndektsv4rrffq69g5fav", "lowercase"],
+    ["REQ-01ARZ3NDEKTSV4RRFFQ69G5FAO", "the O alias"],
+    ["REQ-01ARZ3NDEKTSV4RRFFQ69G5FA", "25 bytes"],
+    ["REQ-01ARZ3NDEKTSV4RRFFQ69G5FAV-2", "a suffix"],
+    ["REQ-a", "not a ULID at all"],
+  ]) {
+    const planted = JSON.parse(JSON.stringify(baseStore()));
+    planted.clauses.push({ id, authority: "approved-requirement", kind: "specification", text: "t", sourceRef: "S-hc", taskRef: "TASK-1" });
+    repo.write(".ctide/provenance.json", JSON.stringify(planted));
+    const e = await refused(build(repo, oid), `${JSON.stringify(id)} (${why})`, "E_CURRENT_STORE_SCHEMA");
+    assert.match(e.message, /E_CLAUSE_ID_GRAMMAR|not <PREFIX>-<ULID>/, "refused by the id grammar, at the schema layer");
+  }
 }));

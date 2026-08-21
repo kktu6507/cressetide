@@ -563,7 +563,7 @@ const SCRATCH_GRAPH = [
   "adapter-discovery-preimage.mjs", "adapter-content-view.mjs", "adapter-registry.mjs", "test-adapters.json",
   "changed-test-inventory.mjs", "explicit-config.mjs", "head-view-snapshot.mjs", "json-unique-members.mjs",
   "node-test-adapter.mjs", "parser-ignore-wrapper.mjs", "parser-ignore-worker.mjs",
-  "parser-ignore-worker-runner.mjs", "provenance-store.mjs",
+  "parser-ignore-worker-runner.mjs", "provenance-store.mjs", "git-object-read.mjs",
 ];
 
 function scratchShippedLayout() {

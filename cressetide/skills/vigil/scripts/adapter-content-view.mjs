@@ -22,16 +22,12 @@
 // no status, emits no artifact and writes nothing anywhere. A green run of this file satisfies
 // AC118, AC136, AC137 and AC138 not at all and does not lift the unsupported-populated-inventory
 // gate.
-import cp from "node:child_process";
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
 
 import { requireHeadViewSnapshot } from "./head-view-snapshot.mjs";
 import { compareCodePoint } from "./provenance-store.mjs";
-
-const execFile = promisify(cp.execFile);
+import { runGit, GitReadError, newControlledHome, gitEnvironment } from "./git-object-read.mjs";
 
 export class AdapterContentViewError extends Error {
   constructor(code, message, detail) {
@@ -52,8 +48,6 @@ const MODE_TYPE = new Map([
   ["120000", "symlink"],
 ]);
 
-const GIT_TIMEOUT_MS = 120_000;
-const GIT_MAX_BUFFER = 256 * 1024 * 1024;
 
 // --- canonical path grammar (step 1: lexical only) -------------------------------------------------
 
@@ -192,116 +186,18 @@ export function requireAdapterContentView(value, what) {
 // can move. GIT_DIR, GIT_OBJECT_DIRECTORY and the alternates list decide which store answers, and a
 // config include expanded through "~" can reach into a repository-local config the caller does not
 // own. The scrub below mirrors the principles HeadViewSnapshot established for the head side.
-//
-// KNOWN DUPLICATION, deliberately not resolved here: head-view-snapshot.mjs holds a related scrub as
-// module-private code. The two are no longer identical -- the base side additionally has to close
-// object REPLACEMENT and lazy fetching, neither of which can reach a head view built from worktree
-// bytes -- so unifying them now would mean merging two rule sets that have genuinely diverged.
-// Recorded as a follow-up rather than hidden.
-const GIT_REDIRECT_VARIABLES = new Set([
-  "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
-  "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CEILING_DIRECTORIES",
-]);
-const HOME_VARIABLES = ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "HOMEDRIVE", "HOMEPATH"];
-
-// Variables this module PINS rather than inherits. They are dropped case-insensitively during the
-// copy below and then written back with the one value that is correct here, so an inherited "",
-// "0", "false" or a lower/mixed-case spelling cannot survive to weaken the setting. Windows treats
-// environment names case-blind, so dropping by name alone would leave a second key behind and let
-// the child pick either one.
-//
-// GIT_NO_REPLACE_OBJECTS closes refs/replace. Without it, `baseTreeOid` names a tree and Git hands
-//   back a DIFFERENT one: a replacement ref installed for that object silently redirects every
-//   cat-file and ls-tree, so the "exact immutable Git tree" §11b.10 requires would be whatever the
-//   repository's replace refs currently point at. Measured on git 2.55.0.windows.3: with tree A
-//   replaced by tree B, capturing A returned B's paths and bytes end to end.
-// GIT_NO_LAZY_FETCH closes partial-clone demand fetching. Without it, a missing promisor object
-//   makes Git contact the remote, download it and WRITE it into .git/objects -- turning a read of
-//   the object database into a network operation and a mutation of the repository. A base capture
-//   that has to fetch has not observed the repository; it has changed it. Measured: two extra packs
-//   appeared and a blob that was provably absent became present.
-//
-// Neither is trusted ON ITS OWN: both closures are ALSO passed as command-line options, because a
-// Git build that does not recognise a variable ignores it in silence. See GIT_GLOBAL_OPTIONS below.
-const PINNED_VARIABLES = ["GIT_OPTIONAL_LOCKS", "GIT_NO_REPLACE_OBJECTS", "GIT_NO_LAZY_FETCH"];
-const EMPTY_GIT_CONFIG_FILE = "/dev/null";
-
-// A fresh, valid, absolute path that does not exist and is never created, rooted at the filesystem
-// root of the repository itself rather than anywhere the caller can steer through TEMP.
-function newControlledHome(canonicalRepoRoot) {
-  return path.join(path.parse(canonicalRepoRoot).root, `ctide-base-view-no-home-${crypto.randomUUID()}`);
-}
-
-function gitEnvironment(controlledHome) {
-  const env = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    const upper = key.toUpperCase();
-    if (GIT_REDIRECT_VARIABLES.has(upper)) continue;
-    if (upper === "GIT_CONFIG" || upper.startsWith("GIT_CONFIG_")) continue;
-    if (HOME_VARIABLES.includes(upper)) continue;
-    if (PINNED_VARIABLES.includes(upper)) continue;
-    env[key] = value;
-  }
-  env.GIT_OPTIONAL_LOCKS = "0";
-  // Pinned to "1", never merely "set": Git reads both as booleans, and an inherited "0" or "false"
-  // left in place would read as OFF.
-  env.GIT_NO_REPLACE_OBJECTS = "1";
-  env.GIT_NO_LAZY_FETCH = "1";
-  env.GIT_CONFIG_NOSYSTEM = "1";
-  env.GIT_CONFIG_GLOBAL = EMPTY_GIT_CONFIG_FILE;
-  env.HOME = controlledHome;
-  env.USERPROFILE = controlledHome;
-  env.XDG_CONFIG_HOME = controlledHome;
-  const drive = /^[A-Za-z]:/.test(controlledHome) ? controlledHome.slice(0, 2) : "";
-  env.HOMEDRIVE = drive;
-  env.HOMEPATH = drive === "" ? controlledHome : controlledHome.slice(2);
-  return env;
-}
-
-// The same two closures as command-line options, in front of every subcommand.
-//
-// WHY THE FLAGS AND NOT JUST THE ENVIRONMENT. An environment variable a Git build does not recognise
-// is silently ignored, so a version that predates GIT_NO_LAZY_FETCH would read GIT_NO_LAZY_FETCH=1,
-// do nothing with it, and go on to demand-fetch a missing promisor object over the network -- the
-// exact failure this component is supposed to make impossible. A command-line option cannot be
-// ignored: measured on git 2.55.0.windows.3, an unrecognised global option exits 129 with
-// "unknown option: …" BEFORE the subcommand runs and before any object is read. So the flag turns a
-// silent capability gap into a refusal, which is the direction this component fails in everywhere
-// else.
-//
-// The environment variables stay as defence in depth, for a Git that honours one spelling and not
-// the other.
-//
-// THE TRADE-OFF, taken deliberately: a Git old enough not to know one of these options now refuses
-// to capture at all rather than capturing under weaker guarantees. That is the correct direction --
-// reading a replaced tree, or silently completing a partial clone over the network, would each be a
-// wrong answer presented as a right one, while a refusal is merely an unavailable one.
-const GIT_GLOBAL_OPTIONS = ["--no-replace-objects", "--no-lazy-fetch"];
-
+// The hardened, read-only Git access -- the environment scrub, the GIT_NO_REPLACE_OBJECTS and
+// GIT_NO_LAZY_FETCH closures in both spellings, the controlled HOME and the runner -- now lives in
+// git-object-read.mjs, shared with every other component that reads the object database. It used
+// to be module-private here, with the duplication recorded as a follow-up; this is that follow-up.
+// Only the error mapping stays local, so this component's failure surface does not change.
 async function git(cwd, args, environment) {
-  // Global options go first, because Git parses them before the subcommand; putting them after
-  // would make them the subcommand's arguments instead.
-  const argv = [...GIT_GLOBAL_OPTIONS, ...args];
-  let result;
   try {
-    result = await execFile("git", argv, {
-      cwd,
-      env: environment,
-      encoding: "buffer",
-      timeout: GIT_TIMEOUT_MS,
-      maxBuffer: GIT_MAX_BUFFER,
-      shell: false,
-      windowsHide: true,
-    });
+    return await runGit(cwd, args, environment);
   } catch (error) {
-    const stderr = error && error.stderr ? error.stderr.toString("utf8").trim() : "";
-    // The WHOLE argv is reported, not a prefix of it: what this component actually ran is the only
-    // way a caller -- or a regression -- can establish that the isolation options were really passed
-    // rather than merely written down here.
-    throw fail("E_GIT_FAILED", `git ${args[0]} failed: ${stderr || (error && error.message) || "unknown error"}`,
-      { args: argv, stderr });
+    if (error instanceof GitReadError) throw fail("E_GIT_FAILED", error.message, error.detail);
+    throw error;
   }
-  return result.stdout;
 }
 
 function canonicalRepoRoot(repoRoot) {

@@ -10,19 +10,22 @@
 // The carrier is four keys, in memory only. Nothing here writes the store, .ctide/output/**, the
 // explicit config or the registry, and no failure returns a partial carrier.
 import path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 
 import {
   CANONICAL_STORE_PATH, PROVENANCE_VERSION, LEGACY_PROVENANCE_VERSION,
   emptyStore, canonicalStoreBytes, storeDigest, parseStore, canonicalJson, canonicalText,
-  compareCodePoint, sha256Hex, validateAll, validateLegacyV1, parseCanonicalExpiry,
+  compareCodePoint, sha256Hex, validateAll, validateStoreSchema, validateLegacyV1, parseCanonicalExpiry,
   isCanonicalClauseRef,
 } from "./provenance-store.mjs";
 import { withStableHeadView } from "./head-view-snapshot.mjs";
 // The fixed internal store-loader import AC171 (vii)'s shape-B proxy points at. One import, one
 // call site, one read per capture -- see current-store-load.mjs for why it is its own module.
 import { readCurrentStoreFile } from "./current-store-load.mjs";
+// The accepted hardened object-database reader, shared rather than re-implemented. Raw execFile
+// here was a real defect, not a style point: without --no-replace-objects a replacement ref makes
+// "read tree A" return tree B end to end, so the exact-tree witness this component is built on
+// would have been whatever refs/replace currently points at.
+import { runGit, GitReadError, newControlledHome, gitEnvironment } from "./git-object-read.mjs";
 
 export class GovernanceSeedPreimageError extends Error {
   constructor(code, message, detail) {
@@ -35,7 +38,6 @@ export class GovernanceSeedPreimageError extends Error {
 const fail = (code, message, detail) => new GovernanceSeedPreimageError(code, message, detail);
 
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-const execFileAsync = promisify(execFile);
 
 // Every alias §11b.10c enumerates, named individually so the refusal can say WHICH one was supplied
 // rather than only that the key set was wrong. A caller who can hand in any of these can decide what
@@ -134,6 +136,16 @@ function captureCurrentStore(repoRoot, label) {
       + `only ${PROVENANCE_VERSION} is a current store`,
       { label, provenanceVersion: store.provenanceVersion });
   }
+  // Authoritative schema validation, and it reads no clock. Doing it HERE is what lets T0 be
+  // sampled after "G1 parse/schema validation" and before the first time-dependent decision, per
+  // §11b.10c step 4 -- rather than after a validateAll() that would already have needed a clock.
+  try {
+    validateStoreSchema(store);
+  } catch (error) {
+    throw fail("E_CURRENT_STORE_SCHEMA",
+      `${label}: the current provenance store fails schema validation (${error && error.message})`,
+      { label, cause: error && error.code });
+  }
   return { present: true, store, digest: sha256Hex(canonicalStoreBytes(store)) };
 }
 
@@ -141,12 +153,18 @@ function captureCurrentStore(repoRoot, label) {
 // store as a stand-in would compare the run against itself and make lifecycleAffectedClauses
 // permanently empty -- which is why this never touches the working tree.
 async function captureBaseStore(repoRoot, baseTreeOid) {
+  // One controlled environment for the whole capture: the redirect variables scrubbed, HOME and
+  // the config files pointed nowhere, and object replacement and lazy fetching closed in BOTH
+  // spellings -- environment variable and command-line option -- because a Git that does not
+  // recognise a variable ignores it in silence while an unknown option is a refusal.
+  const environment = gitEnvironment(newControlledHome(repoRoot));
   const run = async (args) => {
-    const { stdout } = await execFileAsync("git", args, {
-      cwd: repoRoot, encoding: "buffer", maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, GIT_CONFIG_GLOBAL: path.join(repoRoot, ".git", "ctide-absent-config"), GIT_CONFIG_SYSTEM: "" },
-    });
-    return stdout;
+    try {
+      return await runGit(repoRoot, args, environment);
+    } catch (error) {
+      if (error instanceof GitReadError) throw fail("E_GIT_FAILED", error.message, error.detail);
+      throw error;
+    }
   };
   let type;
   try {
@@ -274,7 +292,12 @@ function directSourceRefs(clause) {
   if (clause.id.startsWith("REQ-")) return clause.sourceRef ? [clause.sourceRef] : [];
   const refs = [];
   for (const basis of clause.basisRefs || []) {
-    if (basis && typeof basis === "object" && basis.kind === "source" && typeof basis.ref === "string") refs.push(basis.ref);
+    // IS §4: a Source basis is a PLAIN "S-…" string. A free-form string that is not a source id is
+    // an ObservationalRef and is not followed; an object is a RecordRef or a typed ObservationalRef
+    // and is not followed either. The earlier { kind: "source", ref } shape does not exist in this
+    // model, so the check that looked for it never matched anything -- DEC and ASSUM drift was dead
+    // code rather than a passing case.
+    if (typeof basis === "string" && basis.startsWith("S-")) refs.push(basis);
   }
   return refs;
 }
@@ -395,15 +418,19 @@ export async function buildGovernanceSeedPreimage(request) {
   const stable = await withStableHeadView({
     repoRoot,
     evaluate: async (snapshot) => {
-      // G1: ONE fresh load. This parsed store serves validation, the digest and the derivation --
-      // nothing between them reads the file again.
+      // G1: ONE fresh load, parsed and schema-validated without reading any clock.
+      // This parsed store serves the validation, the digest and the derivation -- nothing between
+      // them reads the file again.
       const g1 = captureCurrentStore(repoRoot, "G1");
 
-      // T0 is sampled HERE: after G1's parse and schema validation, before the first
-      // time-dependent decision. Date.now() already returns a timezone-independent instant, so no
-      // conversion or localisation is applied, and it is never sampled at import time.
+      // T0 is sampled HERE and nowhere else: after G1's parse and schema validation succeeded,
+      // before the first time-dependent decision. An invalid G1 therefore fails with the clock
+      // never having been read at all. Date.now() already returns a timezone-independent instant,
+      // so no conversion or localisation is applied, and it is never sampled at import time.
       const t0 = Date.now();
 
+      // Everything time-dependent from here on uses that one T0: the full validation of both
+      // stores, exception applicability and expiry alike.
       if (g1.present) validateAll(g1.store, { now: t0 });
       if (base.present) {
         if (base.store.provenanceVersion === LEGACY_PROVENANCE_VERSION) validateLegacyV1(base.store, { now: t0 });
@@ -423,6 +450,12 @@ export async function buildGovernanceSeedPreimage(request) {
       // SAME current-store version rule as G1 -- so a v1 or unsupported G2 is a version/schema
       // failure on its own layer -- and only then are the canonical digests compared.
       const g2 = captureCurrentStore(repoRoot, "G2");
+      // Two layers, judged in order and never allowed to impersonate each other. captureCurrentStore
+      // has already applied G1's version and clock-free schema rules to G2; the full, time-dependent
+      // validation runs here under the SAME T0, no clock re-read. Only once G2 is a legal current
+      // store does the digest comparison mean anything -- otherwise a malformed G2 would be reported
+      // as "the store moved", which is a different and much more misleading fact.
+      if (g2.present) validateAll(g2.store, { now: t0 });
       // Presence is not an independent signal: a missing store and an explicitly canonical-empty
       // one hash to the same value, so both directions of missing<->empty pass here. A
       // missing->present transition fails only when the digests actually differ.

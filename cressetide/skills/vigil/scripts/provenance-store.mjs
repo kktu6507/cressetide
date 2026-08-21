@@ -1881,6 +1881,28 @@ function validateReopenCauseCoherence(index, now) {
   }
 }
 
+// The authoritative CLOCK-FREE half of validation: every validator in validateAll() that does not
+// take `now`, in the same order, and nothing else. It exists because TP §11b.10c step 4 puts T0
+// AFTER G1 parse and schema validation and before the first time-dependent decision, so a caller
+// needs a way to finish the clock-free half first and prove the clock was untouched while it ran.
+//
+// Not a second validator: these are the same functions validateAll() calls, and they are pure, so
+// a caller that runs this and then validateAll() gets the same verdict twice rather than a
+// different one. The two clock-taking members -- validateReopenCauseCoherence and
+// validateInvariants -- are deliberately absent; they belong after T0.
+export function validateStoreSchema(store) {
+  validateStructure(store);
+  const index = indexStore(store);
+  validateCarrierCoherence(index);
+  validateRefs(index);
+  validateMergeReconciliation(index);
+  validateTransitionMatrix(index);
+  validateGovernanceRulings(index);
+  validateRoutingOrigins(index);
+  validateTaskStatesAndHeads(index);
+  return { ok: true, index };
+}
+
 export function validateAll(store, options = {}) {
   const now = options.now === undefined ? Date.now() : options.now;
   validateStructure(store);
