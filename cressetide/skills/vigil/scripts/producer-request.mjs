@@ -4,7 +4,11 @@
 // refuse the same injection aliases, so the rule lives in one place. A second copy of an
 // anti-injection list is the same hazard as a second copy of a grammar: the weaker copy is the one
 // an attacker -- or a well-meaning caller -- finds, and nothing announces the divergence.
-export const PRODUCER_REQUEST_KEYS = ["baseTreeOid", "repoRoot"];
+// TP approved v1.16: three keys, not two. §7's REQ@DP binding needs currentTaskDpIds, which lives
+// on a TaskState, and a store may hold several -- so { repoRoot, baseTreeOid } cannot say which task
+// is current, and guessing is the move this model fails closed on everywhere else. taskId is a fact
+// the caller must state; it supplies no observed input, so it is not an injection.
+export const PRODUCER_REQUEST_KEYS = ["baseTreeOid", "repoRoot", "taskId"];
 
 // Every alias §11b.10c enumerates, named individually so a refusal can say WHICH one was supplied
 // rather than only that the key set was wrong. A caller who can hand in any of these decides what
@@ -55,12 +59,12 @@ export function checkProducerRequest(request, argumentCount, operation) {
     }
   }
   const sorted = [...keys].sort();
-  if (sorted.length !== 2 || sorted[0] !== PRODUCER_REQUEST_KEYS[0] || sorted[1] !== PRODUCER_REQUEST_KEYS[1]) {
+  if (sorted.length !== PRODUCER_REQUEST_KEYS.length || sorted.some((k, i) => k !== PRODUCER_REQUEST_KEYS[i])) {
     throw new ProducerRequestError("E_API_ARGUMENTS",
       `${operation} expects exactly ${JSON.stringify(PRODUCER_REQUEST_KEYS)}; got ${JSON.stringify(sorted)}`,
       { keys: sorted });
   }
-  const { repoRoot, baseTreeOid } = request;
+  const { repoRoot, baseTreeOid, taskId } = request;
   if (typeof repoRoot !== "string" || repoRoot.length === 0) {
     throw new ProducerRequestError("E_API_ARGUMENTS", `repoRoot must be a non-empty string; got ${JSON.stringify(repoRoot)}`);
   }
@@ -70,5 +74,11 @@ export function checkProducerRequest(request, argumentCount, operation) {
       + "An abbreviated OID, a ref name or a revision expression is refused rather than resolved",
       { baseTreeOid });
   }
-  return { repoRoot, baseTreeOid };
+  if (typeof taskId !== "string" || taskId.length === 0) {
+    throw new ProducerRequestError("E_API_ARGUMENTS",
+      `taskId must be a non-empty string; got ${JSON.stringify(taskId)}. It names which TaskState in the `
+      + "current store carries the currentTaskDpIds §7 resolves REQ@DP against, and a store may hold several",
+      { taskId });
+  }
+  return { repoRoot, baseTreeOid, taskId };
 }

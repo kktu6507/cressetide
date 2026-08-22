@@ -17,7 +17,9 @@ import path from "node:path";
 import cp from "node:child_process";
 
 import { root } from "./helpers.mjs";
-import { canonicalJson } from "../cressetide/skills/vigil/scripts/provenance-store.mjs";
+import {
+  canonicalJson, emptyStore, canonicalStoreBytes, storeDigest, CANONICAL_STORE_PATH,
+} from "../cressetide/skills/vigil/scripts/provenance-store.mjs";
 import {
   computeInventoryV2Digest, V2_INVENTORY_KEYS, parseCanonicalInventoryV2, parseInventory,
   UNSUPPORTED_POPULATED,
@@ -29,6 +31,20 @@ import {
 const SCRIPTS = path.join(root, "cressetide", "skills", "vigil", "scripts");
 const NODE_TEST = 'import { test } from "node:test";\n';
 const REQ_A = "REQ-01ARZ3NDEKTSV4RRFFQ69G5FAV";
+const TASK = "TASK-1";
+
+// TP v1.16: the request names a task, and the CURRENT store must carry a matching TaskState whose
+// baseProvenance witness equals the requested tree. The base-tree store cannot -- its oid depends on
+// its own bytes -- and need not: TaskState is not an immutable section, so B may have none.
+const withTask = (store, baseTreeOid, dpIds = []) => {
+  const s = JSON.parse(JSON.stringify(store));
+  s.taskStates = [{
+    taskId: TASK,
+    baseProvenance: { treeOid: baseTreeOid, storePath: CANONICAL_STORE_PATH, storeDigest: storeDigest(emptyStore()) },
+    currentTaskDpIds: dpIds,
+  }];
+  return s;
+};
 
 // --- fixtures -----------------------------------------------------------------------------------
 
@@ -47,7 +63,17 @@ function makeRepo(prefix = "ctide-prod-") {
   };
   return {
     root: dir, git, write,
-    commit: () => { git("add", "-A"); git("commit", "-qm", "c"); return git("rev-parse", "HEAD^{tree}"); },
+    commit: () => {
+      git("add", "-A"); git("commit", "-qm", "c");
+      const oid = git("rev-parse", "HEAD^{tree}");
+      // The current store carries the task; it is written AFTER the commit, so it is not in the tree.
+      write(".ctide/provenance.json", canonicalStoreBytes(withTask(emptyStore(), oid)));
+      return oid;
+    },
+    // Point the current task at a specific tree. Needed whenever a case commits twice and then
+    // requests the EARLIER tree: otherwise the task's baseProvenance witness names the later one and
+    // the run stops on E_TASK_BASE_MISMATCH before reaching the case under test.
+    useTask: (oid) => write(".ctide/provenance.json", canonicalStoreBytes(withTask(emptyStore(), oid))),
   };
 }
 
@@ -86,7 +112,7 @@ function runProducerIn(scratch, repoRoot, baseTreeOid) {
   fs.writeFileSync(script, [
     'const m = await import("./cressetide/skills/vigil/scripts/changed-test-inventory-producer.mjs");',
     "try {",
-    `  const out = await m.produceChangedTestInventoryV2({ repoRoot: ${JSON.stringify(repoRoot)}, baseTreeOid: ${JSON.stringify(baseTreeOid)} });`,
+    `  const out = await m.produceChangedTestInventoryV2({ repoRoot: ${JSON.stringify(repoRoot)}, baseTreeOid: ${JSON.stringify(baseTreeOid)}, taskId: "TASK-1" });`,
     "  console.log(JSON.stringify({ ok: true, keys: Object.keys(out).sort(), entries: out.entries.length, registryDigest: out.registryDigest }));",
     "} catch (e) { console.log(JSON.stringify({ ok: false, code: e.code, message: String(e.message) })); }",
   ].join("\n"), "utf8");
@@ -103,7 +129,7 @@ test("AC172 (1)(2): both preimages agree on baseTreeOid and headViewDigest, and 
   repo.write("a.test.mjs", `${NODE_TEST}// @src ${REQ_A}\ntest("alpha", () => {});\n`);
   const oid = repo.commit();
 
-  const out = await produceChangedTestInventoryV2({ repoRoot: repo.root, baseTreeOid: oid });
+  const out = await produceChangedTestInventoryV2({ repoRoot: repo.root, baseTreeOid: oid, taskId: TASK });
   assert.deepStrictEqual(Object.keys(out).sort(), [...V2_INVENTORY_KEYS].sort(), "exactly seven keys");
   assert.strictEqual(out.inventoryVersion, 2);
   assert.strictEqual(out.baseTreeOid, oid, "the envelope carries the requested tree, not a substitute");
@@ -123,7 +149,7 @@ test("AC172 (1)(2): both preimages agree on baseTreeOid and headViewDigest, and 
 test("AC172 (5): the producer request is exactly { repoRoot, baseTreeOid } and refuses every injection", () => withRepo(async (repo) => {
   repo.write("a.test.mjs", `${NODE_TEST}// @src ${REQ_A}\ntest("alpha", () => {});\n`);
   const oid = repo.commit();
-  await produceChangedTestInventoryV2({ repoRoot: repo.root, baseTreeOid: oid }); // the legal call works
+  await produceChangedTestInventoryV2({ repoRoot: repo.root, baseTreeOid: oid, taskId: TASK }); // the legal call works
 
   const e2 = await refused(
     produceChangedTestInventoryV2({ repoRoot: repo.root, baseTreeOid: oid }, { preimage: {} }),
@@ -146,7 +172,7 @@ test("AC172 (5): the producer request is exactly { repoRoot, baseTreeOid } and r
   await refused(produceChangedTestInventoryV2({ repoRoot: repo.root, baseTreeOid: oid, extra: 1 }), "an unknown key", "E_API_ARGUMENTS");
   await refused(produceChangedTestInventoryV2({ repoRoot: repo.root }), "a missing baseTreeOid", "E_API_ARGUMENTS");
   for (const bad of ["HEAD", "main", oid.slice(0, 8), oid.toUpperCase(), ""]) {
-    await refused(produceChangedTestInventoryV2({ repoRoot: repo.root, baseTreeOid: bad }),
+    await refused(produceChangedTestInventoryV2({ repoRoot: repo.root, baseTreeOid: bad, taskId: TASK }),
       `baseTreeOid ${JSON.stringify(bad)}`, "E_BASE_TREE_OID");
   }
 }));
@@ -162,6 +188,7 @@ test("AC172 (3): one side built against a DIFFERENT legal tree is fail-closed", 
   repo.write("b.test.mjs", `${NODE_TEST}test("beta", () => {});\n`);
   const treeB = repo.commit();
   assert.notStrictEqual(treeA, treeB);
+  repo.useTask(treeA);
 
   const scratch = scratchScripts("ctide-prod-xbind-oid-");
   try {
@@ -184,8 +211,8 @@ test("AC172 (4): one side carrying a DIFFERENT legal headViewDigest is fail-clos
   const scratch = scratchScripts("ctide-prod-xbind-hv-");
   try {
     patch(path.join(scratch, PRODUCER),
-      "const governance = await buildGovernanceSeedPreimage({ repoRoot, baseTreeOid });",
-      "const governance = { ...(await buildGovernanceSeedPreimage({ repoRoot, baseTreeOid })), "
+      "const discovery = await buildDiscoveryAnalysisPreimage({ repoRoot, baseTreeOid });",
+      "const discovery = { ...(await buildDiscoveryAnalysisPreimage({ repoRoot, baseTreeOid })), "
       + `headViewDigest: ${JSON.stringify(other)} };`);
     const out = runProducerIn(scratch, repo.root, oid);
     assert.strictEqual(out.ok, false, "two head views must not produce an envelope");
@@ -196,33 +223,33 @@ test("AC172 (4): one side carrying a DIFFERENT legal headViewDigest is fail-clos
   } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
 }));
 
-test("AC172 (6): registryDigest comes from the analysed preimage and nowhere else", () => withRepo(async (repo) => {
+test("AC172 (6): a second registry mixed into the envelope is fail-closed", () => withRepo(async (repo) => {
   repo.write("a.test.mjs", `${NODE_TEST}// @src ${REQ_A}\ntest("alpha", () => {});\n`);
   const oid = repo.commit();
 
-  const honest = await produceChangedTestInventoryV2({ repoRoot: repo.root, baseTreeOid: oid });
+  const honest = await produceChangedTestInventoryV2({ repoRoot: repo.root, baseTreeOid: oid, taskId: TASK });
 
-  // Shape B again: a second registry read, mixed in after the fact. The point of the case is that
-  // there is no legal way to do this -- so the evidence has to come from a scratch source copy --
-  // and that the value in the envelope is the one bound to the discovery preimage.
-  const scratch = scratchScripts("ctide-prod-registry-");
-  try {
-    patch(path.join(scratch, PRODUCER),
-      "const registryDigest = discovery.registryDigest;",
-      `const registryDigest = ${JSON.stringify("a".repeat(64))}; // RED: a second registry, mixed in`);
-    const out = runProducerIn(scratch, repo.root, oid);
-    assert.strictEqual(out.ok, true, "the mutated copy still runs, which is what makes the difference visible");
-    assert.notStrictEqual(out.registryDigest, honest.registryDigest,
-      "the mutated copy really does emit a different registryDigest");
-    assert.strictEqual(honest.registryDigest, "" + honest.registryDigest,
-      "and the production module takes it from the discovery preimage it analysed");
-  } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
-
-  // The binding itself, asserted on the production module: the envelope's registryDigest is the
-  // discovery preimage's, not a value read separately.
+  // The binding itself, on the production module: the envelope carries the digest the analysed
+  // discovery preimage is bound to.
   const { buildDiscoveryAnalysisPreimage } = await import("../cressetide/skills/vigil/scripts/adapter-discovery-preimage.mjs");
   const discovery = await buildDiscoveryAnalysisPreimage({ repoRoot: repo.root, baseTreeOid: oid });
   assert.strictEqual(honest.registryDigest, discovery.registryDigest);
+
+  // And the defensive branch. There is no legal way for a second registry to reach the envelope, so
+  // §11b.10c shape B is the only authorised way to see the guard fire: one edit, in a scratch source
+  // copy, in a child process. The earlier version of this test asserted the OPPOSITE -- that the
+  // mutated copy still returned -- which is exactly what the spec forbids.
+  const scratch = scratchScripts("ctide-prod-registry-");
+  try {
+    patch(path.join(scratch, PRODUCER),
+      "    registryDigest: discovery.registryDigest,",
+      `    registryDigest: ${JSON.stringify("a".repeat(64))}, // RED: a second registry, mixed in`);
+    const out = runProducerIn(scratch, repo.root, oid);
+    assert.strictEqual(out.ok, false, "a mixed second registry must be refused, not returned");
+    assert.strictEqual(out.code, "E_REGISTRY_BINDING");
+    assert.match(out.message, /a second registry may not be mixed in/);
+    assert.strictEqual(out.keys, undefined, "no envelope escapes");
+  } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
 }));
 
 // --- AC172: no partial result, and no side effects ------------------------------------------------
@@ -232,6 +259,7 @@ test("AC172: a cross-binding failure returns nothing at all and writes nothing",
   const treeA = repo.commit();
   repo.write("b.test.mjs", `${NODE_TEST}test("beta", () => {});\n`);
   const treeB = repo.commit();
+  repo.useTask(treeA);
 
   const before = repo.git("status", "--porcelain", "--untracked-files=all");
   const scratch = scratchScripts("ctide-prod-partial-");
@@ -254,7 +282,7 @@ test("AC172: a cross-binding failure returns nothing at all and writes nothing",
 test("AC173 (i)(j): the output passes the canonical reader AND the product entry point still refuses it", () => withRepo(async (repo) => {
   repo.write("a.test.mjs", `${NODE_TEST}// @src ${REQ_A}\ntest("alpha", () => {});\n`);
   const oid = repo.commit();
-  const out = await produceChangedTestInventoryV2({ repoRoot: repo.root, baseTreeOid: oid });
+  const out = await produceChangedTestInventoryV2({ repoRoot: repo.root, baseTreeOid: oid, taskId: TASK });
   const text = canonicalJson(out);
 
   // (i) the isolated canonical reader accepts what the producer wrote.

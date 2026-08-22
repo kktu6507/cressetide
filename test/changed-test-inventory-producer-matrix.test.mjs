@@ -22,10 +22,12 @@ import path from "node:path";
 import cp from "node:child_process";
 
 import {
-  emptyStore, canonicalStoreBytes, sha256Hex, validateAll, canonicalJson,
+  emptyStore, canonicalStoreBytes, sha256Hex, validateAll, canonicalJson, storeDigest,
+  CANONICAL_STORE_PATH,
 } from "../cressetide/skills/vigil/scripts/provenance-store.mjs";
 import { V2_INVENTORY_KEYS, computeInventoryV2Digest } from "../cressetide/skills/vigil/scripts/changed-test-inventory.mjs";
 import { produceChangedTestInventoryV2 } from "../cressetide/skills/vigil/scripts/changed-test-inventory-producer.mjs";
+import { root } from "./helpers.mjs";
 
 const NODE_TEST = 'import { test } from "node:test";\n';
 const NOW = Date.UTC(2026, 6, 26);
@@ -36,6 +38,21 @@ const REQ = (tail) => "REQ-" + U(tail);
 const CLAUSE_A = REQ("0A");   // in B and in C
 const CLAUSE_X = REQ("0X");   // only in C -- semanticallyChanged
 const CLAUSE_G = REQ("0G");   // in both; the governance-only cases move IT, not the tag
+
+const TASK = "TASK-1";
+
+// TP v1.16: the request names a task, and the CURRENT store must carry a matching TaskState whose
+// baseProvenance witness equals the requested tree. The base-tree store cannot -- its oid depends on
+// its own bytes -- and need not: TaskState is not an immutable section, so B may have none.
+const withTask = (store, baseTreeOid, dpIds = []) => {
+  const s = JSON.parse(JSON.stringify(store));
+  s.taskStates = [{
+    taskId: TASK,
+    baseProvenance: { treeOid: baseTreeOid, storePath: CANONICAL_STORE_PATH, storeDigest: storeDigest(emptyStore()) },
+    currentTaskDpIds: dpIds,
+  }];
+  return s;
+};
 
 // --- repository -----------------------------------------------------------------------------------
 
@@ -52,11 +69,15 @@ function makeRepo(prefix = "ctide-m-") {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, body, "utf8");
   };
+  let committed = null;
   return {
     root: dir, git, write,
     remove: (rel) => fs.rmSync(path.join(dir, rel), { force: true }),
-    commit: () => { git("add", "-A"); git("commit", "-qm", "c"); return git("rev-parse", "HEAD^{tree}"); },
-    putStore: (store) => write(".ctide/provenance.json", canonicalStoreBytes(store)),
+    commit: () => { git("add", "-A"); git("commit", "-qm", "c"); committed = git("rev-parse", "HEAD^{tree}"); return committed; },
+    // The CURRENT store always carries the task, witnessing the tree just committed. Base-side
+    // stores go through write() directly and stay task-free -- a base tree cannot name its own oid.
+    putStore: (store, dpIds) => write(".ctide/provenance.json",
+      canonicalStoreBytes(committed === null ? store : withTask(store, committed, dpIds))),
     bytes: (rel) => fs.readFileSync(path.join(dir, rel)),
   };
 }
@@ -129,8 +150,15 @@ const untagged = (name, body = "") => `${NODE_TEST}test("${name}", () => {${body
 
 const byPath = (entries) => Object.fromEntries(entries.map((e) => [e.testRef.path, e]));
 
+async function refusedProduce(repo, oid, what) {
+  let error = null;
+  try { await produce(repo, oid); } catch (e) { error = e; }
+  assert.ok(error && error.code, `${what}: expected a coded failure, got ${error}`);
+  return error;
+}
+
 async function produce(repo, oid) {
-  return produceChangedTestInventoryV2({ repoRoot: repo.root, baseTreeOid: oid });
+  return produceChangedTestInventoryV2({ repoRoot: repo.root, baseTreeOid: oid, taskId: TASK });
 }
 
 // --- AC173 (a): a previously BLOCKED cell, now reachable -------------------------------------------
@@ -178,46 +206,71 @@ test("AC173 (a): a new Clause reached by a retag yields exactly one retagged, ne
 
 // --- AC173 (b1)(b2)(b3): the three reachable governance-only cases --------------------------------
 
-const GOVERNANCE_ONLY = [
-  ["b1 transitionedClauses", { transitioned: true }, false],
-  ["b2 driftedClauses", { drifted: true }, true],
-  ["b3 expiredClauses", { expired: true }, true],
-];
+// A COLLISION v1.16 CREATES, recorded here rather than asserted away.
+//
+// AC173 (b1) and (b3) want a governance-affected entry for a test whose head binding points at a
+// clause the seed caught because it was RETIRED by a new Transition, or because its exception grant
+// EXPIRED. But §11b.10c v1.16 now charges the post-state binding shared §9's full postChangeBinding
+// row -- active, mechanicallyApplicable, Check A/B and a valid exception chain -- so a live head
+// binding to a retired or expired clause is fail-closed BEFORE any entry is emitted.
+//
+// The two requirements cannot both hold: a clause cannot be simultaneously a legal post-state
+// binding and retired/expired. Measured, not inferred -- the two cases below fail on
+// E_HEAD_BINDING_INACTIVE and E_HEAD_BINDING_NOT_APPLICABLE respectively. b2 (drift) is unaffected,
+// because drifting a Source does not make its clause inactive, and it is asserted normally.
+//
+// Nothing is worked around: the spec is untouched, the producer is not taught an exception, and the
+// two cells are asserted as they actually behave so the collision is visible to the next reviewer.
 
-for (const [label, flag, inBaseToo] of GOVERNANCE_ONLY) {
-  test(`AC173 (${label}): same path, same body, same tag, seed hit -> exactly one governance-affected`, () => withRepo(async (repo) => {
-    // The test file is byte-identical between base and head, and so is its tag. The only thing that
-    // moves is governance state, so §6 row 6 is the only row that can fire.
-    //
-    // Sources are immutable (INV-3), so for drift and expiry the SAME Source has to be in both
-    // stores -- the clause is not re-pointed. b2 changes only the head view; b3 changes nothing at
-    // all, because the grant is already past its expiry and T0 is what decides. b1 is the one case
-    // where the current store legitimately gains something: a new, append-only Transition.
-    repo.write("hit.test.mjs", tagged(CLAUSE_G, "hit"));
-    repo.write("miss.test.mjs", tagged(CLAUSE_A, "miss"));   // the single-variable control
-    repo.write("docs/policy.md", "the anchored sentence\n");
-    const shared = { clauses: [CLAUSE_A, CLAUSE_G], ...(inBaseToo ? flag : {}) };
-    repo.putStore(legal(storeWith(shared)));
-    const oid = repo.commit();
+test("AC173 (b1): a head binding to a RETIRED clause is fail-closed, so its governance-only cell is unreachable", () => withRepo(async (repo) => {
+  repo.write("hit.test.mjs", tagged(CLAUSE_G, "hit"));
+  repo.write("docs/policy.md", "the anchored sentence\n");
+  repo.write(".ctide/provenance.json", canonicalStoreBytes(legal(storeWith({ clauses: [CLAUSE_A, CLAUSE_G] }))));
+  const oid = repo.commit();
+  repo.putStore(legal(storeWith({ clauses: [CLAUSE_A, CLAUSE_G], transitioned: true })));
 
-    if (flag.drifted) repo.write("docs/policy.md", "gone\n"); // Check B -> zero occurrences
-    repo.putStore(legal(storeWith({ ...shared, ...flag })));
+  const e = await refusedProduce(repo, oid, "a head binding to a retired clause");
+  assert.strictEqual(e.code, "E_HEAD_BINDING_INACTIVE");
+  assert.match(e.message, /is not active in the current store/);
+}));
 
-    const out = await produce(repo, oid);
-    const map = byPath(out.entries);
+test("AC173 (b3): a head binding to an EXPIRED exception is fail-closed, so its cell is unreachable too", () => withRepo(async (repo) => {
+  repo.write("hit.test.mjs", tagged(CLAUSE_G, "hit"));
+  repo.write("docs/policy.md", "the anchored sentence\n");
+  const shared = { clauses: [CLAUSE_A, CLAUSE_G], expired: true };
+  repo.write(".ctide/provenance.json", canonicalStoreBytes(legal(storeWith(shared))));
+  const oid = repo.commit();
+  repo.putStore(legal(storeWith(shared)));
 
-    const hit = map["hit.test.mjs"];
-    assert.ok(hit, `${label}: the bound test must produce an entry`);
-    assert.strictEqual(hit.status, "governance-affected");
-    assert.strictEqual(hit.reason, "governance-affected", "status and reason hold together");
-    assert.strictEqual(hit.baseBodyDigest, hit.headBodyDigest, "both body digests are equal");
-    assert.deepStrictEqual(hit.tagBefore, hit.tagAfter, "tagBefore and tagAfter are canonically equal");
-    assert.deepStrictEqual(hit.tagAfter, { clauseRef: CLAUSE_G });
+  const e = await refusedProduce(repo, oid, "a head binding to an expired exception");
+  assert.strictEqual(e.code, "E_HEAD_BINDING_NOT_APPLICABLE");
+  assert.match(e.message, /not mechanically applicable/);
+}));
 
-    assert.ok(!("miss.test.mjs" in map), `${label}: the seed-miss control is omitted from entries`);
-    assert.strictEqual(out.entries.length, 1, `${label}: exactly one entry, got ${out.entries.length}`);
-  }));
-}
+test("AC173 (b2 driftedClauses): same path, same body, same tag, seed hit -> exactly one governance-affected", () => withRepo(async (repo) => {
+  // The one governance-only cell that survives v1.16: drift does not make a clause inactive.
+  repo.write("hit.test.mjs", tagged(CLAUSE_G, "hit"));
+  repo.write("miss.test.mjs", tagged(CLAUSE_A, "miss"));   // the single-variable control
+  repo.write("docs/policy.md", "the anchored sentence\n");
+  const shared = { clauses: [CLAUSE_A, CLAUSE_G], drifted: true };
+  repo.write(".ctide/provenance.json", canonicalStoreBytes(legal(storeWith(shared))));
+  const oid = repo.commit();
+
+  repo.write("docs/policy.md", "gone\n"); // Check B -> zero occurrences
+  repo.putStore(legal(storeWith(shared)));
+
+  const out = await produce(repo, oid);
+  const map = byPath(out.entries);
+  const hit = map["hit.test.mjs"];
+  assert.ok(hit, "the bound test must produce an entry");
+  assert.strictEqual(hit.status, "governance-affected");
+  assert.strictEqual(hit.reason, "governance-affected", "status and reason hold together");
+  assert.strictEqual(hit.baseBodyDigest, hit.headBodyDigest, "both body digests are equal");
+  assert.deepStrictEqual(hit.tagBefore, hit.tagAfter, "tagBefore and tagAfter are canonically equal");
+  assert.deepStrictEqual(hit.tagAfter, { clauseRef: CLAUSE_G });
+  assert.ok(!("miss.test.mjs" in map), "the seed-miss control is omitted from entries");
+  assert.strictEqual(out.entries.length, 1, `exactly one entry, got ${out.entries.length}`);
+}));
 
 // --- AC173 (c): governance never overrides precedence ---------------------------------------------
 
@@ -358,16 +411,23 @@ test("AC173 (d)(g)(h): unchanged is omitted, entries ascend strictly, the envelo
   assert.strictEqual(canonicalJson(out), canonicalJson(JSON.parse(canonicalJson(out))));
 }));
 
-test("AC173 (k): the store, the config, the registry and .ctide/output are byte-identical afterwards", () => withRepo(async (repo) => {
+test("AC173 (k): the store, the real config, the shipped registry and .ctide/output are byte-identical afterwards", () => withRepo(async (repo) => {
+  // The config path is .ctide/test-adapters-config.json -- explicit-config.mjs's EXPLICIT_CONFIG_PATH.
+  // An earlier version of this test guarded ".ctide/adapters.json", which no component reads, so it
+  // protected nothing.
+  const CONFIG = ".ctide/test-adapters-config.json";
+  const REGISTRY = path.join(root, "cressetide", "skills", "vigil", "scripts", "test-adapters.json");
+
   repo.write("a.test.mjs", tagged(CLAUSE_A, "a"));
-  repo.write(".ctide/adapters.json", '{"adapters":[]}\n'); // an explicit-config-shaped carrier
-  repo.putStore(legal(storeWith({ clauses: [CLAUSE_A] })));
+  repo.write(".ctide/provenance.json", canonicalStoreBytes(legal(storeWith({ clauses: [CLAUSE_A] }))));
   const oid = repo.commit();
+  repo.putStore(legal(storeWith({ clauses: [CLAUSE_A] })));
   repo.write("a.test.mjs", tagged(CLAUSE_A, "a", " const x = 2; void x;"));
 
   const before = {
     store: repo.bytes(".ctide/provenance.json"),
-    config: repo.bytes(".ctide/adapters.json"),
+    config: fs.existsSync(path.join(repo.root, CONFIG)) ? repo.bytes(CONFIG) : null,
+    registry: fs.readFileSync(REGISTRY),
     status: repo.git("status", "--porcelain", "--untracked-files=all"),
   };
   const out = await produce(repo, oid);
@@ -375,7 +435,9 @@ test("AC173 (k): the store, the config, the registry and .ctide/output are byte-
 
   assert.deepStrictEqual(repo.bytes(".ctide/provenance.json"), before.store,
     "the provenance store is byte-identical: not migrated, not written back");
-  assert.deepStrictEqual(repo.bytes(".ctide/adapters.json"), before.config, "the config carrier is byte-identical");
+  assert.strictEqual(fs.existsSync(path.join(repo.root, CONFIG)), before.config !== null,
+    "the producer neither creates nor removes the explicit config");
+  assert.deepStrictEqual(fs.readFileSync(REGISTRY), before.registry, "the shipped registry is byte-identical");
   assert.strictEqual(repo.git("status", "--porcelain", "--untracked-files=all"), before.status,
     "nothing appeared or changed anywhere in the repository");
   assert.ok(!fs.existsSync(path.join(repo.root, ".ctide", "output")), "no .ctide/output/** was created");

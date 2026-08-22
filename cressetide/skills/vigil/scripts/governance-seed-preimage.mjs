@@ -47,10 +47,10 @@ const ID_KEY = { sources: "sourceId", clauses: "id", transitions: "id", records:
 
 // The shared contract, re-wrapped into this component's error type so its failure surface is
 // unchanged. producer-request.mjs is the only place the alias list and the exact key set live.
-function requireRequest(request, argumentCount) {
+function requireRequest(request, argumentCount, operation = "buildGovernanceSeedPreimage") {
   try {
-    const { repoRoot, baseTreeOid } = checkProducerRequest(request, argumentCount, "buildGovernanceSeedPreimage");
-    return { repoRoot: path.resolve(repoRoot), baseTreeOid };
+    const { repoRoot, baseTreeOid, taskId } = checkProducerRequest(request, argumentCount, operation);
+    return { repoRoot: path.resolve(repoRoot), baseTreeOid, taskId };
   } catch (error) {
     if (error instanceof ProducerRequestError) throw fail(error.code, error.message, error.detail);
     throw error;
@@ -169,6 +169,31 @@ async function captureBaseStore(repoRoot, baseTreeOid) {
       { provenanceVersion: store.provenanceVersion });
   }
   return { present: true, store, digest: sha256Hex(canonicalStoreBytes(store)) };
+}
+
+// TP approved v1.16: taskId resolves against the SAME parsed G1, never a second read. A store may
+// hold several TaskStates, so "the current task" is a fact the caller states and this function
+// checks -- it is never inferred from DPs, the head view or any heuristic.
+function resolveTaskState(store, taskId, baseTreeOid) {
+  const matches = (store.taskStates || []).filter((t) => t.taskId === taskId);
+  if (matches.length === 0) {
+    throw fail("E_UNKNOWN_TASK",
+      `taskId ${JSON.stringify(taskId)} names no TaskState in the current store; §7 resolves REQ@DP against that task's currentTaskDpIds, so an unknown task is fail-closed rather than guessed`,
+      { taskId });
+  }
+  if (matches.length > 1) {
+    throw fail("E_AMBIGUOUS_TASK",
+      `taskId ${JSON.stringify(taskId)} matches ${matches.length} TaskStates; the store is internally inconsistent and no task may be chosen from among them`,
+      { taskId, matches: matches.length });
+  }
+  const [taskState] = matches;
+  const witness = taskState.baseProvenance && taskState.baseProvenance.treeOid;
+  if (witness !== baseTreeOid) {
+    throw fail("E_TASK_BASE_MISMATCH",
+      `task ${taskId} records baseProvenance.treeOid ${JSON.stringify(witness)} but the request names ${JSON.stringify(baseTreeOid)}; neither side is preferred and the run stops`,
+      { taskId, taskState: witness, request: baseTreeOid });
+  }
+  return taskState;
 }
 
 // --- cross-snapshot immutability ---------------------------------------------------------------
@@ -367,35 +392,33 @@ function deepFreeze(value) {
 
 // --- the operation -------------------------------------------------------------------------------
 
-export async function buildGovernanceSeedPreimage(request) {
-  const { repoRoot, baseTreeOid } = requireRequest(request, arguments.length);
-
+// The shared core. §11b.10c v1.16 forbids the producer from taking a FINISHED four-key carrier --
+// G2 already done -- and then validating bindings with G1 afterwards: that puts the binding decision
+// after the store was declared unchanged, so G2 no longer witnesses the interval it claims to.
+//
+// So the ordering lives here, once, and both operations run through it: G1 and its clock-free schema
+// validation, then T0, then taskId resolution, then the seed, then whatever G1-dependent work the
+// caller passes as `work`, and only after the LAST use of G1 does G2 run. `work` receives the
+// retained context -- parsed B, parsed G1, the chosen TaskState and T0 -- which stays inside this
+// invocation: it is not a fifth carrier field, not a public operation, not a caller entry point and
+// not persisted.
+export async function runWithGovernanceContext(request, argumentCount, operation, work) {
+  const { repoRoot, baseTreeOid, taskId } = requireRequest(request, argumentCount, operation);
   const base = await captureBaseStore(repoRoot, baseTreeOid);
 
-  // One head view, stability-checked across S1/S2. The whole governance analysis happens inside,
-  // so an unstable head view stops the run instead of producing a carrier from two different heads.
   const stable = await withStableHeadView({
     repoRoot,
     evaluate: async (snapshot) => {
-      // G1: ONE fresh load, parsed and schema-validated without reading any clock.
-      // This parsed store serves the validation, the digest and the derivation -- nothing between
-      // them reads the file again.
       const g1 = captureCurrentStore(repoRoot, "G1");
-
-      // T0 is sampled HERE and nowhere else: after G1's parse and schema validation succeeded,
-      // before the first time-dependent decision. An invalid G1 therefore fails with the clock
-      // never having been read at all. Date.now() already returns a timezone-independent instant,
-      // so no conversion or localisation is applied, and it is never sampled at import time.
       const t0 = Date.now();
 
-      // Everything time-dependent from here on uses that one T0: the full validation of both
-      // stores, exception applicability and expiry alike.
       if (g1.present) validateAll(g1.store, { now: t0 });
       if (base.present) {
         if (base.store.provenanceVersion === LEGACY_PROVENANCE_VERSION) validateLegacyV1(base.store, { now: t0 });
         else validateAll(base.store, { now: t0 });
       }
 
+      const taskState = resolveTaskState(g1.store, taskId, baseTreeOid);
       assertCrossSnapshotImmutability(base.store, g1.store);
 
       const lifecycleAffectedClauses = canonicalUnion(
@@ -405,33 +428,37 @@ export async function buildGovernanceSeedPreimage(request) {
         expiredClauses(g1.store, t0),
       );
 
-      // G2: the second and last fresh load, after the closure and before returning. It applies the
-      // SAME current-store version rule as G1 -- so a v1 or unsupported G2 is a version/schema
-      // failure on its own layer -- and only then are the canonical digests compared.
+      // Everything the caller needs G1 for happens HERE, before G2 is taken.
+      const value = work === undefined ? undefined : await work({
+        base: base.store, current: g1.store, taskState, t0, snapshot, lifecycleAffectedClauses,
+      });
+
+      // G2: after the last use of G1, before anything is returned. Same version and clock-free
+      // schema rules as G1, then the full time-dependent validation under the SAME T0, and only
+      // then the digest comparison -- a malformed G2 must not be reported as "the store moved".
       const g2 = captureCurrentStore(repoRoot, "G2");
-      // Two layers, judged in order and never allowed to impersonate each other. captureCurrentStore
-      // has already applied G1's version and clock-free schema rules to G2; the full, time-dependent
-      // validation runs here under the SAME T0, no clock re-read. Only once G2 is a legal current
-      // store does the digest comparison mean anything -- otherwise a malformed G2 would be reported
-      // as "the store moved", which is a different and much more misleading fact.
       if (g2.present) validateAll(g2.store, { now: t0 });
-      // Presence is not an independent signal: a missing store and an explicitly canonical-empty
-      // one hash to the same value, so both directions of missing<->empty pass here. A
-      // missing->present transition fails only when the digests actually differ.
       if (g2.digest !== g1.digest) {
         throw fail("E_STORE_MOVED",
           `the current provenance store changed while the governance seed was being derived (G1 ${g1.digest}, G2 ${g2.digest}); no carrier is produced`,
           { g1: g1.digest, g2: g2.digest });
       }
-
-      return { inputProvenanceStoreDigest: g1.digest, lifecycleAffectedClauses };
+      return { inputProvenanceStoreDigest: g1.digest, lifecycleAffectedClauses, value };
     },
   });
 
-  return deepFreeze({
-    baseTreeOid,
-    headViewDigest: stable.snapshot.headViewDigest,
-    inputProvenanceStoreDigest: stable.value.inputProvenanceStoreDigest,
-    lifecycleAffectedClauses: stable.value.lifecycleAffectedClauses,
-  });
+  return {
+    carrier: deepFreeze({
+      baseTreeOid,
+      headViewDigest: stable.snapshot.headViewDigest,
+      inputProvenanceStoreDigest: stable.value.inputProvenanceStoreDigest,
+      lifecycleAffectedClauses: stable.value.lifecycleAffectedClauses,
+    }),
+    value: stable.value.value,
+  };
+}
+
+export async function buildGovernanceSeedPreimage(request) {
+  const { carrier } = await runWithGovernanceContext(request, arguments.length, "buildGovernanceSeedPreimage");
+  return carrier;
 }
