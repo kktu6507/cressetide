@@ -85,8 +85,14 @@ inconsistency the Authority split above says must stop work: the manifest would 
   in a current registry.
 - **Scope.** Dependency selection, resource policy, the vendored bytes and the wrapper contract are
   all unchanged. This amendment authorizes an identity change and nothing else.
-- **Authorization.** The user explicitly authorized the `node-test-v2` executable and identity
-  rollout on 2026-08-22, after the coupled-set promotion of test-provenance v1.16 on the same day.
+- **Authorization, and who gave it.** The user granted Codex roadmap decision authority; the
+  immediate authorization to begin the `node-test-v2` executable and identity rollout on
+  2026-08-22 came from **Codex under that delegation**, not from a fresh explicit user approval on
+  the day. The distinction is recorded because this is an authorization record: the 2026-08-09
+  decision above rests on a direct user approval, this one rests on a delegated one, and conflating
+  them would overstate the provenance of the later change. The user's own explicit approval that
+  day was of the test-provenance v1.16 spec promotion, which is a different act -- promoting the
+  contract, not authorizing the artifacts to move.
   The manifest carries the matching `approvedOn: 2026-08-22`, with `previousApprovedOn:
   "2026-08-09"` and `reauthorizedFor` naming the identity move, so the ADR and the manifest agree
   again and the authorization packet is internally consistent.

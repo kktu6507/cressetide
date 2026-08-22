@@ -18,7 +18,7 @@
 // forms) are line-oriented because 11b.8c defines them on physical lines, not as a shortcut around
 // the tree.
 //
-// FAIL-CLOSED: every path that cannot be classified under the closed v1 profile throws. Silence is
+// FAIL-CLOSED: every path that cannot be classified under the closed v2 profile throws. Silence is
 // never an answer here: an unclassified call, an unattached directive or an unresolvable helper
 // makes the whole module fail, because a missing oracle edge is exactly the failure this model
 // exists to prevent.
