@@ -27,7 +27,7 @@ import { pathToFileURL } from "node:url";
 
 import {
   TestAdapterRegistryError, loadTestAdapterRegistry, loadTestAdapterRegistryRoot,
-  readTestAdapterRegistryRootFresh,
+  readTestAdapterRegistryRootFresh, resolveAdapterComponent,
 } from "../cressetide/skills/vigil/scripts/adapter-registry.mjs";
 import { loadVendorCapability } from "../cressetide/skills/vigil/scripts/parser-ignore-wrapper.mjs";
 import { root } from "./support.mjs";
@@ -268,7 +268,7 @@ test("registry: implementationIdentity shape and agreement", async () => {
   await expectScratch("E_REGISTRY_SHAPE", (r) => { delete r.adapters[0].implementationIdentity.parserId; }, "identity missing a key");
   await expectScratch("E_REGISTRY_SHAPE", (r) => { r.adapters[0].implementationIdentity.extra = "x"; }, "identity with an undeclared key");
   await expectScratch("E_REGISTRY_SHAPE", (r) => { r.adapters[0].implementationIdentity.parserVersion = ""; }, "identity field empty");
-  await expectScratch("E_REGISTRY_SHAPE", (r) => { r.adapters[0].implementationIdentity.implementationId = "node-test-v2"; },
+  await expectScratch("E_REGISTRY_SHAPE", (r) => { r.adapters[0].implementationIdentity.implementationId = "node-test-v3"; },
     "identity implementationId disagrees with the adapter's");
   await expectScratch("E_REGISTRY_IDENTITY", (r) => { r.adapters[0].implementationIdentity.parserId = "espree"; },
     "parserId disagrees with the shipped manifest");
@@ -307,8 +307,8 @@ test("registry: an identity field must obey the ID-token grammar even when the m
 
 test("registry: unknown implementationId fails closed without any module lookup", async () => {
   await expectScratch("E_REGISTRY_UNSUPPORTED", (r) => {
-    r.adapters[0].implementationId = "node-test-v2";
-    r.adapters[0].implementationIdentity.implementationId = "node-test-v2";
+    r.adapters[0].implementationId = "node-test-v3";
+    r.adapters[0].implementationIdentity.implementationId = "node-test-v3";
   }, "unknown implementationId");
   // A name that looks like a path must not become one: still just an unknown token.
   await expectScratch("E_REGISTRY_SHAPE", (r) => {
@@ -317,7 +317,7 @@ test("registry: unknown implementationId fails closed without any module lookup"
   }, "implementationId shaped like a module path");
 });
 
-test("registry: the node-test-v1 binding row is exact in every column", async () => {
+test("registry: the node-test-v2 binding row is exact in every column", async () => {
   await expectScratch("E_REGISTRY_UNSUPPORTED", (r) => { r.adapters[0].language = "typescript"; }, "wrong language");
   await expectScratch("E_REGISTRY_UNSUPPORTED", (r) => { r.adapters[0].framework = "vitest"; }, "wrong framework");
   await expectScratch("E_REGISTRY_UNSUPPORTED", (r) => { r.adapters[0].attachmentRule = "decorator"; }, "wrong attachmentRule");
@@ -486,4 +486,34 @@ test("registry: raw duplicate member names are refused before any schema or valu
 test("registry: malformed JSON still uses the shape error family, not the duplicate one", async () => {
   await expectScratch("E_REGISTRY_SHAPE", () => "{ not json", "a malformed registry");
   await expectScratch("E_REGISTRY_SHAPE", () => '{"registryVersion":1,"adapters":[]}extra', "trailing content");
+});
+
+// --- TP approved v1.16 AC175 (8c): node-test-v2 needs all four carriers to agree ------------------
+
+test("AC175 (8c): the shipped registry, vendor manifest, compiled mapping and component all say node-test-v2", () => {
+  // The positive. An identity means "same identity => same bytes => same digest", so it is only
+  // meaningful when every carrier of it agrees. This asserts the real shipped tree, not a fixture.
+  const registry = loadTestAdapterRegistry();
+  const [adapter] = registry.adapters;
+  assert.strictEqual(adapter.implementationId, "node-test-v2", "formal registry");
+  assert.strictEqual(adapter.implementationIdentity.implementationId, "node-test-v2", "registry identity block");
+  assert.strictEqual(MANIFEST.implementationIdentity.implementationId, "node-test-v2", "vendor manifest");
+  const component = resolveAdapterComponent("node-test-v2");
+  assert.strictEqual(component.implementationId, "node-test-v2", "executable component self-report");
+});
+
+test("AC175 (8c): a registry-only bump fails closed -- the manifest still saying v1 is not an upgrade", async () => {
+  // The case the spec names. Moving the registry alone leaves an old and a new writer sharing one
+  // identity while disagreeing on the digest, which is exactly what the identity exists to prevent.
+  await expectScratch("E_REGISTRY_IDENTITY", () => {}, "registry at v2, manifest still v1",
+    (m) => { m.implementationIdentity.implementationId = "node-test-v1"; });
+});
+
+test("AC175 (8c): a registry left at the historical v1 fails closed against the compiled mapping", async () => {
+  // The other direction. node-test-v1 is a historical identity: it must not resolve in a current
+  // registry, whatever the manifest says.
+  await expectScratch("E_REGISTRY_UNSUPPORTED", (r) => {
+    r.adapters[0].implementationId = "node-test-v1";
+    r.adapters[0].implementationIdentity.implementationId = "node-test-v1";
+  }, "registry back at the historical v1", (m) => { m.implementationIdentity.implementationId = "node-test-v1"; });
 });

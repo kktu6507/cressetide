@@ -25,7 +25,7 @@ import {
   DiscoveryPreimageError, buildDiscoveryAnalysisPreimage,
 } from "../cressetide/skills/vigil/scripts/adapter-discovery-preimage.mjs";
 import { createAdapterContentView } from "../cressetide/skills/vigil/scripts/adapter-content-view.mjs";
-import { nodeTestV1Component } from "../cressetide/skills/vigil/scripts/node-test-adapter.mjs";
+import { nodeTestV2Component } from "../cressetide/skills/vigil/scripts/node-test-adapter.mjs";
 import { captureHeadViewSnapshot } from "../cressetide/skills/vigil/scripts/head-view-snapshot.mjs";
 import { loadTestAdapterRegistryRoot } from "../cressetide/skills/vigil/scripts/adapter-registry.mjs";
 import { canonicalJson, sha256Hex } from "../cressetide/skills/vigil/scripts/provenance-store.mjs";
@@ -666,7 +666,7 @@ test("AC165 a local assertion helper is a body discriminator on its own", async 
 
     // The fixture's premise, checked through the component's own API: the closure is exactly the
     // helper, as a whole-file dependency. If it were empty, the assertion below would prove nothing.
-    const closure = await nodeTestV1Component.analyzeModule({
+    const closure = await nodeTestV2Component.analyzeModule({
       view: createAdapterContentView({
         "a.test.mjs": Buffer.from(declarationModule, "utf8"),
         "h.mjs": Buffer.from(fs.readFileSync(path.join(repo.root, "h.mjs"))),

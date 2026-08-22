@@ -30,7 +30,7 @@ import { canonicalJson } from "../cressetide/skills/vigil/scripts/provenance-sto
 const OID = "a".repeat(40);
 const HEAD_VIEW_DIGEST = "b".repeat(64);
 const REGISTRY_DIGEST = "c".repeat(64);
-const IDENTITY = Object.freeze({ implementationId: "node-test-v1", parserId: "acorn", parserVersion: "8.18.0" });
+const IDENTITY = Object.freeze({ implementationId: "node-test-v2", parserId: "acorn", parserVersion: "8.18.0" });
 const digest = (seed) => seed.padStart(64, "0").slice(-64).replace(/[^0-9a-f]/g, "0");
 
 // --- synthetic preimage construction ----------------------------------------------------------------

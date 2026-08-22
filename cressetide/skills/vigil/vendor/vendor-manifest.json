@@ -13,7 +13,7 @@
     "runtimeNetwork": false
   },
   "implementationIdentity": {
-    "implementationId": "node-test-v1",
+    "implementationId": "node-test-v2",
     "parserId": "acorn",
     "parserVersion": "8.18.0"
   },

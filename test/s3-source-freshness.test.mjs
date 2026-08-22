@@ -79,7 +79,7 @@ const ENTRY = {
   baseBodyDigest: sha256Hex("base body"),
   headBodyDigest: sha256Hex("head body"),
   framework: "node:test",
-  implementationIdentity: { implementationId: "node-test-v1", parserId: "acorn", parserVersion: "8.18.0" },
+  implementationIdentity: { implementationId: "node-test-v2", parserId: "acorn", parserVersion: "8.18.0" },
 };
 
 function envelopeText({ headViewDigest, registryDigest }) {

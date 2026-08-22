@@ -3,7 +3,7 @@
 //
 // SCOPE NOTE: these tests exercise the WRAPPER ONLY. Nothing here asserts declaration discovery,
 // node:test or node:assert binding classification, stableId/structuralId or oracle closure -- that
-// layer is the node-test-v1 component, and it has its own file, test/node-test-adapter.test.mjs.
+// layer is the node-test-v2 component, and it has its own file, test/node-test-adapter.test.mjs.
 // Adapter selection and inventory production are asserted nowhere, because neither is implemented.
 // A green run of this file does not mean a producer, a populated inventory or Phase 2 is ready.
 //

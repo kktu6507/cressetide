@@ -566,7 +566,7 @@ test("TP AC158: a fully canonical POPULATED v2 inventory is readable, and the pr
       baseBodyDigest: sha256Hex("base body"),
       headBodyDigest: sha256Hex("head body"),
       framework: "node:test",
-      implementationIdentity: { implementationId: "node-test-v1", parserId: "acorn", parserVersion: "8.18.0" },
+      implementationIdentity: { implementationId: "node-test-v2", parserId: "acorn", parserVersion: "8.18.0" },
     }],
   };
   // canonicalJson emits every object with its members in code-point order, which is exactly what the

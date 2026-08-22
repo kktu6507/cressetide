@@ -26,7 +26,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { JsonMemberScanError, assertUniqueJsonMembers } from "./json-unique-members.mjs";
-import { nodeTestV1Component } from "./node-test-adapter.mjs";
+import { nodeTestV2Component } from "./node-test-adapter.mjs";
 import { loadVendorCapability } from "./parser-ignore-wrapper.mjs";
 
 export class TestAdapterRegistryError extends Error {
@@ -50,7 +50,7 @@ const ID_TOKEN = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
 // model fixes, not values borrowed from the manifest: the manifest owns dependency identity, and
 // nothing from it is duplicated here.
 const IMPLEMENTATIONS = {
-  "node-test-v1": {
+  "node-test-v2": {
     language: "javascript",
     framework: "node:test",
     testDeclarationPatternIds: ["node-test-call"],
@@ -69,7 +69,7 @@ const IMPLEMENTATIONS = {
 // it is a table of already-imported objects -- there is no name-to-path step anywhere in it, so an
 // unknown implementationId cannot become a module load however it is spelled.
 const COMPONENTS = {
-  "node-test-v1": nodeTestV1Component,
+  "node-test-v2": nodeTestV2Component,
 };
 
 // The two closed tables describe the same closed set from two sides, so they must not drift: a

@@ -23,7 +23,7 @@ import {
   isAdapterContentView, projectHeadAdapterContentView, requireAdapterContentView, requireCanonicalViewPath,
 } from "../cressetide/skills/vigil/scripts/adapter-content-view.mjs";
 import { captureHeadViewSnapshot, withStableHeadView } from "../cressetide/skills/vigil/scripts/head-view-snapshot.mjs";
-import { createContentView, nodeTestV1Component } from "../cressetide/skills/vigil/scripts/node-test-adapter.mjs";
+import { createContentView, nodeTestV2Component } from "../cressetide/skills/vigil/scripts/node-test-adapter.mjs";
 import { compareCodePoint } from "../cressetide/skills/vigil/scripts/provenance-store.mjs";
 
 const B = (text) => Buffer.from(text, "utf8");
@@ -181,7 +181,7 @@ test("11b.10 the adapter and the projections share ONE brand, not two compatible
     "package.json": B('{"type":"module"}\n'),
     "a.test.mjs": B('import { test } from "node:test";\ntest("n", () => {});\n'),
   });
-  const analysis = await nodeTestV1Component.analyzeView({ view: shared, modulePaths: ["a.test.mjs"] });
+  const analysis = await nodeTestV2Component.analyzeView({ view: shared, modulePaths: ["a.test.mjs"] });
   assert.strictEqual(analysis.modules.length, 1);
   assert.strictEqual(analysis.modules[0].declarations[0].structuralId, 's:["n"]');
 });
@@ -192,13 +192,13 @@ test("11b.10 a symlink is never parsed as a module, and a symlinked package.json
     "linked.test.mjs": { mode: "120000", bytes: B("real.test.mjs") },
     "real.test.mjs": { mode: "100644", bytes: B('import { test } from "node:test";\ntest("n", () => {});\n') },
   });
-  await refused(nodeTestV1Component.analyzeModule({ view, path: "linked.test.mjs" }), "a symlink module", "E_ENTRY_TYPE");
+  await refused(nodeTestV2Component.analyzeModule({ view, path: "linked.test.mjs" }), "a symlink module", "E_ENTRY_TYPE");
 
   const manifestLink = createAdapterContentView({
     "package.json": { mode: "120000", bytes: B("elsewhere/package.json") },
     "a.test.js": { mode: "100644", bytes: B('import { test } from "node:test";\ntest("n", () => {});\n') },
   });
-  await refused(nodeTestV1Component.analyzeModule({ view: manifestLink, path: "a.test.js" }), "a symlinked manifest", "E_ENTRY_TYPE");
+  await refused(nodeTestV2Component.analyzeModule({ view: manifestLink, path: "a.test.js" }), "a symlinked manifest", "E_ENTRY_TYPE");
 });
 
 // --- base projection ------------------------------------------------------------------------------------
@@ -420,7 +420,7 @@ test("11b.10 head: a projection built inside evaluate is the object the adapter 
       repoRoot: repo.root,
       evaluate: async (s1) => {
         const view = projectHeadAdapterContentView(s1);
-        return nodeTestV1Component.analyzeView({ view, modulePaths: ["a.test.mjs"] });
+        return nodeTestV2Component.analyzeView({ view, modulePaths: ["a.test.mjs"] });
       },
     });
     assert.strictEqual(stable.value.modules[0].declarations[0].structuralId, 's:["inside evaluate"]');

@@ -1,4 +1,4 @@
-// Coverage for the node-test-v1 executable adapter component:
+// Coverage for the node-test-v2 executable adapter component:
 // cressetide/skills/vigil/scripts/node-test-adapter.mjs, plus the closed implementationId ->
 // component mapping wired into adapter-registry.mjs.
 //
@@ -25,7 +25,7 @@ import {
   analyzeModule,
   analyzeView,
   createContentView,
-  nodeTestV1Component,
+  nodeTestV2Component,
 } from "../cressetide/skills/vigil/scripts/node-test-adapter.mjs";
 import { loadTestAdapterRegistry, resolveAdapterComponent } from "../cressetide/skills/vigil/scripts/adapter-registry.mjs";
 import { loadVendorCapability } from "../cressetide/skills/vigil/scripts/parser-ignore-wrapper.mjs";
@@ -60,6 +60,7 @@ const ULID_MIN = "0".repeat(26);
 const ULID_MAX = `7${"Z".repeat(25)}`;
 const REQ = `REQ-${ULID_MIN}`;
 const DEC = `DEC-${ULID_MAX}`;
+const REQ_OTHER = `REQ-${ULID_MAX}`;
 const DP = `DP-${ULID_MAX}`;
 
 const HEAD = ['import test from "node:test";', 'import assert from "node:assert";'];
@@ -500,6 +501,50 @@ test("the range is the outermost ExpressionStatement, so a semicolon is inside i
   assert.notStrictEqual(withSemicolon, without, "a lone semicolon must move the digest");
 });
 
+// --- TP approved v1.16 AC175: @src leaves the canonical declaration bytes -------------------------
+
+test("AC175 (1): a tag-only change leaves the canonical bytes identical", async () => {
+  // The whole point of the v1.16 exclusion. Under v1.15 these two differed, which made §6 row 5
+  // (retagged) unreachable because row 4 (modified) always fired first.
+  const a = await digestOfSource(`// @src ${REQ}`, 'test("n", () => { assert.ok(1); });');
+  const b = await digestOfSource(`// @src ${REQ_OTHER}`, 'test("n", () => { assert.ok(1); });');
+  assert.strictEqual(a, b, "only the tag moved, so the declaration digest must not");
+  // And a real body change still moves it, so the exclusion did not blunt the digest.
+  const moved = await digestOfSource(`// @src ${REQ}`, 'test("n", () => { assert.ok(2); });');
+  assert.notStrictEqual(moved, a, "a body change still moves the digest");
+});
+
+test("AC175 (2): @tid and @src are removed by ONE algorithm, in one scan", async () => {
+  // All four combinations of the two directives hash to the same bytes: neither is special-cased,
+  // and there is no second range or second digest for @src.
+  const neither = await digestOfSource('test("n", () => { assert.ok(1); });');
+  const srcOnly = await digestOfSource(`// @src ${REQ}`, 'test("n", () => { assert.ok(1); });');
+  const tidOnly = await digestOfSource("// @tid alpha", 'test("n", () => { assert.ok(1); });');
+  const both = await digestOfSource(`// @src ${REQ}`, "// @tid alpha", 'test("n", () => { assert.ok(1); });');
+  const bothSwapped = await digestOfSource("// @tid alpha", `// @src ${REQ}`, 'test("n", () => { assert.ok(1); });');
+  for (const [label, value] of [["src only", srcOnly], ["tid only", tidOnly], ["both", both], ["both, swapped", bothSwapped]]) {
+    assert.strictEqual(value, neither, `${label} must hash to the same bytes as no directive at all`);
+  }
+});
+
+test("AC175 (3): an ordinary comment that merely mentions @src is NOT a directive and stays hashed", async () => {
+  // §11b.8c decides what a directive is. A comment that does not match its exact lexical form is
+  // content, and removing it would silently widen the exclusion.
+  const base = await digestOfSource(`// @src ${REQ}`, "// a note", 'test("n", () => { assert.ok(1); });');
+  const changed = await digestOfSource(`// @src ${REQ}`, "// a note about @src", 'test("n", () => { assert.ok(1); });');
+  assert.notStrictEqual(changed, base, "an ordinary comment is inside the range, whatever it mentions");
+  const other = await digestOfSource(`// @src ${REQ}`, "// a note about @tid", 'test("n", () => { assert.ok(1); });');
+  assert.notStrictEqual(other, base, "the same holds for a comment mentioning @tid");
+});
+
+test("AC175 (5): CRLF invariance survives the @src exclusion", async () => {
+  // §11b.8b step 0 normalises before the range is cut. Removing another directive line must not
+  // leave a stray CR behind on a CRLF file.
+  const lf = await digestOfSource(`// @src ${REQ}`, "// a note", 'test("n", () => { assert.ok(1); });');
+  const files = simple(`// @src ${REQ}`, "// a note", 'test("n", () => { assert.ok(1); });');
+  const crlf = (await only({ "a.test.mjs": files["a.test.mjs"].replace(/\n/g, "\r\n") })).declarationDigest;
+  assert.strictEqual(crlf, lf, "the same logical content stored CRLF hashes identically");
+});
 test("bytes after the statement are outside the range", async () => {
   const bare = await digestOfSource(`// @src ${REQ}`, 'test("n", () => { assert.ok(1); });');
   const commented = await digestOfSource(`// @src ${REQ}`, 'test("n", () => { assert.ok(1); }); // trailing note');
@@ -509,9 +554,19 @@ test("bytes after the statement are outside the range", async () => {
 });
 
 test("with a block the range starts at the block's line-start byte, indentation included", async () => {
-  const flush = await digestOfSource(`// @src ${REQ}`, 'test("n", () => { assert.ok(1); });');
-  const indented = await digestOfSource(`    // @src ${REQ}`, 'test("n", () => { assert.ok(1); });');
-  assert.notStrictEqual(indented, flush, "the block line's own indentation is inside the range");
+  // The indentation rule is tested on a NON-directive block line, because v1.16 removes a
+  // legitimately-attached @src line whole -- its own indentation goes with it, so it can no longer
+  // be the thing that moves the digest. That removal is asserted immediately below.
+  const flush = await digestOfSource("// note", `// @src ${REQ}`, 'test("n", () => { assert.ok(1); });');
+  const indented = await digestOfSource("    // note", `// @src ${REQ}`, 'test("n", () => { assert.ok(1); });');
+  assert.notStrictEqual(indented, flush, "an ordinary block line's own indentation is inside the range");
+
+  // TP v1.16 §11b.8b: the whole @src line is removed, terminator and indentation included, so
+  // indenting it changes nothing. Under v1.15 this pair differed.
+  const directiveFlush = await digestOfSource(`// @src ${REQ}`, 'test("n", () => { assert.ok(1); });');
+  const directiveIndented = await digestOfSource(`    // @src ${REQ}`, 'test("n", () => { assert.ok(1); });');
+  assert.strictEqual(directiveIndented, directiveFlush,
+    "a removed directive line takes its own indentation with it");
 
   const noteA = await digestOfSource("// note A", `// @src ${REQ}`, 'test("n", () => { assert.ok(1); });');
   const noteB = await digestOfSource("// note B", `// @src ${REQ}`, 'test("n", () => { assert.ok(1); });');
@@ -1320,12 +1375,12 @@ test("the view is a copy, so a caller cannot change what the next read returns",
 });
 
 test("the implementationId maps to a shipped component through a closed table, never a module path", async () => {
-  const component = resolveAdapterComponent("node-test-v1");
-  assert.strictEqual(component, nodeTestV1Component);
-  assert.strictEqual(component.implementationId, "node-test-v1");
+  const component = resolveAdapterComponent("node-test-v2");
+  assert.strictEqual(component, nodeTestV2Component);
+  assert.strictEqual(component.implementationId, "node-test-v2");
   assert.ok(Object.isFrozen(component));
-  const badIds = ["node-test-v2", "./node-test-adapter.mjs", "../../../elsewhere.mjs",
-    "file:///D:/anything.mjs", "node:fs", "", "node-test-v1 "];
+  const badIds = ["node-test-v3", "./node-test-adapter.mjs", "../../../elsewhere.mjs",
+    "file:///D:/anything.mjs", "node:fs", "", "node-test-v2 "];
   for (const id of badIds) {
     let code = null;
     try { resolveAdapterComponent(id); } catch (e) {
@@ -1335,7 +1390,7 @@ test("the implementationId maps to a shipped component through a closed table, n
     assert.strictEqual(code, "E_REGISTRY_UNSUPPORTED", JSON.stringify(id));
   }
   let extraArgumentCode = null;
-  try { resolveAdapterComponent("node-test-v1", nodeTestV1Component); } catch (e) { extraArgumentCode = e.code; }
+  try { resolveAdapterComponent("node-test-v2", nodeTestV2Component); } catch (e) { extraArgumentCode = e.code; }
   assert.strictEqual(extraArgumentCode, "E_API_ARGUMENTS");
 });
 
@@ -1350,7 +1405,7 @@ test("every adapter in the shipped registry resolves to a component, and the com
   // The identity the analysis reports comes from the hash-verified vendor manifest, so a component
   // result and the registry declaration cannot drift apart without one of them failing first.
   const view = viewOf(simple('test("n", () => { assert.ok(1); });'));
-  const analysis = await nodeTestV1Component.analyzeModule({ view, path: "a.test.mjs" });
+  const analysis = await nodeTestV2Component.analyzeModule({ view, path: "a.test.mjs" });
   assert.deepStrictEqual(analysis.identity, loadVendorCapability().identities.parser);
   assert.deepStrictEqual(analysis.identity, registry.adapters[0].implementationIdentity);
 });
@@ -1362,7 +1417,7 @@ test("the production registry and vendor capability survive every failure above"
   assert.strictEqual(registry.adapters.length, 1);
   assert.strictEqual(registry.adapters[0].adapterId, "node-test");
   assert.strictEqual(loadVendorCapability().identities.parser.parserId, "acorn");
-  assert.strictEqual(resolveAdapterComponent("node-test-v1"), nodeTestV1Component);
+  assert.strictEqual(resolveAdapterComponent("node-test-v2"), nodeTestV2Component);
   assert.ok(NodeTestAdapterError.prototype instanceof Error);
 });
 

@@ -3,7 +3,7 @@
 // SCOPE: this is the dependency-wrapper layer and nothing else. It does not discover test
 // declarations, classify node:test or node:assert bindings, analyse scope, read attachment tags,
 // compute stableId/structuralId/oracle closures, select adapters, enumerate a worktree, or produce
-// any inventory. The node-test-v1 component in node-test-adapter.mjs now does the recognition and
+// any inventory. The node-test-v2 component in node-test-adapter.mjs now does the recognition and
 // closure work ON TOP of this file, calling parseModuleSource() like any other consumer; adapter
 // discovery, adapter selection and inventory production are still unimplemented anywhere. Nothing
 // here should be read as claiming a producer, a populated inventory, or Phase 2 is ready.

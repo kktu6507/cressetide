@@ -1,4 +1,4 @@
-// The node-test-v1 executable adapter component.
+// The node-test-v2 executable adapter component.
 //
 // SCOPE: this is the executable component behind ONE implementationId, and nothing else. It
 // analyses a module the caller has ALREADY captured into an immutable content view and reports
@@ -38,7 +38,11 @@ export class NodeTestAdapterError extends Error {
 
 const fail = (code, message, detail) => new NodeTestAdapterError(code, message, detail);
 
-export const NODE_TEST_V1_IMPLEMENTATION_ID = "node-test-v1";
+// TP approved v1.16: removing @src from the canonical bytes is a NEW digest algorithm, so it must
+// carry a NEW implementation identity. Sharing node-test-v2 would mean an old and a new writer
+// agreeing on an identity while disagreeing on the digest, which is the one thing an identity is
+// for. node-test-v2 survives only as the identity of historical data.
+export const NODE_TEST_V2_IMPLEMENTATION_ID = "node-test-v2";
 
 // --- closed vocabulary --------------------------------------------------------------------------
 
@@ -141,7 +145,7 @@ function resolveRelativeLexically(fromDir, specifier, what) {
 // mean an object accepted by the projections and refused by this adapter, and "the adapter reads the
 // captured view" would stop being a statement about one object.
 //
-// createContentView keeps its name and its place on nodeTestV1Component because that is the accepted
+// createContentView keeps its name and its place on nodeTestV2Component because that is the accepted
 // public surface; it is now a thin delegate, so a view built through it and a view built by a
 // projection are indistinguishable, including to requireView below.
 // The shared carrier's refusals are re-raised as this component's error type, code, message and
@@ -487,7 +491,7 @@ function collectBindings(program, modulePath) {
     if (!relative && specifier !== TEST_SPECIFIER && !ASSERT_SPECIFIERS.has(specifier) && !Object.prototype.hasOwnProperty.call(FS_API, specifier)) {
       // The profile is a chosen subset. A bare "test", another assertion library and any other
       // package alike are unsupported here; unlisted syntax is fail-closed, not tolerated.
-      throw fail("E_UNSUPPORTED_IMPORT", `${modulePath}: specifier ${JSON.stringify(specifier)} is outside the node-test-v1 profile`);
+      throw fail("E_UNSUPPORTED_IMPORT", `${modulePath}: specifier ${JSON.stringify(specifier)} is outside the node-test-v2 profile`);
     }
     // A relative import must name a helper module outright: 11b.9f allows only an explicit .mjs or
     // .js, and external-expected-data was removed as an edge kind, so a static .json import is an
@@ -797,14 +801,28 @@ function attachDirectives(module, records) {
     if (record.tag === undefined) record.tag = null;
     if (record.stableId === undefined) record.stableId = null;
     if (record.tidLines === undefined) record.tidLines = [];
+    if (record.tagLine === undefined) record.tagLine = null;
+    // TP v1.16 §11b.8b: ONE removal set, ONE scan. @tid and @src are removed by the same algorithm,
+    // so there is no second range, no second pass and no @src-conditional branch downstream.
+    record.directiveLines = [...record.tidLines, ...(record.tagLine === null ? [] : [record.tagLine])]
+      .sort((a, b) => a - b);
   }
 }
 
 // --- canonical bytes ------------------------------------------------------------------------------
 
-// 11b.8c canonical declaration range plus 11b.8b's @tid removal. The range starts at the line-start
+// 11b.8c canonical declaration range plus 11b.8b's directive removal. The range starts at the line-start
 // byte of the block's first line when there is a block, and always ends at the outermost
 // ExpressionStatement's end -- so a semicolon is inside and a trailing comment is not.
+// TP approved v1.16 removes legitimately-attached @src lines here too, by the same single algorithm
+// that already removed @tid. Under v1.15 the @src line stayed inside the hashed range, so changing a
+// tag also changed bodyDigest and §6 precedence row 4 (modified) always beat row 5 (retagged) --
+// making `retagged` unreachable end to end. With both directives out, a tag-only change leaves the
+// canonical bytes identical and the two body digests equal, which is exactly what row 5 needs.
+//
+// Only LEGITIMATELY ATTACHED directives are removed. A malformed or unattached one has already
+// failed closed before hashing, and an ordinary comment that merely mentions @src or @tid without
+// matching §11b.8c's exact lexical form is not a directive and stays in the bytes.
 function canonicalDeclarationBytes(module, record) {
   const statement = record.statement;
   const hasBlock = record.block.first < record.block.end;
@@ -813,7 +831,7 @@ function canonicalDeclarationBytes(module, record) {
 
   const pieces = [];
   let cursor = start;
-  for (const lineIndex of record.tidLines) {
+  for (const lineIndex of record.directiveLines) {
     const line = module.lines[lineIndex];
     // The line and its LF go together; the last line of a file has no terminator to remove.
     const drop = Math.min(line.end + 1, module.normalized.length);
@@ -1209,7 +1227,7 @@ async function analyzeOne(session, path) {
   }
   return Object.freeze({
     path: module.path,
-    implementationId: NODE_TEST_V1_IMPLEMENTATION_ID,
+    implementationId: NODE_TEST_V2_IMPLEMENTATION_ID,
     identity: Object.freeze({ ...module.identity }),
     declarations: Object.freeze(out),
     containers: Object.freeze(containers.map((c) => Object.freeze({ name: c.name, chain: Object.freeze([...c.chain]), line: c.line }))),
@@ -1277,13 +1295,13 @@ export async function analyzeView(request) {
     }
     modules.push(analysis);
   }
-  return Object.freeze({ implementationId: NODE_TEST_V1_IMPLEMENTATION_ID, modules: Object.freeze(modules) });
+  return Object.freeze({ implementationId: NODE_TEST_V2_IMPLEMENTATION_ID, modules: Object.freeze(modules) });
 }
 
-// The shipped component behind implementationId "node-test-v1". The registry resolves this object
+// The shipped component behind implementationId "node-test-v2". The registry resolves this object
 // from a closed table; it is never located by turning an implementationId into a module path.
-export const nodeTestV1Component = Object.freeze({
-  implementationId: NODE_TEST_V1_IMPLEMENTATION_ID,
+export const nodeTestV2Component = Object.freeze({
+  implementationId: NODE_TEST_V2_IMPLEMENTATION_ID,
   createContentView,
   analyzeModule,
   analyzeView,

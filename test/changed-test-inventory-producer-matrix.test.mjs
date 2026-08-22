@@ -133,52 +133,38 @@ async function produce(repo, oid) {
   return produceChangedTestInventoryV2({ repoRoot: repo.root, baseTreeOid: oid });
 }
 
-// --- a BLOCKED AC173 cell, recorded here rather than worked around --------------------------------
+// --- AC173 (a): a previously BLOCKED cell, now reachable -------------------------------------------
 //
-// AC173 (a) wants a tag change that leaves the body untouched -> `retagged`, with the two body
-// digests EQUAL. AC173 (c) wants the same shape under a governance hit. Neither is reachable end to
-// end with the shipped node:test v1 adapter, and the reason is mechanical: §11b.8b removes only
-// @tid lines from the canonical declaration bytes, so the @src line -- the ONLY way to change a tag
-// in this adapter -- is inside the range that bodyDigest covers. Editing it moves bodyDigest, so §6
-// row 4 (modified) always fires before row 5 (retagged).
-//
-// Measured, not inferred: a fixture whose sole edit is @src A -> @src X yields base and head
-// declarations with different bodyDigests. The assertion below pins that, so the day the adapter or
-// the canonical range changes, this test fails and the blocked cell gets revisited.
-//
-// Nothing here is worked around. The spec is not touched, the accepted adapter is not quietly
-// widened, and the producer is not taught a special case: a `retagged` classification is simply not
-// yet demonstrable end to end, and this suite says so instead of asserting something weaker and
-// calling the cell covered.
+// Under v1.15 the @src line stayed inside the canonical declaration bytes, so a tag-only edit also
+// moved bodyDigest and §6 row 4 (modified) always beat row 5 (retagged). This suite recorded that as
+// a blocked cell rather than asserting something weaker. TP approved v1.16 removes legitimately
+// attached @src lines by the same algorithm that already removed @tid, so the two body digests are
+// now equal on a tag-only change and row 5 fires. The cell is asserted as AC173 (a) actually writes
+// it, and the digest equality is asserted too -- if the exclusion ever regresses, this fails.
 
-test("AC173 (a): the reachable half -- a new Clause, a head-only add, and no extra governance entry", () => withRepo(async (repo) => {
-  // B has Clause A and the base test binds A; C adds Clause X. The rebound test and a head-only
-  // test both reach the new clause, so governanceHit is true for both -- and neither may produce a
-  // governance-affected entry, because rows 1-5 come first.
+test("AC173 (a): a new Clause reached by a retag yields exactly one retagged, never governance-affected", () => withRepo(async (repo) => {
+  // B has Clause A and the base test binds A; C adds Clause X; the SAME logical test rebinds to X
+  // with the body untouched. X is in semanticallyChangedClauses so governanceHit is true -- and row
+  // 5 still fires first, because governance never overrides a retag.
   repo.write("retag.test.mjs", tagged(CLAUSE_A, "alpha"));
   repo.write("control.test.mjs", tagged(CLAUSE_A, "control"));
   repo.putStore(legal(storeWith({ clauses: [CLAUSE_A] })));
   const oid = repo.commit();
 
-  repo.write("retag.test.mjs", tagged(CLAUSE_X, "alpha"));       // the tag moves; the test body does not
+  repo.write("retag.test.mjs", tagged(CLAUSE_X, "alpha"));       // the tag moves; the body does not
   repo.write("headonly.test.mjs", tagged(CLAUSE_X, "fresh"));    // head-only, binding the new clause
   repo.putStore(legal(storeWith({ clauses: [CLAUSE_A, CLAUSE_X] })));
 
   const out = await produce(repo, oid);
   const map = byPath(out.entries);
 
-  const rebound = map["retag.test.mjs"];
-  assert.ok(rebound, "the rebound test produces an entry");
-  assert.deepStrictEqual(rebound.tagBefore, { clauseRef: CLAUSE_A });
-  assert.deepStrictEqual(rebound.tagAfter, { clauseRef: CLAUSE_X });
-  // THE BLOCKED CELL, asserted as it actually behaves. AC173 (a) asks for `retagged` with equal body
-  // digests; the @src line lives inside the canonical declaration bytes, so the digests differ and
-  // row 4 wins. Recorded, not accommodated.
-  assert.strictEqual(rebound.status, "modified",
-    "an @src-only edit still moves bodyDigest, so row 4 fires: AC173 (a)'s retagged cell is NOT reachable here");
-  assert.notStrictEqual(rebound.baseBodyDigest, rebound.headBodyDigest,
-    "and the two body digests really do differ, which is why row 5 cannot be reached");
-  assert.strictEqual(rebound.reason, "content-change", "reason is content-change, never governance-affected");
+  const retag = map["retag.test.mjs"];
+  assert.ok(retag, "the rebound test produces an entry");
+  assert.strictEqual(retag.status, "retagged", "row 5 fires: the @src exclusion keeps the body digests equal");
+  assert.strictEqual(retag.baseBodyDigest, retag.headBodyDigest, "both body digests are equal");
+  assert.strictEqual(retag.reason, "content-change", "reason is content-change, never governance-affected");
+  assert.deepStrictEqual(retag.tagBefore, { clauseRef: CLAUSE_A });
+  assert.deepStrictEqual(retag.tagAfter, { clauseRef: CLAUSE_X });
 
   const added = map["headonly.test.mjs"];
   assert.strictEqual(added.status, "added", "a head-only test binding the new clause is added");
@@ -261,12 +247,12 @@ test("AC173 (c): body change, tag change and a move all beat a governance hit", 
   assert.strictEqual(map["body.test.mjs"].reason, "content-change");
   assert.notStrictEqual(map["body.test.mjs"].baseBodyDigest, map["body.test.mjs"].headBodyDigest);
 
-  // Same blocked cell as above: the @src edit moves bodyDigest, so this lands on row 4 rather than
-  // row 5. What the case still proves -- and what (c) is really about -- is that a governance hit
-  // does NOT override whichever content row fires.
-  assert.strictEqual(map["tag.test.mjs"].status, "modified",
-    "a tag edit also moves bodyDigest in this adapter; the point stands: governance did not override it");
+  // Now reachable: the @src exclusion keeps the body digests equal, so a tag-only change is a
+  // retag -- and a governance hit still does not override it.
+  assert.strictEqual(map["tag.test.mjs"].status, "retagged", "tag-only change wins over the hit");
   assert.strictEqual(map["tag.test.mjs"].reason, "content-change");
+  assert.strictEqual(map["tag.test.mjs"].baseBodyDigest, map["tag.test.mjs"].headBodyDigest,
+    "and its body digests are equal, which is what makes row 5 legal");
 
   const moved = out.entries.find((e) => e.status === "moved");
   assert.ok(moved, "the moved pair is classified moved, not governance-affected");

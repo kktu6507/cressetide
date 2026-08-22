@@ -40,7 +40,7 @@ const ULID_HIGH = "7ZZZZZZZZZZZZZZZZZZZZZZZZZ";
 const REQ = `REQ-${ULID_LOW}`;
 const DEC = `DEC-${ULID_HIGH}`;
 const DP = `DP-${ULID_HIGH}`;
-const IDENTITY = { implementationId: "node-test-v1", parserId: "acorn", parserVersion: "8.18.0" };
+const IDENTITY = { implementationId: "node-test-v2", parserId: "acorn", parserVersion: "8.18.0" };
 
 assert.strictEqual(OID64.length, 64, "the 64-hex fixture really is 64 characters");
 
