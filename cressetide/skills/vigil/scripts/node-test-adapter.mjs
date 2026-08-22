@@ -9,7 +9,8 @@
 // run of this file does not mean the producer, the consumer freshness recomputation, AC136, AC137,
 // AC138, a populated inventory or Phase 2 is ready.
 //
-// AUTHORITY: approved test-provenance v1.8 (section 2 tag grammar, 11b.2-11b.9f, 11b.11-11b.12) and
+// AUTHORITY: approved test-provenance v1.16 (section 2 tag grammar, 11b.2-11b.9f including 11b.8b's
+// @tid AND @src directive exclusion, 11b.11-11b.12) and
 // approved intent-scan v1.10 section 8 for the canonical ULID grammar. The parser comes from
 // parseModuleSource() in the vendored-dependency wrapper -- the vendored Acorn is never imported
 // here, no parser is added, and no construct below is recognised by regex standing in for an AST.
@@ -39,9 +40,9 @@ export class NodeTestAdapterError extends Error {
 const fail = (code, message, detail) => new NodeTestAdapterError(code, message, detail);
 
 // TP approved v1.16: removing @src from the canonical bytes is a NEW digest algorithm, so it must
-// carry a NEW implementation identity. Sharing node-test-v2 would mean an old and a new writer
+// carry a NEW implementation identity. Keeping node-test-v1 would mean an old and a new writer
 // agreeing on an identity while disagreeing on the digest, which is the one thing an identity is
-// for. node-test-v2 survives only as the identity of historical data.
+// for. node-test-v1 survives only as the identity of historical data, never in a current registry.
 export const NODE_TEST_V2_IMPLEMENTATION_ID = "node-test-v2";
 
 // --- closed vocabulary --------------------------------------------------------------------------

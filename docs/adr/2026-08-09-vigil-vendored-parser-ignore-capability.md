@@ -66,6 +66,36 @@ No approved spec is changed by this ADR. The formal `test-adapters.json` remains
 - Legitimate repositories exceed a resource ceiling with measured safe behavior.
 - A dependency version, selected member, or resource-policy change is proposed.
 
+## Amendment 2026-08-22: parser identity re-authorized as node-test-v2
+
+The 2026-08-09 record above is unchanged and remains the account of what was approved then. This
+section records a later, separate authorization, because leaving it unrecorded is exactly the
+inconsistency the Authority split above says must stop work: the manifest would declare
+`node-test-v2` while this ADR still approved only `node-test-v1`.
+
+- **What changed.** `test-provenance` approved v1.16 (§11b.8b) removes legitimately-attached `@src`
+  lines from the canonical declaration bytes, by the same single algorithm that already removed
+  `@tid`. That is a NEW digest algorithm over the same source, so §11b.8b requires a NEW
+  implementation identity rather than a silent change under the old one.
+- **Identity.** Parser identity is now
+  `{ implementationId: "node-test-v2", parserId: "acorn", parserVersion: "8.18.0" }`.
+  Only `implementationId` moved: the vendored parser and its version are the same artifacts,
+  selected and vendored under the 2026-08-09 decision, and no new dependency was introduced.
+  `node-test-v1` remains the identity of data written by the previous algorithm and must not appear
+  in a current registry.
+- **Scope.** Dependency selection, resource policy, the vendored bytes and the wrapper contract are
+  all unchanged. This amendment authorizes an identity change and nothing else.
+- **Authorization.** The user explicitly authorized the `node-test-v2` executable and identity
+  rollout on 2026-08-22, after the coupled-set promotion of test-provenance v1.16 on the same day.
+  The manifest carries the matching `approvedOn: 2026-08-22`, with `previousApprovedOn:
+  "2026-08-09"` and `reauthorizedFor` naming the identity move, so the ADR and the manifest agree
+  again and the authorization packet is internally consistent.
+- **What this does NOT do.** It does not accept the implementation. Independent implementation
+  review is still required, and until it is given the six rollout prerequisites stay at **4/6** --
+  the adapter registry is incomplete while the identity is unaccepted, and the populated-inventory
+  producer was never finished. The `unsupported-populated-inventory` gate is not lifted, a populated
+  inventory still must not be accepted, and Phase 2 is not READY.
+
 ## Approval evidence
 
 The exact selection followed a non-shipping proof and targeted architecture, security, test, and gatekeeper review. The user explicitly approved creation of the dependency authorization packet on 2026-08-09, and separately and explicitly approved the exact four-member vendoring on 2026-08-09. That second approval covers only the four members listed in the manifest. It does not cover the adapter registry, the parser or ignore wrapper, the producer/consumer path, removal of `unsupported-populated-inventory`, record migration, publishing, or pushing.

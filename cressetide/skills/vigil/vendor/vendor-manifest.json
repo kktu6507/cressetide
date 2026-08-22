@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "authorization": {
     "status": "selection-authorized-artifacts-vendored",
-    "approvedOn": "2026-08-09",
+    "approvedOn": "2026-08-22",
     "canonicalAuthority": "this-file",
     "carrierRole": "dependency-authorization-packet-only-not-registry",
     "inseparableCapabilities": [
@@ -10,7 +10,9 @@
       "gitignore-matching"
     ],
     "runtimeInstall": false,
-    "runtimeNetwork": false
+    "runtimeNetwork": false,
+    "previousApprovedOn": "2026-08-09",
+    "reauthorizedFor": "implementationId node-test-v1 -> node-test-v2 (TP approved v1.16 section 11b.8b)"
   },
   "implementationIdentity": {
     "implementationId": "node-test-v2",
