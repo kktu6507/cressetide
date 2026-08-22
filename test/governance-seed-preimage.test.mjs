@@ -27,7 +27,7 @@ import cp from "node:child_process";
 import { root } from "./helpers.mjs";
 import {
   emptyStore, canonicalStoreBytes, storeDigest, sha256Hex, validateAll, compareCodePoint,
-  isCanonicalClauseRef, digestOf,
+  isCanonicalClauseRef, digestOf, validateStoreSchema,
 } from "../cressetide/skills/vigil/scripts/provenance-store.mjs";
 import {
   buildGovernanceSeedPreimage, GovernanceSeedPreimageError,
@@ -1015,4 +1015,159 @@ test("AC171 (A)(iii): a non-canonical clause id never reaches the carrier -- ref
     const e = await refused(build(repo, oid), `${JSON.stringify(id)} (${why})`, "E_CURRENT_STORE_SCHEMA");
     assert.match(e.message, /E_CLAUSE_ID_GRAMMAR|not <PREFIX>-<ULID>/, "refused by the id grammar, at the schema layer");
   }
+}));
+
+// --- the G1/T0 phase boundary, and the clock-dependent half of G2 -------------------------------
+
+// A store whose only terminal is exception-backed and whose DP carries the scope ruling that makes
+// it applicable. Clock-free-valid either way; whether it is VALID depends entirely on the expiry
+// against T0, which is exactly the seam the G2 test below needs.
+const INTENT = { kind: "discipline", discipline: "intent" };
+const SCOPE_DP = {
+  id: "DP-1", dimension: "data", scenario: "s", alternatives: ["A", "B"], layer: "implementation",
+  classificationBasis: "engineering standard", materialReasons: [],
+};
+function exceptionBackedStore(expiry) {
+  const packet = {
+    dpId: SCOPE_DP.id, scenario: SCOPE_DP.scenario, alternatives: SCOPE_DP.alternatives,
+    layer: SCOPE_DP.layer, classificationBasis: SCOPE_DP.classificationBasis,
+    materialReasons: [], requestedPrincipal: INTENT, basisRefs: [],
+  };
+  const s = withGrant(baseStore(), { expiry });
+  s.records.push({
+    recordId: "R-scope", kind: "review-ruling", by: INTENT, subjectRef: SCOPE_DP.id, ruling: "ok",
+    rulingKind: "scope-coverage", basis: "stated basis",
+    inputPacketSnapshot: packet, inputPacketDigest: digestOf(packet), scopeCovers: true,
+  });
+  s.decisionPoints.push({
+    ...SCOPE_DP, status: "resolved", resolvedBy: REQ("0B"), reopenCauseRef: null,
+    scopeRulingRef: { kind: "review-ruling", ref: "R-scope" },
+  });
+  return s;
+}
+
+// The two-stage armed-clock probe, factored out: install the wrapper BEFORE the dynamic import but
+// disarmed, reset and arm it after, and report how many armed reads the invocation made.
+function clockProbe(scratch, repoRoot, baseTreeOid, t0) {
+  const script = path.join(scratch, "run.mjs");
+  fs.writeFileSync(script, [
+    "let armed = false;",
+    "let count = 0;",
+    `const T0 = ${t0};`,
+    "Date.now = () => { if (!armed) return Date.UTC(2000, 0, 1); count += 1; return T0; };",
+    'const m = await import("./scripts/governance-seed-preimage.mjs");',
+    "count = 0;",
+    "armed = true;",
+    "let result;",
+    "try {",
+    `  const out = await m.buildGovernanceSeedPreimage({ repoRoot: ${JSON.stringify(repoRoot)}, baseTreeOid: ${JSON.stringify(baseTreeOid)} });`,
+    "  result = { ok: true, keys: Object.keys(out).sort() };",
+    "} catch (e) { result = { ok: false, code: e.code, message: String(e.message) }; }",
+    "console.log(JSON.stringify({ ...result, armedReads: count }));",
+  ].join("\n"), "utf8");
+  const r = runChild(script);
+  assert.strictEqual(r.code, 0, r.err);
+  return JSON.parse(r.out);
+}
+
+test("AC171 (C)(xv): a dangling reopenCauseRef in G1 fails BEFORE the clock is read", () => withRepo(async (repo) => {
+  // The reference counterexample. reopenCauseRef shape and resolution are coherence checks with no
+  // clock in them, so a store that fails on one must fail with the clock still untouched. Splitting
+  // validation by "does the function take now" left this whole validator on the far side of T0.
+  repo.write("README.md", "hello\n");
+  const oid = repo.commit();
+  const planted = JSON.parse(JSON.stringify(baseStore()));
+  planted.decisionPoints.push({
+    id: "DP-1", dimension: "data", scenario: "s", alternatives: ["A", "B"], layer: "implementation",
+    classificationBasis: "engineering standard", materialReasons: [], status: "open",
+    reopenCauseRef: { kind: "transition", ref: "T-missing" },
+  });
+  repo.write(".ctide/provenance.json", JSON.stringify(planted));
+
+  const scratch = scratchScripts("ctide-gsp-cause-");
+  try {
+    const out = clockProbe(scratch, repo.root, oid, Date.UTC(2030, 5, 15));
+    assert.strictEqual(out.ok, false, "a dangling cause witness must not produce a carrier");
+    assert.strictEqual(out.code, "E_CURRENT_STORE_SCHEMA");
+    assert.match(out.message, /E_CAUSE_REF_SHAPE|not a valid TransitionRef/, "refused on the cause ref itself");
+    assert.strictEqual(out.armedReads, 0, `the clock must not have been read, got ${out.armedReads}`);
+  } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+}));
+
+test("AC171 (C)(xv): a DP whose terminal disagrees with its status fails BEFORE the clock is read", () => withRepo(async (repo) => {
+  // The other half. INV-4 terminal exclusivity, the terminal field-to-kind mapping and the
+  // status agreement are all clock-free; only the applicable() call at the end of that validator
+  // is not. A store that fails on the clock-free part must fail with zero armed reads.
+  repo.write("README.md", "hello\n");
+  const oid = repo.commit();
+  const planted = JSON.parse(JSON.stringify(baseStore()));
+  planted.clauses.push({
+    id: REQ("0B"), authority: "approved-requirement", kind: "specification",
+    text: "b", sourceRef: "S-hc", taskRef: "TASK-1",
+  });
+  // A REQ parked in decidedBy: wrong field for the kind, and the status agrees with neither.
+  planted.decisionPoints.push({
+    id: "DP-1", dimension: "data", scenario: "s", alternatives: ["A", "B"], layer: "implementation",
+    classificationBasis: "engineering standard", materialReasons: [], status: "decided",
+    decidedBy: REQ("0B"), reopenCauseRef: null,
+  });
+  repo.write(".ctide/provenance.json", JSON.stringify(planted));
+
+  const scratch = scratchScripts("ctide-gsp-inv4-");
+  try {
+    const out = clockProbe(scratch, repo.root, oid, Date.UTC(2030, 5, 15));
+    assert.strictEqual(out.ok, false, "an incoherent DP terminal must not produce a carrier");
+    assert.strictEqual(out.code, "E_CURRENT_STORE_SCHEMA");
+    assert.match(out.message, /E_INV4_TYPE|type mismatch/, "refused on the terminal type mapping");
+    assert.strictEqual(out.armedReads, 0, `the clock must not have been read, got ${out.armedReads}`);
+  } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+}));
+
+test("AC171 (B)(xii): a G2 that fails only TIME-dependent validation is not reported as a moved store", () => withRepo(async (repo) => {
+  // G1 is legal and its exception-backed terminal is applicable at T0. G2 is swapped in
+  // synchronously by the loader proxy: same version, still clock-free-valid, but its canonical
+  // expiry has already passed at that SAME T0. So it can only fail inside applicable()/INV-4 --
+  // the clock-dependent half -- and it must fail there rather than reaching the digest comparison.
+  const T0 = Date.UTC(2030, 5, 15);
+  const live = legal(exceptionBackedStore("2030-12-31"));
+  const expired = exceptionBackedStore("2030-01-01");
+  validateStoreSchema(expired); // the swapped-in store really does pass the clock-free half
+
+  repo.write(".ctide/provenance.json", canonicalStoreBytes(live));
+  repo.write("README.md", "hello\n");
+  const oid = repo.commit();
+  repo.putStore(live);
+
+  const scratch = scratchScripts("ctide-gsp-g2time-");
+  try {
+    const proxy = path.join(scratch, "scripts", "counting-proxy.mjs");
+    fs.writeFileSync(proxy, [
+      'import fs from "node:fs";',
+      'import path from "node:path";',
+      'import { readCurrentStoreFile as real } from "./current-store-load.mjs";',
+      "let calls = 0;",
+      "export function readCurrentStoreFile(repoRoot) {",
+      "  calls += 1;",
+      "  const text = real(repoRoot);",
+      `  if (calls === 1) fs.writeFileSync(path.join(repoRoot, ".ctide", "provenance.json"), ${JSON.stringify(canonicalStoreBytes(expired))}, "utf8");`,
+      "  return text;",
+      "}",
+    ].join("\n"), "utf8");
+    patch(path.join(scratch, "scripts", "governance-seed-preimage.mjs"),
+      'from "./current-store-load.mjs"', 'from "./counting-proxy.mjs"');
+
+    const out = clockProbe(scratch, repo.root, oid, T0);
+    assert.strictEqual(out.ok, false, "an illegal G2 must not produce a carrier");
+    assert.notStrictEqual(out.code, "E_STORE_MOVED", "and must NOT be reported as a moved store");
+    assert.match(out.message, /E_INV4_NOT_APPLICABLE|not active\+applicable|exception-expired/,
+      `the failure must name the time-dependent invariant, got ${out.code}: ${out.message}`);
+    // Still exactly one clock read: G2 is validated under G1's T0, never a fresh sample.
+    assert.strictEqual(out.armedReads, 1, `the clock is read once for the whole invocation, got ${out.armedReads}`);
+
+    // No result, no partial carrier, no write beyond the proxy's own swap.
+    assert.strictEqual(repo.readStore(), canonicalStoreBytes(expired),
+      "the only content change is the one the probe made; the component wrote nothing");
+    assert.deepStrictEqual(fs.readdirSync(path.join(repo.root, ".ctide")).sort(), ["provenance.json"],
+      "no output, lock or temp file appeared");
+  } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
 }));

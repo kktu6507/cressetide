@@ -1190,7 +1190,12 @@ function assertRulingSubjectBinding(index, t, ack, subject) {
 }
 
 // shared §6 INV-1..4.
-function validateInvariants(index, now) {
+// `phase` selects which half runs, and NOTHING else changes: the checks keep their order, their
+// codes and their precedence. validateAll() runs it with both halves, exactly as before. The
+// clock-free pass exists so a caller can finish schema and coherence work BEFORE sampling a
+// clock; splitting by "does the function take now" would have been wrong, because almost
+// everything in here is clock-free and only the applicable() call below is not.
+function validateInvariants(index, now, phase = "all") {
   for (const d of index.store.decisionPoints) {
     const set = TERMINAL_FIELDS.filter((f) => d[f]);
     if (set.length > 1) {
@@ -1208,9 +1213,13 @@ function validateInvariants(index, now) {
       if (d.status !== STATUS_BY_KIND[kind]) {
         reject("E_INV4_STATUS", `INV-4: DP ${d.id} status ${d.status} disagrees with terminal ${ref}`, d.id);
       }
-      const app = applicable(index, ref, d, now);
-      if (!app.ok) {
-        reject("E_INV4_NOT_APPLICABLE", `INV-4: DP ${d.id} terminal ${ref} is not active+applicable (${app.reason})`, d.id);
+      // The ONLY clock-dependent check in this validator: exception applicability and expiry
+      // membership both live behind applicable(). It must not run before T0 exists.
+      if (phase !== "clock-free") {
+        const app = applicable(index, ref, d, now);
+        if (!app.ok) {
+          reject("E_INV4_NOT_APPLICABLE", `INV-4: DP ${d.id} terminal ${ref} is not active+applicable (${app.reason})`, d.id);
+        }
       }
     } else if (["resolved", "decided", "assumed"].includes(d.status)) {
       reject("E_INV4_MISSING_TERMINAL", `INV-4: DP ${d.id} claims status ${d.status} with no terminal ref`, d.id);
@@ -1825,7 +1834,10 @@ function validateCarrierCoherence(index) {
 // Assurance boundary (SM §2): this verifies witness COHERENCE. The model holds no second record of
 // the same history, so a structurally self-consistent witness cannot be shown to be fabricated;
 // the non-source-2 paths writing null is guaranteed at command time, not re-derived here.
-function validateReopenCauseCoherence(index, now) {
+// Same phase split as validateInvariants: the TransitionRef shape and resolution, the status,
+// terminal, subject, successor, trigger and ruling-carrier coherence are all clock-free and must
+// be able to fail before T0 is sampled. Only the successor-applicability check needs a clock.
+function validateReopenCauseCoherence(index, now, phase = "all") {
   for (const d of index.store.decisionPoints) {
     const cause = d.reopenCauseRef;
     if (cause === undefined || cause === null) continue;
@@ -1860,7 +1872,9 @@ function validateReopenCauseCoherence(index, now) {
         d.id,
       );
     }
-    const app = applicable(index, t.successor, d, now);
+    // The ONLY clock-dependent check here. Skipped in the clock-free pass; the checks after it
+    // keep running, and validateAll() still evaluates all of them in this same order.
+    const app = phase === "clock-free" ? { ok: false } : applicable(index, t.successor, d, now);
     if (app.ok) {
       reject(
         "E_CAUSE_POSTCONDITION",
@@ -1881,24 +1895,33 @@ function validateReopenCauseCoherence(index, now) {
   }
 }
 
-// The authoritative CLOCK-FREE half of validation: every validator in validateAll() that does not
-// take `now`, in the same order, and nothing else. It exists because TP §11b.10c step 4 puts T0
-// AFTER G1 parse and schema validation and before the first time-dependent decision, so a caller
-// needs a way to finish the clock-free half first and prove the clock was untouched while it ran.
+// The authoritative CLOCK-FREE pass: every validator validateAll() runs, in the SAME order, with
+// the two clock-dependent checks -- and only those two -- switched off. TP §11b.10c step 4 puts T0
+// after G1 parse and schema validation and before the first time-dependent decision, so a caller
+// needs to finish everything clock-free first and be able to prove the clock was never touched.
 //
-// Not a second validator: these are the same functions validateAll() calls, and they are pure, so
-// a caller that runs this and then validateAll() gets the same verdict twice rather than a
-// different one. The two clock-taking members -- validateReopenCauseCoherence and
-// validateInvariants -- are deliberately absent; they belong after T0.
+// An earlier version split by whether a FUNCTION takes `now`, which skipped
+// validateReopenCauseCoherence and validateInvariants whole. That was wrong by a wide margin:
+// between them they carry the reopenCauseRef TransitionRef shape and resolution, the cause's
+// status/terminal/subject/successor/trigger coherence, DP terminal exclusivity, terminal
+// field-to-type-to-status agreement and the resolved/decided/assumed presence rules -- all
+// clock-free, and all of which a malformed store must be able to fail on before any clock exists.
+// Each function now has exactly one clock-dependent line, behind applicable().
+//
+// Not a second authority: these are the same functions in the same order, they are pure, and
+// validateAll() is unchanged -- it still runs both halves and keeps its error precedence, so a
+// caller that runs this and then validateAll() gets the same verdict twice, never a different one.
 export function validateStoreSchema(store) {
   validateStructure(store);
   const index = indexStore(store);
   validateCarrierCoherence(index);
+  validateReopenCauseCoherence(index, undefined, "clock-free");
   validateRefs(index);
   validateMergeReconciliation(index);
   validateTransitionMatrix(index);
   validateGovernanceRulings(index);
   validateRoutingOrigins(index);
+  validateInvariants(index, undefined, "clock-free");
   validateTaskStatesAndHeads(index);
   return { ok: true, index };
 }
