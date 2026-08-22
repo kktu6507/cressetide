@@ -26,6 +26,7 @@ import { readCurrentStoreFile } from "./current-store-load.mjs";
 // "read tree A" return tree B end to end, so the exact-tree witness this component is built on
 // would have been whatever refs/replace currently points at.
 import { runGit, GitReadError, newControlledHome, gitEnvironment } from "./git-object-read.mjs";
+import { checkProducerRequest, ProducerRequestError } from "./producer-request.mjs";
 
 export class GovernanceSeedPreimageError extends Error {
   constructor(code, message, detail) {
@@ -37,65 +38,23 @@ export class GovernanceSeedPreimageError extends Error {
 }
 const fail = (code, message, detail) => new GovernanceSeedPreimageError(code, message, detail);
 
-const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
-// Every alias §11b.10c enumerates, named individually so the refusal can say WHICH one was supplied
-// rather than only that the key set was wrong. A caller who can hand in any of these can decide what
-// the envelope's freshness carrier attests to, which is the whole reason the request is closed.
-const FORBIDDEN_KEYS = [
-  "preimage", "discoveryPreimage", "discoveryAnalysisPreimage", "governanceSeedPreimage", "seed",
-  "baseModules", "headModules", "declarations", "registry", "registryPath", "registryRoot",
-  "registryDigest", "parser", "ignoreMatcher", "gitExecutable", "git", "env", "environment",
-  "fs", "filesystem", "config", "configPath", "explicitConfig", "modulePaths", "candidates",
-  "view", "contentView", "adapterContentView", "snapshot", "headViewSnapshot", "headViewDigest",
-  "storeBytes", "store", "parsedStore", "storeDigest", "inputProvenanceStoreDigest", "storePath",
-  "lifecycleAffectedClauses", "governanceHit", "hitSet", "reverseClosure", "closure",
-  "matcherResult", "pairs", "entries", "inventoryDigest",
-  "clock", "now", "timestamp", "date", "Date", "dateProvider", "clockProvider", "T0",
-  "captureHook", "hook", "componentModulePath", "modulePath", "outputPath", "output",
-];
 
 const IMMUTABLE_SECTIONS = ["sources", "clauses", "transitions", "records"];
 const ID_KEY = { sources: "sourceId", clauses: "id", transitions: "id", records: "recordId" };
 
 // --- request ---------------------------------------------------------------------------------
 
+// The shared contract, re-wrapped into this component's error type so its failure surface is
+// unchanged. producer-request.mjs is the only place the alias list and the exact key set live.
 function requireRequest(request, argumentCount) {
-  if (argumentCount !== 1) {
-    throw fail("E_API_ARGUMENTS",
-      "buildGovernanceSeedPreimage takes exactly one argument; a second argument is not a place to "
-      + "put a preimage, a store, a registry, a clock or a capture hook");
+  try {
+    const { repoRoot, baseTreeOid } = checkProducerRequest(request, argumentCount, "buildGovernanceSeedPreimage");
+    return { repoRoot: path.resolve(repoRoot), baseTreeOid };
+  } catch (error) {
+    if (error instanceof ProducerRequestError) throw fail(error.code, error.message, error.detail);
+    throw error;
   }
-  if (request === null || typeof request !== "object" || Array.isArray(request)) {
-    throw fail("E_API_ARGUMENTS", "buildGovernanceSeedPreimage expects a request object");
-  }
-  const keys = Object.keys(request);
-  for (const key of keys) {
-    if (FORBIDDEN_KEYS.includes(key)) {
-      throw fail("E_API_ARGUMENTS",
-        `buildGovernanceSeedPreimage refuses the injected key ${JSON.stringify(key)}: the producer `
-        + "observes every input itself, so a caller cannot supply a preimage, seed, store, digest, "
-        + "hit set, entries, registry, parser, view, snapshot, clock, capture hook or module path",
-        { key });
-    }
-  }
-  const sorted = [...keys].sort();
-  if (sorted.length !== 2 || sorted[0] !== "baseTreeOid" || sorted[1] !== "repoRoot") {
-    throw fail("E_API_ARGUMENTS",
-      `buildGovernanceSeedPreimage expects exactly ["baseTreeOid","repoRoot"]; got ${JSON.stringify(sorted)}`,
-      { keys: sorted });
-  }
-  const { repoRoot, baseTreeOid } = request;
-  if (typeof repoRoot !== "string" || repoRoot.length === 0) {
-    throw fail("E_API_ARGUMENTS", `repoRoot must be a non-empty string; got ${JSON.stringify(repoRoot)}`);
-  }
-  if (typeof baseTreeOid !== "string" || !OID.test(baseTreeOid)) {
-    throw fail("E_BASE_TREE_OID",
-      `baseTreeOid must be 40 or 64 lowercase hex; got ${JSON.stringify(baseTreeOid)}. `
-      + "An abbreviated OID, a ref name or a revision expression is refused rather than resolved",
-      { baseTreeOid });
-  }
-  return { repoRoot: path.resolve(repoRoot), baseTreeOid };
 }
 
 // --- stores ----------------------------------------------------------------------------------
