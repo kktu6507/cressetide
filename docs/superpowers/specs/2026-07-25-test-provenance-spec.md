@@ -2998,7 +2998,7 @@ gate:
 **v1.16 effective addendum（status carrier，非 normative；生效日 2026-08-22；不回改上方 dated 2026-08-16 敘述，也不回改 AC174）** —— v1.16 把 current implementation identity 由 `node-test-v1` 收斂為 `node-test-v2`。**spec promotion 本身不使任何 shipped artifact 變成、或被接受為 `node-test-v2`。**
 
 ```
-現況（截至本 draft 起草時，機械可查）:
+現況（截至 2026-08-22 promotion，機械可查）:
   cressetide/skills/vigil/scripts/test-adapters.json  implementationId: "node-test-v1"
   cressetide/skills/vigil/vendor/vendor-manifest.json implementationId: "node-test-v1"
   —— 兩者**仍逐欄授權 v1**。v1.16 promotion **不得**被讀成它們已改、
