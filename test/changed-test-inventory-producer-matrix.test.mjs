@@ -1,0 +1,396 @@
+// AC173 evidence: the populated-inventory producer end to end.
+//
+// SCOPE NOTE: a green run here does NOT lift the unsupported-populated-inventory gate, does not
+// make the product entry point accept a populated inventory, does not satisfy AC118, AC136, AC137
+// or AC138, and does not mean Phase 2 is ready. AC173 (j) is asserted in the sibling suite: the
+// product path refuses the very documents this one produces.
+//
+// Spec anchors (the current approved coupled set, one effective set):
+//   SM = 2026-07-25-shared-decision-provenance-model.md (approved v1.15) §2, §9
+//   TP = 2026-07-25-test-provenance-spec.md (approved v1.15) §6, §11b.9c, §11b.10c, AC173
+//
+// FIXTURE POLICY: repositories are real -- git init, real commits, a real working tree -- and the
+// provenance stores are built as objects and then asserted legal through the PRODUCTION
+// validateAll(). The producer is a reader of both, and the shapes it must read (a base tree whose
+// store differs from the current one by exactly one clause, an expiry that has passed) are not
+// reachable through the transaction chain without a fixture apparatus larger than the tests.
+import { test } from "node:test";
+import assert from "node:assert";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import cp from "node:child_process";
+
+import {
+  emptyStore, canonicalStoreBytes, sha256Hex, validateAll, canonicalJson,
+} from "../cressetide/skills/vigil/scripts/provenance-store.mjs";
+import { V2_INVENTORY_KEYS, computeInventoryV2Digest } from "../cressetide/skills/vigil/scripts/changed-test-inventory.mjs";
+import { produceChangedTestInventoryV2 } from "../cressetide/skills/vigil/scripts/changed-test-inventory-producer.mjs";
+
+const NODE_TEST = 'import { test } from "node:test";\n';
+const NOW = Date.UTC(2026, 6, 26);
+
+// Canonical ULIDs (IS v1.10 §8): 26 upper-Crockford bytes, first byte 0-7.
+const U = (tail) => "01J000000000000000000000" + tail;
+const REQ = (tail) => "REQ-" + U(tail);
+const CLAUSE_A = REQ("0A");   // in B and in C
+const CLAUSE_X = REQ("0X");   // only in C -- semanticallyChanged
+const CLAUSE_G = REQ("0G");   // in both; the governance-only cases move IT, not the tag
+
+// --- repository -----------------------------------------------------------------------------------
+
+function makeRepo(prefix = "ctide-m-") {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+  const git = (...a) => cp.execFileSync("git", a, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  git("init", "-q", "--initial-branch=main");
+  git("config", "user.email", "t@example.com");
+  git("config", "user.name", "t");
+  git("config", "commit.gpgsign", "false");
+  git("config", "core.symlinks", "false");
+  const write = (rel, body) => {
+    const file = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, body, "utf8");
+  };
+  return {
+    root: dir, git, write,
+    remove: (rel) => fs.rmSync(path.join(dir, rel), { force: true }),
+    commit: () => { git("add", "-A"); git("commit", "-qm", "c"); return git("rev-parse", "HEAD^{tree}"); },
+    putStore: (store) => write(".ctide/provenance.json", canonicalStoreBytes(store)),
+    bytes: (rel) => fs.readFileSync(path.join(dir, rel)),
+  };
+}
+
+async function withRepo(body, prefix) {
+  const repo = makeRepo(prefix);
+  try { return await body(repo); } finally { fs.rmSync(repo.root, { recursive: true, force: true }); }
+}
+
+// --- provenance stores ------------------------------------------------------------------------------
+
+const legal = (s) => { validateAll(s, { now: NOW }); return s; };
+
+function storeWith({ clauses = [], drifted = false, expired = false, transitioned = false } = {}) {
+  const s = emptyStore();
+  s.records.push({ recordId: "R-owner", kind: "source-authority", authorityIdentity: "EU DPA" });
+  // A snapshot-only Source: never drifts, so a clause hanging off it is inert unless something else
+  // moves it. That is what makes the single-variable controls single-variable.
+  s.sources.push({
+    sourceId: "S-inert", contentKind: "requirement", driftMode: "snapshot-only",
+    locator: "c#1", excerpt: "inert", digest: sha256Hex("inert"),
+  });
+  for (const id of clauses) {
+    s.clauses.push({
+      id, authority: "approved-requirement", kind: "specification",
+      text: `clause ${id}`, sourceRef: "S-inert", taskRef: "TASK-1",
+    });
+  }
+  if (drifted) {
+    // A repo-file Source whose excerpt is absent from the head view -> Check B zero -> drift.
+    s.sources.push({
+      sourceId: "S-file", contentKind: "requirement", driftMode: "repo-file",
+      locator: "docs/policy.md#1", excerpt: "the anchored sentence", digest: sha256Hex("the anchored sentence"),
+    });
+    s.clauses.find((c) => c.id === CLAUSE_G).sourceRef = "S-file";
+  }
+  if (expired) {
+    s.sources.push({
+      sourceId: "S-hc", contentKind: "policy", driftMode: "snapshot-only",
+      locator: "p#1", excerpt: "PII stays in the EU", digest: sha256Hex("PII stays in the EU"),
+    });
+    s.clauses.push({
+      id: REQ("0H"), authority: "hard-constraint", kind: "specification",
+      text: "hc", sourceRef: "S-hc", ownerRef: { kind: "source-authority", ref: "R-owner" },
+    });
+    s.sources.push({
+      sourceId: "S-exc", contentKind: "exception-grant", driftMode: "snapshot-only", locator: "g#1",
+      excerpt: "grant", digest: sha256Hex("grant"), targetConstraintRef: REQ("0H"),
+      grantAuthorityRef: { kind: "source-authority", ref: "R-owner" }, scope: "eu", expiry: "2020-01-01",
+    });
+    s.clauses.find((c) => c.id === CLAUSE_G).sourceRef = "S-exc";
+  }
+  if (transitioned) {
+    s.records.push({
+      recordId: "R-ack", kind: "plan-gate", target: CLAUSE_G, successor: null,
+      impact: "no consumers", disposition: "no-affected-dependents", approvedBy: "user",
+    });
+    s.transitions.push({
+      id: "T-1", subject: CLAUSE_G, action: "retire", authorityRef: { kind: "user" },
+      effectiveAt: "2026-01-01T00:00:00.000Z", ackRef: { kind: "plan-gate", ref: "R-ack" },
+    });
+  }
+  return s;
+}
+
+// --- module sources -----------------------------------------------------------------------------
+
+const tagged = (clauseRef, name, body = "") => `${NODE_TEST}// @src ${clauseRef}\ntest("${name}", () => {${body}});\n`;
+const untagged = (name, body = "") => `${NODE_TEST}test("${name}", () => {${body}});\n`;
+
+const byPath = (entries) => Object.fromEntries(entries.map((e) => [e.testRef.path, e]));
+
+async function produce(repo, oid) {
+  return produceChangedTestInventoryV2({ repoRoot: repo.root, baseTreeOid: oid });
+}
+
+// --- a BLOCKED AC173 cell, recorded here rather than worked around --------------------------------
+//
+// AC173 (a) wants a tag change that leaves the body untouched -> `retagged`, with the two body
+// digests EQUAL. AC173 (c) wants the same shape under a governance hit. Neither is reachable end to
+// end with the shipped node:test v1 adapter, and the reason is mechanical: §11b.8b removes only
+// @tid lines from the canonical declaration bytes, so the @src line -- the ONLY way to change a tag
+// in this adapter -- is inside the range that bodyDigest covers. Editing it moves bodyDigest, so §6
+// row 4 (modified) always fires before row 5 (retagged).
+//
+// Measured, not inferred: a fixture whose sole edit is @src A -> @src X yields base and head
+// declarations with different bodyDigests. The assertion below pins that, so the day the adapter or
+// the canonical range changes, this test fails and the blocked cell gets revisited.
+//
+// Nothing here is worked around. The spec is not touched, the accepted adapter is not quietly
+// widened, and the producer is not taught a special case: a `retagged` classification is simply not
+// yet demonstrable end to end, and this suite says so instead of asserting something weaker and
+// calling the cell covered.
+
+test("AC173 (a): the reachable half -- a new Clause, a head-only add, and no extra governance entry", () => withRepo(async (repo) => {
+  // B has Clause A and the base test binds A; C adds Clause X. The rebound test and a head-only
+  // test both reach the new clause, so governanceHit is true for both -- and neither may produce a
+  // governance-affected entry, because rows 1-5 come first.
+  repo.write("retag.test.mjs", tagged(CLAUSE_A, "alpha"));
+  repo.write("control.test.mjs", tagged(CLAUSE_A, "control"));
+  repo.putStore(legal(storeWith({ clauses: [CLAUSE_A] })));
+  const oid = repo.commit();
+
+  repo.write("retag.test.mjs", tagged(CLAUSE_X, "alpha"));       // the tag moves; the test body does not
+  repo.write("headonly.test.mjs", tagged(CLAUSE_X, "fresh"));    // head-only, binding the new clause
+  repo.putStore(legal(storeWith({ clauses: [CLAUSE_A, CLAUSE_X] })));
+
+  const out = await produce(repo, oid);
+  const map = byPath(out.entries);
+
+  const rebound = map["retag.test.mjs"];
+  assert.ok(rebound, "the rebound test produces an entry");
+  assert.deepStrictEqual(rebound.tagBefore, { clauseRef: CLAUSE_A });
+  assert.deepStrictEqual(rebound.tagAfter, { clauseRef: CLAUSE_X });
+  // THE BLOCKED CELL, asserted as it actually behaves. AC173 (a) asks for `retagged` with equal body
+  // digests; the @src line lives inside the canonical declaration bytes, so the digests differ and
+  // row 4 wins. Recorded, not accommodated.
+  assert.strictEqual(rebound.status, "modified",
+    "an @src-only edit still moves bodyDigest, so row 4 fires: AC173 (a)'s retagged cell is NOT reachable here");
+  assert.notStrictEqual(rebound.baseBodyDigest, rebound.headBodyDigest,
+    "and the two body digests really do differ, which is why row 5 cannot be reached");
+  assert.strictEqual(rebound.reason, "content-change", "reason is content-change, never governance-affected");
+
+  const added = map["headonly.test.mjs"];
+  assert.strictEqual(added.status, "added", "a head-only test binding the new clause is added");
+  assert.strictEqual(added.reason, "content-change");
+
+  assert.ok(!("control.test.mjs" in map), "the control changed nothing and is omitted from entries");
+  assert.strictEqual(out.entries.length, 2, `exactly two entries, got ${JSON.stringify(out.entries.map((e) => e.testRef.path))}`);
+  assert.strictEqual(out.entries.filter((e) => e.status === "governance-affected").length, 0,
+    "reverse closure adds no second entry for a test rows 1-5 already carried");
+}));
+
+// --- AC173 (b1)(b2)(b3): the three reachable governance-only cases --------------------------------
+
+const GOVERNANCE_ONLY = [
+  ["b1 transitionedClauses", { transitioned: true }, false],
+  ["b2 driftedClauses", { drifted: true }, true],
+  ["b3 expiredClauses", { expired: true }, true],
+];
+
+for (const [label, flag, inBaseToo] of GOVERNANCE_ONLY) {
+  test(`AC173 (${label}): same path, same body, same tag, seed hit -> exactly one governance-affected`, () => withRepo(async (repo) => {
+    // The test file is byte-identical between base and head, and so is its tag. The only thing that
+    // moves is governance state, so §6 row 6 is the only row that can fire.
+    //
+    // Sources are immutable (INV-3), so for drift and expiry the SAME Source has to be in both
+    // stores -- the clause is not re-pointed. b2 changes only the head view; b3 changes nothing at
+    // all, because the grant is already past its expiry and T0 is what decides. b1 is the one case
+    // where the current store legitimately gains something: a new, append-only Transition.
+    repo.write("hit.test.mjs", tagged(CLAUSE_G, "hit"));
+    repo.write("miss.test.mjs", tagged(CLAUSE_A, "miss"));   // the single-variable control
+    repo.write("docs/policy.md", "the anchored sentence\n");
+    const shared = { clauses: [CLAUSE_A, CLAUSE_G], ...(inBaseToo ? flag : {}) };
+    repo.putStore(legal(storeWith(shared)));
+    const oid = repo.commit();
+
+    if (flag.drifted) repo.write("docs/policy.md", "gone\n"); // Check B -> zero occurrences
+    repo.putStore(legal(storeWith({ ...shared, ...flag })));
+
+    const out = await produce(repo, oid);
+    const map = byPath(out.entries);
+
+    const hit = map["hit.test.mjs"];
+    assert.ok(hit, `${label}: the bound test must produce an entry`);
+    assert.strictEqual(hit.status, "governance-affected");
+    assert.strictEqual(hit.reason, "governance-affected", "status and reason hold together");
+    assert.strictEqual(hit.baseBodyDigest, hit.headBodyDigest, "both body digests are equal");
+    assert.deepStrictEqual(hit.tagBefore, hit.tagAfter, "tagBefore and tagAfter are canonically equal");
+    assert.deepStrictEqual(hit.tagAfter, { clauseRef: CLAUSE_G });
+
+    assert.ok(!("miss.test.mjs" in map), `${label}: the seed-miss control is omitted from entries`);
+    assert.strictEqual(out.entries.length, 1, `${label}: exactly one entry, got ${out.entries.length}`);
+  }));
+}
+
+// --- AC173 (c): governance never overrides precedence ---------------------------------------------
+
+test("AC173 (c): body change, tag change and a move all beat a governance hit", () => withRepo(async (repo) => {
+  // Every one of these tests binds a clause that IS in the seed, so governanceHit is true for all
+  // three. None of them may come out governance-affected.
+  repo.write("body.test.mjs", tagged(CLAUSE_G, "b", " const x = 1; void x;"));
+  repo.write("tag.test.mjs", tagged(CLAUSE_G, "t"));
+  repo.write("from/moved.test.mjs", tagged(CLAUSE_G, "m"));
+  repo.write("docs/policy.md", "the anchored sentence\n");
+  // The drifting Source is immutable, so it exists in BOTH stores; only the head view moves.
+  const shared = { clauses: [CLAUSE_A, CLAUSE_G], drifted: true };
+  repo.putStore(legal(storeWith(shared)));
+  const oid = repo.commit();
+
+  repo.write("body.test.mjs", tagged(CLAUSE_G, "b", " const x = 2; void x;")); // body moved
+  repo.write("tag.test.mjs", tagged(CLAUSE_X, "t"));                            // tag moved
+  repo.remove("from/moved.test.mjs");
+  repo.write("to/moved.test.mjs", tagged(CLAUSE_G, "m"));                       // path moved
+  repo.write("docs/policy.md", "gone\n");                                       // and the clause drifts
+  repo.putStore(legal(storeWith({ ...shared, clauses: [CLAUSE_A, CLAUSE_G, CLAUSE_X] })));
+
+  const out = await produce(repo, oid);
+  const map = byPath(out.entries);
+
+  assert.strictEqual(map["body.test.mjs"].status, "modified", "body change wins over the hit");
+  assert.strictEqual(map["body.test.mjs"].reason, "content-change");
+  assert.notStrictEqual(map["body.test.mjs"].baseBodyDigest, map["body.test.mjs"].headBodyDigest);
+
+  // Same blocked cell as above: the @src edit moves bodyDigest, so this lands on row 4 rather than
+  // row 5. What the case still proves -- and what (c) is really about -- is that a governance hit
+  // does NOT override whichever content row fires.
+  assert.strictEqual(map["tag.test.mjs"].status, "modified",
+    "a tag edit also moves bodyDigest in this adapter; the point stands: governance did not override it");
+  assert.strictEqual(map["tag.test.mjs"].reason, "content-change");
+
+  const moved = out.entries.find((e) => e.status === "moved");
+  assert.ok(moved, "the moved pair is classified moved, not governance-affected");
+  assert.strictEqual(moved.reason, "content-change");
+  assert.strictEqual(moved.testRef.path, "to/moved.test.mjs", "a moved entry takes its testRef from head");
+
+  assert.strictEqual(out.entries.filter((e) => e.status === "governance-affected").length, 0,
+    "governance produced no entry of its own for any of the three");
+  // (e) again, on a busier fixture: one entry per logical test, never two.
+  const paths = out.entries.map((e) => e.testRef.path);
+  assert.strictEqual(new Set(paths).size, paths.length, "no test appears twice");
+}));
+
+// --- AC173 (f): the six statuses' exact side projection --------------------------------------------
+
+test("AC173 (f): added is all head, with baseBodyDigest ABSENT", () => withRepo(async (repo) => {
+  // One run, residual on the head side only. Residual on BOTH sides is refused by the matcher as
+  // unresolved identity drift, so added and deleted are necessarily two runs, not one.
+  repo.write("keep.test.mjs", tagged(CLAUSE_A, "keep"));
+  repo.putStore(legal(storeWith({ clauses: [CLAUSE_A] })));
+  const oid = repo.commit();
+  repo.write("fresh.test.mjs", tagged(CLAUSE_A, "fresh"));
+  repo.putStore(legal(storeWith({ clauses: [CLAUSE_A] })));
+
+  const added = byPath((await produce(repo, oid)).entries)["fresh.test.mjs"];
+  assert.strictEqual(added.status, "added");
+  assert.strictEqual(added.tagBefore, null, "added carries tagBefore null");
+  assert.deepStrictEqual(added.tagAfter, { clauseRef: CLAUSE_A });
+  assert.ok(!("baseBodyDigest" in added), "added must NOT carry baseBodyDigest -- absent, not null");
+  assert.ok("headBodyDigest" in added);
+  assert.deepStrictEqual(Object.keys(added).sort(),
+    ["framework", "headBodyDigest", "implementationIdentity", "reason", "status", "tagAfter", "tagBefore", "testRef"]);
+}));
+
+test("AC173 (f): deleted is all base, with headBodyDigest ABSENT", () => withRepo(async (repo) => {
+  repo.write("keep.test.mjs", tagged(CLAUSE_A, "keep"));
+  repo.write("gone.test.mjs", tagged(CLAUSE_A, "gone"));
+  repo.putStore(legal(storeWith({ clauses: [CLAUSE_A] })));
+  const oid = repo.commit();
+  repo.remove("gone.test.mjs");
+  repo.putStore(legal(storeWith({ clauses: [CLAUSE_A] })));
+
+  const deleted = byPath((await produce(repo, oid)).entries)["gone.test.mjs"];
+  assert.strictEqual(deleted.status, "deleted");
+  assert.strictEqual(deleted.tagAfter, null, "deleted carries tagAfter null");
+  assert.deepStrictEqual(deleted.tagBefore, { clauseRef: CLAUSE_A });
+  assert.ok(!("headBodyDigest" in deleted), "deleted must NOT carry headBodyDigest -- absent, not null");
+  assert.ok("baseBodyDigest" in deleted);
+  assert.strictEqual(deleted.testRef.path, "gone.test.mjs", "a deleted entry takes its testRef from base");
+}));
+
+test("AC173 (f): the four two-sided statuses take identity from head and the before-columns from base", () => withRepo(async (repo) => {
+  repo.write("m.test.mjs", tagged(CLAUSE_A, "m", " const x = 1; void x;"));
+  repo.putStore(legal(storeWith({ clauses: [CLAUSE_A] })));
+  const oid = repo.commit();
+  repo.write("m.test.mjs", tagged(CLAUSE_X, "m", " const x = 2; void x;"));
+  repo.putStore(legal(storeWith({ clauses: [CLAUSE_A, CLAUSE_X] })));
+
+  const out = await produce(repo, oid);
+  const entry = byPath(out.entries)["m.test.mjs"];
+  assert.strictEqual(entry.status, "modified");
+  assert.deepStrictEqual(entry.tagBefore, { clauseRef: CLAUSE_A }, "tagBefore is the base tag");
+  assert.deepStrictEqual(entry.tagAfter, { clauseRef: CLAUSE_X }, "tagAfter is the head tag");
+  assert.notStrictEqual(entry.baseBodyDigest, entry.headBodyDigest);
+  assert.deepStrictEqual(Object.keys(entry).sort(),
+    ["baseBodyDigest", "framework", "headBodyDigest", "implementationIdentity", "reason", "status", "tagAfter", "tagBefore", "testRef"]);
+  assert.deepStrictEqual(Object.keys(entry.testRef).sort(), ["adapterId", "path", "structuralId"]);
+  assert.deepStrictEqual(Object.keys(entry.implementationIdentity).sort(),
+    ["implementationId", "parserId", "parserVersion"]);
+}));
+
+// --- AC173 (d)(g)(h)(k): omission, ordering, envelope and no side effects ---------------------------
+
+test("AC173 (d)(g)(h): unchanged is omitted, entries ascend strictly, the envelope is exactly seven keys", () => withRepo(async (repo) => {
+  for (const p of ["b/one.test.mjs", "a/two.test.mjs", "a/one.test.mjs", "steady.test.mjs"]) {
+    repo.write(p, tagged(CLAUSE_A, "n", " const x = 1; void x;"));
+  }
+  repo.putStore(legal(storeWith({ clauses: [CLAUSE_A] })));
+  const oid = repo.commit();
+  for (const p of ["b/one.test.mjs", "a/two.test.mjs", "a/one.test.mjs"]) {
+    repo.write(p, tagged(CLAUSE_A, "n", " const x = 2; void x;"));
+  }
+  repo.putStore(legal(storeWith({ clauses: [CLAUSE_A] })));
+
+  const out = await produce(repo, oid);
+  const paths = out.entries.map((e) => e.testRef.path);
+  assert.deepStrictEqual(paths, ["a/one.test.mjs", "a/two.test.mjs", "b/one.test.mjs"],
+    "strictly ascending by the (path, adapterId, structuralId) tuple");
+  assert.ok(!paths.includes("steady.test.mjs"), "the unchanged test is omitted, with no placeholder");
+  for (const e of out.entries) assert.strictEqual(e.status, "modified");
+
+  assert.deepStrictEqual(Object.keys(out).sort(), [...V2_INVENTORY_KEYS].sort(), "exactly seven keys");
+  for (const forbidden of ["evaluationTime", "producedAt", "clockDigest", "T0", "now"]) {
+    assert.ok(!(forbidden in out), `${forbidden} must not appear in the envelope`);
+  }
+  assert.strictEqual(out.inventoryVersion, 2);
+  assert.strictEqual(out.inventoryDigest, computeInventoryV2Digest({
+    inventoryVersion: out.inventoryVersion, baseTreeOid: out.baseTreeOid, registryDigest: out.registryDigest,
+    headViewDigest: out.headViewDigest, inputProvenanceStoreDigest: out.inputProvenanceStoreDigest,
+    entries: out.entries,
+  }), "the digest recomputes to the same value under the one formula");
+  // Nested objects are canonical: canonicalJson round-trips to itself.
+  assert.strictEqual(canonicalJson(out), canonicalJson(JSON.parse(canonicalJson(out))));
+}));
+
+test("AC173 (k): the store, the config, the registry and .ctide/output are byte-identical afterwards", () => withRepo(async (repo) => {
+  repo.write("a.test.mjs", tagged(CLAUSE_A, "a"));
+  repo.write(".ctide/adapters.json", '{"adapters":[]}\n'); // an explicit-config-shaped carrier
+  repo.putStore(legal(storeWith({ clauses: [CLAUSE_A] })));
+  const oid = repo.commit();
+  repo.write("a.test.mjs", tagged(CLAUSE_A, "a", " const x = 2; void x;"));
+
+  const before = {
+    store: repo.bytes(".ctide/provenance.json"),
+    config: repo.bytes(".ctide/adapters.json"),
+    status: repo.git("status", "--porcelain", "--untracked-files=all"),
+  };
+  const out = await produce(repo, oid);
+  assert.strictEqual(out.entries.length, 1, "the run really did work");
+
+  assert.deepStrictEqual(repo.bytes(".ctide/provenance.json"), before.store,
+    "the provenance store is byte-identical: not migrated, not written back");
+  assert.deepStrictEqual(repo.bytes(".ctide/adapters.json"), before.config, "the config carrier is byte-identical");
+  assert.strictEqual(repo.git("status", "--porcelain", "--untracked-files=all"), before.status,
+    "nothing appeared or changed anywhere in the repository");
+  assert.ok(!fs.existsSync(path.join(repo.root, ".ctide", "output")), "no .ctide/output/** was created");
+}));
