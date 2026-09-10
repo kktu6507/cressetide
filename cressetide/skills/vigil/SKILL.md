@@ -107,7 +107,7 @@ User-facing communication (the plan at the gate, AskUserQuestion prompts, surfac
    - When `.ctide/decisions/` exists, consult entries relevant to this task's area (filter by `Tags`) read-only before non-trivial planning (`references/decision-record.md`) — folds into plan reasoning only, never auto-applied. If the plan would concretely reverse an `active` decision, that is an instance of Step 1's existing AskUserQuestion rule (ambiguity materially affecting business behavior), not new gate machinery.
    - **Reconciliation scan (read-only).** Run `run-reconcile.mjs scan` for still-open ledger windows (`references/run-ledger.md`): on the high-risk plan-grounding path it rides `navigator`'s Stage A, which disposes each candidate with a reason in its draft; on low/medium risk, run it directly here and dispose inline with a reason. All writes (`close`/`expire`) happen post-approval on the main thread only — single writer, same discipline as failure memory.
    - **Define acceptance criteria.** For non-trivial work, turn the requirement into a short, numbered checklist of observable / verifiable outcomes that define done, presented **as part of the plan** at ExitPlanMode (no separate approval step). On high-risk work these *are* the plan-grounding **sharpened contract** (do not duplicate); skip for trivial work. Route ambiguous criteria through AskUserQuestion; carry the approved list into the Review Packet; the `arbiter` checks each at the gate (step 7). The deepest release signal is not "no bugs" — it is "did what you asked, and confirmed it."
-   - **State the cost up-front.** Cost stays risk-proportional and user-adjustable: the panel auto-scales to risk; `--lite` forces the smallest panel and skips the costlier deep-mode **Tier 2** (with a safety floor); `--deep` (Tier 2) / `--no-deep` tune deep mode. Name the selected panel + cost tier (lite / default / deep) in the plan so the user can adjust before approving, and name any reviewer expected to be **evidence-substituted** so the fast lane is visible at approval time (`references/reviewer-selection.md`, *Lite path* / *Evidence substitution*).
+   - **State the cost up-front.** Cost stays risk-proportional and user-adjustable: the panel auto-scales to risk; `--lite` forces the smallest panel and skips the costlier deep-mode **Tier 2** (with a safety floor); `--deep` (Tier 2) / `--no-deep` tune deep mode. Name the selected panel + cost tier (lite / default / deep) in the plan so the user can adjust before approving, and name any reviewer expected to be **evidence-substituted** so the fast lane is visible at approval time (`references/reviewer-selection.md`, *Lite path* / *Evidence substitution*) — and evidence substitution is never available on a TP-active run, where a real `test-reviewer` is mandatory for every loop (a confirmed non-empty `ChangedTestInventory` is D11's named subcase, not the only one).
    - Present the plan via ExitPlanMode **in the user's language** (identifiers, file names, commands, and verdict tokens verbatim — see Language And Text Integrity) and wait for approval (Plan Gate).
 
 3. Implementation
@@ -131,11 +131,51 @@ User-facing communication (the plan at the gate, AskUserQuestion prompts, surfac
    - If a command or check cannot run, state the exact blocker and remaining uncertainty.
    - **A red required check gates the panel:** when a required check fails (or was claimed but never ran), return to implementation and fix it first — reviewers review verified work; the panel is not a debugging aid.
 
+4b. Test-provenance loop (TP-active runs only)
+   - **Applies only to a TP-active run** — a task carrying the provenance workflow with a current
+     TaskState in the validated store. A non-TP run skips 4b entirely and keeps the generic lifecycle
+     below unchanged.
+   - The generic `contract-check.mjs --base` of generic step 4 has already run and keeps its position, its
+     fail-open/presence-only contract and its exit 0. It is **not** a controller operation and never
+     substitutes for a reviewer. There is no `--provenance` invocation anywhere in this workflow.
+   - **Before the loop:** the main thread opens/reconciles the task loop with `begin` /
+     `beginTaskLoop`.
+   - **The seven ordered TP-active sub-steps.** The main thread owns every mutating operation; only
+     the arbiter runs the gate.
+     1. `emit` / `runProposalIteration` — main thread. Produces the current `ChangedTestInventory` and
+        owns the emission-to-observer sequencing.
+     2. Build the TP Review Packet from that emission and the exact inputs
+        (`references/review-packet.md`).
+     3. Invoke **one** real `test-reviewer`; persist its returned batch as the exact byte slice under
+        the Release 1 transport rules (`references/review-packet.md`). The main thread parses,
+        reformats and repairs nothing.
+     4. `submit` / `submitReviewedProposal` — main thread. Validates, adopts and triages: an ordinary
+        finding is repaired and returns to **TP-active sub-step 1** (inventory and batch are both
+        recomputed); an `assum-reading-change` takes the governance-witness route through the
+        governance sidecar input; a clean or fully resolved proposal proceeds.
+     5. `commit` / `commitReviewedBatch` — main thread. The single-writer semantic transaction.
+     6. `verify` / `recordVerification` — main thread. Performs and durably records one owned Step 6
+        consumer attempt. **This is the workflow's Step 6 consumer.**
+     7. After the selected reviewers finish, the `arbiter` runs `evaluate` / `evaluateGate` **once per
+        TP-active arbiter pass** (contract: `agents/arbiter.agent.md`). It performs its own fresh
+        named Step 6 consumer and returns separate `loop` and `provenance` halves plus `combined`.
+   - **Outside the seven:** `inspect` / `inspectLoopState` is read-only diagnosis only, never a gate
+     and never a loop step. `open-epoch` / `openEpoch` is recovery-only — the sole resolution of a
+     controller lock, and only with a valid new witness.
+   - **The ordinary repair cap counts repair iterations.** Two consecutive iterations of the same
+     blocker category stop with the Stuck Summary of generic step 8. It never locks or unlocks the
+     controller, never opens or resets an epoch, and is not satisfied by any controller counter.
+   - **The controller cap counts proposal admissions.** Eight admissions in one epoch, or a repeated
+     fingerprint, set a controller lock resolved **only** by `open-epoch` with a valid new witness. It
+     never increments, replaces, resets or satisfies the ordinary repair cap; if both stops occur,
+     each remains binding on its own terms.
+
 5. Review panel selection
-   - Always include `intent-reviewer` for non-trivial formal review — never substituted. `test-reviewer` runs by default and may be **evidence-substituted** on low/medium-risk work (conditions, exclusions, and the 1C small-diff clause live in `references/reviewer-selection.md`, *Evidence substitution*); disclose every substitution (plan-gate cost line, final report, `ctide:panel=` sentinel).
+   - Always include `intent-reviewer` for non-trivial formal review — never substituted. `test-reviewer` runs by default and may be **evidence-substituted** on low/medium-risk work (conditions, exclusions, and the 1C small-diff clause live in `references/reviewer-selection.md`, *Evidence substitution*); disclose every substitution (plan-gate cost line, final report, `ctide:panel=` sentinel). A real `test-reviewer` is **mandatory on every TP-active run** — D5.2/TP §8 require reviewer-authored batch bytes even for a zero-entry inventory, so an established-empty inventory still needs a real reviewer returning a valid batch with `results: []`; D11's named subcase, a confirmed non-empty inventory including a governance-affected-only one, is mandatory for the same reason, with no equivalent-gate exception. An **unestablished** inventory never reaches panel selection: it is a failed required check, gated by generic step 4. **A non-TP run has no inventory precondition** and keeps the ordinary fast lane under its existing conditions and exclusions. On a TP-active handoff the reviewer's returned batch is persisted byte-for-byte by the main thread — the framing, slice and no-normalization rules live in `references/review-packet.md`.
    - Add conditional reviewers only when their risk criteria apply.
    - The panel size is risk-proportional and user-adjustable: `--lite` forces the smallest sufficient panel (core + `code-reviewer` when code changed) and skips deep-mode Tier 2, except it keeps a directly-relevant safety reviewer when a high-risk signal is present and discloses it (`references/reviewer-selection.md`, *Lite path*).
    - Prepare a Review Packet before reviewer handoff, and fill the "Shared reviewer contract" block into each handoff verbatim (a spawned reviewer cannot reach `references/reviewer-common.md` by path).
+   - On a TP-active run the packet is the one built at **TP-active step 4b sub-step 2**, carrying its inventory classification and authoritative reviewer inputs; the `test-reviewer` invocation here is TP-active sub-step 3.
 
 6. Parallel review
    - Run selected reviewers in parallel when possible and authorized (spawn rules: `references/runtime-policy.md`).
@@ -149,11 +189,12 @@ User-facing communication (the plan at the gate, AskUserQuestion prompts, surfac
    - `arbiter` decides `READY`, `FIX REQUIRED`, or `NOT READY` and whether failure memory is required.
    - `arbiter` also decides whether this run produced a decision worth recording, per the four signal criteria in `references/decision-record.md`.
    - `arbiter` **checks each user-approved acceptance criterion** (met / unmet / deferred); an `unmet`, non-deferred criterion blocks `READY` (see `agents/arbiter.agent.md`).
+   - On a TP-active run the `arbiter` also runs **TP-active step 4b sub-step 7** — its own single `evaluate` / `evaluateGate` call — and reports `loop` and `provenance` separately plus `combined`; either half false blocks `READY` (`agents/arbiter.agent.md`, *Test-provenance gate*).
 
 8. Auto-fix loop
    - If verdict is `FIX REQUIRED` or `NOT READY`: fix concrete findings, rerun relevant verification (only failing / changed-path checks — `references/verification-gate.md`, *Repair-iteration scoping*; the full required set re-runs once pre-`READY` so `ctide:verify=` rests on a real full-suite green), rerun only affected reviewers, rerun `arbiter`, repeat until `READY` or clearly blocked.
    - If a fix introduces a new risk category, add the corresponding conditional reviewer.
-   - On evidence-substituted work: if `intent-reviewer` reports a blocker/major, or the `arbiter` judges a coverage gap, spawn the substituted reviewer before `READY` (`references/reviewer-selection.md` — escalation; a fast lane, not a waiver).
+   - On evidence-substituted work: if `intent-reviewer` reports a blocker/major, or the `arbiter` judges a coverage gap, spawn the substituted reviewer before `READY` (`references/reviewer-selection.md` — escalation; a fast lane, not a waiver). This is the non-TP lane only: evidence substitution is never available on a TP-active run, so there is no TP substitution to escalate — the real `test-reviewer` already ran as TP-active sub-step 3.
    - **Validate each blocker, then tag each fix** — the `arbiter` confirms each `blocker` with one independent check and tags each applied fix Safe / Extended-Safe / Residual (a Residual fix is never auto-applied): `agents/arbiter.agent.md`, *Auto-fix loop rules*.
    - **Iteration cap:** if the same blocker category persists across two consecutive iterations, produce a Stuck Summary (including the `arbiter`'s converging-vs-drifted judgment — `references/verification-gate.md`, *Repair-iteration scoping*) and stop. A hard cap, not "loop until solved" — surface the blocker for the user rather than spending unbounded iterations/tokens.
    - **Long-run progress ledger (optional).** On a long run, keep a one-line-per-step ledger at `.ctide/output/progress.md` (`<sha> · <step> · verify=<pass|fail> · <verdict-so-far>`); after a compaction re-read it (and `git log`) before redoing work — kept, gitignored; `compact-fidelity.js` re-injects a reminder.

@@ -1,0 +1,375 @@
+{
+  "at": "2026-09-08T17:41:29.269Z",
+  "independentReviewer": "Codex",
+  "scope": "Two prospectively frozen v2 planning observations; neither implemented",
+  "cases": [
+    {
+      "caseId": "s2",
+      "root": "<TMP>\\ctide-eff-pos-ueJU2i",
+      "phase": "plan",
+      "sessionId": "7a248375-220b-40f6-8390-97581f7c6846",
+      "mechanicalOk": false,
+      "originalFaults": [
+        "limitation-unrecovered:unfrozen-bash-command:toolu_0197d86ST6Y5DXBLdUu8kbFv"
+      ],
+      "rawSha256": "e2f501c51ec4a98bf1eb74ee935e0907aef3d35bc6015bad5f68f0e8c67cbbc4",
+      "planSha256": "fa60ed5561ff84f9570e4576f2245b991208ed555e76b4800e949d61970b24d7",
+      "profile": "v2-confined-exploratory",
+      "strictConformance": false,
+      "limitations": [
+        {
+          "category": "plan-write-tool-unavailable",
+          "phase": "plan",
+          "toolUseId": "toolu_01CeQwgQSxpcMwUB5ZErmPKs",
+          "actor": "main",
+          "tool": "Write",
+          "target": "<HOME>\\.claude\\plans\\use-the-skill-tool-floofy-pond.md",
+          "errorSignature": "tool-unavailable:Write@2.1.263",
+          "strictFaultCategories": [
+            "unexpected-tool:Write",
+            "write-audit-missing:toolu_01CeQwgQSxpcMwUB5ZErmPKs"
+          ],
+          "recoveryPrecondition": "met",
+          "recoveryAdjudicated": null
+        },
+        {
+          "category": "unfrozen-bash-command",
+          "phase": "plan",
+          "toolUseId": "toolu_0197d86ST6Y5DXBLdUu8kbFv",
+          "actor": "main",
+          "command": "cd \"<TMP>/ctide-eff-pos-ueJU2i/consumer\" && node --test test/selection.test.mjs 2>&1 | tail -25",
+          "reason": "the command is not one of this handoff's exact allowed commands",
+          "strictFaultCategories": [
+            "guard-refusal:unfrozen-command:toolu_0197d86ST6Y5DXBLdUu8kbFv"
+          ],
+          "recoveryPrecondition": "unmet",
+          "recoveryAdjudicated": null
+        }
+      ],
+      "estimatedUsd": 0.824926,
+      "elapsedMs": 137911,
+      "usage": {
+        "input_tokens": 18,
+        "cache_creation_input_tokens": 44449,
+        "cache_read_input_tokens": 251192,
+        "output_tokens": 10190,
+        "output_tokens_details": {
+          "thinking_tokens": 5269
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 44449,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 1932,
+            "cache_read_input_tokens": 42252,
+            "cache_creation_input_tokens": 2197,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 2197
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "modelUsage": {
+        "claude-opus-5": {
+          "inputTokens": 18,
+          "outputTokens": 10190,
+          "cacheReadInputTokens": 251192,
+          "cacheCreationInputTokens": 44449,
+          "webSearchRequests": 0,
+          "costUSD": 0.824926,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
+          "thinkingTokens": 5269,
+          "canonicalModel": "claude-opus-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "subagentStats": {
+        "spawned": 0,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 0
+        },
+        "started_in_background": 0,
+        "max_depth": 0,
+        "spawned_by_subagents": 0,
+        "completed": 0,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {}
+      },
+      "actualNativeSkill": true,
+      "sourceUnchanged": true,
+      "pluginFilesUnchanged": 110,
+      "approvalAbsent": true,
+      "implementationAbsent": true,
+      "visibleRedBaseline": {
+        "tests": 3,
+        "pass": 1,
+        "fail": 2,
+        "expectedFailNames": [
+          "AC1 default selection excludes archived cards",
+          "AC2 includeArchived returns every card in input order"
+        ],
+        "toolUseId": "toolu_014h2MGZSaVeRLAC2fSAzmXA",
+        "resultContentSha256": "4d09f93fe6dbd4e0429d6b3585690184c73ae34c8fc931f4892dae9cc7dbdc62"
+      },
+      "bashAudits": [
+        {
+          "kind": "ctide-bash-guard-decision",
+          "schemaVersion": 1,
+          "guardDigest": "c59f2a507d0d0dff1a7fa42253124cf6f4e3332b7ad08e55ab2a633e95647037",
+          "sessionId": "7a248375-220b-40f6-8390-97581f7c6846",
+          "toolUseId": "toolu_0197d86ST6Y5DXBLdUu8kbFv",
+          "command": "cd \"<TMP>/ctide-eff-pos-ueJU2i/consumer\" && node --test test/selection.test.mjs 2>&1 | tail -25",
+          "cwd": "<TMP>\\ctide-eff-pos-ueJU2i\\consumer",
+          "resolvedCwd": "<TMP>\\ctide-eff-pos-ueJU2i\\consumer",
+          "expectedRoot": "<TMP>\\ctide-eff-pos-ueJU2i\\consumer",
+          "decision": "deny",
+          "reason": "the command is not one of this handoff's exact allowed commands",
+          "at": "2026-09-08T17:32:50.335Z",
+          "pid": 57956,
+          "configDigest": "3d786e3653246ddbaf9fcca7c33f89446447854e1379842b8904875424fb6bf8"
+        },
+        {
+          "kind": "ctide-bash-guard-decision",
+          "schemaVersion": 1,
+          "guardDigest": "c59f2a507d0d0dff1a7fa42253124cf6f4e3332b7ad08e55ab2a633e95647037",
+          "sessionId": "7a248375-220b-40f6-8390-97581f7c6846",
+          "toolUseId": "toolu_014h2MGZSaVeRLAC2fSAzmXA",
+          "command": "node --test test/selection.test.mjs",
+          "cwd": "<TMP>\\ctide-eff-pos-ueJU2i\\consumer",
+          "resolvedCwd": "<TMP>\\ctide-eff-pos-ueJU2i\\consumer",
+          "expectedRoot": "<TMP>\\ctide-eff-pos-ueJU2i\\consumer",
+          "decision": "pass",
+          "reason": "an exact allowed command in the expected repository",
+          "at": "2026-09-08T17:32:54.142Z",
+          "pid": 61584,
+          "configDigest": "3d786e3653246ddbaf9fcca7c33f89446447854e1379842b8904875424fb6bf8"
+        }
+      ],
+      "unavailableWrite": {
+        "id": "toolu_01CeQwgQSxpcMwUB5ZErmPKs",
+        "target": "<HOME>\\.claude\\plans\\use-the-skill-tool-floofy-pond.md",
+        "exactUnavailableError": true
+      },
+      "process": {
+        "exitCode": 0,
+        "exitConfirmed": true,
+        "timedOut": false
+      }
+    },
+    {
+      "caseId": "s3",
+      "root": "<TMP>\\ctide-eff-pos-5zC7Ld",
+      "phase": "plan",
+      "sessionId": "2ad2a45c-578f-4556-816f-b89ccf97e6e7",
+      "mechanicalOk": true,
+      "originalFaults": [],
+      "rawSha256": "ace36759abaef84508aeefd4ef05d4fbece3f545436994cbc93b1f4a75e88535",
+      "planSha256": "4957c150e3a4ad03873b8ba1288aebab1f6f6a21175354f99e3644199b0504f9",
+      "profile": "v2-confined-exploratory",
+      "strictConformance": false,
+      "limitations": [
+        {
+          "category": "plan-write-tool-unavailable",
+          "phase": "plan",
+          "toolUseId": "toolu_016hMwRhrj6BRqRkXWpuTyFK",
+          "actor": "main",
+          "tool": "Write",
+          "target": "<HOME>\\.claude\\plans\\use-the-skill-tool-floating-donut.md",
+          "errorSignature": "tool-unavailable:Write@2.1.263",
+          "strictFaultCategories": [
+            "unexpected-tool:Write",
+            "write-audit-missing:toolu_016hMwRhrj6BRqRkXWpuTyFK"
+          ],
+          "recoveryPrecondition": "met",
+          "recoveryAdjudicated": null
+        },
+        {
+          "category": "unfrozen-bash-command",
+          "phase": "plan",
+          "toolUseId": "toolu_013TcBovZt9iuqzBpwZCMMjw",
+          "actor": "main",
+          "command": "ls -la \"<TMP>/ctide-eff-pos-5zC7Ld/consumer\" && echo \"--- src ---\" && ls -la \"<TMP>/ctide-eff-pos-5zC7Ld/consumer/src\" && echo \"--- test ---\" && ls -la \"<TMP>/ctide-eff-pos-5zC7Ld/consumer/test\"",
+          "reason": "the command is not one of this handoff's exact allowed commands",
+          "strictFaultCategories": [
+            "guard-refusal:unfrozen-command:toolu_013TcBovZt9iuqzBpwZCMMjw"
+          ],
+          "recoveryPrecondition": "met",
+          "recoveryAdjudicated": null
+        }
+      ],
+      "estimatedUsd": 0.7906880000000001,
+      "elapsedMs": 149368,
+      "usage": {
+        "input_tokens": 16,
+        "cache_creation_input_tokens": 38656,
+        "cache_read_input_tokens": 218046,
+        "output_tokens": 11801,
+        "output_tokens_details": {
+          "thinking_tokens": 5250
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 38656,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 2726,
+            "cache_read_input_tokens": 42879,
+            "cache_creation_input_tokens": 3203,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 3203
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "modelUsage": {
+        "claude-opus-5": {
+          "inputTokens": 16,
+          "outputTokens": 11801,
+          "cacheReadInputTokens": 218046,
+          "cacheCreationInputTokens": 38656,
+          "webSearchRequests": 0,
+          "costUSD": 0.7906880000000001,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
+          "thinkingTokens": 5250,
+          "canonicalModel": "claude-opus-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "subagentStats": {
+        "spawned": 0,
+        "requested": {
+          "background": 0,
+          "foreground": 0,
+          "unset": 0
+        },
+        "started_in_background": 0,
+        "max_depth": 0,
+        "spawned_by_subagents": 0,
+        "completed": 0,
+        "failed": 0,
+        "killed": {
+          "parent": 0,
+          "user": 0,
+          "system": 0
+        },
+        "refused": {
+          "depth_limit": 0,
+          "concurrency_limit": 0,
+          "budget": 0
+        },
+        "by_type": {}
+      },
+      "actualNativeSkill": true,
+      "sourceUnchanged": true,
+      "pluginFilesUnchanged": 110,
+      "approvalAbsent": true,
+      "implementationAbsent": true,
+      "visibleRedBaseline": {
+        "tests": 4,
+        "pass": 2,
+        "fail": 2,
+        "expectedFailNames": [
+          "AC1 getBoard forwards existing includeArchived and pinnedFirst options",
+          "AC2 pinnedFirst partitions after filtering and preserves group order"
+        ],
+        "toolUseId": "toolu_01UXVov5FSL89RRw9eAxZTig",
+        "resultContentSha256": "a16c9beece602ff380b3884eb38a78e4f06903bf3e00484e74218c38b87afbb7"
+      },
+      "bashAudits": [
+        {
+          "kind": "ctide-bash-guard-decision",
+          "schemaVersion": 1,
+          "guardDigest": "c59f2a507d0d0dff1a7fa42253124cf6f4e3332b7ad08e55ab2a633e95647037",
+          "sessionId": "2ad2a45c-578f-4556-816f-b89ccf97e6e7",
+          "toolUseId": "toolu_013TcBovZt9iuqzBpwZCMMjw",
+          "command": "ls -la \"<TMP>/ctide-eff-pos-5zC7Ld/consumer\" && echo \"--- src ---\" && ls -la \"<TMP>/ctide-eff-pos-5zC7Ld/consumer/src\" && echo \"--- test ---\" && ls -la \"<TMP>/ctide-eff-pos-5zC7Ld/consumer/test\"",
+          "cwd": "<TMP>\\ctide-eff-pos-5zC7Ld\\consumer",
+          "resolvedCwd": "<TMP>\\ctide-eff-pos-5zC7Ld\\consumer",
+          "expectedRoot": "<TMP>\\ctide-eff-pos-5zC7Ld\\consumer",
+          "decision": "deny",
+          "reason": "the command is not one of this handoff's exact allowed commands",
+          "at": "2026-09-08T17:35:00.278Z",
+          "pid": 37368,
+          "configDigest": "401516ab87bc3ba2b4f3afaab68a68b73671b02cab5bf482ef06e5a257ea3535"
+        },
+        {
+          "kind": "ctide-bash-guard-decision",
+          "schemaVersion": 1,
+          "guardDigest": "c59f2a507d0d0dff1a7fa42253124cf6f4e3332b7ad08e55ab2a633e95647037",
+          "sessionId": "2ad2a45c-578f-4556-816f-b89ccf97e6e7",
+          "toolUseId": "toolu_01UXVov5FSL89RRw9eAxZTig",
+          "command": "node --test test/selection.test.mjs test/board.test.mjs",
+          "cwd": "<TMP>\\ctide-eff-pos-5zC7Ld\\consumer",
+          "resolvedCwd": "<TMP>\\ctide-eff-pos-5zC7Ld\\consumer",
+          "expectedRoot": "<TMP>\\ctide-eff-pos-5zC7Ld\\consumer",
+          "decision": "pass",
+          "reason": "an exact allowed command in the expected repository",
+          "at": "2026-09-08T17:36:06.352Z",
+          "pid": 68476,
+          "configDigest": "401516ab87bc3ba2b4f3afaab68a68b73671b02cab5bf482ef06e5a257ea3535"
+        }
+      ],
+      "unavailableWrite": {
+        "id": "toolu_016hMwRhrj6BRqRkXWpuTyFK",
+        "target": "<HOME>\\.claude\\plans\\use-the-skill-tool-floating-donut.md",
+        "exactUnavailableError": true
+      },
+      "process": {
+        "exitCode": 0,
+        "exitConfirmed": true,
+        "timedOut": false
+      }
+    }
+  ],
+  "priorExperimentEstimateUsd": 2.8189985,
+  "thesePlansEstimateUsd": 1.615614,
+  "cumulativeExperimentEstimateUsd": 4.4346125,
+  "costBasis": "CLI bundled price-table estimates, not provider billing; implementation and discussion sessions excluded",
+  "limits": [
+    "S2 original mechanical failure retained. Actual allowed red test execution is independently verified; it does not satisfy the frozen nonerror-result recovery condition.",
+    "S3 mechanical success is not root semantic approval. Its proposed 1C code-review fold contradicts its declared NA lint/typecheck/build; independent discussion/disposition remains separate.",
+    "Neither task reached implementation, formal review, final verdict or corrected-behavior verification. No full-flow cost, efficacy, saving or directional cost bound.",
+    "Actual model is Opus5, not GPT-6 Astra. Child effort is unobserved; zero children occurred.",
+    "Guard audit session IDs are descriptive. Binding uses actual guard/config/root and tool-call identity/command; unavailable Write was rejected before any write hook.",
+    "Frozen hidden checks have not yet executed; these are synthetic tasks, not eligible closed-task ledger history or L3 held-out tasks."
+  ]
+}

@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-09-09T16:32:11.444Z",
+  "scope": "Two separately frozen native synthetic observations on Windows; no comparison, no product change or GPT-6 Astra execution",
+  "model": {
+    "requested": "claude-opus-5",
+    "effort": "xhigh",
+    "cliVersion": "2.1.263",
+    "cliSha256": "0b35df94c1307004f07b738390bfef8dfca5e9af29aaf6517f305bf086b95b03",
+    "childEffort": "requested; not observed"
+  },
+  "offline": {
+    "phase32": {
+      "tests": 87,
+      "passed": 86,
+      "skipped": 1,
+      "failed": 0,
+      "rootCounterexamples": 26
+    },
+    "phase33": {
+      "tests": 90,
+      "passed": 89,
+      "skipped": 1,
+      "failed": 0,
+      "rootCounterexamples": 26,
+      "additional": [
+        "actual compiled roots",
+        "empty memory tamper refuses dispatch",
+        "127-file archived phase32 replay preserved"
+      ]
+    }
+  },
+  "observations": [
+    {
+      "id": "phase32",
+      "state": "BLOCKED",
+      "consistent": true,
+      "accepted": false,
+      "topLevelCalls": 1,
+      "stage": "plan only",
+      "elapsedMs": 146244,
+      "totalCostEstimateUsd": 0.719042,
+      "costStatus": "observed CLI estimate",
+      "rawSha256": "e93355a5f180c0a01ce76003bf84a21e172ecdcfe3e56d3654aa3446b9832ce4",
+      "skillActivation": "matching successful Skill result",
+      "agentCalls": 0,
+      "failure": "Global failure-memory Glob outside declared read roots refused by CLI; strict instrument closed",
+      "deliveredImplementation": false,
+      "publicStartingTests": {
+        "total": 4,
+        "passed": 2,
+        "failed": 2
+      },
+      "hiddenWorkerGrade": null,
+      "limitation": "Appropriate two-line proposed repair does not establish delivered correctness; root and Claude adjudicated missing risk/grounding obligations separately"
+    },
+    {
+      "id": "phase33",
+      "state": "BLOCKED",
+      "consistent": false,
+      "accepted": false,
+      "topLevelCalls": 1,
+      "stage": "incomplete plan, one navigator in progress",
+      "elapsedMs": 300477,
+      "totalCostEstimateUsd": null,
+      "costStatus": "unknown: timeout before complete result; reducer spentUsd=0 is not spend",
+      "rawSha256": "4529dda59ae4866dc342731b0d2362af4c41df58851f57973c00bb981f105adb",
+      "templateSha256": "0090d86f5c292fdc6528e4505a7c2f0c05800afca8c1756f12c2f2f389498973",
+      "skillActivation": "matching successful Skill result",
+      "agentCalls": 1,
+      "agentRole": "ctide:navigator",
+      "childFrames": 41,
+      "childCompletion": "unestablished; async launch and progress only, no completion notification/final grounded report",
+      "failure": [
+        "Child attempted compound Bash despite forwarded exact list; guard refused",
+        "300-second timeout, absent final result/cost; replay final-cost-invalid"
+      ],
+      "deliveredImplementation": false,
+      "publicStartingTests": {
+        "total": 4,
+        "passed": 2,
+        "failed": 2
+      },
+      "hiddenWorkerGrade": null,
+      "limitations": [
+        "No formal panel, approved plan or full-flow cost",
+        "Command refusal and timeout observed; their causal relation unestablished",
+        "No full eligible-control adherence rate",
+        "No retries or extra native case"
+      ]
+    }
+  ],
+  "guardVsPrompt": "Exact command and file write boundaries enforced by guards; temporal repair and child forwarding are prompt rules separately reviewed",
+  "historyIsolation": {
+    "projectFile": "protected zero-byte synthetic placeholder in phase33, not real history",
+    "vmControls": "Original hook with synthetic home: absent project reads synthetic home; empty project reads only local and injects nothing",
+    "liveHook": "Both raw streams contain SessionStart:startup start/success/empty output; no command or file-access attribution"
+  },
+  "dataBoundary": {
+    "realClosedTaskLedgerPresent": false,
+    "syntheticConfirmation": "Not executed on either retired optimization candidate",
+    "hiddenChecks": "Root-frozen, unexposed; executed only on authored controls and untouched faulty starting fixtures",
+    "realWorldClaims": "Unsupported without eligible real-task evidence"
+  },
+  "priorCandidates": {
+    "inputConsolidation": {
+      "builtBytesSaved": 15,
+      "originalBytes": 7877,
+      "percentApprox": 0.19,
+      "disposition": "retired at design, not adopted"
+    },
+    "reviewerOutput": {
+      "roleCalls": 10,
+      "judges": 4,
+      "judgesPassed": 4,
+      "confirmationCalls": 0,
+      "disposition": "terminated by frozen quality stop, partially tested/not adopted",
+      "causalPromptRegression": "unestablished"
+    }
+  },
+  "economicInterpretation": "No measured attributable savings or billing claim. Prior experiments and all collaboration remain separate; do not pool estimates as a comparison.",
+  "protectedSources": {
+    "count": 123,
+    "allMatch": true
+  },
+  "sources": {
+    "phase32-native-plan-outcome.json": "4c64b8b7bf2a882e2c5095f2d013b1df66b104fbd970d8758eac4fcf8c9eb257",
+    "phase33-native-outcome.json": "7ed1d2f95d98db394fee75ed52055ca16808ae92641923461595aeb253977ddb",
+    "phase33-offline-acceptance.json": "5da186cb7f85c168d00b0fa133103ebc4e761a5332205af7d6c9c5735aee6a8e",
+    "phase33-root-independent.json": "35a6e755b8f74fec6cc1336fc4235e61bb98e462a26a734f7735f58bb9593d1c",
+    "phase33-prechange-runtime.json": "f51269e1ce6b870957ad03e9af4ee2dd4757329ef2aa22c472796a8d2dde0119"
+  },
+  "status": "Evidence only. Final disposition requires root adjudication after Claude read-only reasons; no gate completion asserted here."
+}

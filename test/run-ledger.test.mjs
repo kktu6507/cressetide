@@ -17,6 +17,7 @@ const execFileAsync = promisify(cp.execFile);
 import {
   ledgerDir, runsLedgerPath, ensureLedgerDir, readRunsLedger, filesTouched,
   buildRunRecord, buildCloseEvent, appendRun, appendClose, KNOWN_FLAGS,
+  defaultTestProvenance, readProvenanceTaskFlag,
 } from "../cressetide/skills/vigil/scripts/run-ledger.mjs";
 import { hardenGitSigning } from "./helpers.mjs";
 
@@ -132,6 +133,75 @@ test("buildRunRecord: repairs and drift.outOfScope are floored at 0 and never ne
 test("buildRunRecord: is pure — no I/O, and never invents `ts` from Date.now() when absent (falls back to 0, not the wall clock)", () => {
   const r = buildRunRecord({});
   assert.strictEqual(r.ts, 0);
+});
+
+// --- unit: the v1.18 testProvenance block ---
+
+const TP_KEYS = [
+  "taggedTests", "inventory", "findingKinds", "entriesWithoutFindings", "oracleDepTriggered",
+  "governanceAffectedEntries", "reviewLoopIterations", "convergenceEpochs", "converged", "taskId",
+  "inventoryDigest", "batchDigest", "provenanceBatchRef", "lastStaleSubject", "assumTransitions",
+  "adapterMisses", "staleBatchRejections", "droppedForNoSource",
+];
+
+test("buildRunRecord carries testProvenance unconditionally, and a PURE builder can only report it unavailable", () => {
+  const r = buildRunRecord({ ts: 1 });
+  assert.deepStrictEqual(Object.keys(r.testProvenance), TP_KEYS, "the eighteen §11 keys, in approved order");
+  assert.deepStrictEqual(r.testProvenance, defaultTestProvenance());
+  // The two literals are not interchangeable: `null` is an established absence (no task was
+  // requested), `"unknown"` is an unavailable observation, and `converged` is a required boolean
+  // whose closed default is false.
+  assert.strictEqual(r.testProvenance.taskId, null);
+  assert.strictEqual(r.testProvenance.converged, false);
+  assert.strictEqual(r.testProvenance.droppedForNoSource, "unreported", "§11's own unchanged literal");
+  assert.strictEqual(r.testProvenance.oracleDepTriggered, "unknown");
+});
+
+test("buildRunRecord stays pure and synchronous: it accepts no telemetry parameter and returns no promise", () => {
+  const r = buildRunRecord({ ts: 1, testProvenance: { converged: true }, oracleDepTriggered: 9 });
+  assert.strictEqual(typeof r.then, "undefined", "synchronous");
+  assert.strictEqual(r.testProvenance.converged, false, "a caller-supplied block is ignored, never trusted");
+  assert.deepStrictEqual(r.testProvenance, defaultTestProvenance());
+});
+
+test("defaultTestProvenance returns a fresh object each time, so one record cannot alias another's block", () => {
+  const a = buildRunRecord({ ts: 1 });
+  const b = buildRunRecord({ ts: 2 });
+  a.testProvenance.converged = true;
+  assert.strictEqual(b.testProvenance.converged, false, "no shared mutable default");
+});
+
+// --- unit: the provenance identity flag, whose three non-absent faults are diagnostics ---
+
+test("readProvenanceTaskFlag separates absent, value-less, repeated and empty from a real identity", () => {
+  assert.deepStrictEqual(readProvenanceTaskFlag(["append", "--task", "prose"]),
+    { taskId: null, diagnostic: null }, "absent is not a fault");
+  assert.deepStrictEqual(readProvenanceTaskFlag(["append", "--provenance-task", "TASK-1"]),
+    { taskId: "TASK-1", diagnostic: null });
+
+  const valueLess = readProvenanceTaskFlag(["append", "--provenance-task", "--task", "prose"]);
+  assert.strictEqual(valueLess.taskId, null, "the neighbouring flag is never swallowed as a value");
+  assert.match(valueLess.diagnostic, /requires a value/);
+
+  const trailing = readProvenanceTaskFlag(["append", "--provenance-task"]);
+  assert.strictEqual(trailing.taskId, null);
+  assert.match(trailing.diagnostic, /requires a value/);
+
+  const repeated = readProvenanceTaskFlag(["--provenance-task", "A", "--provenance-task", "B"]);
+  assert.strictEqual(repeated.taskId, null, "a repeat is refused rather than resolved last-wins");
+  assert.match(repeated.diagnostic, /more than once/);
+
+  const empty = readProvenanceTaskFlag(["--provenance-task", ""]);
+  assert.strictEqual(empty.taskId, null);
+  assert.match(empty.diagnostic, /empty value/);
+
+  // No length rule: the store treats a task id as an opaque key, so a long one passes through.
+  assert.strictEqual(readProvenanceTaskFlag(["--provenance-task", "T".repeat(600)]).taskId, "T".repeat(600));
+});
+
+test("--provenance-task is a KNOWN flag, so it can never be swallowed as another flag's value", () => {
+  assert.ok(KNOWN_FLAGS.includes("--provenance-task"));
+  assert.ok(KNOWN_FLAGS.includes("--task"), "and the human prose flag is unchanged");
 });
 
 // --- unit: buildCloseEvent ---
@@ -280,6 +350,109 @@ test("a 2000-character --task is truncated to 300 chars in the stored record", (
   const task = "x".repeat(2000);
   runCli(dir, ["append", "--task", task, "--verdict", "READY", "--verify", "pass", "--panel", "full", "--now", "6000"]);
   assert.strictEqual(lastRecord(dir).task.length, 300);
+});
+
+// --- e2e: the v1.18 telemetry block, derived by the CLI and never supplied to it ---
+
+const appendWith = (dir, extra = []) => cp.spawnSync("node", [
+  SCRIPT, "append", "--task", "human prose", "--verdict", "READY", "--verify", "pass", "--panel", "full",
+  ...extra,
+], { cwd: dir, encoding: "utf8" });
+
+test("the append CLI writes one record carrying the eighteen-key block, and still exits 0", () => {
+  const dir = repository();
+  const result = appendWith(dir);
+  assert.strictEqual(result.status, 0, `fail-open: ${result.stderr}`);
+  const record = lastRecord(dir);
+  assert.deepStrictEqual(Object.keys(record.testProvenance), TP_KEYS);
+  assert.strictEqual(record.task, "human prose", "the human prose flag is untouched");
+});
+
+test("with no --provenance-task the block is the NO-IDENTITY one: taskId null, nothing derived", () => {
+  const dir = repository();
+  assert.strictEqual(appendWith(dir).status, 0);
+  const block = lastRecord(dir).testProvenance;
+  assert.strictEqual(block.taskId, null, "no task was requested — an established absence");
+  assert.deepStrictEqual(block, defaultTestProvenance());
+});
+
+test("with --provenance-task in a repository with no store, the identity is UNAVAILABLE, not absent", () => {
+  const dir = repository();
+  const result = appendWith(dir, ["--provenance-task", "TASK-1"]);
+  assert.strictEqual(result.status, 0, `still fail-open: ${result.stderr}`);
+  const block = lastRecord(dir).testProvenance;
+  assert.strictEqual(block.taskId, "unknown",
+    "the store could not be read, so no trusted identity — never the caller's argument, and never null");
+  assert.strictEqual(block.converged, false);
+});
+
+test("a malformed --provenance-task is a diagnostic: one record is still appended and the exit stays 0", () => {
+  for (const [what, extra] of [
+    ["value-less", ["--provenance-task"]],
+    ["swallowing the next flag", ["--provenance-task", "--base", "HEAD"]],
+    ["repeated", ["--provenance-task", "A", "--provenance-task", "B"]],
+  ]) {
+    const dir = repository();
+    const result = appendWith(dir, extra);
+    assert.strictEqual(result.status, 0, `${what}: the ledger never becomes a gate`);
+    assert.match(result.stderr, /ctide-ledger: --provenance-task/, what);
+    const lines = fs.readFileSync(runsLedgerPath(dir), "utf8").trim().split(/\r?\n/);
+    assert.strictEqual(lines.length, 1, `${what}: exactly one record`);
+    assert.strictEqual(JSON.parse(lines[0]).testProvenance.taskId, null, `${what}: the no-identity block`);
+  }
+});
+
+test("an ACTUALLY unavailable collector keeps a requested identity UNKNOWN, still appends once and exits 0", () => {
+  // The CLI alone in a directory of its own, so its dynamic `./test-provenance-block.mjs` import
+  // raises a real ERR_MODULE_NOT_FOUND. Not a synthetic error property: the failure is the module
+  // resolution the shipped code actually performs.
+  const isolated = temporary("ctide-rl-isolated-");
+  const copy = path.join(isolated, "run-ledger.mjs");
+  fs.copyFileSync(SCRIPT, copy);
+
+  const run = (dir, extra) => cp.spawnSync("node", [
+    copy, "append", "--task", "human prose", "--verdict", "READY", "--verify", "pass", "--panel", "full",
+    ...extra,
+  ], { cwd: dir, encoding: "utf8" });
+
+  const requestedDir = repository();
+  const requested = run(requestedDir, ["--provenance-task", "TASK-1"]);
+  assert.strictEqual(requested.status, 0, `fail-open is preserved: ${requested.stderr}`);
+  assert.match(requested.stderr, /test provenance unavailable/);
+  assert.match(requested.stderr, /Cannot find module|ERR_MODULE_NOT_FOUND/,
+    "the failure is a real module resolution failure");
+  const requestedLines = fs.readFileSync(runsLedgerPath(requestedDir), "utf8").trim().split(/\r?\n/);
+  assert.strictEqual(requestedLines.length, 1, "exactly one record");
+  const requestedBlock = JSON.parse(requestedLines[0]).testProvenance;
+  assert.strictEqual(requestedBlock.taskId, "unknown",
+    "an identity WAS requested and only the collection failed: an unavailable observation, not an absence");
+  assert.notStrictEqual(requestedBlock.taskId, "TASK-1",
+    "and the unvalidated argument is never echoed back as a known task");
+  assert.deepStrictEqual({ ...requestedBlock, taskId: null }, defaultTestProvenance(),
+    "exactly one field moves; everything else keeps its unavailable default");
+
+  const absentDir = repository();
+  const absent = run(absentDir, []);
+  assert.strictEqual(absent.status, 0);
+  const absentBlock = JSON.parse(
+    fs.readFileSync(runsLedgerPath(absentDir), "utf8").trim().split(/\r?\n/)[0]).testProvenance;
+  assert.strictEqual(absentBlock.taskId, null,
+    "no identity was requested, so the absence is established by the request and stays null");
+
+  const malformedDir = repository();
+  assert.strictEqual(run(malformedDir, ["--provenance-task"]).status, 0);
+  assert.strictEqual(JSON.parse(
+    fs.readFileSync(runsLedgerPath(malformedDir), "utf8").trim().split(/\r?\n/)[0]).testProvenance.taskId, null,
+  "a malformed supplied flag supplies no identity at all, so it stays null too");
+});
+
+test("the CLI derives telemetry itself: no flag exists through which a block or a metric can be supplied", () => {
+  const dir = repository();
+  // Unknown flags to this CLI: `get()` never queries them and none can reach the record, so a caller
+  // cannot hand the ledger a verdict it did not derive.
+  const result = appendWith(dir, ["--test-provenance", "{}", "--converged", "true"]);
+  assert.strictEqual(result.status, 0);
+  assert.strictEqual(lastRecord(dir).testProvenance.converged, false);
 });
 
 test("--findings splits on ||| and --planned-paths splits on , (trimmed)", () => {

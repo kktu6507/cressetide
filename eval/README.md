@@ -50,6 +50,16 @@ The reviewer is a Claude subagent, so this costs model tokens and is **not** a p
 A `Workflow` script can drive this (read each `fixtures/*.md` → blind review → independent judge →
 compare to `expected`). Record the run in `baseline.md`.
 
+> **The reference currently recorded in [`baseline.md`](baseline.md) (2026-09-08) was NOT produced by
+> the procedure above.** It used a constrained-excerpt **prompt-body replay** of the shipped
+> `code-reviewer` prompt (system-prompt replacement, `Read`/`Grep`/`Glob` only, native plugin
+> activation unverified), so it is **not comparable** to a native `ctide:code-reviewer` run — a
+> difference between the two is a method difference, not prompt drift. The procedure above remains the
+> native one and is unchanged. For a run comparable to the recorded reference, use the frozen driver in
+> `eval/efficiency/` described in [`../docs/efficiency-measurement.md`](../docs/efficiency-measurement.md).
+> Either way, the judge has not been calibrated on intentionally missed-defect or false-positive
+> reviews, so **semantic negative calibration is required before claiming drift detection**.
+
 ## Regression discipline
 
 - **Re-run after any reviewer/agent prompt change.** A drop in `hit` recall, or a new false positive on a
