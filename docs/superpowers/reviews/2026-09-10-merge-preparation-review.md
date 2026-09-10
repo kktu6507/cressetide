@@ -144,9 +144,13 @@ of **842,922 ms**; its single failure is the real-symlink case addressed below. 
 failed on every platform, the evaluation step, the Linux-only plugin validation and the release
 publisher's syntax check did not run anywhere in this PR.
 
-**Five of the six test failures are defects in the tests, not in the product** — assumptions encoded
-as universal facts. No product contract changed in response, and no `head-view-snapshot.mjs`
-behaviour was altered.
+A second run, on the diagnostic candidate, had typos, link-check and zizmor green, with Ubuntu and
+macOS each reporting **2,138 tests, 2,135 passing, 2 skipped, 1 failing** — only the deliberately
+retained ancestor assertion described below.
+
+**Five failures came from test expectations or fixtures** — assumptions encoded as universal facts.
+**One came from the maintainer audit-name validator**, a genuine defect in that helper. The shipped
+head-view implementation and the product contract are unchanged.
 
 - **A real working-tree symlink** was created but never staged, while the test expected
   `tracked: true`. Trackedness is index membership, so `false` was correct. Both states are now
@@ -168,18 +172,44 @@ behaviour was altered.
   its own basename under **both** separator conventions, which also covers drive-qualified and UNC
   forms. The dot and NUL guards are unchanged.
 
-**One failure is deliberately left red.** A tracked child under an ancestor junction is correctly
-refused; the *untracked* branch of the same test does not reject on POSIX, and we do not yet know
-whether the capture omitted the entry or resolved through the link — those have opposite fixes, so
-the question stays open. A temporary, clearly marked diagnostic takes **one** capture and both
-records it and asserts on it, so the observations describe exactly the capture that decides the
-result. The refusal requirement is unchanged in strength — both the error type and the
-`E_UNSUPPORTED_ENTRY` code are asserted — so the test remains red on POSIX. The diagnostic blocks
-nothing, replaces no bytes and logs no outside content; it reports a presence boolean for the fixture
-sentinel, records every failed snapshot read, and marks the scan complete only when a snapshot
-existed and nothing errored, so an absent sentinel on an incomplete scan is "not established" rather
-than "safe". File-content reads and readlink metadata are recorded as separate observations.
-Actual Linux and macOS evidence is required before the assertion is changed.
+**The remaining failure was held open, then resolved by evidence.** *History:* the tracked child under a
+symlinked ancestor was correctly refused, while the *untracked* branch of the same test did not
+reject on POSIX. Because "the capture omitted the entry" and "the capture resolved through the link"
+have opposite fixes, the assertion was deliberately left failing and a temporary one-capture
+diagnostic was added to record the facts rather than guess at them.
+
+*What the diagnostic observed.* Ubuntu and macOS agree exactly: `git ls-files --others` returns
+`untracked-dir` — the link itself — and no error is thrown; the entry is `120000` / `symlink` /
+`tracked: false`; no descendant paths appear; the fixture sentinel is absent from every snapshot
+buffer with the scan complete and zero read errors; **no content was read** beneath the link or at
+its target, while readlink metadata was. Local Windows, single-capture, differs in the one fact that
+matters: `--others` returns `untracked-dir/f.txt`, and the capture refuses with
+`HeadViewSnapshotError` / `E_UNSUPPORTED_ENTRY` and detail
+`{ path: "untracked-dir/f.txt", ancestor: "untracked-dir", reason: "ancestor-symlink" }`, again with
+no watched content reads.
+
+*Resolution — a test expectation correction, not a product change.* Git hands the capture one of two
+enumerations, because `ls-files --others` does not descend a symlinked directory on POSIX but does
+walk a Windows junction. Only the second presents a child under a symlinked ancestor, so only the
+second is refusable; the first is an ordinary symlink leaf and is represented as one. The old
+assertion demanded refusal unconditionally, encoding the junction enumeration as universal.
+
+The regression test now branches on the **observed enumeration** — never on the platform, and never
+on `linkKind`, which Node ignores off Windows and which therefore discriminates nothing. It requires
+the filtered enumeration to be exactly the leaf spelling or exactly the child spelling and **fails on
+any other shape**. The leaf branch positively verifies a successful capture, the exact symlink
+metadata with `tracked: false`, bytes and digest matching an independent `fs.readlinkSync(…,
+{ encoding: "buffer" })`, that those bytes are not the sentinel, that no descendant path exists, and
+that no snapshot buffer contains the sentinel — with read failures propagating rather than being
+swallowed, so an unreadable entry cannot masquerade as a clean one. The child branch requires the
+exact error name, code, path, ancestor and reason, and that the sentinel never reaches the message.
+Both branches require that no content was read through the link or at its target. The temporary
+console diagnostic, the readlink watcher and the scan-report scaffolding are removed.
+
+*Limits.* This establishes the property for **this fixture, on these platforms, at these Git
+versions**. It is not a universal no-leak guarantee, and the safety it records rests on positive
+observations — no content read, no descendants, sentinel absent under a complete scan — never on the
+mere absence of an error.
 
 **Typos configuration.** Two sealed upstream vendored files are excluded by exact path, because their
 bytes are pinned and whitelisting their words would silence real misspellings in our own source. The
@@ -208,8 +238,9 @@ plus a separate set of 18 portable-basename counter-cases exercising the pure he
 run on a POSIX host. Frozen archives and every published prior result are untouched, and nothing is
 replayed.
 
-CI for the exact final commit has not run. The scoped local results above are not a cross-platform
-result, the helper has not passed CI, and no acceptance is claimed ahead of it.
+CI for the exact final commit — the one carrying the corrected ancestor regression test — has not
+run. The two CI runs recorded above were of earlier candidates, the scoped local results are not a
+cross-platform result, the helper has not passed CI, and no acceptance is claimed ahead of it.
 
 ## 6. Scope boundaries
 

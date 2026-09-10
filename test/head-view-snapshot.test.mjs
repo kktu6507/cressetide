@@ -1021,91 +1021,74 @@ test("a tracked child under an ancestor junction is fail-closed and never reads 
         try { fs.unlinkSync(link); } catch { fs.rmdirSync(link); }
       }
 
-      // An untracked child under the same kind of ancestor is refused too.
+      // An untracked link to the same outside directory. Git hands the capture ONE OF TWO
+      // enumerations, and the observed CI evidence is that both occur: Ubuntu and macOS list the
+      // link itself (`untracked-dir`) because `ls-files --others` does not descend a symlinked
+      // directory, while Windows lists the child (`untracked-dir/f.txt`) because it walks the
+      // junction. Only the second presents a child under a symlinked ancestor, so only the second
+      // is refusable; the first is an ordinary symlink leaf and is represented as one.
+      //
+      // The branch is taken on the OBSERVED ENUMERATION, never on the platform and never on
+      // `linkKind` — Node ignores the `type` argument off Windows, so `linkKind` reads "junction"
+      // on POSIX too and discriminates nothing. Any third shape fails.
       const otherLink = path.join(repo.root, "untracked-dir");
       fs.symlinkSync(outside, otherLink, linkKind);
       try {
-        // TEMPORARY phase36 DIAGNOSTIC. The tracked branch above passes on POSIX while this
-        // untracked branch does not, and we do not yet know whether the capture omitted the entry
-        // or resolved through the link — those have opposite fixes. ONE capture serves both the
-        // record and the assertion, so the observations describe exactly the capture that decides
-        // the result; a second capture would let them describe different work. The refusal
-        // requirement below is unchanged in strength and still fails on POSIX, so CI stays red
-        // until the evidence is discussed. Nothing here blocks or replaces bytes, and no outside
-        // content is logged — only a presence boolean.
+        // ONE capture serves the whole case, so every assertion below describes the same work. The
+        // watcher records only whether CONTENT was read beneath the link or at the outside path;
+        // that is the containment invariant, and nothing else establishes it. A readlink watcher is
+        // deliberately absent: reading a link's target string is how a symlink leaf is represented,
+        // so its value is an implementation detail rather than an invariant. Nothing here blocks or
+        // substitutes bytes, and it is restored in `finally`.
         const watched = [otherLink, outside];
         const beneath = (p) => typeof p === "string" && watched.some((w) => p === w || p.startsWith(w + path.sep));
         const realReadFileSync = fs.readFileSync;
-        const realReadlinkSync = fs.readlinkSync;
-        let readFileBeneathWatched = false;
-        let readlinkBeneathWatched = false;
+        let contentReadBeneathWatched = false;
         let observed = null;
         let thrown = null;
         try {
-          fs.readFileSync = function (p, ...rest) { if (beneath(p)) readFileBeneathWatched = true; return realReadFileSync.call(this, p, ...rest); };
-          fs.readlinkSync = function (p, ...rest) { if (beneath(p)) readlinkBeneathWatched = true; return realReadlinkSync.call(this, p, ...rest); };
+          fs.readFileSync = function (p, ...rest) { if (beneath(p)) contentReadBeneathWatched = true; return realReadFileSync.call(this, p, ...rest); };
           observed = await repo.capture();
         } catch (e) {
-          thrown = { code: (e && e.code) || null, name: (e && e.name) || null, detail: (e && e.detail) || null };
+          thrown = e;
         } finally {
           fs.readFileSync = realReadFileSync;
-          fs.readlinkSync = realReadlinkSync;
         }
 
-        let snapshotPaths = null;
-        let untrackedDirEntry = null;
-        let untrackedDirReadlinkBytes = null;
-        let sentinelReachableFromSnapshot = false;
-        // A read that FAILED is not a read that found nothing. Every failure is recorded, and the
-        // scan only counts as complete when a snapshot existed and nothing errored — so a `false`
-        // sentinel result on an incomplete scan is "not established", never "safe".
-        const readErrors = [];
-        if (observed !== null) {
-          snapshotPaths = observed.paths();
-          for (const p of snapshotPaths) {
-            try {
-              if (observed.read(p).toString("utf8").includes(SENTINEL.trim())) sentinelReachableFromSnapshot = true;
-            } catch (e) {
-              readErrors.push({ path: p, code: (e && e.code) || null, name: (e && e.name) || null });
-            }
-          }
-          if (observed.has("untracked-dir")) {
-            untrackedDirEntry = observed.entry("untracked-dir");
-            try {
-              untrackedDirReadlinkBytes = observed.read("untracked-dir").toString("utf8");
-            } catch (e) {
-              untrackedDirReadlinkBytes = null;
-              readErrors.push({ path: "untracked-dir", code: (e && e.code) || null, name: (e && e.name) || null });
-            }
-          }
-        }
-        const sentinelScanComplete = observed !== null && readErrors.length === 0;
-        const others = repo.git("ls-files", "--others").split("\n").map((l) => l.trim()).filter((l) => l !== "" && l.includes("untracked-dir"));
-        console.log(`PHASE36-ANCESTOR-DIAGNOSTIC ${JSON.stringify({
-          tag: "phase36ancestor",
-          platform: process.platform,
-          linkKind,
-          thrown,
-          lsFilesOthersUntrackedDir: others,
-          snapshotPaths,
-          untrackedDirEntry,
-          untrackedDirReadlinkBytes,
-          hasUntrackedDirChild: observed === null ? null : observed.has("untracked-dir/f.txt"),
-          hasTrackedDirChild: observed === null ? null : observed.has("dir/f.txt"),
-          sentinelReachableFromSnapshot,
-          sentinelScanComplete,
-          readErrors,
-          // Content reads and readlink metadata are recorded separately: reading a link's target
-          // string at the leaf is not the same event as reading bytes from outside the repository.
-          readFileBeneathWatched,
-          readlinkBeneathWatched,
-        })}`);
+        const enumerated = repo.git("ls-files", "--others").split("\n").map((l) => l.trim())
+          .filter((l) => l === "untracked-dir" || l.startsWith("untracked-dir/")).sort();
+        const shape = JSON.stringify(enumerated);
 
-        // The same capture the record above describes. Both the error TYPE and the code are
-        // asserted, matching the strength of the `failureOf` helper this replaces — a different
-        // error carrying a coincidentally equal `code` would not satisfy it.
-        assert.strictEqual(thrown && thrown.name, "HeadViewSnapshotError", "untracked side: expected a HeadViewSnapshotError");
-        assert.strictEqual(thrown && thrown.code, "E_UNSUPPORTED_ENTRY", "untracked side");
+        if (shape === JSON.stringify(["untracked-dir"])) {
+          // The link is the leaf. Nothing walked into it, so the capture must succeed and describe
+          // the LINK — its target string — and must never have reached the directory behind it.
+          assert.strictEqual(thrown, null, `the leaf enumeration must not be refused: ${thrown && thrown.message}`);
+          const linkBytes = fs.readlinkSync(otherLink, { encoding: "buffer" });
+          assert.deepStrictEqual(observed.entry("untracked-dir"),
+            { mode: "120000", type: "symlink", contentDigest: sha256(linkBytes), tracked: false });
+          assert.deepStrictEqual(observed.read("untracked-dir"), linkBytes, "the bytes are the link target, read independently");
+          assert.notStrictEqual(observed.read("untracked-dir").toString("utf8"), SENTINEL, "and are emphatically not what the link points at");
+          // No descendants at all, not merely no known child name.
+          assert.deepStrictEqual(observed.paths().filter((p) => p.startsWith("untracked-dir/")), [],
+            "a symlinked ancestor contributes no descendants");
+          // A failed read FAILS here: an unreadable entry is not evidence of a clean one.
+          for (const p of observed.paths()) {
+            assert.ok(!observed.read(p).toString("utf8").includes(SENTINEL.trim()), `the sentinel reached ${p}`);
+          }
+        } else if (shape === JSON.stringify(["untracked-dir/f.txt"])) {
+          // The child was enumerated under a symlinked ancestor, which is the hazard: reading it
+          // would take bytes from outside the repository. It must be refused, exactly.
+          assert.strictEqual(thrown && thrown.name, "HeadViewSnapshotError", "the enumerated child must be refused");
+          assert.strictEqual(thrown.code, "E_UNSUPPORTED_ENTRY");
+          assert.strictEqual(thrown.detail.path, "untracked-dir/f.txt");
+          assert.strictEqual(thrown.detail.ancestor, "untracked-dir");
+          assert.strictEqual(thrown.detail.reason, "ancestor-symlink");
+          assert.ok(!thrown.message.includes("SECRET"), "the sentinel never reached the failure path");
+        } else {
+          assert.fail(`unrecognised enumeration of the untracked link: ${shape}`);
+        }
+
+        assert.strictEqual(contentReadBeneathWatched, false, "no content was read through the link or at its target");
       } finally { try { fs.unlinkSync(otherLink); } catch { fs.rmdirSync(otherLink); } }
     });
     // Cleanup walked the repo, and the external directory came through untouched.
