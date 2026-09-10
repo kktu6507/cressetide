@@ -130,21 +130,32 @@ Sources:
 - Missing observability: `UNVERIFIED`
 - Missing rollback validation: `UNVERIFIED`
 
+> **Trust markers below are machine-read.** Every Access-inventory row, the
+> Rollback line, and every feature-flag bullet carries both the human-readable
+> marker and a machine-readable HTML comment: `CTIDE:TRUST:unverified`, or
+> `CTIDE:TRUST:verified` / `CTIDE:TRUST:dry-run-verified` followed by a real
+> ISO-8601 date. `map verify` reads **only** that comment and never the prose
+> beside it, so update both together — a filled-in entry whose tag is missing or
+> mis-cased is reported as a `missing trust tag` finding. This template ships
+> every entry as `unverified` because it is fictional; upgrade a tier only when
+> someone actually ran the thing, and only with the real date. Field owner:
+> [`../cressetide/skills/map/references/operational-readiness.md`](../cressetide/skills/map/references/operational-readiness.md).
+
 ## Access inventory
 | What | Where / how to read it | Runnable by | Trust |
 | --- | --- | --- | --- |
-| App logs | <path / command / dashboard URL + how to filter> | agent-runnable | verified: <date> |
-| Error tracking | <tool + project + how to query> | human-only | `UNVERIFIED` |
-| Deploy control | <command / pipeline URL> | agent-runnable | dry-run-verified: <date> |
-| DB read-only access | <connection recipe; where read-only credentials come from> | human-only | `UNVERIFIED` |
+| App logs | <path / command / dashboard URL + how to filter> | agent-runnable | `UNVERIFIED` <!-- CTIDE:TRUST:unverified --> |
+| Error tracking | <tool + project + how to query> | human-only | `UNVERIFIED` <!-- CTIDE:TRUST:unverified --> |
+| Deploy control | <command / pipeline URL> | agent-runnable | `UNVERIFIED` <!-- CTIDE:TRUST:unverified --> |
+| DB read-only access | <connection recipe; where read-only credentials come from> | human-only | `UNVERIFIED` <!-- CTIDE:TRUST:unverified --> |
 
 ## Rollback
-- Exact steps: <commands, in order> (verified: <date> | dry-run-verified: <date> | `UNVERIFIED`)
+- Exact steps: <commands, in order> (verified: <date> | dry-run-verified: <date> | `UNVERIFIED`) <!-- CTIDE:TRUST:unverified -->
 - Schema migrations in recent deploys: <yes/no — which deploys, which migrations>
 - New-format data: <where data written by the new version lands that old code cannot read>
 
 ## Feature flags & kill switches
-- <flag> — <what it disables> — <how to flip it> (verified: <date> | dry-run-verified: <date> | `UNVERIFIED`)
+- <flag> — <what it disables> — <how to flip it> (verified: <date> | dry-run-verified: <date> | `UNVERIFIED`) <!-- CTIDE:TRUST:unverified -->
 
 ## Backups
 - Exists: <yes/no> — Where: <location> — Last restore drill: <date | never>

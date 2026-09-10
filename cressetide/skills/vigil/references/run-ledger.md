@@ -81,9 +81,12 @@ view too — accepted for a path the runtime contract defines as tool-owned.
   neither is ever accepted as a CLI flag (there is no `--head` or `--files` flag), precisely so an
   agent cannot type a plausible-looking value in their place. `base` is optional and defaults to
   `null` when absent.
-- `verdict` / `verify` / `panel` — copied verbatim from the run's own machine sentinel lines
-  (`ctide:delivery=`, `ctide:verify=`, `ctide:panel=`, `references/final-report.md`), never
-  paraphrased or re-derived.
+- `verdict` / `verify` / `panel` — copied verbatim from the run's own final report
+  (`references/final-report.md`), never paraphrased or re-derived. `verdict` is the arbiter's **Final
+  Verdict** token (`READY` / `FIX REQUIRED` / `NOT READY`); `verify` and `panel` are the values of the
+  matching `ctide:verify=` and `ctide:panel=` footer sentinels. `ctide:delivery=` is **not** a verdict —
+  its `held` / `shipped` values describe delivery of the reviewed change — so it is never copied into
+  `verdict`.
 - `repairs` — the observed auto-fix-loop iteration count; floored at 0.
 - `findings` — up to 20 entries, each capped to 150 characters, drawn from the run's actual Findings
   table.
@@ -198,12 +201,16 @@ is normative: it runs after a successful inventory emission and before the commi
 current-store text digest against the artifact's `inputProvenanceStoreDigest`, and the committing
 write necessarily moves it, so a post-commit invocation refuses rather than recording a post-state
 measurement. It does **not** prove that an emission preceded it — the observer never sees the
-emitter's return value, and establishing the actual invocation/proposal sequence is D's.
+emitter's return value, and establishing the actual invocation/proposal sequence belongs to the loop
+controller.
 
-**Nothing invokes it automatically.** Sequencing it inside the review loop, and enforcing that
-sequence, belongs to the loop controller (D), which is not released. Without a sidecar the collector
-simply reports `oracleDepTriggered: "unknown"` and every other field is unaffected; the sidecar is
-disclosure and is never a gate input.
+**Who runs it.** The released loop controller sequences it: `runProposalIteration`
+(`skills/vigil/scripts/test-provenance-loop.mjs`) performs the emission and this observation in one
+operation and records each attempt's outcome. An observer failure there is **non-gating** — it is
+caught and reported, never raised into the loop. A **non-TP run makes no such call at all**, so no
+sidecar is produced and none is expected. Either way, without a sidecar the collector simply reports
+`oracleDepTriggered: "unknown"` and every other field is unaffected; the sidecar is disclosure and is
+never a gate input.
 
 ### `close` event — appended by `run-reconcile.mjs close` / `expire`
 
@@ -339,7 +346,7 @@ the decision that matters (the verdict) is already final.
 ## CLI invocations
 
 ```
-node ${CLAUDE_PLUGIN_ROOT}/skills/vigil/scripts/run-ledger.mjs append --task <text> [--base <sha>] --verdict <text> --verify <text> --panel <text> [--repairs <n>] [--findings "a|||b"] [--planned-paths "g1,g2"] [--planned-risk <high|medium|low>] [--drift-outofscope <n>] [--drift-map <text>] [--window-days <n, default 14>] [--cwd <dir>] [--now <epoch-ms>]
+node ${CLAUDE_PLUGIN_ROOT}/skills/vigil/scripts/run-ledger.mjs append --task <text> [--base <sha>] --verdict <text> --verify <text> --panel <text> [--repairs <n>] [--findings "a|||b"] [--planned-paths "g1,g2"] [--planned-risk <high|medium|low>] [--drift-outofscope <n>] [--drift-map <text>] [--window-days <n, default 14>] [--provenance-task <id>] [--cwd <dir>] [--now <epoch-ms>]
 
 node ${CLAUDE_PLUGIN_ROOT}/skills/vigil/scripts/run-reconcile.mjs scan [--cwd <dir>] [--now <epoch-ms>]
 node ${CLAUDE_PLUGIN_ROOT}/skills/vigil/scripts/run-reconcile.mjs close --ref <head-sha> --as <escaped|survived|superseded|building-upon> --reason <text> [--cwd <dir>] [--now <epoch-ms>]
@@ -372,5 +379,5 @@ invocations, which should omit it.
   can grow past it on an unusually large change; `test/run-ledger.test.mjs`'s concurrent-append test
   exercises the common (short-line) case, not an arbitrarily large one.
 - **Language.** Per `SKILL.md` *Language And Text Integrity* — user-facing text follows the user's
-  language; the schema field names, the 4 `--as` literals, and the machine sentinel values copied
-  into `verdict`/`verify`/`panel` stay verbatim.
+  language; the schema field names, the 4 `--as` literals, and the verdict token and sentinel values
+  copied into `verdict`/`verify`/`panel` stay verbatim.

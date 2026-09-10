@@ -1,5 +1,7 @@
 # Incident `<date>-<slug>`
 
+- Status: open
+
 > Template only. Store sanitized evidence. Do not include secrets, credentials,
 > personal data, customer content, or raw environment values.
 
@@ -64,6 +66,13 @@
 - Rollback readiness: `<verified evidence>`
 
 ## Closure
+
+Flip the `Status:` line at the top to `closed` **only after every required
+closure check has actually completed** — the checklist and the
+`open | mitigated | closed` field are owned by
+[`cressetide/skills/salvage/references/reentry-and-closure.md`](../cressetide/skills/salvage/references/reentry-and-closure.md). Until then leave
+it `open` or `mitigated`: `/ctide:doctor --project` reads that exact line, and a
+missing or unparseable one is reported as unknown rather than assumed closed.
 
 - Impact: `<evidence-backed summary>`
 - Root cause: `UNVERIFIED`

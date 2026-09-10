@@ -53,7 +53,7 @@ body:
         - Language / framework: <e.g. TypeScript / React / Node>
         - Task: <what you asked ctide to do>
         - Intent given: <the requirement / contract handed in — how specific was it?>
-        - Reviewers run: <e.g. spec, test, code, security, arbiter — or "none">
+        - Reviewers run: <e.g. intent-reviewer, test-reviewer, code-reviewer, security-reviewer, arbiter — or "none">
         - Verification: <commands / browser checks / tests you actually ran>
         - Caught: <real findings ctide raised that you acted on>
         - Missed: <defects found later, after the verdict — or "none known">

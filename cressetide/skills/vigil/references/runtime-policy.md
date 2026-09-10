@@ -27,7 +27,7 @@ Therefore:
 
 ## Context Ordering (cache-friendly)
 
-The provider's prompt cache discounts a stable prefix heavily — cache reads bill at roughly a tenth of fresh input — so order context to keep prefixes stable across the run. This is a **cost-free** discipline: it changes ordering and timing, never content or signal (like *filter noise, not signal*, it never trades away correctness).
+The provider's prompt cache reuses a stable prefix instead of re-reading it as fresh input, so order context to keep prefixes stable across the run. What that reuse is worth is not fixed here: cache pricing varies by model, plan and cache term, so state the assumed rate and date if you quantify it and never carry a fixed ratio between the components. What the discipline itself does is bounded — it changes ordering and timing, never content or signal (like *filter noise, not signal*, it never trades away correctness).
 
 - Keep the stable shared preamble byte-stable. The verbatim "Shared reviewer contract" block is identical across every reviewer handoff *by design*; that byte-stability is what lets a provider reuse it, so do not reword it per-handoff.
 - Load delivery-only references late. `references/final-report.md` is loaded at delivery, never up front, so the report template does not pollute the earlier prefix.

@@ -43,7 +43,7 @@ Learning loop  run verdict -> ledger record -> the next planning reconciles: esc
 - **Five skills**: `vigil` and `salvage` engage on their own (anything beyond a small edit / incident-sounding language); [`map`](#the-ops-map-map), [`doctor`](#health-check-doctor), and [`ship`](#release-readiness-check-ship) start manually (`/ctide:map`, `/ctide:doctor`, `/ctide:ship`).
 - **[11 subagents](#the-dev-flow-vigil)**: a navigator, an implementer, seven risk-selected reviewers, a cartographer, and the arbiter that decides readiness.
 - **[6 hooks](#hooks-and-safety-model)**: local-only, dependency-free Node guardrails, covering the plan gate, destructive-command guard, contract guard, failure-memory injection, compaction reminder, and delivery-claim check.
-- **[A learning loop](#the-learning-loop)**: every run ends with a ledger record; the next run starts by checking whether past verdicts actually held.
+- **[A learning loop](#the-learning-loop)**: a completed run ends with a ledger record written by the workflow itself; the next run starts by checking whether past verdicts actually held.
 
 ### Project layout
 
@@ -56,8 +56,10 @@ Everything ctide keeps in your project lives under one root folder:
   map/        # SYSTEM_MAP.md — repository and operational-readiness Map (committed)
   incidents/  # INCIDENT-<date>-<slug>.md journals — the audit trail (committed)
   decisions/  # DECISION-<date>-<slug>.md — why we chose X over Y, what would revisit it (committed)
-  ledger/     # runs.jsonl — append-only run history (persists across runs, self-gitignored)
+  provenance.json  # the test-provenance store — canonical state, committed
+  ledger/     # runs.jsonl — append-only run history (persistent episodic state, self-gitignored)
   output/     # per-run scratch: contract.md, evidence, review diffs (never committed, self-gitignored)
+  test-provenance-loop/  # the review-loop controller's durable prefix — tool-owned, untracked
 ```
 
 Legacy layouts (`ai/FAILURE_MEMORY.md`, a repo-root `design.md`, `.ctide/legacy-output/`) are migrated only once, by the workflow itself, and every move is spelled out in the run that performs it.
@@ -91,7 +93,7 @@ ctide is **not** a CI replacement, a linter or static analyzer, or a zero-bug gu
 
 ## Quick start
 
-Prerequisites: **Claude Code** + `node` on `PATH`. The hooks are Node scripts; without Node they simply do nothing, and never raise an error.
+Prerequisites: **Claude Code** + **Node 20 or newer** on `PATH`. The hooks are Node scripts; without Node they simply do nothing, and never raise an error.
 
 ```text
 # in your project directory, inside Claude Code:
@@ -153,6 +155,14 @@ Verdicts are release-readiness decisions, not absolute truths. See [`docs/how-to
 - **Reviewers hold no editor tools**: `Read` / `Grep` / `Glob` / `Bash` for inspection only; review-only behavior is enforced by policy and context isolation, not a hard read-only capability boundary (see [`ARCHITECTURE.md`](ARCHITECTURE.md)). They propose the fix; the `implementer` applies it.
 - **Correctness-critical paths receive ≥2 independent lenses**: parsing, numeric / encoding / overflow, concurrency, security, and data integrity, so the panel does not share one blind spot on high-impact work.
 
+**Test-provenance runs are stricter.** A task carrying the provenance workflow — one with a current TaskState in the validated store — runs a **TP-active** variant of the review step. Its effects include:
+
+- The real `test-reviewer` always runs. It is never evidence-substituted, **even when the changed-test inventory is legitimately empty**, so the fast lane below never applies.
+- The `arbiter` reports two gate halves, `loop` and `provenance`, plus their `combined` result. **Either half false blocks `READY`.**
+- The run keeps canonical state: a committed `.ctide/provenance.json` store, plus the durable, tool-owned `.ctide/test-provenance-loop/` prefix. The controller writes no nested `.gitignore` there, so a consuming project should ignore **that prefix only** — never `.ctide/` wholesale, which would drop committed semantic state. The head view's exclusion of the prefix is independent of gitignore and applies either way.
+
+A task that does not use the provenance workflow is unaffected: the step is skipped entirely and the normal lifecycle applies. That is a property of tasks outside the workflow — a task inside it whose state is missing or fails validation is not thereby excused from its checks. Paths, prefixes and state classes are specified in [`docs/runtime-contract.md`](docs/runtime-contract.md); the component view is in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
 **Writing good tasks.** ctide reviews against the intent you state, so the best tasks include the requirement, acceptance criteria, must-not-change scope, expected verification, and risk areas. Templates and bad / better / best examples: [`docs/task-writing-guide.md`](docs/task-writing-guide.md).
 
 **Per-run flags.** `--lite` (smallest panel), `--deep` (adversarial verification), `--report full` (detailed report); details in [Configuration reference](#configuration-reference).
@@ -183,7 +193,7 @@ What it does not do, in one line: no paging/on-call rotation, no status-page aut
 
 ## The ops map (map)
 
-**Prepare before you need it.** `/ctide:map` builds `.ctide/map/SYSTEM_MAP.md`: the peacetime map that makes wartime start at 30 seconds instead of 30 minutes. It holds an access inventory marked agent-runnable vs human-only, rollback steps with schema-migration compatibility intel, feature flags, backups, and observability.
+**Prepare before you need it.** `/ctide:map` builds `.ctide/map/SYSTEM_MAP.md`: the peacetime map that lets an incident start from recorded facts instead of a live search. It holds an access inventory marked agent-runnable vs human-only, rollback steps with schema-migration compatibility intel, feature flags, backups, and observability.
 
 Every entry carries a trust marker (`verified: <date>`, `dry-run-verified: <date>`, or `UNVERIFIED`); an unverified rollback command is flagged on the decision card that relies on it, never silently trusted.
 
@@ -193,15 +203,15 @@ Map owns the operational-preparation contract: [`operational-readiness.md`](cres
 
 ## Health check (doctor)
 
-`/ctide:doctor` runs a local, read-only self-check of the hooks and environment (plugin identity, Node availability, whether the hooks are wired up), and transmits nothing (no telemetry). Run it when the gate never blocks, hooks seem silent, or Node may be missing.
+`/ctide:doctor` runs a local, read-only self-check of the hooks and environment (plugin identity, Node availability, whether the hooks are wired up). The helper and the hooks make no network call and send no telemetry; the enclosing Claude Code session still works the way it always does, so this is a statement about ctide's own code, not a privacy guarantee about your session. Run it when the gate never blocks, hooks seem silent, or Node may be missing.
 
-Add `--project` (optionally with `--cwd <path>`) to layer two more checks on top: `failure-memory-health` summarizes the project's own `FAILURE_MEMORY.md` (never the machine-global one), and `incident-journals` flags any `.ctide/incidents/*.md` not confirmed `closed`. Both are opt-in and additive — the default `/ctide:doctor` output never changes.
+Add `--project` (optionally with `--cwd <path>`) to layer three more checks on top: `failure-memory-health` summarizes the project's own `FAILURE_MEMORY.md` (never the machine-global one), `incident-journals` flags any `.ctide/incidents/*.md` not confirmed `closed`, and `ledger-health` reports reconciliation debt plus how far `HEAD` has moved past the ledger's last recorded commit. All three are opt-in and additive — the default `/ctide:doctor` output never changes.
 
 ## Release-readiness check (ship)
 
 `/ctide:ship` is manual-only and read-only: it never runs your build, test, or deploy pipeline, and it never writes anything (no git tag, no version bump, no changelog entry). It reads what already exists — every `READY` run in the ledger since your last release tag, `package.json`, `CHANGELOG.md`'s git history, git tags, and `SYSTEM_MAP.md`'s Rollback section — and reports a decision card: the pending batch, then four checks (version consistency, whether `CHANGELOG.md` changed, tag readiness, and migration compatibility from the Map), each `pass` / `fail` / `not-applicable` / `unverified` with cited evidence.
 
-A fifth check, checksum verification, only runs when you pass `--artifact` and `--checksum` explicitly; ship never guesses which file in your repo is a build artifact. Version consistency reads `package.json` only.
+A fifth check, checksum verification, only runs when you pass `--artifact` and `--checksum` explicitly; ship never guesses which file in your repo is a build artifact. Version consistency compares the `package.json` files Ship discovers outside excluded dependency, build and runtime directories — that ecosystem only, not other manifest formats, and not ctide's own nested `plugin.json`. The exact excluded set is in [`docs/command-reference.md`](docs/command-reference.md).
 
 Ship is a pre-flight checklist you read before using whatever you already use to actually publish — not a replacement for your release pipeline.
 
@@ -209,7 +219,7 @@ Ship is a pre-flight checklist you read before using whatever you already use to
 
 From run to run, ctide carries forward what it learned — the losses and the wins:
 
-- **Every run ends with a ledger record.** After the verdict locks, one event-fact line is appended to `.ctide/ledger/runs.jsonl`: task, changed files (computed from `git diff`, never taken from an agent's claim), verdict, verification status, panel, repair count, findings, and planned scope vs observed drift. Facts only: the ledger never stores a score, rate, or percentage.
+- **A completed run ends with a ledger record.** After the verdict locks, the workflow's main thread appends one event-fact line to `.ctide/ledger/runs.jsonl`: task, changed files (computed from `git diff`, never taken from an agent's claim), verdict, verification status, panel, repair count, findings, and planned scope vs observed drift. Facts only: the ledger never stores a score, rate, or percentage. The append is part of the workflow and fails open — no hook records runs automatically, so a run that ends without reaching that step leaves no ledger line. `/ctide:doctor --project`'s `ledger-health` can report an absent ledger, reconciliation debt, and how far `HEAD` has moved past the last recorded commit; it cannot reconstruct a run that was never recorded.
 - **The next run starts by checking whether past verdicts held.** Planning scans later commits for rework of each recorded run's files and disposes it as `escaped` / `survived` / `superseded` / `building-upon`. Overlap it cannot judge is marked "needs human review" and handed to a person, never silently passed. Three `escaped` closures within 14 days makes the end-of-run report suggest a retro ([`docs/advanced/retro-practice.md`](docs/advanced/retro-practice.md)). These counts exist to inform you, appear only after the verdict is locked, and never adjust the current run's scope, panel, or verdict.
 - **The lessons live in two committed memory files.** `.ctide/memory/FAILURE_MEMORY.md` holds prevention rules (from incident postmortems and escaped defects); a SessionStart hook injects an untrusted digest so the next plan reads it. `.ctide/memory/EXPERIENCE.md` holds validated positive patterns (`candidate → validated → standard`; `standard` requires a linked executable asset, and prose alone never gets promoted).
 
@@ -258,8 +268,8 @@ A malformed or unreadable settings file is treated as "not disabled" (fail-safe:
 
 | Variable | Effect when set |
 |---|---|
-| `CTIDE_ENFORCE_STOP` | any non-empty value makes the `orchestration-check.js` Stop hook hard-block delivery on a verdict/evidence mismatch, instead of only advising |
-| `CTIDE_HOOK_DEBUG` | `1` makes every hook append a one-line debug trace (used by [`/ctide:doctor`](#health-check-doctor) and manual troubleshooting) |
+| `CTIDE_ENFORCE_STOP` | `1`, `true`, `yes` or `on` (case-insensitive) makes the `orchestration-check.js` Stop hook hard-block delivery on a verdict/evidence mismatch, instead of only advising. Any other value, including `0`, leaves it advisory |
+| `CTIDE_HOOK_DEBUG` | any non-empty value makes every hook append a one-line debug trace; only unset or empty disables it (used by [`/ctide:doctor`](#health-check-doctor) and manual troubleshooting) |
 
 ```bash
 CTIDE_ENFORCE_STOP=1 claude            # bash/zsh
@@ -292,14 +302,13 @@ $env:CTIDE_ENFORCE_STOP = "1"; claude  # PowerShell
 
 ## Compatibility
 
-ctide targets Claude Code. It also runs under GitHub Copilot CLI, with caveats: the plugin format loads, but some Claude-Code-only hook outputs never arrive.
+ctide targets Claude Code. GitHub Copilot CLI is **unverified**: no Cressetide run has been recorded there, so no behavior is asserted — at most partial compatibility is possible, and Claude-Code-only hook output may never arrive.
 
 Compatibility and conformance smoke details live in [`docs/compatibility.md`](docs/compatibility.md). The highlights:
 
 - Claude Code is the primary runtime.
-- GitHub Copilot CLI loads skills, subagents, and some PreToolUse decisions, but injected `SessionStart` and `Stop` output may be no-op.
-- No Cressetide-specific Copilot CLI live run is recorded yet; treat that runtime as unverified.
-- Claude Code hook/agent contracts are moving targets; release smoke is recorded in [`RELEASING.md`](RELEASING.md).
+- GitHub Copilot CLI: no Cressetide-specific live run is recorded, so nothing about skill, subagent, `PreToolUse`, `SessionStart` or `Stop` behavior there is asserted. Treat the runtime as unverified.
+- Claude Code hook/agent contracts are moving targets. [`RELEASING.md`](RELEASING.md) defines the release *procedure*; the evidence actually recorded for a release lives in [`EVIDENCE.md`](EVIDENCE.md).
 
 ## Trust and releases
 
@@ -307,13 +316,13 @@ ctide hooks auto-execute once the plugin is enabled, so install integrity matter
 
 Recommended safe install:
 
-1. Install from a tagged release or pinned commit.
+1. Install from a tagged release or pinned commit. The current release is [`v0.7.1`](https://github.com/kktu6507/cressetide/releases/tag/v0.7.1).
 2. Review the shipped plugin's `hooks/` directory before enabling (repo path: `cressetide/hooks/`).
 3. Run `/ctide:doctor` after install.
-4. Verify release tags with `git verify-tag vX.Y.Z` when a signed tag is available.
-5. Verify release archives against their published `.sha256` files when assets are available.
+4. Verify the release tag with `git verify-tag vX.Y.Z`. `v0.7.0` and `v0.7.1` are signed; later tags follow the release procedure.
+5. Verify release archives against their published `.sha256` files.
 
-See [`SECURITY.md`](SECURITY.md) for the trust model and [`RELEASING.md`](RELEASING.md) for release checklist, live smoke, signed tag setup, and checksum verification.
+See [`SECURITY.md`](SECURITY.md) for the trust model, [`RELEASING.md`](RELEASING.md) for the release *procedure* — contract, preconditions, deterministic archives, tag and publication steps — and [`EVIDENCE.md`](EVIDENCE.md) for the evidence actually recorded against a release.
 
 The quick-start marketplace command is the convenient path, and it follows whatever state the marketplace and repo are in at that moment.
 
@@ -321,17 +330,18 @@ Release checksums integrity-check the published archive; authenticity still depe
 
 ## Cost
 
-Typical real-app runs cost more than a one-shot AI review because ctide plans, verifies, reviews, and may repair. Rough orders of magnitude:
+Planning, verification, the reviewer panel and repair all add work on top of producing the change itself. What a run actually costs depends on the levers below and on what your own project's commands cost. **No representative end-to-end cost or duration, and no cost-saving benefit, has been established.** The maintainer's efficiency investigation closed with its confirmation stage unexecuted (see the [final disposition](docs/superpowers/reviews/2026-09-10-efficiency-final-disposition.md)); the scoped CLI estimates it does record are bounded to those specific experiments and are not general figures. What is stated below is what drives cost, not what it will be.
 
-| Task | Reviewers | New tokens | Wall-clock |
-|---|---|---|---|
-| Light | `--lite`, core only | ~0.5-2M | a few minutes |
-| Typical | 3-5 reviewers + one repair pass | ~2-7M | ~5-15 minutes |
-| Deep | `--deep`, several repair loops | >10M | ~20-40 minutes |
+These are the levers:
 
-The incident flow is cheap where it matters: wartime turns are short (one decision card at a time, no essays), the formal fix costs one normal `--lite` run, and a Map refresh only scans a bounded slice of the repo.
+- **Panel size.** `--lite` forces the smallest sufficient panel; risk signals add reviewers.
+- **Repair loops.** Each `FIX REQUIRED` → repair → re-verify cycle repeats implementation and verification.
+- **Deep mode.** Tier 2 (`--deep`) adds adversarial verification and maximum reasoning effort for `arbiter` / `security-reviewer`; that tier is opt-in and never auto-engaged. Tier 1 is a separate enforcement tier that runs the **same selected panel, models and reasoning effort** — what changes is that the orchestration is enforced by the graph rather than left to the model. It *does* auto-engage on high-risk or correctness-critical work where the Workflow capability exists, and is opted out with `--no-deep` / `--shallow`.
+- **Verification breadth.** Build, test, lint and browser evidence run as your project's commands actually cost.
 
-An automatic **fast lane** goes one step further on small low/medium-risk changes: when execution evidence already answers the reviewer's question (every behavior-changing criterion has a red→green test and the full required suite is green), `test-reviewer` is evidence-substituted and disclosed via `ctide:panel=substituted:test-reviewer`. Same evidence, fewer agents; high-risk and deep runs never take the fast lane.
+The incident flow is shaped to keep wartime turns short — one decision card at a time, no essays — the formal fix goes back through the dev flow as a `--lite` run, and a Map refresh scans a bounded slice of the repo rather than the whole tree.
+
+An automatic **fast lane** goes one step further on small low/medium-risk changes: when execution evidence already answers the reviewer's question (every behavior-changing criterion has a red→green test and the full required suite is green), `test-reviewer` is evidence-substituted and disclosed via `ctide:panel=substituted:test-reviewer`. Same evidence, fewer agents. It never applies to high-risk work, to deep-mode runs of either tier, or to [TP-active runs](#the-dev-flow-vigil) — on a TP-active run the real `test-reviewer` always runs, **including when the changed-test inventory is empty**.
 
 ## Examples and evidence
 
@@ -346,7 +356,9 @@ Real-world validation is tracked manually because ctide ships **no telemetry**. 
 |---|---|
 | Type-B verified live runs | 0 recorded |
 | Distinct real projects | 0 recorded |
-| Non-maintainer runs | 0 / 1 |
+| Non-maintainer runs | 0 recorded |
+
+Release and CI evidence for `v0.7.1` is recorded separately in [`EVIDENCE.md`](EVIDENCE.md); it establishes that the published plugin loads and that specific hooks fire, not a real-world run.
 
 Most valuable contribution: run ctide on real work and open a [Verified ctide run issue](https://github.com/kktu6507/cressetide/issues/new?template=verified-run.yml). Paste the `### Live run` block that ctide prints at the end. Keep misses, false alarms, cost, and follow-up outcome in the report; honest negatives are the point.
 

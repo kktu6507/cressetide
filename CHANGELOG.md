@@ -4,6 +4,22 @@ All notable changes to Cressetide will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.2] - Unreleased
+
+版本已在 manifest 宣告，尚未發布：本節沒有發布日期，也還沒有對應的 `v0.7.2` tag 或 release 資產。v0.7.1 仍是目前已發佈的版本。
+
+出貨內容的修正：
+
+- Doctor 診斷契約步驟 1 沒有區分「在臨時 shell 子行程中未設定 plugin root」與「這個 session 無法解析 plugin root」，照字面執行會把已驗證健康的 plugin 報成無法定位。現在以 host 展開的 skill 呼叫為第一順位 canonical 來源、其次為三個環境變數，並要求記錄來源；禁止 filesystem 搜尋的規則不變，並明確禁止自行指定任意 `--plugin-root`。其餘診斷檢查與所有程式碼皆未更動。
+- 移除所有沒有來源的成本宣稱：`final-report.md` 寫死的模型費率與快取倍數（改為「載明假設費率與日期，或只給 token 數」），以及 `runtime-policy.md`／`deep-mode.md`／`reviewer-selection.md`／`vigil/SKILL.md` 的 cache-read 倍數、「cost-free」與 Tier 1「≈ 標準成本」（改為陳述真正成立的部分：同一組已選定的 panel、模型與 reasoning effort）。表格、Share bar、sentinel、selection 規則與 tier 觸發條件皆未更動。
+- Map overlay（`vigil-map-overlay.md`，由 `vigil/SKILL.md` 實際載入）的兩處敘述與擁有者不符：`--no-deep` 實際是 Tier 1 的 opt-out（Tier 2 才是 `--deep` opt-in），而 `test-reviewer` 並非一律選入（有 evidence substitution fast lane，TP-active run 除外）。兩處改為指向 `deep-mode.md` 與 `reviewer-selection.md`。
+- `run-ledger.md` 的觀測 sidecar 敘述已過時：controller 隨 v0.7.1 發布，`runProposalIteration` 會實際呼叫 observer，失敗為 non-gating，non-TP run 則完全不呼叫。同時更正 `verdict` 的來源是 arbiter 的 Final Verdict，而非 `ctide:delivery=`（該欄位是 `held`／`shipped`），並補上 `append` 選用的 `--provenance-task`。schema 與 post-verdict 邊界未更動。
+- `test-layer-boundaries.md` 原本宣稱任何 criterion 少了 red→green 一律 `unmet`，比它自己引用的擁有者 `verification-gate.md` 更絕對（後者允許在沒有 red-green 的情況改以揭露的指令／觀察證據取代）。改為保留「選擇較粗的 layer 不等於免除證據」並指向擁有者的例外。
+- `design-spec.md`：legacy root `design.md` 的一次性搬移改為對齊既有 plan gate——規劃階段就地讀取並記錄，實際搬移由 main thread 在核准後、本次 run 結束前執行，未新增任何程序。同檔的「net token saver」改為陳述機制本身（決策連同來源記錄一次供後續引用），不作成本宣稱。
+- 隨 plugin 出貨的範本與連結：兩份 incident 模板補上 `/ctide:doctor --project` 判定 closed 所需的 `- Status: open` 並指向 `reentry-and-closure.md`；`operational-readiness.md` 移除沒有來源的「30 秒對比 30 分鐘」宣稱；兩條指向本 repo `master` 的失效連結（`verification-gate.md`、`final-report.md`）修正為 `main`。
+
+倉庫內文件與範例的修正（這些檔案不隨 plugin 出貨）：`examples/SYSTEM_MAP.md` 補上 `map verify` 實際讀取的 `<!-- CTIDE:TRUST:… -->` 機器標籤與填寫說明，模板維持虛構、全部標為 `unverified`；`docs/benchmark-contract.md` 與 `final-report.md` 既有 Cost `Share` 欄位的字面矛盾，改為把禁令界定在品質／結果指標（closed-world 規則與 hidden fixtures 未更動，也沒有新增任何 live 百分比）；`ARCHITECTURE.md` 的 TP-active 規則改為與 README 一致；`docs/runtime-contract.md` 改為只忽略 `/.ctide/test-provenance-loop/`，並區分 Git 衛生與工具內部的 head-view 硬排除；三語 README 的成本段落移除無依據的比較與 Tier 1 成本保證，ship 版號比對範圍改為排除相依／建置／執行期目錄後探知到的 `package.json`（確切清單見同步更正的 `docs/command-reference.md`）；tutorial 改用實際 reviewer 識別字。其餘：Node 版本需求、Doctor `--project` 的三項檢查、`CTIDE_ENFORCE_STOP` 與 `CTIDE_HOOK_DEBUG` 的取值契約、fast lane 的 TP-active 排除、ledger append 的負責者與能力界線、`.ctide/` 三類狀態、compatibility 改以實際觀察到的情境陳述、EVIDENCE 補上 v0.7.1 的公開 CI 連結，以及兩份 final-report 範例與兩份 incident 模板的擁有者指標改為相對連結。
+
 ## [0.7.1] - 2026-09-11
 
 - 修復 `eval/loop-e2e/bash-guard.mjs` 的 `readStreamWithTimeout`：deadline timer 先前呼叫 `timer.unref()`，在沒有其他 referenced handle 的情境下 event loop 會在 promise settle 之前排空，該 promise 因此永遠不會 settle。`finish()` 在每一條路徑上都已經 `clearTimeout`，`unref()` 並不必要；移除後 timer 只在 deadline 之前維持 loop 存活。新增兩個以子行程執行的迴歸測試——有缺陷的版本會在毫無輸出的情況下以 0 結束，所以測試以輸出內容而非結束碼判定。此檔案屬於維護者用的 `eval/`，不隨 `cressetide/` plugin 出貨。

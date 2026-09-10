@@ -20,7 +20,7 @@ Only the `ctide` namespace is supported:
 
 | Key | Meaning |
 | --- | --- |
-| `ctide.planGate` | Require plan approval before non-trivial implementation. |
+| `ctide.planGate` | Deny edit tools, and obvious Bash/PowerShell writes, while the session is in plan mode. It keys on the session's permission mode; it does not track whether a plan was approved, and approval remains a workflow obligation. |
 | `ctide.contractGuard` | Check task scope and acceptance-criteria contract evidence. |
 | `ctide.destructiveGuard` | Intercept supported destructive mutations for advisory review. |
 | `ctide.preserveOnCompact` | Preserve bounded workflow state across conversation compaction. |
@@ -32,7 +32,8 @@ Agents must not edit settings to bypass a guard.
 | Variable | Purpose |
 | --- | --- |
 | `CTIDE_HOOK_DEBUG` | Enable bounded local hook diagnostics when set to any non-empty value; only an unset or empty value disables them. |
-| `CTIDE_REPAIR_PUBLISHED_RELEASE_ASSETS` | Explicitly authorize the reviewed release-asset repair path. |
+| `CTIDE_ENFORCE_STOP` | Upgrade the `orchestration-check.js` Stop hook from advisory to a hard block on a verdict/evidence mismatch. Recognized values are `1`, `true`, `yes` and `on`, matched case-insensitively; every other value, including `0`, leaves the hook advisory. |
+| `CTIDE_REPAIR_PUBLISHED_RELEASE_ASSETS` | Explicitly authorize the reviewed release-asset repair path. Recognized only as the exact string `true`; every other value, including `1`, leaves repair unauthorized. It is one of several preconditions, not a switch on its own: repair additionally requires that both exact assets download successfully and that the downloaded bytes prove drift. Missing assets and transport failures never enter repair. |
 
 Doctor and release diagnostic summaries must not expose environment values,
 secrets, tokens, settings payloads, or unredacted sensitive paths. The hook debug sink is separately opt-in and may include a bounded
@@ -151,10 +152,18 @@ tool-owned control state**. It is not run scratch like `.ctide/output/`, which a
 it is not the append-only ledger. Its two main-thread files are the reviewer's persisted bytes and the
 governance draft input; everything else is controller-owned.
 
-**Hygiene, stated exactly.** Unlike `.ctide/ledger/` and `.ctide/output/`, this prefix does **not**
-create its own nested `.gitignore`. It relies on the consuming repository's root-level `.ctide/`
-ignore. That is a dependency, not a guarantee: in a repository that has not ignored `.ctide/`, control
+**Git hygiene, stated exactly.** Unlike `.ctide/ledger/` and `.ctide/output/`, this prefix does **not**
+create its own nested `.gitignore`, so keeping it out of a commit depends entirely on the consuming
+project's own **tracked** `.gitignore`. Add one line there for this prefix and only this prefix —
+`/.ctide/test-provenance-loop/`. Do **not** ignore `.ctide/` wholesale: that would also drop the
+committed semantic state above (`map/`, `memory/`, `design/`, `incidents/`, `decisions/` and
+`provenance.json`), which is meant to be tracked and to travel with the repository. This is Git
+hygiene, and it is a dependency rather than a guarantee: in a project that adds no such rule, control
 state can be committed.
+
+That is a separate mechanism from the head-view exclusion below. The exclusion is a hard rule inside
+the tool and holds whether or not the path is gitignored; the `.gitignore` line only governs what Git
+will stage.
 
 **Head-view exclusion.** The prefix is in the closed hard-exclusion set and is evaluated **before
 trackedness**, so it never enters the head view and carries **zero** inventory or telemetry cost. The

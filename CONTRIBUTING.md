@@ -36,10 +36,14 @@ Open a **"Verified ctide run"** issue. The form is short — pick the **run type
 
 ## Local development
 
-Run the hook tests:
+Run the full local check set — the suite covers far more than the hooks: hooks,
+Doctor, the release publisher, the structure validator, workflow contracts, the
+provenance and loop modules, and the E2E harness helpers.
 
 ```bash
-npm test
+npm test        # node --test across the repository
+npm run validate  # structure, identity, inventory, release contract, text integrity
+npm run eval      # deterministic evaluation cases
 ```
 
 The tests exercise the Claude Code hook scripts (`cressetide/hooks/*.js`) as CLI programs and preserve the **fail-open** and **plan-gate** behavior. `node .github/scripts/validate-structure.mjs` runs the structure / distribution-hygiene checks.
@@ -51,8 +55,8 @@ The tests exercise the Claude Code hook scripts (`cressetide/hooks/*.js`) as CLI
 1. Keep the change scoped.
 2. Update documentation when behavior changes.
 3. Add or update tests for hook behavior. **When you change a reviewer/agent prompt, re-run the `eval/` behavioral fixture suite** (`eval/README.md`) and update `eval/baseline.md` — a clear drop in hit-recall or a new false positive on a clean control is a regression to fix before merging.
-4. Update `CHANGELOG.md` for user-visible changes — and bump the version in both manifests (`cressetide/.claude-plugin/plugin.json`, `package.json`) when the shipped `cressetide/` tree changes. Pure repo-root docs (README, EVIDENCE, this file) don't ship and don't need a bump.
-5. Do not commit the workflow's runtime output (failure-memory files) or temporary verification artifacts into this repo.
+4. Update `CHANGELOG.md` and bump the version in both manifests (`cressetide/.claude-plugin/plugin.json`, `package.json`) when the change is **perceptible to someone running ctide** — the same test `RELEASING.md` defines under *When to bump the version*, which also covers the validator's parity and changelog-heading requirements. A shipped prompt or reference under `cressetide/` that changes behavior qualifies; an internal comment or a non-perceptible edit does not, even though it ships. Pure repo-root docs (README, EVIDENCE, this file) ship nothing.
+5. Do not commit **this repository's own dogfood runtime output** — the `/.ctide/` tree here, and temporary verification artifacts. That is a property of this repo, not of the product: in a consuming project `.ctide/memory/`, `design/`, `map/`, `incidents/`, `decisions/` and `provenance.json` are committed semantic state by design. The packaged sample under `cressetide/examples/` is source and is committed.
 
 ## Tone and claims
 

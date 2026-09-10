@@ -132,9 +132,27 @@ with only `contents: write`, followed by an independent provenance job with
 provided only to the individual steps that call `gh`; checkout credentials are
 not persisted.
 
+Signing may use either the OpenPGP or the SSH format; `git tag -s` follows
+whichever `gpg.format` is configured. To verify an SSH-signed tag locally, point
+Git at an allowed-signers file held **outside the checkout** — a trust store you
+control — containing a public key you have independently established as the
+signer's:
+
+```bash
+git -c gpg.ssh.allowedSignersFile='/absolute/path/allowed_signers' verify-tag vX.Y.Z
+```
+
+The file format and lookup rules are documented at
+<https://git-scm.com/docs/git-config#Documentation/git-config.txt-gpgsshallowedSignersFile>.
+Never place private key material in the repository, and never trust a public key
+merely because it was found inside the same unverified checkout. GitHub's own
+signature verification is a separate check from local trust; neither substitutes
+for the other.
+
 Do not describe the release as complete until the final tag commit has a green
 required check set and GitHub exposes the expected immutable assets and
-attestation.
+attestation. This document defines the procedure only; the evidence recorded for
+a given release belongs in `EVIDENCE.md`.
 
 ## Verify published evidence
 

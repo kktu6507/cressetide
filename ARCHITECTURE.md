@@ -99,8 +99,12 @@ a version, and never writes anything.
 | `arbiter` | Evidence aggregation and final readiness verdict. |
 | `cartographer` | Read-only Map discovery and provenance collection. |
 
-Reviewers are read-only. The coordinating thread owns writes, conflict
-resolution, and serialized failure-memory updates.
+Reviewers hold no editor tools: `Read`, `Grep`, `Glob` and `Bash` for inspection
+only. Review-only behavior is enforced by **policy and context isolation, not by
+a hard read-only capability boundary** — `Bash` can in principle write, so the
+constraint is contractual and is why reviewers propose fixes rather than apply
+them. The coordinating thread owns writes, conflict resolution, and serialized
+failure-memory updates.
 
 ## Hook boundary
 
@@ -122,8 +126,48 @@ security boundary. An agent must not weaken a hook to bypass a denial.
 
 `.ctide/` is the sole project state root. It separates the system Map, failure
 memory, design context, incident journals, decision records, run ledger, and
-task output. Runtime artifacts are ignored by Git by default because they may
-contain repository-specific or operational evidence.
+task output, in three classes:
+
+- **Committed semantic state** — `memory/`, `design/`, `map/`, `incidents/`,
+  `decisions/`, `provenance.json` — versioned with the project.
+- **Persistent episodic state** — `ledger/` — self-gitignored, never overwritten
+  or truncated, and survives across runs.
+- **Per-run scratch** — `output/` — self-gitignored and overwritten each run.
+
+Separately, `test-provenance-loop/` is a **durable, untracked, tool-owned
+prefix** reserved for the review-loop controller. The controller writes no nested
+`.gitignore` there, so a consuming project should ignore that prefix explicitly
+and only that prefix — ignoring `.ctide/` wholesale would drop committed semantic
+state. The head view's exclusion of the prefix is a separate rule evaluated
+before trackedness, so it holds whether or not the path is gitignored.
+
+Path-level specifics, including the exclusion rule and its stated cost, are in
+`docs/runtime-contract.md`.
+
+## Test provenance
+
+A task carrying the provenance workflow — one with a current TaskState in the
+validated store — runs a **TP-active** variant of the review step. It binds test
+evidence to its source so a stale claim is refused rather than believed, and it
+changes three things a user can observe:
+
+- the real `test-reviewer` always runs and is never evidence-substituted, **even
+  when the changed-test inventory is legitimately empty**;
+- the `arbiter` reports `loop` and `provenance` gate halves plus their
+  `combined` result, and either half false blocks `READY`;
+- the run keeps canonical state: a `provenance.json` store and the durable
+  `.ctide/test-provenance-loop/` prefix above.
+
+A task that does not use the provenance workflow is unaffected: the step is
+skipped entirely and the ordinary lifecycle applies. That is a property of tasks
+**outside** the workflow. A task inside it whose TaskState is missing or fails
+validation is not thereby excused from these checks — an unestablished inventory
+is a failed required check, never an empty one, and it is fixed before the panel
+is selected rather than routed around.
+
+The controller's operations and the store's schema are internal; the
+observable contract is in `docs/runtime-contract.md` and
+`cressetide/skills/vigil/SKILL.md` step 4b.
 
 Evidence moves through bounded Review Packets rather than full conversation
 transcripts. A packet states intent, numbered criteria, in/out of scope,

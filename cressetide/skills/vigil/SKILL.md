@@ -180,7 +180,7 @@ User-facing communication (the plan at the gate, AskUserQuestion prompts, surfac
 6. Parallel review
    - Run selected reviewers in parallel when possible and authorized (spawn rules: `references/runtime-policy.md`).
    - If runtime or policy prevents subagent use, state that limitation and continue with local evidence without calling it formal multi-agent review.
-   - **Prefer deterministic enforcement on high-risk work.** With the Workflow capability on high-risk / correctness-critical work, express the panel + arbiter barrier as a deterministic Workflow — deep-mode **Tier 1** (opt-out `--no-deep`, ≈ standard cost); **Tier 2** stays explicit opt-in (`--deep`). `references/deep-mode.md`.
+   - **Prefer deterministic enforcement on high-risk work.** With the Workflow capability on high-risk / correctness-critical work, express the panel + arbiter barrier as a deterministic Workflow — deep-mode **Tier 1** (opt-out `--no-deep`; same selected panel and configured effort); **Tier 2** stays explicit opt-in (`--deep`). `references/deep-mode.md`.
 
 7. Conflict resolution and arbiter
    - Compare reviewer findings by evidence, not tone.

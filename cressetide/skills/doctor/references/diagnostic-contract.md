@@ -16,13 +16,27 @@ project. If a step can't run, say why and continue.
 
 ## Steps
 
-1. **Plugin root.** Resolve `$CLAUDE_PLUGIN_ROOT` (else `$COPILOT_PLUGIN_ROOT`, else `$PLUGIN_ROOT`).
-   If none is set, report that hooks can't be located from here and stop with that finding. Do
-   **not** fall back to searching the filesystem for ctide installations: a copy found by search
-   (an old marketplace cache, another runtime's install such as `~/.copilot/…`) is not the copy this
-   session runs, and diagnosing it produces a false health report — worse than no report. A live
-   search can cause a stale copy to be reported as "DEGRADED". Note which variable supplied the
-   root.
+1. **Plugin root.** Resolve it from the first available canonical source, in order:
+
+   1. **The host-expanded skill invocation.** `SKILL.md` writes `${CLAUDE_PLUGIN_ROOT}`, which the
+      host substitutes into the skill text before you see it, so the path arrives already resolved
+      and is passed to the helper as `--plugin-root`. The helper gives that argument precedence over
+      the environment by design. This is the normal path, and it is canonical even when the variable
+      is **not** set in an ad-hoc shell subprocess — a `Bash` call's environment says nothing about
+      how this session located the plugin. (Substitution reference:
+      <https://code.claude.com/docs/en/skills#available-string-substitutions>.)
+   2. Otherwise `$CLAUDE_PLUGIN_ROOT`, else `$COPILOT_PLUGIN_ROOT`, else `$PLUGIN_ROOT`.
+
+   **Record which source supplied the root**, and treat "unset in a subshell" and "unresolvable for
+   this session" as different findings. If neither a canonical invocation path nor one of the three
+   variables supplies a root, report that hooks can't be located from here and stop with that
+   finding.
+
+   Do **not** fall back to searching the filesystem for ctide installations, and do **not** pass an
+   arbitrary `--plugin-root` you chose yourself: a copy found by search or guessed (an old
+   marketplace cache, another runtime's install such as `~/.copilot/…`) is not the copy this session
+   runs, and diagnosing it produces a false health report — worse than no report. A live search can
+   cause a stale copy to be reported as "DEGRADED".
 
 2. **Node.** Run `node --version`. If `node` is **absent**, this is the single most common silent
    failure — **all six hooks no-op** (fail-open by design). Report it as the top finding.

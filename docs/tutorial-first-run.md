@@ -2,16 +2,16 @@
 
 This is a hands-on walkthrough. You will install ctide, hand it one small task, approve its plan, and watch it change code, verify the change, review it, and decide whether the result is ready to ship. By the end you will recognize every stage of a `/ctide:vigil` and know how to read the verdict at the bottom.
 
-It takes about ten minutes, and you do not need to understand ctide's internals first — follow the steps and the flow will explain itself.
+You do not need to understand ctide's internals first — follow the steps and the flow will explain itself. How long it takes depends on your project, the task you pick and the model you are running.
 
 If you want reference material instead of a guided tour, see [`task-writing-guide.md`](task-writing-guide.md) and [`how-to-read-verdicts.md`](how-to-read-verdicts.md). This page is the tour; those are the maps.
 
 ## What you'll need
 
 - **Claude Code**, running in a project directory — any small repo where you can safely make a trivial change.
-- **`node` on your `PATH`.** ctide's hooks are Node scripts; with no Node they silently no-op and you would miss half the guardrails. Check with `node --version`.
+- **Node 20 or newer on your `PATH`.** ctide's hooks are Node scripts; with no Node they silently no-op and you would miss half the guardrails. Check with `node --version`.
 
-That is all — no API keys, no services, no configuration.
+That is all: ctide itself needs no additional API key, service or configuration. Your Claude Code session still authenticates and bills as it normally does.
 
 ## 1. Install and enable ctide
 
@@ -68,7 +68,7 @@ ctide runs the project's real checks — build, tests, lint, whatever applies �
 
 ## 7. Watch the risk-selected reviewers
 
-You do not pick reviewers; ctide assembles the panel by **risk**. A typo engages none. A small helper fix like this engages a small core panel — the spec reviewer checking the change against your stated requirement, the test reviewer checking the tests and edge cases, plus a code-review pass (its own reviewer, or folded into the arbiter for a tiny diff like this one). An authentication change would additionally pull in the security reviewer; a schema migration would pull in others. Review is proportional to risk, so small changes stay cheap.
+You do not pick reviewers; ctide assembles the panel by **risk**. A typo engages none. A small helper fix like this engages a small core panel — `intent-reviewer` checking the change against your stated requirement, `test-reviewer` checking the tests and edge cases, plus a code-review pass (`code-reviewer`, or folded into the arbiter for a tiny diff like this one). An authentication change would additionally pull in `security-reviewer`; a schema migration would pull in others. Review is proportional to risk, so a small change gets a small panel.
 
 Each reviewer inspects the change against your intent and reports findings rated `blocker`, `major`, or `minor`. They propose fixes; they do not edit.
 
@@ -95,7 +95,7 @@ That is a complete run: task, restated requirement, approved plan, smallest chan
 ## What to try next
 
 - **Give it a bigger task.** Something with several acceptance criteria and a real must-not-change boundary — see [`task-writing-guide.md`](task-writing-guide.md) for bad / better / best examples. The more contract you give ctide, the more the reviewers and arbiter can actually verify.
-- **Turn up the scrutiny with `--deep`.** `/ctide:vigil --deep <task>` opts into adversarial verification of findings and maximum reasoning effort for the arbiter and security reviewer. It costs more; reach for it when the change is high-risk.
+- **Turn up the scrutiny with `--deep`.** `/ctide:vigil --deep <task>` opts into adversarial verification of findings and maximum reasoning effort for `arbiter` and `security-reviewer`. It costs more; reach for it when the change is high-risk.
 - **Keep `/ctide:doctor` handy.** If the gate never seems to block, the hooks seem silent, or Node might be missing, run it to check your setup.
 
 Now hand ctide a real change from your own project, and read its verdict with the map in [`how-to-read-verdicts.md`](how-to-read-verdicts.md).

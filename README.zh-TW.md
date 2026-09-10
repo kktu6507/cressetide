@@ -43,7 +43,7 @@ Incident flow  警報 -> Triage -> 保全證據 -> 先止血（可回復的動�
 - **五個 skill**：`vigil` 與 `salvage` 會自行啟用（不是小修小補就會自動接手／聽到像事故的描述就會出動）；[`map`](#ops-地圖map)、[`doctor`](#健康檢查doctor) 與 [`ship`](#release-readiness-檢查ship) 手動啟動（`/ctide:map`、`/ctide:doctor`、`/ctide:ship`）。
 - **[11 個 subagent](#開發流程vigil)**：一位 navigator、一位 implementer、七位依風險挑選的 reviewer、一位 cartographer，以及判定就緒的 arbiter。
 - **[6 個 hook](#hooks-與安全模型)**：local-only、零依賴的 Node guardrails，包含 plan gate、破壞性指令 guard、contract guard、failure-memory 注入、compaction 提醒、delivery-claim 檢查。
-- **[學習迴圈](#學習迴圈)**：每次 run 以一筆 ledger 記錄收尾；下一次 run 開頭先檢查過去的 verdict 是否站得住。
+- **[學習迴圈](#學習迴圈)**：完成的 run 由 workflow 自己寫下一筆 ledger 記錄收尾；下一次 run 開頭先檢查過去的 verdict 是否站得住。
 
 ### 專案佈局
 
@@ -56,8 +56,10 @@ ctide 放進你專案裡的所有東西，都收在一個根目錄底下：
   map/        # SYSTEM_MAP.md — 儲存庫與操作就緒 Map（committed）
   incidents/  # INCIDENT-<date>-<slug>.md journals — 稽核軌跡（committed）
   decisions/  # DECISION-<date>-<slug>.md — 選擇 X 而非 Y 的理由與重新檢視條件（committed）
-  ledger/     # runs.jsonl — append-only 執行歷史（跨執行留存、自帶 gitignore）
+  provenance.json  # test-provenance store — canonical state（committed）
+  ledger/     # runs.jsonl — append-only 執行歷史（持久 episodic state、自帶 gitignore）
   output/     # 每次執行的 scratch：contract.md、evidence、review diffs（永不 commit、自帶 gitignore）
+  test-provenance-loop/  # review-loop controller 的持久前綴——工具擁有、不進 git
 ```
 
 舊版佈局（`ai/FAILURE_MEMORY.md`、repo 根目錄的 `design.md`、`.ctide/legacy-output/`）只會遷移一次，由 workflow 自己搬，搬了什麼當次就會講清楚。
@@ -91,7 +93,7 @@ ctide **不是** CI 替代品、linter 或 static analysis、零 bug 保證，�
 
 ## 快速開始
 
-前置需求：**Claude Code** + `PATH` 上有 `node`。hook 是 Node 腳本；沒有 Node 的話 hooks 就直接不動作，也不會報錯。
+前置需求：**Claude Code** + `PATH` 上有 **Node 20 或更新版本**。hook 是 Node 腳本；沒有 Node 的話 hooks 就直接不動作，也不會報錯。
 
 ```text
 # 在你的專案目錄、Claude Code 內：
@@ -153,6 +155,14 @@ Verdicts 是 release-readiness decisions，不是絕對真理。請看 [`docs/ho
 - **reviewer 不持有 editor 工具**：僅 `Read` / `Grep` / `Glob` / `Bash` 供檢查；唯審查、不編輯是靠政策與情境隔離強制，而非硬性的唯讀能力邊界（詳見 [`ARCHITECTURE.md`](ARCHITECTURE.md)）。由它們提出修法，再由 `implementer` 執行。
 - **正確性關鍵路徑配置至少兩個獨立視角**：parsing、數值／編碼／溢位、並行、安全、資料完整性，避免大家帶著同一種盲點一起漏看。
 
+**Test-provenance run 更嚴格。** 帶有 provenance workflow 的任務——也就是在 validated store 中有現行 TaskState 的任務——會走 **TP-active** 版本的 review 步驟。它的影響包括：
+
+- 真正的 `test-reviewer` 一定會跑。它永遠不會被 evidence-substituted，**即使 changed-test inventory 合法地是空的也一樣**，因此下方的快速通道完全不適用。
+- `arbiter` 會分別回報 `loop` 與 `provenance` 兩個 gate 半邊，以及兩者的 `combined` 結果。**任一半為 false 就擋下 `READY`。**
+- 這種 run 會保有 canonical state：進 git 的 `.ctide/provenance.json` store，以及持久、由工具擁有的 `.ctide/test-provenance-loop/` 前綴。controller 不會在該處寫入巢狀 `.gitignore`，所以使用端專案應該**只忽略這個前綴**——絕不要整個忽略 `.ctide/`，那會連進 git 的 semantic state 一起丟掉。head view 對該前綴的排除獨立於 gitignore，兩種情況都成立。
+
+不使用 provenance workflow 的任務不受影響：整段跳過，維持原本的 lifecycle。這是「不在該 workflow 內」的性質——在該 workflow 內、但 state 缺漏或驗證失敗的任務，並不因此免除它該有的檢查。路徑、前綴與 state 分類的規格見 [`docs/runtime-contract.md`](docs/runtime-contract.md)；元件視角見 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
+
 **把任務寫好。** ctide 對著你陳述的意圖審查，所以最好的任務會交代需求、acceptance criteria、不可變更範圍、預期驗證與風險區域。模板與 bad / better / best 範例：[`docs/task-writing-guide.md`](docs/task-writing-guide.md)（英文）。
 
 **單次執行旗標。** `--lite`（最小面板）、`--deep`（對抗式驗證）、`--report full`（詳細報告）；細節見「設定參考」一節。
@@ -183,7 +193,7 @@ Verdicts 是 release-readiness decisions，不是絕對真理。請看 [`docs/ho
 
 ## Ops 地圖（map）
 
-**在需要之前先準備。** `/ctide:map` 會建立 `.ctide/map/SYSTEM_MAP.md`：這張平時地圖讓戰時從 30 秒開始，而不是 30 分鐘。裡面有標明 agent-runnable 與 human-only 的存取清單、附 schema-migration 相容性情報的 rollback 步驟、feature flags、備份與可觀測性。
+**在需要之前先準備。** `/ctide:map` 會建立 `.ctide/map/SYSTEM_MAP.md`：這張平時地圖讓事故從已記錄的事實開始，而不是臨場翻找。裡面有標明 agent-runnable 與 human-only 的存取清單、附 schema-migration 相容性情報的 rollback 步驟、feature flags、備份與可觀測性。
 
 每個條目都帶信任標記（`verified: <date>`、`dry-run-verified: <date>` 或 `UNVERIFIED`）；未驗證的 rollback 指令會在依賴它的 decision card 上被標出，絕不默默信任。
 
@@ -193,15 +203,15 @@ Map 承接 operational-preparation 契約：[`operational-readiness.md`](cresset
 
 ## 健康檢查（doctor）
 
-`/ctide:doctor` 做本機、唯讀的 hooks 與環境自檢（plugin 身分、Node 是否存在、hook 有沒有接上），且不傳送任何東西（無 telemetry）。gate 沒擋、hook 沒反應、或 Node 可能不存在時就跑它。
+`/ctide:doctor` 做本機、唯讀的 hooks 與環境自檢（plugin 身分、Node 是否存在、hook 有沒有接上）。helper 與 hooks 本身不發任何網路請求、不送 telemetry；外層的 Claude Code session 仍照它原本的方式運作，所以這是關於 ctide 自己程式碼的陳述，不是對你 session 的隱私保證。gate 沒擋、hook 沒反應、或 Node 可能不存在時就跑它。
 
-加上 `--project`（可搭配 `--cwd <path>`）會多疊兩項檢查：`failure-memory-health` 摘要專案自己的 `FAILURE_MEMORY.md`（不會碰機器全域那份），`incident-journals` 標出 `.ctide/incidents/*.md` 裡還沒確認 `closed` 的項目。兩者都是選配、疊加式的——預設的 `/ctide:doctor` 輸出不會變。
+加上 `--project`（可搭配 `--cwd <path>`）會多疊三項檢查：`failure-memory-health` 摘要專案自己的 `FAILURE_MEMORY.md`（不會碰機器全域那份），`incident-journals` 標出 `.ctide/incidents/*.md` 裡還沒確認 `closed` 的項目，`ledger-health` 回報 reconciliation debt 以及 `HEAD` 相對 ledger 最後一筆記錄前進了幾顆 commit。三者都是選配、疊加式的——預設的 `/ctide:doctor` 輸出不會變。
 
 ## Release-readiness 檢查（ship）
 
 `/ctide:ship` 是手動、唯讀的：它從不執行你的 build、test 或 deploy pipeline，也從不寫入任何東西（不打 git tag、不改版號、不寫 changelog 條目）。它讀取既有的東西——上次 release tag 以來 ledger 裡每筆 `READY` 的 run、`package.json`、`CHANGELOG.md` 的 git 歷史、git tags，以及 `SYSTEM_MAP.md` 的 Rollback 章節——輸出一張 decision card：待處理批次，接著四項檢查（版號一致性、`CHANGELOG.md` 是否改過、tag 是否就緒，以及 Map 帶來的 migration compatibility），每項都是 `pass` / `fail` / `not-applicable` / `unverified`，並附引用證據。
 
-第五項檢查——checksum 驗證——只在你明確帶入 `--artifact` 與 `--checksum` 時才跑；ship 從不猜你 repo 裡哪個檔案是 build artifact。版號一致性只讀 `package.json`。
+第五項檢查——checksum 驗證——只在你明確帶入 `--artifact` 與 `--checksum` 時才跑；ship 從不猜你 repo 裡哪個檔案是 build artifact。版號一致性比對的是 ship 在排除掉相依、建置與執行期目錄之後找到的那些 `package.json`——只涵蓋這個生態系，不含其他 manifest 格式，也不含 ctide 自己的巢狀 `plugin.json`。確切的排除清單見 [`docs/command-reference.md`](docs/command-reference.md)（英文）。
 
 Ship 是你真正發布前讀的 pre-flight checklist——不是你 release pipeline 的替代品。
 
@@ -209,7 +219,7 @@ Ship 是你真正發布前讀的 pre-flight checklist——不是你 release pip
 
 run 與 run 之間，ctide 會把學到的東西接起來——輸的、贏的都記：
 
-- **每次 run 以一筆 ledger 記錄收尾。** verdict 鎖定後，一行 event-fact 會 append 到 `.ctide/ledger/runs.jsonl`：任務、改動的檔案（由 `git diff` 計算，絕不採信 agent 的口述）、verdict、驗證狀態、面板、修復輪數、findings，以及計畫 scope 與實際觀察到的 drift。只記事實：ledger 永不儲存分數、比率或百分比。
+- **完成的 run 以一筆 ledger 記錄收尾。** verdict 鎖定後，workflow 的 main thread 會把一行 event-fact append 到 `.ctide/ledger/runs.jsonl`：任務、改動的檔案（由 `git diff` 計算，絕不採信 agent 的口述）、verdict、驗證狀態、面板、修復輪數、findings，以及計畫 scope 與實際觀察到的 drift。只記事實：ledger 永不儲存分數、比率或百分比。這個 append 屬於 workflow 本身且 fail-open——沒有任何 hook 會自動記錄 run，所以沒走到那一步就結束的 run 不會留下 ledger 行。`/ctide:doctor --project` 的 `ledger-health` 可以回報 ledger 不存在、reconciliation debt，以及 `HEAD` 相對最後一筆記錄前進了幾顆 commit；它無法還原一個從未被記錄的 run。
 - **下一次 run 開頭先檢查過去的 verdict 是否站得住。** planning 會掃描後續 commits 是否重工了過往 run 記錄的檔案，並把該筆 run 處置為 `escaped` / `survived` / `superseded` / `building-upon`。判斷不了的重疊會標成「needs human review」交給人看，不會默默當沒事。14 天內出現三筆 `escaped` closure，結尾報告會建議一次 retro（[`docs/advanced/retro-practice.md`](docs/advanced/retro-practice.md)（英文））。這些統計只是講給你聽的，而且要等 verdict 定案才出現，絕不回頭調整本次 run 的 scope、面板或 verdict。
 - **教訓由兩份進 git 的記憶檔負責記住。** `.ctide/memory/FAILURE_MEMORY.md` 存 prevention rules（來自事故 postmortem 與 escaped 缺陷）；SessionStart hook 會注入 untrusted digest，讓下一次 plan 讀到。`.ctide/memory/EXPERIENCE.md` 存已驗證的正向模式（`candidate → validated → standard`；`standard` 必須掛上連結的可執行資產，只有文字描述永遠升不上去）。
 
@@ -258,8 +268,8 @@ hooks 也絕不遷移、寫入或刪除 ctide 的專案檔案；舊佈局的一�
 
 | 變數 | 設定後的效果 |
 |---|---|
-| `CTIDE_ENFORCE_STOP` | 設成任何非空值，會讓 `orchestration-check.js` 這個 Stop hook 在 verdict/evidence 矛盾時直接硬擋 delivery，而不只是提示 |
-| `CTIDE_HOOK_DEBUG` | 設成 `1` 會讓每個 hook 都多印一行 debug trace（[`/ctide:doctor`](#健康檢查doctor) 與手動排除故障會用到） |
+| `CTIDE_ENFORCE_STOP` | 設成 `1`、`true`、`yes` 或 `on`（不分大小寫），會讓 `orchestration-check.js` 這個 Stop hook 在 verdict/evidence 矛盾時直接硬擋 delivery，而不只是提示。其他值（包含 `0`）一律維持提示 |
+| `CTIDE_HOOK_DEBUG` | 設成任何非空值都會讓每個 hook 多印一行 debug trace；只有未設定或空值才停用（[`/ctide:doctor`](#健康檢查doctor) 與手動排除故障會用到） |
 
 ```bash
 CTIDE_ENFORCE_STOP=1 claude            # bash/zsh
@@ -292,14 +302,13 @@ $env:CTIDE_ENFORCE_STOP = "1"; claude  # PowerShell
 
 ## 相容性
 
-ctide 以 Claude Code 為主要 runtime。在 GitHub Copilot CLI 下也能跑，但會打折：plugin 格式載得進去，部分 Claude Code 專屬的 hook 輸出送不到。
+ctide 以 Claude Code 為主要 runtime。GitHub Copilot CLI 屬於 **unverified**：目前沒有任何 Cressetide run 被記錄下來，因此不主張任何行為——最多只可能部分相容，Claude Code 專屬的 hook 輸出也可能完全送不到。
 
 Compatibility 與 conformance smoke 詳情請看 [`docs/compatibility.md`](docs/compatibility.md)（英文）。重點如下：
 
 - Claude Code 是主要 runtime。
-- GitHub Copilot CLI 會載入 skills、subagents、部分 PreToolUse decisions，但 injected `SessionStart` 與 `Stop` output 可能 no-op。
-- 目前尚未記錄 Cressetide 專屬的 Copilot CLI live run；在新證據出現前應視為 unverified。
-- Claude Code hook/agent contracts 是 moving target；release smoke 記錄在 [`RELEASING.md`](RELEASING.md)。
+- GitHub Copilot CLI：目前沒有記錄任何 Cressetide 專屬的 live run，因此不主張 skills、subagents、`PreToolUse`、`SessionStart` 或 `Stop` 在該處的任何行為。視為 unverified。
+- Claude Code hook/agent contracts 是 moving target。[`RELEASING.md`](RELEASING.md) 定義的是 release **程序**；某次 release 實際記錄下來的證據放在 [`EVIDENCE.md`](EVIDENCE.md)。
 
 ## 信任與發佈
 
@@ -307,13 +316,13 @@ ctide 啟用後 hooks 會 auto-execute，所以 install integrity 很重要。
 
 建議安全安裝：
 
-1. 從 tagged release 或 pinned commit 安裝。
+1. 從 tagged release 或 pinned commit 安裝。目前的 release 是 [`v0.7.1`](https://github.com/kktu6507/cressetide/releases/tag/v0.7.1)。
 2. 啟用前先 review shipped plugin 的 `hooks/` 目錄（repo path：`cressetide/hooks/`）。
 3. 安裝後跑 `/ctide:doctor`。
-4. signed tag 存在時，用 `git verify-tag vX.Y.Z` 驗證。
-5. release assets 有 SHA-256 checksum 時，優先使用並驗證。
+4. 用 `git verify-tag vX.Y.Z` 驗證 release tag。`v0.7.0` 與 `v0.7.1` 有簽章；之後的 tag 依 release 程序處理。
+5. 用 published `.sha256` 檔驗證 release archive。
 
-Trust model 請看 [`SECURITY.md`](SECURITY.md)（英文）；release checklist、live smoke、signed tag setup、checksum verification 請看 [`RELEASING.md`](RELEASING.md)（英文）。
+Trust model 請看 [`SECURITY.md`](SECURITY.md)（英文）；release **程序**——contract、preconditions、deterministic archive、tag 與 publication 步驟——請看 [`RELEASING.md`](RELEASING.md)（英文）；某次 release 實際記錄下來的證據則在 [`EVIDENCE.md`](EVIDENCE.md)。
 
 快速開始那組 marketplace 指令是圖方便的捷徑，內容跟著 marketplace 和 repo 的當下狀態走。
 
@@ -321,17 +330,18 @@ Release checksum 只能做完整性比對：確認下載的 archive 符合 publi
 
 ## 成本
 
-典型 real-app run 會比一次性 AI review 貴，因為 ctide 會 plan、verify、review，也可能 repair。大概的量級：
+除了做出改動本身，plan、verify、reviewer 面板與 repair 都會額外增加工作量。一次 run 實際的成本，取決於下面這些槓桿，也取決於你自己專案那些指令本來的成本。**本專案沒有建立具代表性的端到端成本或時間，也沒有建立任何成本節省效益。** 維護者的 efficiency 調查在未執行 confirmation 階段的情況下結案（見[最終處置](docs/superpowers/reviews/2026-09-10-efficiency-final-disposition.md)（英文））；它確實記錄的 CLI 估算只限於那些特定實驗，不是通用數字。以下列的是成本的驅動因素，不是它會是多少。
 
-| 任務等級 | 審查者 | 新增 tokens | 經過時間 |
-|---|---|---|---|
-| 輕量 | `--lite`，core only | ~0.5-2M | 幾分鐘 |
-| 典型 | 3-5 reviewers + one repair pass | ~2-7M | ~5-15 分鐘 |
-| 深入 | `--deep`，多輪 repair | >10M | ~20-40 分鐘 |
+槓桿在這幾處：
 
-incident flow 在關鍵處很省：戰時回合都很短（一次一張 decision card，不寫長文）、正式修復只花一次普通的 `--lite` run、Map 更新只掃有限範圍的 repo。
+- **面板大小。** `--lite` 會強制使用最小充分面板；風險訊號則會增加 reviewer。
+- **修復輪數。** 每一輪 `FIX REQUIRED` → repair → re-verify 都會重跑實作與驗證。
+- **Deep mode。** Tier 2（`--deep`）會加上 adversarial verification，並讓 `arbiter` / `security-reviewer` 用最高推理強度；**這一層**是 opt-in，永不自動啟用。Tier 1 是另一層強制執行層，用的是**同一組已選定的面板、模型與推理強度**——改變的只是編排由 graph 強制執行，而不是交給模型自律。它在高風險／正確性關鍵且具備 Workflow capability 時**會**自動啟用，以 `--no-deep` / `--shallow` 退出。
+- **驗證廣度。** build、test、lint 與 browser evidence 的成本，就是你專案那些指令本來的成本。
 
-在小型低／中風險變更上，自動的 **fast lane** 會更進一步：當執行證據已回答該 reviewer 的問題（每個 behavior-changing criterion 都有 red→green 測試、full required suite 全綠），`test-reviewer` 會被證據替代，並以 `ctide:panel=substituted:test-reviewer` 披露。同樣的證據、更少 agents；高風險與 deep run 一律不走 fast lane。
+incident flow 的設計讓戰時回合保持簡短——一次一張 decision card，不寫長文；正式修復會回到 dev flow 走一次 `--lite` run；Map 更新掃的是 repo 的有限切片而非整棵樹。
+
+在小型低／中風險變更上，自動的 **fast lane** 會更進一步：當執行證據已回答該 reviewer 的問題（每個 behavior-changing criterion 都有 red→green 測試、full required suite 全綠），`test-reviewer` 會被證據替代，並以 `ctide:panel=substituted:test-reviewer` 披露。同樣的證據、更少 agents。它對高風險工作、任一 tier 的 deep-mode run，以及 [TP-active run](#開發流程vigil) 一律不適用——TP-active run 一定會跑真正的 `test-reviewer`，**包含 changed-test inventory 是空的時候**。
 
 ## 範例與證據
 
@@ -346,7 +356,9 @@ incident flow 在關鍵處很省：戰時回合都很短（一次一張 decision
 |---|---|
 | Type-B verified live runs | 0 recorded |
 | Distinct real projects | 0 recorded |
-| Non-maintainer runs | 0 / 1 |
+| Non-maintainer runs | 0 recorded |
+
+`v0.7.1` 的 release 與 CI 證據另外記錄在 [`EVIDENCE.md`](EVIDENCE.md)：它證明已發佈的 plugin 載得起來、特定 hook 會觸發，而不是一次 real-world run。
 
 最有價值的貢獻：在真實工作上跑 ctide，然後開一個 [Verified ctide run issue](https://github.com/kktu6507/cressetide/issues/new?template=verified-run.yml)。請貼上 ctide 在結尾印出的 `### Live run` block，並保留 misses、false alarms、cost、follow-up outcome；誠實的負面資訊才是 evidence 的重點。
 

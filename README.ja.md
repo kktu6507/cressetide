@@ -43,7 +43,7 @@ Incident flow  アラート -> Triage -> 証拠保全 -> まず止血（可逆�
 - **5つの skill**：`vigil` と `salvage` は自動で起動します（小さな修正を超える開発作業で／インシデントらしい言葉づかいで）；[`map`](#ops-マップmap)、[`doctor`](#ヘルスチェックdoctor)、[`ship`](#release-readiness-チェックship) は手動で開始します（`/ctide:map`、`/ctide:doctor`、`/ctide:ship`）。
 - **[11個の subagent](#開発フローvigil)**：navigator、implementer、リスクに応じて選ばれる7人の reviewer、cartographer、そして readiness を判定する arbiter。
 - **[6つの hook](#hooks-と安全性モデル)**：local-only で依存関係ゼロの Node guardrails。plan gate、破壊的コマンドの guard、contract guard、failure-memory の注入、compaction リマインダー、delivery-claim チェックをカバーします。
-- **[学習ループ](#学習ループ)**：すべての run は ledger への記録で終わり、次の run は過去の verdict が実際に持ちこたえたかの確認から始まります。
+- **[学習ループ](#学習ループ)**：完了した run は workflow 自身が書く ledger 記録で終わり、次の run は過去の verdict が実際に持ちこたえたかの確認から始まります。
 
 ### プロジェクトレイアウト
 
@@ -56,8 +56,10 @@ ctide があなたのプロジェクト内に保持するものは、すべて1�
   map/        # SYSTEM_MAP.md — リポジトリと運用準備の Map（committed）
   incidents/  # INCIDENT-<date>-<slug>.md journals — 監査証跡（committed）
   decisions/  # DECISION-<date>-<slug>.md — Y ではなく X を選んだ理由と見直す条件（committed）
-  ledger/     # runs.jsonl — append-only の実行履歴（実行をまたいで永続、自前の gitignore 付き）
+  provenance.json  # test-provenance ストア — canonical state（committed）
+  ledger/     # runs.jsonl — append-only の実行履歴（永続的な episodic state、自前の gitignore 付き）
   output/     # 実行ごとのスクラッチ：contract.md、evidence、review diffs（決して commit しない、自前の gitignore 付き）
+  test-provenance-loop/  # review-loop controller の永続プレフィックス——ツール所有、git に入らない
 ```
 
 旧レイアウト（`ai/FAILURE_MEMORY.md`、リポジトリ直下の `design.md`、`.ctide/legacy-output/`）の移行は一度だけ。workflow 自身が移動し、何を動かしたかはその実行の中で説明されます。
@@ -91,7 +93,7 @@ ctide は CI の代替でも、linter や static analyzer でも、zero-bug の�
 
 ## クイックスタート
 
-前提条件：**Claude Code** と、`PATH` 上に `node` があること。hooks は Node スクリプトなので、Node がない場合は何もしません（エラーも出しません）。
+前提条件：**Claude Code** と、`PATH` 上に **Node 20 以降**があること。hooks は Node スクリプトなので、Node がない場合は何もしません（エラーも出しません）。
 
 ```text
 # プロジェクトディレクトリで、Claude Code 内から：
@@ -153,6 +155,14 @@ Verdicts は release-readiness の判断であり、絶対的な真実ではあ�
 - **reviewer は editor 系ツールを持ちません**：検査用に `Read` / `Grep` / `Glob` / `Bash` のみ。review-only という振る舞いは政策とコンテキスト分離によって強制されているのであり、厳密な read-only の権限境界ではありません（詳細は [`ARCHITECTURE.md`](ARCHITECTURE.md)）。修正案を提案するのは reviewer で、実際に適用するのは `implementer` です。
 - **正確性が重要な経路には、独立した視点を2つ以上割り当てます**：parsing、数値／エンコーディング／overflow、並行処理、セキュリティ、データ整合性。パネル全員が同じ盲点を共有しないためです。
 
+**Test-provenance run はより厳格です。** provenance workflow を伴うタスク——validated store に現行の TaskState を持つタスク——では、review ステップの **TP-active** 版が動きます。その影響には次が含まれます：
+
+- 本物の `test-reviewer` が必ず動きます。evidence-substituted されることは決してなく、**changed-test inventory が正当に空であっても**同じなので、下記の fast lane は一切適用されません。
+- `arbiter` は `loop` と `provenance` の2つの gate 半分と、その `combined` 結果を別々に報告します。**どちらかが false なら `READY` はブロックされます。**
+- この run は canonical state を保持します：git に入る `.ctide/provenance.json` ストアと、永続的でツール所有の `.ctide/test-provenance-loop/` プレフィックス。controller はそこに入れ子の `.gitignore` を書かないため、利用側プロジェクトは**このプレフィックスのみ**を ignore してください——`.ctide/` を丸ごと ignore すると、git に入るべき semantic state まで落ちます。head view によるこのプレフィックスの除外は gitignore とは独立に効きます。
+
+provenance workflow を使わないタスクは影響を受けません：このステップは丸ごとスキップされ、通常の lifecycle が適用されます。これは「その workflow の外にある」ことの性質です——workflow の中にあって state が欠落または検証に失敗しているタスクが、それによって必要な検査を免れるわけではありません。パス、プレフィックス、state 分類の仕様は [`docs/runtime-contract.md`](docs/runtime-contract.md)（英語）に、コンポーネント視点は [`ARCHITECTURE.md`](ARCHITECTURE.md)（英語）にあります。
+
 **良いタスクの書き方。** ctide はあなたが明示した意図に照らしてレビューするため、最良のタスクには要件、acceptance criteria、変更禁止範囲、期待する検証、リスク領域が書かれています。テンプレートと bad / better / best の例：[`docs/task-writing-guide.md`](docs/task-writing-guide.md)（英語）。
 
 **実行単位のフラグ。** `--lite`（最小パネル）、`--deep`（adversarial verification）、`--report full`（詳細レポート）；詳細は「設定リファレンス」の節へ。
@@ -183,7 +193,7 @@ Verdicts は release-readiness の判断であり、絶対的な真実ではあ�
 
 ## Ops マップ（map）
 
-**必要になる前に準備する。** `/ctide:map` は `.ctide/map/SYSTEM_MAP.md` を作ります：戦時を30分ではなく30秒から始められるようにする平時マップです。中身は、agent-runnable か human-only かを明記したアクセス一覧、schema-migration 互換性の情報付き rollback 手順、feature flags、バックアップ、observability。
+**必要になる前に準備する。** `/ctide:map` は `.ctide/map/SYSTEM_MAP.md` を作ります：インシデントを、その場での探索ではなく記録済みの事実から始められるようにする平時マップです。中身は、agent-runnable か human-only かを明記したアクセス一覧、schema-migration 互換性の情報付き rollback 手順、feature flags、バックアップ、observability。
 
 各エントリには信頼マーカー（`verified: <date>`、`dry-run-verified: <date>` または `UNVERIFIED`）が付きます；未検証の rollback コマンドはそれに依存する decision card 上で明示され、黙って信頼されることはありません。
 
@@ -193,15 +203,15 @@ Map は operational-preparation の契約を担います：[`operational-readine
 
 ## ヘルスチェック（doctor）
 
-`/ctide:doctor` は hooks と環境のローカルで読み取り専用のセルフチェック（plugin の同一性、Node の有無、hook がつながっているか）を行い、何も送信しません（telemetry なし）。gate が一度も block しない、hooks が無反応、あるいは Node が入っていない可能性があるときに実行してください。
+`/ctide:doctor` は hooks と環境のローカルで読み取り専用のセルフチェック（plugin の同一性、Node の有無、hook がつながっているか）を行います。helper と hooks 自体はネットワーク通信も telemetry 送信も行いません。外側の Claude Code セッションは通常どおり動作するため、これは ctide 自身のコードについての記述であって、セッションのプライバシー保証ではありません。gate が一度も block しない、hooks が無反応、あるいは Node が入っていない可能性があるときに実行してください。
 
-`--project`（`--cwd <path>` を併用可）を付けると、2つのチェックが追加で重なります：`failure-memory-health` はプロジェクト自身の `FAILURE_MEMORY.md` を要約します（マシン全体のものには触れません）、`incident-journals` は `.ctide/incidents/*.md` のうち `closed` と確認されていない項目を報告します。どちらもオプトインかつ加算的——デフォルトの `/ctide:doctor` 出力は変わりません。
+`--project`（`--cwd <path>` を併用可）を付けると、3つのチェックが追加で重なります：`failure-memory-health` はプロジェクト自身の `FAILURE_MEMORY.md` を要約します（マシン全体のものには触れません）、`incident-journals` は `.ctide/incidents/*.md` のうち `closed` と確認されていない項目を報告します、`ledger-health` は reconciliation debt と、ledger の最後の記録から `HEAD` が何コミット進んだかを報告します。3つともオプトインかつ加算的——デフォルトの `/ctide:doctor` 出力は変わりません。
 
 ## Release-readiness チェック（ship）
 
 `/ctide:ship` は手動・読み取り専用です：build、test、deploy パイプラインを実行することは決してなく、何も書き込みません（git tag も、バージョン更新も、changelog へのエントリも一切なし）。既存のものを読むだけです——前回の release tag 以降 ledger にある `READY` の run すべて、`package.json`、`CHANGELOG.md` の git 履歴、git tags、そして `SYSTEM_MAP.md` の Rollback セクション——そして decision card を出力します：pending なバッチ、続いて4つのチェック（バージョンの整合性、`CHANGELOG.md` が変更されたか、tag の準備状況、Map から得られる migration compatibility）で、それぞれ `pass` / `fail` / `not-applicable` / `unverified` を引用証拠つきで報告します。
 
-5つ目のチェック——checksum 検証——は `--artifact` と `--checksum` を明示的に渡したときだけ実行されます；ship はリポジトリ内のどのファイルが build artifact かを推測することは決してありません。バージョンの整合性は `package.json` だけを読みます。
+5つ目のチェック——checksum 検証——は `--artifact` と `--checksum` を明示的に渡したときだけ実行されます；ship はリポジトリ内のどのファイルが build artifact かを推測することは決してありません。バージョンの整合性が比較するのは、依存・ビルド・ランタイム用のディレクトリを除外したうえで ship が見つけた `package.json` です——このエコシステムのみが対象で、他の manifest 形式も、ctide 自身の入れ子の `plugin.json` も含みません。除外されるディレクトリの正確な一覧は [`docs/command-reference.md`](docs/command-reference.md)（英語）にあります。
 
 Ship は実際に公開する前に読む pre-flight checklist であり、あなたの release パイプラインの代替ではありません。
 
@@ -209,7 +219,7 @@ Ship は実際に公開する前に読む pre-flight checklist であり、あ�
 
 run と run のあいだで、ctide は学んだことを持ち越します——負けも勝ちも：
 
-- **すべての run は ledger への記録で終わります。** verdict が確定した後、event-fact の1行が `.ctide/ledger/runs.jsonl` に追記されます：タスク、変更されたファイル（`git diff` から算出され、agent の申告は決して信用しない）、verdict、検証ステータス、パネル、repair 回数、findings、計画された scope と観測された drift。事実のみ：ledger がスコア、率、パーセンテージを保存することはありません。
+- **完了した run は ledger への記録で終わります。** verdict が確定した後、workflow の main thread が event-fact の1行を `.ctide/ledger/runs.jsonl` に追記します：タスク、変更されたファイル（`git diff` から算出され、agent の申告は決して信用しない）、verdict、検証ステータス、パネル、repair 回数、findings、計画された scope と観測された drift。事実のみ：ledger がスコア、率、パーセンテージを保存することはありません。この追記は workflow 自身の一部であり fail-open です——run を自動的に記録する hook は存在しないため、そのステップに到達せずに終わった run は ledger 行を残しません。`/ctide:doctor --project` の `ledger-health` は、ledger の不在、reconciliation debt、および `HEAD` が最後の記録から何コミット進んだかを報告できますが、記録されなかった run を復元することはできません。
 - **次の run は、過去の verdict が持ちこたえたかの確認から始まります。** planning は、記録された各 run のファイルがその後の commit で手直しされていないかをスキャンし、その run を `escaped` / `survived` / `superseded` / `building-upon` として処置します。判断がつかない重なりは「needs human review」として人に渡し、黙って合格にはしません。14日以内に `escaped` のクローズが3件になると、最終レポートが retro を提案します（[`docs/advanced/retro-practice.md`](docs/advanced/retro-practice.md)（英語））。この集計はあなたに知らせるためのもので、verdict の確定後にだけ現れ、現在の run の scope、パネル、verdict を調整することは決してありません。
 - **教訓は、git 管理される2つのメモリファイルが記憶します。** `.ctide/memory/FAILURE_MEMORY.md` は prevention rule（インシデントの postmortem と escaped な欠陥から）を保持し、SessionStart hook が untrusted な digest を注入して次の plan が読みます。`.ctide/memory/EXPERIENCE.md` は検証済みのポジティブなパターンを保持します（`candidate → validated → standard`；`standard` にはリンクされた実行可能アセットが必須で、文章だけでは決して昇格しません）。
 
@@ -258,8 +268,8 @@ hooks が ctide のプロジェクトファイルを移行・書き込み・削�
 
 | 変数 | 設定した場合の効果 |
 |---|---|
-| `CTIDE_ENFORCE_STOP` | 空でない値を設定すると、`orchestration-check.js` の Stop hook が verdict/evidence の矛盾時に警告するだけでなく、delivery を強制的にブロックするようになります |
-| `CTIDE_HOOK_DEBUG` | `1` に設定すると、各 hook が debug trace を1行追加出力します（[`/ctide:doctor`](#ヘルスチェックdoctor) や手動のトラブルシューティングで使用） |
+| `CTIDE_ENFORCE_STOP` | `1`、`true`、`yes`、`on`（大文字小文字を区別しない）のいずれかを設定すると、`orchestration-check.js` の Stop hook が verdict/evidence の矛盾時に警告するだけでなく、delivery を強制的にブロックするようになります。それ以外の値（`0` を含む）では警告のままです |
+| `CTIDE_HOOK_DEBUG` | 空でない値を設定すると各 hook が debug trace を1行追加出力します；未設定または空のときだけ無効になります（[`/ctide:doctor`](#ヘルスチェックdoctor) や手動のトラブルシューティングで使用） |
 
 ```bash
 CTIDE_ENFORCE_STOP=1 claude            # bash/zsh
@@ -292,14 +302,13 @@ $env:CTIDE_ENFORCE_STOP = "1"; claude  # PowerShell
 
 ## 互換性
 
-ctide は Claude Code を主対象としています。GitHub Copilot CLI でも動きますが、割り引いて考えてください：plugin 形式は読み込めるものの、Claude Code 専用の hook 出力の一部は届きません。
+ctide は Claude Code を主対象としています。GitHub Copilot CLI は **unverified** です：Cressetide の run は1件も記録されていないため、いかなる挙動も主張しません——せいぜい部分的な互換性がありうる程度で、Claude Code 専用の hook 出力はまったく届かない可能性があります。
 
 Compatibility と conformance smoke の詳細は [`docs/compatibility.md`](docs/compatibility.md)（英語）にあります。要点は以下の通りです：
 
 - Claude Code が主要な runtime です。
-- GitHub Copilot CLI は skills、subagents、一部の PreToolUse decision をロードしますが、injected された `SessionStart` と `Stop` の output は no-op になることがあります。
-- Cressetide 固有の Copilot CLI live run はまだ記録されていません。新しい証拠が得られるまでは unverified と扱います。
-- Claude Code の hook/agent contract は moving target です；release smoke の記録は [`RELEASING.md`](RELEASING.md) にあります。
+- GitHub Copilot CLI：Cressetide 固有の live run は記録されていないため、そこでの skills、subagents、`PreToolUse`、`SessionStart`、`Stop` の挙動については何も主張しません。unverified として扱います。
+- Claude Code の hook/agent contract は moving target です。[`RELEASING.md`](RELEASING.md) が定義するのは release の**手順**であり、あるリリースについて実際に記録された証拠は [`EVIDENCE.md`](EVIDENCE.md) にあります。
 
 ## 信頼性とリリース
 
@@ -307,13 +316,13 @@ ctide は有効化されると hooks が auto-execute されるため、install 
 
 推奨される安全なインストール手順：
 
-1. tagged release または pinned commit からインストールする。
+1. tagged release または pinned commit からインストールする。現在のリリースは [`v0.7.1`](https://github.com/kktu6507/cressetide/releases/tag/v0.7.1) です。
 2. 有効化する前に、配布される plugin の `hooks/` ディレクトリを確認する（repo path：`cressetide/hooks/`）。
 3. インストール後に `/ctide:doctor` を実行する。
-4. signed tag がある場合は `git verify-tag vX.Y.Z` で検証する。
-5. release アセットに SHA-256 checksum がある場合は、公開されている `.sha256` ファイルと突き合わせて検証する。
+4. `git verify-tag vX.Y.Z` で release tag を検証する。`v0.7.0` と `v0.7.1` には署名があります。以降の tag は release 手順に従います。
+5. 公開されている `.sha256` ファイルと突き合わせて release archive を検証する。
 
-trust model については [`SECURITY.md`](SECURITY.md)（英語）を、release checklist、live smoke、signed tag のセットアップ、checksum 検証については [`RELEASING.md`](RELEASING.md)（英語）を参照してください。
+trust model については [`SECURITY.md`](SECURITY.md)（英語）を、release の**手順**——contract、preconditions、deterministic archive、tag と publication のステップ——については [`RELEASING.md`](RELEASING.md)（英語）を、あるリリースについて実際に記録された証拠については [`EVIDENCE.md`](EVIDENCE.md) を参照してください。
 
 クイックスタートの marketplace command は便利さ優先の経路で、その時点の marketplace / repo の状態に追随します。
 
@@ -321,17 +330,18 @@ Release checksum はあくまで整合性チェックです：ダウンロード
 
 ## コスト
 
-典型的な real-app での run は、ctide が plan、verify、review を行い、場合によっては repair も行うため、一回きりの AI review より高くつきます。おおよその目安：
+変更そのものを作る作業に加えて、plan、verify、reviewer パネル、repair がそれぞれ作業を上乗せします。run が実際にいくらかかるかは、以下のレバーと、あなたのプロジェクト自身のコマンドにかかるコスト次第です。**代表的なエンドツーエンドのコストや所要時間は確立しておらず、コスト削減効果も確立していません。** メンテナの efficiency 調査は confirmation 段階を実行しないまま終結しました（[最終処置](docs/superpowers/reviews/2026-09-10-efficiency-final-disposition.md)（英語））。そこに記録されている CLI 推定値は、それらの個別実験に限定されたものであり、一般的な数値ではありません。以下に挙げるのはコストを動かす要因であって、いくらになるかではありません。
 
-| タスク規模 | Reviewer | 新規トークン | 所要時間 |
-|---|---|---|---|
-| 軽量 | `--lite`、core のみ | ~0.5-2M | 数分 |
-| 典型 | 3-5 reviewers + repair 1回 | ~2-7M | ~5-15分 |
-| 深掘り | `--deep`、repair 複数回 | >10M | ~20-40分 |
+レバーは次のとおりです：
 
-incident flow は要所で安く済みます：戦時のターンは短く（decision card 1枚ずつ、長文なし）、正式な修正にかかるのは通常の `--lite` run 1回分、Map の更新は限られた範囲の repo スキャンだけです。
+- **パネルの規模。** `--lite` は最小限で十分なパネルを強制し、リスク信号は reviewer を増やします。
+- **repair の回数。** `FIX REQUIRED` → repair → re-verify のサイクルごとに実装と検証が繰り返されます。
+- **Deep mode。** Tier 2（`--deep`）は adversarial verification を加え、`arbiter` / `security-reviewer` を最大の推論強度で動かします。**この tier は**オプトインであり、自動では有効になりません。Tier 1 は別の強制実行層で、**同じ選定パネル・同じモデル・同じ推論強度**で動きます——変わるのは、オーケストレーションがモデルの自律ではなく graph によって強制される点だけです。高リスク／正確性重視の作業で Workflow capability がある場合には**自動的に有効化され**、`--no-deep` / `--shallow` で解除します。
+- **検証の広さ。** build、test、lint、browser evidence は、あなたのプロジェクトのコマンド本来のコストがかかります。
 
-小さな低／中リスクの変更では、自動の **fast lane** がさらに一歩進みます：実行エビデンスがすでに reviewer の問いに答えている場合（behavior-changing な基準すべてに red→green テストがあり、full required suite がグリーン）、`test-reviewer` はエビデンスで代替され、`ctide:panel=substituted:test-reviewer` として開示されます。同じエビデンスで、より少ない agents。高リスクと deep run は fast lane を通りません。
+incident flow は戦時のターンを短く保つ設計です——decision card 1枚ずつ、長文なし。正式な修正は dev flow に戻って `--lite` run として走り、Map の更新はツリー全体ではなく repo の限られた範囲をスキャンします。
+
+小さな低／中リスクの変更では、自動の **fast lane** がさらに一歩進みます：実行エビデンスがすでに reviewer の問いに答えている場合（behavior-changing な基準すべてに red→green テストがあり、full required suite がグリーン）、`test-reviewer` はエビデンスで代替され、`ctide:panel=substituted:test-reviewer` として開示されます。同じエビデンスで、より少ない agents。高リスクな作業、いずれかの tier の deep-mode run、そして [TP-active run](#開発フローvigil) には一切適用されません——TP-active run では、**changed-test inventory が空の場合も含めて**本物の `test-reviewer` が必ず動きます。
 
 ## サンプルとエビデンス
 
@@ -346,7 +356,9 @@ ctide には **telemetry がない**ため、real-world での検証は手動記
 |---|---|
 | Type-B verified live runs | 0 recorded |
 | Distinct real projects | 0 recorded |
-| Non-maintainer runs | 0 / 1 |
+| Non-maintainer runs | 0 recorded |
+
+`v0.7.1` の release および CI エビデンスは [`EVIDENCE.md`](EVIDENCE.md) に別途記録しています。これは公開された plugin が読み込まれ、特定の hook が発火することを示すものであり、real-world run ではありません。
 
 最も価値のある貢献：実際の作業で ctide を動かし、[Verified ctide run issue](https://github.com/kktu6507/cressetide/issues/new?template=verified-run.yml) を開いてください。ctide が最後に出力する `### Live run` block を貼り付け、misses、false alarms、cost、follow-up outcome をそのまま記録してください。正直なネガティブ情報こそが evidence の要点です。
 

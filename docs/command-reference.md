@@ -29,15 +29,26 @@ rollback. It reads `.ctide/map/SYSTEM_MAP.md` when present, verifies the touched
 area directly, and pauses for material business, security, destructive, data,
 contract, or user-flow ambiguity.
 
-Every non-trivial formal review includes `intent-reviewer` and `test-reviewer`.
-Vigil adds only the applicable discipline reviewers and runs `arbiter` after
-their reports are available. A failed or unrun required check blocks `READY`.
+Every non-trivial formal review includes `intent-reviewer`, which is never
+substituted. `test-reviewer` is included unless the run takes the evidence
+-substitution fast lane, which is available only on low/medium-risk work whose
+execution evidence already answers the question, and is disclosed as
+`ctide:panel=substituted:test-reviewer`. On a **TP-active** run the real
+`test-reviewer` is mandatory and the fast lane never applies, **even when the
+changed-test inventory is empty**. Vigil adds only the applicable discipline
+reviewers and runs `arbiter` after their reports are available. A failed or
+unrun required check blocks `READY`.
 
 Options:
 
-- `--lite`: use the smallest safe review panel.
-- `--deep`: add adversarial verification.
-- `--no-deep`: decline the adversarial tier.
+- `--lite`: use the smallest safe review panel, and skip deep-mode Tier 2.
+- `--deep` (or a `deep:` / `ultra:` prefix): opt into deep-mode Tier 2 —
+  adversarial verification and maximum reasoning effort for `arbiter` /
+  `security-reviewer`. Never auto-engaged.
+- `--no-deep`, and its alias `--shallow`: opt out of deep-mode **Tier 1**, the
+  deterministic panel enforcement that otherwise auto-engages on high-risk or
+  correctness-critical work where the Workflow capability exists. Tier 2 is
+  already opt-in, so this flag is not about the adversarial tier.
 - `--report full`: request the detailed final report.
 
 ## `/ctide:salvage`
@@ -85,6 +96,13 @@ Doctor is manual-only and read-only. It reports pass, fail, or unverified for:
 7. install, enable, and reload guidance for `ctide@kktu`;
 8. confirmation that no telemetry or network probe was performed.
 
+`--project` (optionally with `--cwd <path>`) adds three opt-in checks on top,
+without changing the default output: `failure-memory-health` summarizes the
+project's own `FAILURE_MEMORY.md` and never the machine-global one,
+`incident-journals` flags any `.ctide/incidents/*.md` not confirmed `closed`,
+and `ledger-health` reports reconciliation debt plus how far `HEAD` has moved
+past the ledger's last recorded commit.
+
 Doctor never changes user configuration. It must not claim a live plugin smoke
 unless an authenticated Claude Code session loaded and exercised the installed
 plugin.
@@ -94,7 +112,12 @@ plugin.
 Ship is manual-only and read-only. It reports pass, fail, not-applicable, or
 unverified for each of:
 
-1. version consistency across every `package.json` in the repository;
+1. version consistency across the `package.json` files Ship discovers by walking
+   the repository. The walk skips `.git`, `.ctide`, `node_modules`, `dist`,
+   `build`, `coverage` and `vendor`, so a dependency's or a build output's own
+   manifest is never compared against yours. That ecosystem only — not other
+   manifest formats, and not ctide's own nested
+   `cressetide/.claude-plugin/plugin.json`;
 2. whether `CHANGELOG.md` changed since the last release tag;
 3. tag readiness for the currently declared version (an existing tag for it, or
    a dirty working tree, both block readiness);

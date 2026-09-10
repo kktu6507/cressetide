@@ -6,11 +6,11 @@ Deep mode raises **depth, not breadth.** The reviewer *selection* is unchanged �
 
 The downward cost knob is separate: `--lite` (`reviewer-selection.md`, *Lite path* — smallest panel, skips the costlier deep-mode **Tier 2**, safety floor kept and disclosed) lowers **breadth**, the counterpart to `--deep` raising depth: deep manages the depth ceiling, lite the breadth floor. Both are opt-in and orchestrator-followed.
 
-## Two tiers (enforcement is cheap; extra effort is not)
+## Two tiers (enforcement without extra effort; deeper verification with it)
 
-Deep mode is split into two tiers so its *enforcement* benefit can be had cheaply without paying its *cost*:
+Deep mode is split into two tiers so its *enforcement* benefit can be had without also taking on its extra verification effort:
 
-- **Tier 1 — deterministic enforcement.** Express the **already-selected** panel as a Workflow `parallel` barrier and the arbiter as a `pipeline` barrier, so the panel actually runs and arbiter only runs after it. **Same reviewers, same model, same reasoning effort** as the standard flow — the only change is that the orchestration is *enforced by the graph* rather than left to model self-discipline. Because it adds no effort, its token cost is ≈ the standard flow. **This is the tier that may auto-engage** (see Detect).
+- **Tier 1 — deterministic enforcement.** Express the **already-selected** panel as a Workflow `parallel` barrier and the arbiter as a `pipeline` barrier, so the panel actually runs and arbiter only runs after it. **Same reviewers, same model, same reasoning effort** as the standard flow — the only change is that the orchestration is *enforced by the graph* rather than left to model self-discipline. It adds no reasoning effort of its own; whatever the graph expression itself costs at runtime is not measured here, so no ratio to the standard flow is claimed. **This is the tier that may auto-engage** (see Detect).
 - **Tier 2 — deeper verification (raises cost).** On top of Tier 1, add **adversarial verification** of blocker/major findings, **loop-until-dry** repair, and **maximum reasoning effort** for `arbiter` / `security-reviewer`. This materially raises tokens/wall-clock, so it stays **explicit opt-in** (per the Auto-fix loop's cost-control rule in `SKILL.md`) — never auto-engaged.
 
 ## Detect
@@ -53,6 +53,6 @@ When `--deep` was requested, the **app-launch obligation (Tier 2, item 6) and th
 
 - The plan gate and failure-memory hooks are active in both modes; deep mode changes neither hook and the hooks must never depend on deep mode.
 - Plan approval (ExitPlanMode) stays human-in-the-loop; the Workflow does not take it over.
-- **Cost stays proportional.** Tier 1 adds enforcement at ≈ standard cost and may auto-engage on high-risk work; Tier 2 raises effort and is **never** auto-engaged — it needs `--deep` or an explicit confirmation, honoring the `SKILL.md` Auto-fix loop cost-control rule.
+- **Cost stays proportional.** Tier 1 adds enforcement over the **same selected panel, models and reasoning effort** and may auto-engage on high-risk work; Tier 2 raises effort and is **never** auto-engaged — it needs `--deep` or an explicit confirmation, honoring the `SKILL.md` Auto-fix loop cost-control rule.
 - The conditional plan-grounding step (`references/plan-grounding.md`) runs the same in both modes; in deep mode its Stage A grounding may run as a read-only Workflow agent node, but it never changes reviewer selection.
 - Roles, severity vocabulary (`blocker`/`major`/`minor`), and the verdict set (`READY`/`FIX REQUIRED`/`NOT READY`) are unchanged, so a deep run and a standard run are directly comparable — only enforcement, verification depth, and effort differ.

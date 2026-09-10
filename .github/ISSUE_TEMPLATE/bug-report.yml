@@ -47,7 +47,7 @@ body:
     attributes:
       label: ctide version
       description: From the marketplace, or the `version` in the installed plugin.json.
-      placeholder: "e.g. 0.1.0"
+      placeholder: "e.g. 1.2.3"
     validations:
       required: true
 
