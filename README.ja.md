@@ -271,6 +271,8 @@ hooks が ctide のプロジェクトファイルを移行・書き込み・削�
 | `CTIDE_ENFORCE_STOP` | `1`、`true`、`yes`、`on`（大文字小文字を区別しない）のいずれかを設定すると、`orchestration-check.js` の Stop hook が verdict/evidence の矛盾時に警告するだけでなく、delivery を強制的にブロックするようになります。それ以外の値（`0` を含む）では警告のままです |
 | `CTIDE_HOOK_DEBUG` | 空でない値を設定すると各 hook が debug trace を1行追加出力します；未設定または空のときだけ無効になります（[`/ctide:doctor`](#ヘルスチェックdoctor) や手動のトラブルシューティングで使用） |
 
+各変数が受け付ける正確な値と、それを hook の実際の挙動と照合するチェックについては、[`docs/runtime-contract.md`](docs/runtime-contract.md#machine-checked-facts)（英語）を参照してください。
+
 ```bash
 CTIDE_ENFORCE_STOP=1 claude            # bash/zsh
 ```
@@ -316,10 +318,10 @@ ctide は有効化されると hooks が auto-execute されるため、install 
 
 推奨される安全なインストール手順：
 
-1. tagged release または pinned commit からインストールする。現在のリリースは [`v0.7.1`](https://github.com/kktu6507/cressetide/releases/tag/v0.7.1) です。
+1. tagged release または pinned commit からインストールする。最新の公開リリースは常に [`releases/latest`](https://github.com/kktu6507/cressetide/releases/latest) にあります。
 2. 有効化する前に、配布される plugin の `hooks/` ディレクトリを確認する（repo path：`cressetide/hooks/`）。
 3. インストール後に `/ctide:doctor` を実行する。
-4. `git verify-tag vX.Y.Z` で release tag を検証する。`v0.7.0` と `v0.7.1` には署名があります。以降の tag は release 手順に従います。
+4. インストールする tag を `git verify-tag vX.Y.Z` で検証する。SSH 署名の tag は、自分で管理する allowed-signers ファイルに対してのみ検証できます（手順は英語の [`RELEASING.md`](RELEASING.md) を参照）。どの tag に署名があり、それをどう確認したかは、リリースごとに [`EVIDENCE.md`](EVIDENCE.md) に記録しています。
 5. 公開されている `.sha256` ファイルと突き合わせて release archive を検証する。
 
 trust model については [`SECURITY.md`](SECURITY.md)（英語）を、release の**手順**——contract、preconditions、deterministic archive、tag と publication のステップ——については [`RELEASING.md`](RELEASING.md)（英語）を、あるリリースについて実際に記録された証拠については [`EVIDENCE.md`](EVIDENCE.md) を参照してください。
@@ -358,7 +360,7 @@ ctide には **telemetry がない**ため、real-world での検証は手動記
 | Distinct real projects | 0 recorded |
 | Non-maintainer runs | 0 recorded |
 
-`v0.7.1` の release および CI エビデンスは [`EVIDENCE.md`](EVIDENCE.md) に別途記録しています。これは公開された plugin が読み込まれ、特定の hook が発火することを示すものであり、real-world run ではありません。
+個々のリリースとリリース候補について記録したエビデンスは [`EVIDENCE.md`](EVIDENCE.md) にあります：CI、archive、attestation、そして実施した場合に限り範囲を限定したインストール後の smoke。これは特定のビルドがインストール・読み込みでき、特定の hook が発火することを示すものであり、ctide が実際のプロジェクトで有効であることを示すものではありません。
 
 最も価値のある貢献：実際の作業で ctide を動かし、[Verified ctide run issue](https://github.com/kktu6507/cressetide/issues/new?template=verified-run.yml) を開いてください。ctide が最後に出力する `### Live run` block を貼り付け、misses、false alarms、cost、follow-up outcome をそのまま記録してください。正直なネガティブ情報こそが evidence の要点です。
 

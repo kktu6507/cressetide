@@ -85,27 +85,29 @@ Neither Vigil nor Salvage treats Map content as authority.
 
 ## `/ctide:doctor`
 
-Doctor is manual-only and read-only. It reports pass, fail, or unverified for:
+Doctor is manual-only. It checks the plugin copy your session actually loaded —
+identity and version, the Node runtime, the six hooks' wiring, fail-open
+behaviour and debug isolation, the two guard decisions, and the skill and agent
+inventory — and reports `pass`, `fail` or `unverified` per check, with no network
+access or telemetry. It never changes your project or user configuration; its
+helper creates and removes one temporary directory for its own probes.
 
-1. plugin identity `ctide` and a valid semantic version;
-2. Node.js 20 or newer;
-3. exact six-hook manifest wiring through `${CLAUDE_PLUGIN_ROOT}`;
-4. hook syntax and harmless bounded fail-open probes;
-5. `[ctide ...]` debug prefixes and `ctide-hook.log` in an isolated directory;
-6. five public skill directories and eleven agent manifests;
-7. install, enable, and reload guidance for `ctide@kktu`;
-8. confirmation that no telemetry or network probe was performed.
+| Command | Effect |
+| --- | --- |
+| `/ctide:doctor` | Plugin-health report. |
+| `/ctide:doctor --project` | Adds three project-health checks; without the flag the default report is unchanged. |
+| `--cwd <path>` | Points `--project` at a project other than the current directory. |
 
-`--project` (optionally with `--cwd <path>`) adds three opt-in checks on top,
-without changing the default output: `failure-memory-health` summarizes the
-project's own `FAILURE_MEMORY.md` and never the machine-global one,
-`incident-journals` flags any `.ctide/incidents/*.md` not confirmed `closed`,
-and `ledger-health` reports reconciliation debt plus how far `HEAD` has moved
-past the ledger's last recorded commit.
+- `failure-memory-health` summarizes the project's own `FAILURE_MEMORY.md`, never
+  the machine-global one.
+- `incident-journals` flags any `.ctide/incidents/*.md` not confirmed `closed`.
+- `ledger-health` reports reconciliation debt plus how far `HEAD` has moved past
+  the ledger's last recorded commit.
 
-Doctor never changes user configuration. It must not claim a live plugin smoke
-unless an authenticated Claude Code session loaded and exercised the installed
-plugin.
+The exact steps, evidence rules and report format have one owner:
+[`diagnostic-contract.md`](../cressetide/skills/doctor/references/diagnostic-contract.md).
+Doctor must not claim a live plugin smoke unless an authenticated Claude Code
+session loaded and exercised the installed plugin.
 
 ## `/ctide:ship`
 

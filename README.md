@@ -271,6 +271,8 @@ A malformed or unreadable settings file is treated as "not disabled" (fail-safe:
 | `CTIDE_ENFORCE_STOP` | `1`, `true`, `yes` or `on` (case-insensitive) makes the `orchestration-check.js` Stop hook hard-block delivery on a verdict/evidence mismatch, instead of only advising. Any other value, including `0`, leaves it advisory |
 | `CTIDE_HOOK_DEBUG` | any non-empty value makes every hook append a one-line debug trace; only unset or empty disables it (used by [`/ctide:doctor`](#health-check-doctor) and manual troubleshooting) |
 
+The exact values each variable recognizes are specified, and checked against the hooks' actual behaviour, in [`docs/runtime-contract.md`](docs/runtime-contract.md#machine-checked-facts).
+
 ```bash
 CTIDE_ENFORCE_STOP=1 claude            # bash/zsh
 ```
@@ -316,10 +318,10 @@ ctide hooks auto-execute once the plugin is enabled, so install integrity matter
 
 Recommended safe install:
 
-1. Install from a tagged release or pinned commit. The current release is [`v0.7.1`](https://github.com/kktu6507/cressetide/releases/tag/v0.7.1).
+1. Install from a tagged release or pinned commit. The latest published release is always at [`releases/latest`](https://github.com/kktu6507/cressetide/releases/latest).
 2. Review the shipped plugin's `hooks/` directory before enabling (repo path: `cressetide/hooks/`).
 3. Run `/ctide:doctor` after install.
-4. Verify the release tag with `git verify-tag vX.Y.Z`. `v0.7.0` and `v0.7.1` are signed; later tags follow the release procedure.
+4. Verify the tag you install with `git verify-tag vX.Y.Z`. An SSH-signed tag verifies only against an allowed-signers file you control (see [`RELEASING.md`](RELEASING.md)); which tags were signed, and how that was checked, is recorded per release in [`EVIDENCE.md`](EVIDENCE.md).
 5. Verify release archives against their published `.sha256` files.
 
 See [`SECURITY.md`](SECURITY.md) for the trust model, [`RELEASING.md`](RELEASING.md) for the release *procedure* — contract, preconditions, deterministic archives, tag and publication steps — and [`EVIDENCE.md`](EVIDENCE.md) for the evidence actually recorded against a release.
@@ -358,7 +360,7 @@ Real-world validation is tracked manually because ctide ships **no telemetry**. 
 | Distinct real projects | 0 recorded |
 | Non-maintainer runs | 0 recorded |
 
-Release and CI evidence for `v0.7.1` is recorded separately in [`EVIDENCE.md`](EVIDENCE.md); it establishes that the published plugin loads and that specific hooks fire, not a real-world run.
+Evidence recorded against individual releases and release candidates is in [`EVIDENCE.md`](EVIDENCE.md): CI, archives, attestation, and bounded installed smoke where it was run. It shows that a specific build installs and loads and that specific hooks fire, not that ctide is effective on real projects.
 
 Most valuable contribution: run ctide on real work and open a [Verified ctide run issue](https://github.com/kktu6507/cressetide/issues/new?template=verified-run.yml). Paste the `### Live run` block that ctide prints at the end. Keep misses, false alarms, cost, and follow-up outcome in the report; honest negatives are the point.
 

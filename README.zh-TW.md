@@ -271,6 +271,8 @@ hooks 也絕不遷移、寫入或刪除 ctide 的專案檔案；舊佈局的一�
 | `CTIDE_ENFORCE_STOP` | 設成 `1`、`true`、`yes` 或 `on`（不分大小寫），會讓 `orchestration-check.js` 這個 Stop hook 在 verdict/evidence 矛盾時直接硬擋 delivery，而不只是提示。其他值（包含 `0`）一律維持提示 |
 | `CTIDE_HOOK_DEBUG` | 設成任何非空值都會讓每個 hook 多印一行 debug trace；只有未設定或空值才停用（[`/ctide:doctor`](#健康檢查doctor) 與手動排除故障會用到） |
 
+每個變數確切接受哪些值，以及這些值如何對照 hook 的實際行為檢查，詳見 [`docs/runtime-contract.md`](docs/runtime-contract.md#machine-checked-facts)（英文）。
+
 ```bash
 CTIDE_ENFORCE_STOP=1 claude            # bash/zsh
 ```
@@ -316,10 +318,10 @@ ctide 啟用後 hooks 會 auto-execute，所以 install integrity 很重要。
 
 建議安全安裝：
 
-1. 從 tagged release 或 pinned commit 安裝。目前的 release 是 [`v0.7.1`](https://github.com/kktu6507/cressetide/releases/tag/v0.7.1)。
+1. 從 tagged release 或 pinned commit 安裝。最新發佈的 release 一律在 [`releases/latest`](https://github.com/kktu6507/cressetide/releases/latest)。
 2. 啟用前先 review shipped plugin 的 `hooks/` 目錄（repo path：`cressetide/hooks/`）。
 3. 安裝後跑 `/ctide:doctor`。
-4. 用 `git verify-tag vX.Y.Z` 驗證 release tag。`v0.7.0` 與 `v0.7.1` 有簽章；之後的 tag 依 release 程序處理。
+4. 用 `git verify-tag vX.Y.Z` 驗證你要安裝的 tag。SSH 簽章的 tag 只能對照你自己掌控的 allowed-signers 檔案驗證（作法見英文的 [`RELEASING.md`](RELEASING.md)）；哪些 tag 有簽章、又是如何查證的，逐一記錄在 [`EVIDENCE.md`](EVIDENCE.md)。
 5. 用 published `.sha256` 檔驗證 release archive。
 
 Trust model 請看 [`SECURITY.md`](SECURITY.md)（英文）；release **程序**——contract、preconditions、deterministic archive、tag 與 publication 步驟——請看 [`RELEASING.md`](RELEASING.md)（英文）；某次 release 實際記錄下來的證據則在 [`EVIDENCE.md`](EVIDENCE.md)。
@@ -358,7 +360,7 @@ incident flow 的設計讓戰時回合保持簡短——一次一張 decision ca
 | Distinct real projects | 0 recorded |
 | Non-maintainer runs | 0 recorded |
 
-`v0.7.1` 的 release 與 CI 證據另外記錄在 [`EVIDENCE.md`](EVIDENCE.md)：它證明已發佈的 plugin 載得起來、特定 hook 會觸發，而不是一次 real-world run。
+針對個別 release 與 release 候選版記錄的證據都在 [`EVIDENCE.md`](EVIDENCE.md)：CI、archive、attestation，以及有實際執行時的有限範圍安裝後 smoke。它證明的是某個特定版本裝得起來、載得起來，以及特定 hook 會觸發，而不是 ctide 在真實專案上有效。
 
 最有價值的貢獻：在真實工作上跑 ctide，然後開一個 [Verified ctide run issue](https://github.com/kktu6507/cressetide/issues/new?template=verified-run.yml)。請貼上 ctide 在結尾印出的 `### Live run` block，並保留 misses、false alarms、cost、follow-up outcome；誠實的負面資訊才是 evidence 的重點。
 

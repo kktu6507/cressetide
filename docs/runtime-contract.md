@@ -35,11 +35,34 @@ Agents must not edit settings to bypass a guard.
 | `CTIDE_ENFORCE_STOP` | Upgrade the `orchestration-check.js` Stop hook from advisory to a hard block on a verdict/evidence mismatch. Recognized values are `1`, `true`, `yes` and `on`, matched case-insensitively; every other value, including `0`, leaves the hook advisory. |
 | `CTIDE_REPAIR_PUBLISHED_RELEASE_ASSETS` | Explicitly authorize the reviewed release-asset repair path. Recognized only as the exact string `true`; every other value, including `1`, leaves repair unauthorized. It is one of several preconditions, not a switch on its own: repair additionally requires that both exact assets download successfully and that the downloaded bytes prove drift. Missing assets and transport failures never enter repair. |
 
+The values `CTIDE_HOOK_DEBUG` and `CTIDE_ENFORCE_STOP` recognize are also listed
+under [Machine-checked facts](#machine-checked-facts), which the test suite
+compares against the hooks' actual behaviour.
+
 Doctor and release diagnostic summaries must not expose environment values,
 secrets, tokens, settings payloads, or unredacted sensitive paths. The hook debug sink is separately opt-in and may include a bounded
 raw command fragment;
 do not enable or collect `CTIDE_HOOK_DEBUG` where commands
 may contain credentials.
+
+## Machine-checked facts
+
+The block below restates, in one language-neutral place, facts that this document,
+the [command reference](command-reference.md) and the Doctor
+[diagnostic contract](../cressetide/skills/doctor/references/diagnostic-contract.md)
+state in prose. `test/documented-facts.test.mjs` observes the shipped runtime over
+fixed test inputs and fails when a line omits or adds a value relative to that
+behaviour, and it checks that the owning prose names every listed value. It does
+not check README wording or translations, a claim that prose adds beyond these
+values, or inputs outside the test's input set; those stay under human review.
+
+```ctide-facts
+env.CTIDE_ENFORCE_STOP.accepts = 1, true, yes, on
+env.CTIDE_ENFORCE_STOP.case    = insensitive
+env.CTIDE_HOOK_DEBUG.enables   = non-empty
+doctor.project.checks          = failure-memory-health, incident-journals, ledger-health
+ship.manifest.excludes         = .git, .ctide, node_modules, dist, build, coverage, vendor
+```
 
 ## Hooks
 
