@@ -148,13 +148,21 @@ A second run, on the diagnostic candidate, had typos, link-check and zizmor gree
 macOS each reporting **2,138 tests, 2,135 passing, 2 skipped, 1 failing** — only the deliberately
 retained ancestor assertion described below.
 
+A third run, on the corrected ancestor regression, had every other check green. Ubuntu and macOS
+reported **2,138 tests, 2,136 passing, 2 skipped, 0 failing**, with the evaluation cases at 7/7 and
+the Linux plugin validation passing — the first time those two steps executed in this PR. Windows
+reported **2,138 tests, 2,132 passing, 5 skipped, 1 failing** in 733,808 ms; its skip count moved
+from 4 to 5 because the observed-mode test is gated on the worktree executable bit being observable.
+That single Windows failure is described under *A second assumption in the same fixture* below.
+
 **Five failures came from test expectations or fixtures** — assumptions encoded as universal facts.
 **One came from the maintainer audit-name validator**, a genuine defect in that helper. The shipped
 head-view implementation and the product contract are unchanged.
 
 - **A real working-tree symlink** was created but never staged, while the test expected
   `tracked: true`. Trackedness is index membership, so `false` was correct. Both states are now
-  asserted, before and after staging.
+  asserted, before and after staging. That repair was **not complete** — see *A second assumption in
+  the same fixture* below.
 - **Two mode fixtures** used `update-index --chmod=+x`, which moves the index mode only. Where the
   worktree bit is observable the observed mode correctly wins, so on POSIX the digest never moved.
   One test additionally asserted the **opposite of its own title** — it claimed observed-mode
@@ -211,6 +219,24 @@ versions**. It is not a universal no-leak guarantee, and the safety it records r
 observations — no content read, no descendants, sentinel absent under a complete scan — never on the
 mere absence of an error.
 
+**A second assumption in the same fixture.** The first privileged Windows run of the real-symlink
+test left one failure after the trackedness repair: the expected `contentDigest` was
+`SHA256("lib/helper.mjs")` while the observed digest was `SHA256("lib\helper.mjs")`. Windows
+normalises the separator when it creates the reparse point, so the stored target differs from the
+string passed to `fs.symlinkSync`. Both product read paths take the same
+`fs.readlinkSync(…, { encoding: "buffer" })` branch and record those bytes unnormalised, before any
+index consideration, so the head view was reporting exactly what the OS stored. **The defect was the
+fixture's, in a second hardcoded value the earlier repair did not touch** — that repair corrected
+trackedness and left this one standing. It is neither a containment defect nor a product regression,
+and no product byte changed in response.
+
+The fixture now takes `fs.readlinkSync(link, { encoding: "buffer" })` as ground truth for both the
+unstaged and staged digests and returned buffers — the same convention the ancestor case uses — with
+a separator-agnostic suffix anchor, and reads the target file independently so the no-follow
+discrimination carries no hardcoded value of its own. Because both read paths reach readlink before
+consulting the index, one ground truth covers both captures. The privileged Windows execution is not
+skipped: it is the only reason either assumption was ever exposed.
+
 **Typos configuration.** Two sealed upstream vendored files are excluded by exact path, because their
 bytes are pinned and whitelisting their words would silence real misspellings in our own source. The
 canonical `ASSUM` clause prefix is accepted as project vocabulary. Two opaque strings — a ULID-shaped
@@ -238,16 +264,23 @@ plus a separate set of 18 portable-basename counter-cases exercising the pure he
 run on a POSIX host. Frozen archives and every published prior result are untouched, and nothing is
 replayed.
 
-CI for the exact final commit — the one carrying the corrected ancestor regression test — has not
-run. The two CI runs recorded above were of earlier candidates, the scoped local results are not a
-cross-platform result, the helper has not passed CI, and no acceptance is claimed ahead of it.
+CI for the exact final commit — the one carrying the corrected readlink-byte expectation — has not
+run. The three CI runs recorded above were of earlier candidates; the most recent left Windows with
+one failure, and **no claim is made that the new candidate passes Windows**.
+
+The audit-name helper and its regressions shipped before that run and **did pass the actual Ubuntu
+and macOS suites at 22cb8ad**, both fully green. On Windows at the same commit its cases were not
+among the reported failures, though that job did not finish green, so no Windows pass is asserted for
+it. What remains outstanding is **acceptance of the final candidate across all three platforms**, not
+the helper's regressions in isolation. The scoped local results remain a local run rather than a
+cross-platform one, and no acceptance is claimed ahead of a full validation round.
 
 ## 6. Scope boundaries
 
 This preparation carries no efficiency claim. The efficiency investigation is closed with **L3
 unexecuted** — see the [final disposition](2026-09-10-efficiency-final-disposition.md) — and merging
-functional work does not change that, does not require it to change, and asserts no saving, efficacy
-or cross-platform result.
+functional work does not change that, does not require it to change, and asserts no saving or
+efficacy. It also does not claim completed cross-platform acceptance before final CI.
 
 No raw model transcripts, reasoning traces or held-out grading material appear in the files selected
 and scanned for this preparation. Unrelated maintainer material outside the repository's tracked

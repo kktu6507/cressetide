@@ -550,20 +550,38 @@ test("AC133 an actual working-tree symlink is read with readlink and never follo
     seed(repo);
     // Real working-tree symlink semantics, so the index records 120000 rather than a plain blob.
     repo.git("config", "core.symlinks", "true");
-    fs.symlinkSync("lib/helper.mjs", path.join(repo.root, "real-link"));
-    const digest = sha256(Buffer.from("lib/helper.mjs", "utf8"));
+    const link = path.join(repo.root, "real-link");
+    fs.symlinkSync("lib/helper.mjs", link);
+
+    // GROUND TRUTH is what the OS STORED, read back independently — never the string passed to
+    // `symlinkSync`. Windows normalises the separator when it creates the reparse point, so the
+    // stored target is `lib\helper.mjs` there and `lib/helper.mjs` on POSIX. The head view records
+    // the raw readlink bytes unnormalised, which is the contract, so the fixture must not assume a
+    // separator either. Same convention as the ancestor case below.
+    const linkBytes = fs.readlinkSync(link, { encoding: "buffer" });
+    const digest = sha256(linkBytes);
+    // Separator-agnostic anchor: the target is still the file we pointed at, whatever the spelling.
+    assert.match(linkBytes.toString("utf8"), /helper\.mjs$/, "the stored target still names the intended file");
+    // Independently read, so the no-follow discrimination below carries no second hardcoded value.
+    const targetBytes = fs.readFileSync(path.join(repo.root, "lib", "helper.mjs"));
+    assert.notDeepStrictEqual(linkBytes, targetBytes, "the link's target string and the file's contents must differ for the check below to mean anything");
 
     // Trackedness is INDEX MEMBERSHIP. The link is created here and not staged, so it is untracked
-    // until `git add` puts it in the index; both states are asserted below. (The earlier version
-    // created the link, never added it, and expected tracked:true.)
+    // until `git add` puts it in the index; both states are asserted below. (The earlier repair
+    // corrected this expectation and left the digest one, which assumed the separator.)
     const untracked = await repo.capture();
     assert.deepStrictEqual(untracked.entry("real-link"), { mode: "120000", type: "symlink", contentDigest: digest, tracked: false });
-    assert.strictEqual(untracked.read("real-link").toString("utf8"), "lib/helper.mjs", "readlink bytes, not the target's contents");
+    assert.deepStrictEqual(untracked.read("real-link"), linkBytes, "readlink bytes, as stored");
+    assert.notDeepStrictEqual(untracked.read("real-link"), targetBytes, "and never the target's contents — the link was not followed");
 
+    // `git add` moves index membership only. Both read paths take the same readlink branch before
+    // any index consideration, so the staged capture re-reads the worktree link rather than the
+    // stored blob, and the same ground truth applies unchanged.
     repo.git("add", "real-link");
     const s1 = await repo.capture();
     assert.deepStrictEqual(s1.entry("real-link"), { mode: "120000", type: "symlink", contentDigest: digest, tracked: true });
-    assert.strictEqual(s1.read("real-link").toString("utf8"), "lib/helper.mjs");
+    assert.deepStrictEqual(s1.read("real-link"), linkBytes);
+    assert.notDeepStrictEqual(s1.read("real-link"), targetBytes);
   });
 });
 
