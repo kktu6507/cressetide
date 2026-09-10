@@ -4,9 +4,7 @@ All notable changes to Cressetide will be documented in this file.
 
 ## [Unreleased]
 
-## [0.7.0] - Unreleased
-
-版本已在 manifest 宣告，尚未發布：本節沒有發布日期，也還沒有對應的 `v0.7.0` tag 或 release 資產。宣告版本與發布 release 是兩件事，見 [`RELEASING.md`](RELEASING.md)（*When to bump the version*）。
+## [0.7.0] - 2026-09-10
 
 - Test provenance v1.21：新增 committed-batch 出處鏈的完整寫入／讀取路徑——batch writer、persisted v2 reader 與歷史邊界、Step 6 committed-head consumer 與 freshness 判定、A–C artifact emitter 與公開 parser CLI，以及 E1 telemetry／ledger 與 head hygiene。產出物綁定到來源、過期宣稱會被拒絕，reviewer transport 逐位元組保留。
 - 新增 durable loop controller 與其 CLI／HEAD prefix 處理，串起 ledger、Vigil、review packet、reviewer 與 arbiter 的整合路徑；並補上 file-owned preview 與 pure prospective authority 兩個前置元件，以及較低層 request capture／request boundary 的修正。

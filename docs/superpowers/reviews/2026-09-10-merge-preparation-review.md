@@ -5,6 +5,12 @@ product, test, spec, driver, guard or fixture was changed, no experiment was run
 claim is made here.** Two things are disclosed: a path redaction applied to nine public evidence
 files, and the difference between what has been verified locally and what has not yet run at all.
 
+> **Status update, 2026-09-10.** The six checks on the final candidate `94e985c` passed, and pull
+> request 7 merged to `main` as `4b570bd` with the tree unchanged from that candidate. **Every
+> statement below about pending or outstanding CI is therefore a historical pre-push checkpoint**,
+> retained as the record of what was known at the time rather than as current status. No release has
+> been published and no tag exists as of this line.
+
 ## 1. Public evidence files carry redacted paths
 
 Nine JSON receipts under `docs/superpowers/reviews/` embedded absolute paths from the maintainer's
