@@ -1,0 +1,30 @@
+{
+  "date": "2026-09-09",
+  "scope": "private offline plan-review-feasibility-p1 capability acceptance on Windows",
+  "accepted": true,
+  "wholeEfficiencyRoadmapComplete": false,
+  "liveConsumerCalls": 0,
+  "nativeVigilIntegrationVerified": false,
+  "behaviorOrEfficiencyClaim": false,
+  "sources": {
+    ".ctide/collaboration/plan-review-driver.mjs": "e51b785b4d737552ac4d14fd91b8a03282b57285ea5aa5325543bdd614936025",
+    ".ctide/collaboration/plan-review-driver.test.mjs": "7dc6a610ca974a62a8ca7eac451e7067c297d7d63b363227b3d3779c63b299ea",
+    ".ctide/collaboration/phase27-review-fixtures.json": "c9559c7155c3ec5113075c44ae272a528d67429c28cb3008117d6ea0ad3ea43e"
+  },
+  "rootVerification": {
+    "suiteCommand": "node --test --test-reporter=tap .ctide/collaboration/plan-review-driver.test.mjs",
+    "suite": {"tests": 53, "passed": 52, "skipped": 1, "failed": 0, "exitCode": 0},
+    "skipReason": "Windows symlink creation privilege unavailable",
+    "auditCommand": "node .ctide/collaboration/phase27h-root-audit.mjs .ctide/collaboration/phase27m-root-audit-results.json",
+    "audit": {"cases": 26, "passed": 26, "failed": 0, "exitCode": 0},
+    "auditEvidence": ".ctide/collaboration/phase27m-root-audit-results.json",
+    "protectedManifest": ".ctide/collaboration/phase27-protected-sources.json",
+    "protectedFilesChecked": 123,
+    "protectedFilesChanged": 0,
+    "capturedImplementationStdinSha256": "c5ee97be674c259b197aacf0ac78e9f1c4be72f5b3d14a681db2818fbc5657ab"
+  },
+  "discussionBeforeRepair": [["phase27f", "phase27g"], ["phase27j", "phase27k", "phase27l"]],
+  "unchangedClosedExperimentalEstimateUsd": 4.4346125,
+  "costBoundary": "CLI price-table estimate for prior closed experiments only; excludes all collaboration implementation/discussion; not billing or total spend",
+  "limitations": ["synthetic offline transcripts", "resume capability unverified", "no native plugin integration", "no hidden behavior grading", "current symlink branch skipped", "internal consistency only, not authenticated history", "TOCTOU remains", "read scope is post-hoc", "L2-L4 evidence gates remain unmet"]
+}

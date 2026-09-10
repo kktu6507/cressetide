@@ -1,0 +1,218 @@
+{
+  "at": "2026-09-08T15:03:34.604Z",
+  "scope": "One known-child aggregate observation on the pinned Windows CLI; no workflow efficacy or exact child-cost claim.",
+  "originalPrespecifiedGate": {
+    "accepted": false,
+    "faults": [
+      "init-tools:Task"
+    ],
+    "attempt": {
+      "sessionId": "d4136469-2592-4381-89c4-3f6345f1697f",
+      "endedAt": "2026-09-08T14:53:53.435Z",
+      "exitCode": 0,
+      "signal": null,
+      "spawnError": null,
+      "timedOut": false,
+      "exitConfirmed": true,
+      "killSignalSent": null,
+      "descendantsKilled": "unverified",
+      "elapsedMs": 7175,
+      "stdoutSha256": "89713e4520bb3bc45fda0410d2e883cb3b20a3401807e97d76d0d0c9c0414570",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "totalCostUsd": 0.06233899999999999,
+      "costBasis": "cli-bundled-price-table-estimate; not provider billing",
+      "markerPresent": true,
+      "ok": false,
+      "faults": [
+        "init-tools:Task"
+      ]
+    }
+  },
+  "reviewDisposition": {
+    "accepted": true,
+    "postHoc": true,
+    "reviewer": "Codex",
+    "claudeDiscussion": ".ctide/collaboration/phase22m-claude-response.md",
+    "reason": "The sole deviation is the init.tools label Task; actual invocation and successful result use the requested Agent capability with a linked Opus 5 child. Every accounting and child-linkage gate passed. Original record and source remain unchanged.",
+    "guardrail": "A post-hoc disposition is justified only for a deviation independent of the measured claim, supported by direct evidence. It is not a general exception or a passed prespecified gate.",
+    "independentChecks": "Raw/binary/source digests, parent/child model, tool call/result linkage, child counters, three input/cache category deltas and whole-query cost checked independently.",
+    "observedInputSideEquality": 854,
+    "childEffort": "requested xhigh, not exposed as observed metadata",
+    "outputLimit": "The output residual is not attributed to the child; its message output_tokens is a placeholder."
+  },
+  "requested": {
+    "model": "claude-opus-5",
+    "effort": "xhigh",
+    "child": {
+      "description": "Deterministic arithmetic relay used once for cost-accounting observation.",
+      "prompt": "Compute 17 + 26. Reply with only the resulting number and nothing else.",
+      "model": "claude-opus-5",
+      "effort": "xhigh",
+      "tools": [],
+      "disallowedTools": [
+        "Agent",
+        "Task"
+      ],
+      "maxTurns": 1,
+      "background": false,
+      "permissionMode": "default"
+    },
+    "probeEnv": {
+      "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1",
+      "CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-5",
+      "CLAUDE_CODE_SUBAGENT_MODEL_FORCE": "1"
+    },
+    "envPolicyNote": "three forced keys; differs from the single-key policy used by L1b and the judge probe"
+  },
+  "observed": {
+    "init": {
+      "model": "claude-opus-5",
+      "permissionMode": "default",
+      "apiKeySource": "none",
+      "outputStyle": "default",
+      "cwd": "<TMP>\\ctide-eff-child-work-u2lzaY",
+      "tools": [
+        "Task"
+      ],
+      "agents": [
+        "Explore",
+        "Plan",
+        "claude",
+        "ctide-cost-child",
+        "general-purpose",
+        "statusline-setup"
+      ],
+      "plugins": [],
+      "mcpServers": [],
+      "slashCommands": []
+    },
+    "sessionId": "d4136469-2592-4381-89c4-3f6345f1697f",
+    "agentCalls": [
+      {
+        "id": "toolu_01AA3T6DSSkQvFEDYVfvuYLX",
+        "subagentType": "ctide-cost-child"
+      }
+    ],
+    "toolResults": [
+      {
+        "toolUseId": "toolu_01AA3T6DSSkQvFEDYVfvuYLX",
+        "isError": false
+      }
+    ],
+    "child": {
+      "eventCount": 2,
+      "assistantMessages": 1,
+      "parentToolUseIds": [
+        "toolu_01AA3T6DSSkQvFEDYVfvuYLX"
+      ],
+      "uniqueMessages": [
+        {
+          "id": "msg_011CerARnZid6UPgDdbKuJTQ",
+          "inputTokens": 2,
+          "cacheCreationInputTokens": 852,
+          "cacheReadInputTokens": 0,
+          "outputTokensPlaceholder": 1
+        }
+      ],
+      "toolNames": [],
+      "modelsWhenEmitted": [
+        "claude-opus-5"
+      ],
+      "modelObserved": true,
+      "inputSideKnown": true,
+      "inputSideSum": 854,
+      "faults": []
+    },
+    "childEffortObserved": false,
+    "childModelObserved": true,
+    "childUsageComparable": true,
+    "subagent": {
+      "evidence": "counters",
+      "spawned": 1,
+      "counters": {
+        "spawned": 1,
+        "completed": 1,
+        "failed": 0,
+        "spawned_by_subagents": 0,
+        "started_in_background": 0,
+        "max_depth": 1,
+        "requested.background": 0,
+        "requested.foreground": 1,
+        "requested.unset": 0,
+        "killed.parent": 0,
+        "killed.user": 0,
+        "killed.system": 0,
+        "refused.depth_limit": 0,
+        "refused.concurrency_limit": 0,
+        "refused.budget": 0
+      },
+      "byTypeKeys": [
+        "ctide-cost-child"
+      ],
+      "activity": true
+    },
+    "usage": {
+      "inputTokens": 4,
+      "cacheCreationInputTokens": 4991,
+      "cacheReadInputTokens": 4648,
+      "outputTokens": 187
+    },
+    "modelUsage": {
+      "claude-opus-5": {
+        "inputTokens": 6,
+        "cacheCreationInputTokens": 5843,
+        "cacheReadInputTokens": 4648,
+        "outputTokens": 190,
+        "costUsd": 0.06233899999999999,
+        "costBasis": "list",
+        "provider": "firstParty"
+      }
+    },
+    "totalCostUsd": 0.06233899999999999,
+    "markerPresent": true
+  },
+  "residualUpperBound": {
+    "inputTokens": 2,
+    "cacheCreationInputTokens": 852,
+    "cacheReadInputTokens": 0,
+    "outputTokens": 3
+  },
+  "cli": {
+    "observedVersion": "2.1.263",
+    "commandSha256": "0b35df94c1307004f07b738390bfef8dfca5e9af29aaf6517f305bf086b95b03"
+  },
+  "sources": {
+    "eval/efficiency/stream-usage.mjs": "1764c624c0702440ae75aa09fb3fec9aa008d237fb3c9a96bc7f2f1674fc8670",
+    "eval/efficiency/protocol.mjs": "082addcc0be248848390f52dfbc4a2039f90fe539eb782c2cc91e230d505db47",
+    "eval/efficiency/l1b-driver.mjs": "733d2599e3669940751f31f6ed71f3f03582911f036a3fc34700a5ba12a31e9f",
+    ".ctide/collaboration/known-child-probe.mjs": "45b15eb5a5cb6b6d5583c08d168af4201487ad56fa5d8ed9a7e29eed9c35edc2"
+  },
+  "raw": {
+    "stdoutSha256": "89713e4520bb3bc45fda0410d2e883cb3b20a3401807e97d76d0d0c9c0414570",
+    "paths": {
+      "stdout": "<TMP>\\ctide-eff-child-XQf2he\\raw.stdout.jsonl",
+      "stderr": "<TMP>\\ctide-eff-child-XQf2he\\raw.stderr.txt"
+    }
+  },
+  "claims": [
+    "One known-child observation under this frozen configuration only.",
+    "modelUsage is model-keyed, so a same-model child cannot be attributed individually; the main-vs-aggregate difference is an unattributed UPPER BOUND, not the child cost.",
+    "The child-usage check is a deliberately weaker INPUT-SIDE TOTAL lower bound, chosen because one observation cannot establish per-category attribution. It proves nothing about which cache category absorbed the child, and asserts no exact child cost.",
+    "Output residual is a non-negativity and positivity diagnostic only; no output figure is attributed to the child.",
+    "usage (main loop) is never added to modelUsage (whole query). Per-message output tokens are documented placeholders and are never summed.",
+    "The final marker alone proves nothing; the linkage evidence is the Agent tool_use id, the matching child parent_tool_use_id, and the subagent counters.",
+    "Child effort is requested configuration only; no documented control forces it and the runtime is not expected to emit it.",
+    "Estimates from the CLI price table, not provider billing; not authenticated, and not evidence about nested or multi-child workflows."
+  ],
+  "offlineValidation": {
+    "tests": 27,
+    "pass": 27,
+    "fail": 0
+  },
+  "experimentCosts": {
+    "priorL1bAndCalibrationUsd": 1.710581,
+    "thisAttemptUsd": 0.06233899999999999,
+    "cumulativeEstimateUsd": 1.77292,
+    "costBasis": "CLI price-table estimates, not provider billing or actual subscription charges; implementation/discussion sessions excluded."
+  }
+}
