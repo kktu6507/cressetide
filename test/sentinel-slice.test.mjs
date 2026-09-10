@@ -1,13 +1,15 @@
 // Hermetic tests for the E2E harness's byte-exact sentinel slicer.
 //
-// NO MODEL, NO NETWORK, NO CHILD PROCESS. This file is safe under `node --test` precisely because the
-// thing it covers is a pure Buffer -> Buffer function. The harness stage that actually spawns a real
-// `test-reviewer` process lives in `eval/loop-e2e/run-scenario.mjs` and is never reachable from here.
+// NO MODEL, NO NETWORK. Covers pure helpers and local Node child processes with no reviewer or
+// provider invocation. Each child runs a bare `process.execPath` with `shell: false`. The harness
+// stage that actually spawns a real `test-reviewer` process lives in
+// `eval/loop-e2e/run-scenario.mjs` and is never reachable from here.
 //
-// Every assertion below is on BYTES. Parsing the slice as JSON would test a different property than
-// the transport contract, which is about a byte range surviving unchanged — so the negatives are
-// framed as boundary shifts (one byte more, one byte fewer, wrong terminator retained), and one case
-// deliberately carries a slice that is neither JSON nor valid UTF-8 to prove nothing ever decodes.
+// The slicer assertions below are on BYTES. Parsing the slice as JSON would test a different
+// property than the transport contract, which is about a byte range surviving unchanged — so the
+// negatives are framed as boundary shifts (one byte more, one byte fewer, wrong terminator
+// retained), and one case deliberately carries a slice that is neither JSON nor valid UTF-8 to prove
+// nothing ever decodes.
 import assert from "node:assert/strict";
 import cp from "node:child_process";
 import crypto from "node:crypto";
@@ -997,8 +999,12 @@ test("guard: the config must carry the guard digest that records will copy", () 
 });
 
 test("guard: the stdin watchdog blocks rather than hanging", async () => {
-  // A stream that never ends. Injectable so the deadline is exercised deterministically, with no
-  // child process and no dependence on the production default.
+  // A stream that never ends. Injectable so the deadline is exercised without a child process and
+  // with no dependence on the production default. This covers the API contract; the event-loop
+  // lifetime of the deadline timer is covered by the child-process regressions below. An in-process
+  // test cannot settle that question either way, because the surrounding suite MAY incidentally keep
+  // the loop referenced — which is exactly why this same test cancelled under Node 22 and passed
+  // under Node 24 while the defect was present in both.
   const stalled = new PassThrough();
   const result = await readStreamWithTimeout(stalled, 20);
   assert.equal(result.timedOut, true, "a stdin that never closes must time out, not hang");
@@ -1010,6 +1016,65 @@ test("guard: the stdin watchdog blocks rather than hanging", async () => {
   const ok = await done;
   assert.equal(ok.timedOut, false);
   assert.equal(ok.bytes.toString("utf8"), "hello");
+});
+
+// The guard's deadline timer must hold the event loop open, because when the stream never ends it is
+// the ONLY thing that can settle the promise. A bare stream holds no libuv handle, so an unreferenced
+// timer let the loop drain first: the promise never settled and the process exited 0 having printed
+// nothing — the fail-open direction for a PreToolUse hook. Only a child with nothing else on its loop
+// can observe that reliably, and the assertion is on OUTPUT rather than exit status, because the
+// defective build exits 0 too.
+const GUARD_URL = new URL("../eval/loop-e2e/bash-guard.mjs", import.meta.url).href;
+const WATCHDOG_CHILD_TIMEOUT_MS = 5_000;
+
+function runWatchdogChild(source, label) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-watchdog-"));
+  try {
+    const script = path.join(dir, "probe.mjs");
+    fs.writeFileSync(script, source, "utf8");
+    const run = cp.spawnSync(process.execPath, [script], {
+      encoding: "utf8", shell: false, timeout: WATCHDOG_CHILD_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"],
+    });
+    assert.equal(run.error, undefined, `${label}: the child did not run to completion: ${run.error && run.error.code}`);
+    assert.equal(run.status, 0, `${label}: unexpected exit status ${run.status}; stderr: ${run.stderr}`);
+    assert.notEqual(run.stdout.trim(), "",
+      `${label}: the child printed nothing, so its promise never settled — the loop drained before the deadline`);
+    return JSON.parse(run.stdout);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+}
+
+test("guard: the stdin watchdog settles in a child with nothing else on the event loop", () => {
+  // `.then` rather than top-level await, so the module body finishes and the loop is free to drain
+  // if anything is unreferenced — which is exactly the condition being tested.
+  const observed = runWatchdogChild([
+    'import { PassThrough } from "node:stream";',
+    `import { readStreamWithTimeout } from ${JSON.stringify(GUARD_URL)};`,
+    "readStreamWithTimeout(new PassThrough(), 20).then((r) => {",
+    '  process.stdout.write(JSON.stringify({ timedOut: r.timedOut, bytes: r.bytes.length }));',
+    "});",
+    "",
+  ].join("\n"), "stalled stream");
+  assert.equal(observed.timedOut, true, "a stream that never ends must resolve as timed out");
+  assert.equal(observed.bytes, 0, "and with no bytes, not a partial read reported as a timeout");
+});
+
+test("guard: a settled watchdog clears its timer instead of holding the child for the full deadline", () => {
+  // A 60s deadline against a 5s child timeout: if `finish` did not clear the timer, a referenced
+  // timer would keep the child alive far past the spawn timeout and this fails rather than hangs.
+  const observed = runWatchdogChild([
+    'import { PassThrough } from "node:stream";',
+    `import { readStreamWithTimeout } from ${JSON.stringify(GUARD_URL)};`,
+    "const fine = new PassThrough();",
+    "readStreamWithTimeout(fine, 60000).then((r) => {",
+    '  process.stdout.write(JSON.stringify({ timedOut: r.timedOut, bytes: r.bytes.length }));',
+    "});",
+    'fine.end("hello");',
+    "",
+  ].join("\n"), "ended stream");
+  assert.equal(observed.timedOut, false, "a stream that ends is not a timeout");
+  assert.equal(observed.bytes, 5, "and its bytes survive");
 });
 
 test("guard: malformed input or config denies, never falls through", () => {

@@ -4,7 +4,13 @@ All notable changes to Cressetide will be documented in this file.
 
 ## [Unreleased]
 
-## [0.7.0] - 2026-09-10
+## [0.7.1] - 2026-09-11
+
+- 修復 `eval/loop-e2e/bash-guard.mjs` 的 `readStreamWithTimeout`：deadline timer 先前呼叫 `timer.unref()`，在沒有其他 referenced handle 的情境下 event loop 會在 promise settle 之前排空，該 promise 因此永遠不會 settle。`finish()` 在每一條路徑上都已經 `clearTimeout`，`unref()` 並不必要；移除後 timer 只在 deadline 之前維持 loop 存活。新增兩個以子行程執行的迴歸測試——有缺陷的版本會在毫無輸出的情況下以 0 結束，所以測試以輸出內容而非結束碼判定。此檔案屬於維護者用的 `eval/`，不隨 `cressetide/` plugin 出貨。
+- v0.7.0 的簽署 tag 已存在、GitHub 驗證為 verified、指向 `e6196ff`，並且保持不變；但 release workflow 的驗證 job 失敗，publish 與 attest 從未執行，因此 v0.7.0 沒有任何已發布的 release 資產。v0.7.0 不會被重新指向或刪除，恢復路徑是這個新版本。
+- 出貨的 plugin payload 與 v0.7.0 相比只有 `cressetide/.claude-plugin/plugin.json` 的版本字串不同；沒有任何 hook、skill、agent 或 runtime 行為改變。
+
+## [0.7.0] - Unreleased (signed tag; publication gate failed)
 
 - Test provenance v1.21：新增 committed-batch 出處鏈的完整寫入／讀取路徑——batch writer、persisted v2 reader 與歷史邊界、Step 6 committed-head consumer 與 freshness 判定、A–C artifact emitter 與公開 parser CLI，以及 E1 telemetry／ledger 與 head hygiene。產出物綁定到來源、過期宣稱會被拒絕，reviewer transport 逐位元組保留。
 - 新增 durable loop controller 與其 CLI／HEAD prefix 處理，串起 ledger、Vigil、review packet、reviewer 與 arbiter 的整合路徑；並補上 file-owned preview 與 pure prospective authority 兩個前置元件，以及較低層 request capture／request boundary 的修正。

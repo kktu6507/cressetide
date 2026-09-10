@@ -172,7 +172,8 @@ export const DEFAULT_STDIN_TIMEOUT_MS = 10_000;
  * Bounded read. Without a deadline a stdin that never closes hangs the guard, and what the CLI does
  * with a hung hook is not something this harness can observe — a timeout that is treated as a
  * non-blocking error would be a fail-open path invisible from outside. The stream is injectable so
- * the deadline can be exercised deterministically without a child process.
+ * the deadline can be exercised without a child process, though an in-process test cannot observe
+ * the event-loop lifetime property below; the child-process regressions in the sentinel slice do.
  */
 export function readStreamWithTimeout(stream, timeoutMs) {
   return new Promise(resolve => {
@@ -185,8 +186,13 @@ export function readStreamWithTimeout(stream, timeoutMs) {
       clearTimeout(timer);
       resolve({ bytes: Buffer.concat(chunks), timedOut });
     };
+    // REFERENCED ON PURPOSE. This timer is the only thing that can settle the promise when the
+    // stream never ends, so it must hold the event loop open until the deadline. It previously
+    // called `unref()`, and with nothing else referenced — a bare stream holds no libuv handle —
+    // the loop drained first and the promise never settled at all: the process exited 0 with no
+    // result, which for a PreToolUse hook is the fail-open direction. `unref()` was also redundant,
+    // because `finish` clears the timer on every settle path, so it can never delay a real exit.
     const timer = setTimeout(() => finish(true), timeoutMs);
-    if (typeof timer.unref === "function") timer.unref();
     stream.on("data", chunk => {
       total += chunk.length;
       if (total > MAX_STDIN) { chunks.length = 0; finish(false); return; }
