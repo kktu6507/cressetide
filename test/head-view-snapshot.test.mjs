@@ -8,10 +8,11 @@
 // ACCEPT): canonical v2 parser/reader introduced 52fe0e0, product-gate remediation 4f44b6e,
 // current invariants 9f42628; base/head declaration matching introduced 898f81c, remediated
 // a3ad6dd + 5f339a9; S3 consumer freshness verifier introduced 711ec14, carrier remediation
-// d2a5319. No ChangedTestInventory producer, no governance
-// reverse closure and no artifact emission exists, here or anywhere. A green run
-// does not satisfy AC118, AC136, AC137 or AC138, does not lift the
-// unsupported-populated-inventory gate, and does not mean Phase 2 is ready.
+// d2a5319. Nothing HERE builds a ChangedTestInventory, computes a governance reverse closure or
+// emits an artifact. (The stronger claim that used to stand here -- that none of those exists
+// anywhere -- is out of date: the producer and the artifact emitter are separate modules with their
+// own suites. The governance reverse closure still does not exist.) A green run does not establish
+// AC118, AC136, AC137 or AC138, and does not mean Phase 2 is ready.
 //
 // FIXTURES: every repository below is created with mkdtemp in the OS temporary directory and
 // removed in a finally block. Nothing writes into this repository and no Git configuration outside
@@ -276,6 +277,123 @@ test("AC131 exclusions: .git/**, .ctide/provenance.json and .ctide/output/** nev
     }
   });
 });
+
+// v1.18 E1: the runtime-owned ledger directory joins the closed prefix set. Three controls, because
+// the defect this closes was durable rather than momentary — before it, one ledger append moved
+// headViewDigest and every committed batch stopped re-verifying afterwards.
+test("AC131 exclusions (v1.18): creating the ledger, its untracked guard and appending runs.jsonl never move the digest",
+  async () => {
+    await inRepo(async (repo) => {
+      seed(repo);
+      // THE FIXTURE MUST NOT COVER .ctide/ledger/ IN TRACKED IGNORE BYTES, or the exclusion is never
+      // reached and this measures a world in which the defect cannot occur.
+      assert.ok(!fs.readFileSync(path.join(repo.root, ".gitignore"), "utf8").includes(".ctide"),
+        "the tracked .gitignore deliberately does not mention .ctide");
+
+      const before = await repo.capture();
+      assert.ok(!before.paths().some((p) => p.startsWith(".ctide/ledger/")),
+        "nothing under the ledger is in the universe to begin with");
+
+      const variables = [
+        ["the ledger directory and its own untracked guard",
+          () => repo.write(".ctide/ledger/.gitignore", "*\n!.gitignore\n")],
+        ["a first appended run record", () => repo.write(".ctide/ledger/runs.jsonl", '{"type":"run"}\n')],
+        ["a second appended record", () => fs.appendFileSync(
+          path.join(repo.root, ".ctide", "ledger", "runs.jsonl"), '{"type":"close"}\n')],
+        ["a nested ledger path", () => repo.write(".ctide/ledger/sub/extra.jsonl", "{}\n")],
+      ];
+      for (const [label, mutate] of variables) {
+        mutate();
+        const after = await repo.capture();
+        assert.strictEqual(after.headViewDigest, before.headViewDigest, `${label} must not change headViewDigest`);
+        assert.deepStrictEqual(after.paths(), before.paths(), label);
+      }
+    });
+  });
+
+test("AC131 (v1.18): the ledger exclusion precedes trackedness, so even a COMMITTED ledger file is invisible",
+  async () => {
+    await inRepo(async (repo) => {
+      seed(repo);
+      const before = await repo.capture();
+      // Deliberately tracked, which the runtime contract says is unsupported for this path. The cost
+      // is real and is asserted rather than merely written down: step 1 runs before the tracked
+      // /untracked split, so this file never enters the universe and editing it changes nothing.
+      repo.write(".ctide/ledger/tracked-note.txt", "committed on purpose\n");
+      repo.commit("track a ledger file");
+      const tracked = await repo.capture();
+      assert.strictEqual(tracked.has(".ctide/ledger/tracked-note.txt"), false,
+        "a hard exclusion is unconditional and is not overridden by trackedness");
+      assert.strictEqual(tracked.headViewDigest, before.headViewDigest);
+
+      repo.write(".ctide/ledger/tracked-note.txt", "edited\n");
+      assert.strictEqual((await repo.capture()).headViewDigest, before.headViewDigest,
+        "and editing it still changes nothing");
+    });
+  });
+
+// v1.21 §D1.4: the review-loop controller's own prefix joins the same closed set, for the same
+// reason. Without it, every admission, lock and retained payload this controller records would move
+// headViewDigest in any repository whose TRACKED ignore bytes do not cover the path — so a batch
+// committed at the start of a loop would stop re-verifying the moment the loop recorded its next step.
+test("AC131 exclusions (v1.21): the loop control prefix, its locks, temps and payloads never move the digest",
+  async () => {
+    await inRepo(async (repo) => {
+      seed(repo);
+      assert.ok(!fs.readFileSync(path.join(repo.root, ".gitignore"), "utf8").includes(".ctide"),
+        "the tracked .gitignore deliberately does not mention .ctide, so the exclusion is really reached");
+      const before = await repo.capture();
+      assert.ok(!before.paths().some((p) => p.startsWith(".ctide/test-provenance-loop/")),
+        "nothing under the control prefix is in the universe to begin with");
+
+      const variables = [
+        ["the durable control state", () => repo.write(".ctide/test-provenance-loop/task-abc.json", '{"loopControlVersion":1}\n')],
+        ["a per-task lock", () => repo.write(".ctide/test-provenance-loop/task-abc.lock", '{"pid":1}\n')],
+        ["the global emission lock", () => repo.write(".ctide/test-provenance-loop/emit.lock", '{"pid":1}\n')],
+        ["a staging temp", () => repo.write(".ctide/test-provenance-loop/task-abc.1.ff.tmp", "{}\n")],
+        ["the persisted reviewer bytes", () => repo.write(".ctide/test-provenance-loop/task-abc.review.json", '{"taskId":"T"}\n')],
+        ["the governance input", () => repo.write(".ctide/test-provenance-loop/task-abc.governance.json", '{"governanceVersion":1}\n')],
+        ["a retained writer payload", () => repo.write(".ctide/test-provenance-loop/task-abc.dead.payload.json", "{}\n")],
+      ];
+      for (const [label, mutate] of variables) {
+        mutate();
+        // eslint-disable-next-line no-await-in-loop
+        const after = await repo.capture();
+        assert.strictEqual(after.headViewDigest, before.headViewDigest, `${label} must not change headViewDigest`);
+        assert.deepStrictEqual(after.paths(), before.paths(), label);
+      }
+    });
+  });
+
+test("AC131 (v1.21): the loop exclusion precedes trackedness, and an ADJACENT user prefix is unaffected",
+  async () => {
+    await inRepo(async (repo) => {
+      seed(repo);
+      const before = await repo.capture();
+      // The declared cost, asserted rather than merely written down.
+      repo.write(".ctide/test-provenance-loop/tracked-note.txt", "committed on purpose\n");
+      repo.commit("track a loop-control file");
+      const tracked = await repo.capture();
+      assert.strictEqual(tracked.has(".ctide/test-provenance-loop/tracked-note.txt"), false,
+        "a hard exclusion is unconditional and is not overridden by trackedness");
+      assert.strictEqual(tracked.headViewDigest, before.headViewDigest);
+      repo.write(".ctide/test-provenance-loop/tracked-note.txt", "edited\n");
+      assert.strictEqual((await repo.capture()).headViewDigest, before.headViewDigest,
+        "and editing it still changes nothing");
+
+      // The excluded value is a `/`-terminated PREFIX, not a stem: a longer sibling directory and a
+      // same-stem file are ordinary user content and stay observable.
+      repo.write(".ctide/test-provenance-loops/note.md", "a different directory\n");
+      repo.write(".ctide/test-provenance-loop-notes.md", "a same-stem file\n");
+      const adjacent = await repo.capture();
+      assert.strictEqual(adjacent.has(".ctide/test-provenance-loops/note.md"), true,
+        "a longer sibling prefix is not this prefix");
+      assert.strictEqual(adjacent.has(".ctide/test-provenance-loop-notes.md"), true,
+        "and a stem match is not a prefix match");
+      assert.notStrictEqual(adjacent.headViewDigest, before.headViewDigest,
+        "both really are in the universe and really do move the digest");
+    });
+  });
 
 test("AC131 inclusions: each of the six named kinds moves the digest on its own", async () => {
   await inRepo(async (repo) => {
@@ -1516,6 +1634,223 @@ test("AC134: a stable carrier state passes, for each of the three values", async
     });
   }
 });
+
+// ---------------------------------------------------------------------------------------------
+// Request capture: the module's own inputs cannot move under it
+//
+// The request is an ordinary object, so a caller can mutate it between the call and its resolution.
+// S1 and S2 must describe ONE repository -- comparing S1(A) with S2(B) is not a weaker stability
+// check, it is a different proposition -- and the evaluator that runs must be the one the argument
+// check validated. Capture fixes both; it deliberately does not change what `this` is inside the
+// callback, which is existing public behaviour.
+// ---------------------------------------------------------------------------------------------
+
+async function inTwoRepos(body) {
+  const a = makeRepo();
+  const b = makeRepo();
+  try { return await body(a, b); } finally {
+    for (const repo of [a, b]) {
+      fs.rmSync(repo.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    }
+  }
+}
+
+const countingRequest = (values) => {
+  const counts = {};
+  const request = {};
+  for (const [name, value] of Object.entries(values)) {
+    counts[name] = 0;
+    Object.defineProperty(request, name, {
+      enumerable: true,
+      configurable: true,
+      get() { counts[name] += 1; return value(counts[name]); },
+    });
+  }
+  return { request, counts };
+};
+
+// The evaluator MUST NOT write: 11b.10 step 4 forbids it, and an artifact written inside one would
+// survive an unstable head view. So it only signals entry, awaits an external gate and returns a
+// snapshot-derived value; every change a case makes is a separate CALLER action taken while it waits.
+// The entry signal is raced against the operation itself, so a first-capture rejection surfaces as
+// that failure rather than hanging on a signal that will never arrive.
+function gatedRun(repoRoot) {
+  let signalEntered;
+  let release;
+  const entered = new Promise((resolve) => { signalEntered = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  const request = {
+    repoRoot,
+    evaluate: async (s1) => { signalEntered(); await gate; return s1.headViewDigest; },
+  };
+  const settled = withStableHeadView(request).then(
+    (value) => ({ value, error: null }),
+    (error) => ({ value: null, error }));
+  const reachedEvaluator = Promise.race([entered, settled.then((r) => {
+    throw r.error || new Error("the operation ended before the evaluator was entered");
+  })]);
+  return { request, settled, reachedEvaluator, release: () => release() };
+}
+
+test("capture: an ordinary repoRoot mutation during evaluate cannot make S2 describe another repository",
+  async () => {
+    await inTwoRepos(async (a, b) => {
+      seed(a);
+      seed(b);
+      const beforeA = await a.capture();
+      const beforeB = await b.capture();
+      assert.strictEqual(beforeA.headViewDigest, beforeB.headViewDigest,
+        "the premise: the two initial head views really are equal, so a swapped S2 would compare EQUAL");
+
+      const run = gatedRun(a.root);
+      await run.reachedEvaluator;
+
+      // Caller actions, OUTSIDE the evaluator, while it waits.
+      a.write("docs/notes.md", "the world moved\n");
+      run.request.repoRoot = b.root;
+      run.release();
+      const { value, error } = await run.settled;
+
+      const afterA = await a.capture();
+      assert.notStrictEqual(afterA.headViewDigest, beforeA.headViewDigest, "A really did change");
+      assert.strictEqual(value, null, "an unstable head view returns nothing");
+      assert.strictEqual(error && error.code, "E_HEAD_VIEW_UNSTABLE",
+        `expected E_HEAD_VIEW_UNSTABLE, got ${error && error.code}`);
+      assert.strictEqual(error.detail.s1, beforeA.headViewDigest, "S1 is A's original head view");
+      assert.strictEqual(error.detail.s2, afterA.headViewDigest, "and S2 is A's, moved — never B's");
+    });
+  });
+
+test("capture: the carrier comparison rides the captured root too", async () => {
+  await inTwoRepos(async (a, b) => {
+    // BOTH repositories start with an identical TRACKED config, so a swapped S2 would read "tracked"
+    // and BOTH comparisons would pass on a repository whose carrier never moved. That false
+    // acceptance is what this case exists to exclude.
+    for (const repo of [a, b]) {
+      seedIgnoringCtide(repo);
+      repo.write(CONFIG_PATH, CONFIG_BODY);
+      repo.git("add", "-f", CONFIG_PATH);
+    }
+    const beforeA = await a.capture();
+    const beforeB = await b.capture();
+    assert.strictEqual(beforeA.headViewDigest, beforeB.headViewDigest, "the premise: identical head views");
+    assert.strictEqual(beforeA.entry(CONFIG_PATH).tracked, true, "A's carrier starts tracked");
+    assert.strictEqual(beforeB.entry(CONFIG_PATH).tracked, true, "and so does B's");
+
+    const run = gatedRun(a.root);
+    await run.reachedEvaluator;
+
+    // A's INDEX only, outside the evaluator: its bytes and its digest do not move.
+    a.git("rm", "--cached", "-q", CONFIG_PATH);
+    run.request.repoRoot = b.root;
+    run.release();
+    const { value, error } = await run.settled;
+
+    const afterA = await a.capture();
+    assert.strictEqual(afterA.headViewDigest, beforeA.headViewDigest,
+      "A's digest is unchanged: only the carrier moved, which is what makes this case discriminating");
+    assert.strictEqual(afterA.entry(CONFIG_PATH).tracked, false, "and A's carrier really did move");
+    assert.strictEqual(value, null, "the carrier flip must stop the run");
+    assert.strictEqual(error && error.code, "E_HEAD_VIEW_UNSTABLE",
+      `expected E_HEAD_VIEW_UNSTABLE, got ${error && error.code}`);
+    assert.strictEqual(error.detail.s1, error.detail.s2, "the two digests are identical; only the carrier moved");
+    assert.deepStrictEqual(error.detail.configCarrierState, { s1: "tracked", s2: "untracked" },
+      "both carrier readings come from A; a swapped S2 would have read B's still-tracked carrier and passed");
+  });
+});
+
+test("capture: the evaluator that runs is the one the argument check validated", async () => {
+  await inRepo(async (repo) => {
+    seed(repo);
+    let original = 0;
+    let replacement = 0;
+    const request = {
+      repoRoot: repo.root,
+      evaluate() { original += 1; return "owned-callback"; },
+    };
+    const pending = withStableHeadView(request);
+    request.evaluate = () => { replacement += 1; return "replacement-callback"; };
+    const result = await pending;
+
+    assert.strictEqual(original, 1, "the validated callback ran exactly once");
+    assert.strictEqual(replacement, 0, "and the substituted one never ran");
+    assert.strictEqual(result.value, "owned-callback");
+  });
+});
+
+test("capture: the ORIGINAL request stays the callback receiver, and exception identity is unchanged",
+  async () => {
+    await inRepo(async (repo) => {
+      seed(repo);
+      let receiver = null;
+      const request = { repoRoot: repo.root, evaluate() { receiver = this; return "v"; } };
+      const result = await withStableHeadView(request);
+      assert.strictEqual(receiver, request, "capture fixes which function runs, not what `this` is");
+      assert.strictEqual(result.value, "v");
+
+      // A bare captured call would make `this` undefined; this is the control that would catch it.
+      const boom = new Error("from the evaluator");
+      let thrown = null;
+      try {
+        await withStableHeadView({ repoRoot: repo.root, evaluate() { throw boom; } });
+      } catch (e) { thrown = e; }
+      assert.strictEqual(thrown, boom, "the caller's own error propagates as the same object");
+    });
+  });
+
+test("capture: each owned value is read exactly once, for both operations", async () => {
+  await inRepo(async (repo) => {
+    seed(repo);
+    const snapshot = countingRequest({ repoRoot: () => repo.root });
+    await captureHeadViewSnapshot(snapshot.request);
+    assert.deepStrictEqual(snapshot.counts, { repoRoot: 1 });
+
+    const stable = countingRequest({ repoRoot: () => repo.root, evaluate: () => (s) => s.headViewDigest });
+    const result = await withStableHeadView(stable.request);
+    assert.deepStrictEqual(stable.counts, { repoRoot: 1, evaluate: 1 });
+    assert.strictEqual(result.value, result.snapshot.headViewDigest, "and the ordinary result is unchanged");
+  });
+});
+
+test("the key check reads OWN keys: legal non-enumerable ones are accepted, hidden and symbol extras refused",
+  async () => {
+    await inRepo(async (repo) => {
+      seed(repo);
+      // A required key that is own but not enumerable is a legal request under an own-key contract.
+      const hiddenRequired = {};
+      Object.defineProperty(hiddenRequired, "repoRoot", { value: repo.root, enumerable: false });
+      const accepted = await captureHeadViewSnapshot(hiddenRequired);
+      assert.strictEqual(typeof accepted.headViewDigest, "string", "a non-enumerable required key is accepted");
+
+      const hiddenStable = {};
+      Object.defineProperty(hiddenStable, "repoRoot", { value: repo.root, enumerable: false });
+      Object.defineProperty(hiddenStable, "evaluate", { value: (s) => s.headViewDigest, enumerable: false });
+      assert.strictEqual(typeof (await withStableHeadView(hiddenStable)).value, "string");
+
+      // An extra own key is refused however it is hidden.
+      for (const [what, decorate] of [
+        ["a non-enumerable extra", (r) => Object.defineProperty(r, "clock", { value: 1, enumerable: false })],
+        ["a symbol extra", (r) => Object.defineProperty(r, Symbol("clock"), { value: 1, enumerable: false })],
+      ]) {
+        const one = { repoRoot: repo.root };
+        decorate(one);
+        assert.deepStrictEqual(Object.keys(one), ["repoRoot"], `${what}: invisible to the enumerable view`);
+        const error = await errorOf(() => captureHeadViewSnapshot(one));
+        assert.strictEqual(error && error.code, "E_API_ARGUMENTS", `${what}: refused`);
+        assert.ok(!(error instanceof TypeError), `${what}: a typed refusal, not an engine error`);
+
+        const two = { repoRoot: repo.root, evaluate: (s) => s.headViewDigest };
+        decorate(two);
+        assert.strictEqual(await failureOf(() => withStableHeadView(two)), "E_API_ARGUMENTS", `${what}: refused`);
+      }
+
+      const symbolled = { repoRoot: repo.root };
+      symbolled[Symbol("clock")] = 1;
+      const symbolError = await errorOf(() => captureHeadViewSnapshot(symbolled));
+      assert.match(symbolError.message, /Symbol\(clock\)/,
+        "rendered by String(), not flattened to null by JSON.stringify");
+    });
+  });
 
 // ---------------------------------------------------------------------------------------------
 // The snapshot brand, as a contract a consumer outside this module can rely on

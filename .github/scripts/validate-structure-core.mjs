@@ -664,9 +664,16 @@ if (plugin && Array.isArray(plugin.agents)) {
 // the caps leave headroom so ordinary edits do not trip. Raising a cap is allowed —
 // but must be a CONSCIOUS decision made here with a justifying comment, not accretion.
 {
+  // arbiter.agent.md was consciously raised 27000 -> 30000 for the TP v1.21 §D11 integration: §D11
+  // requires the arbiter to make the one fresh `evaluateGate` call itself, so the complete gate
+  // contract -- the exact command, the forbidden authorities, the stream/exit handling and the
+  // separated loop/provenance reporting -- has to be present in the agent's own prompt. Indirecting
+  // it to a reference would leave a mandatory gate depending on a file the spawned agent is not
+  // guaranteed to load. The file was 26991 bytes before that section, so no honest consolidation
+  // could have funded it. 30000 matches SKILL.md's cap and restores ordinary-edit headroom.
   const SIZE_CAPS = [
     [`${PLUGIN}/skills/vigil/SKILL.md`, 30000],
-    [`${PLUGIN}/agents/arbiter.agent.md`, 27000],
+    [`${PLUGIN}/agents/arbiter.agent.md`, 30000],
   ];
   for (const [rel, cap] of SIZE_CAPS) {
     const abs = path.join(root, rel);

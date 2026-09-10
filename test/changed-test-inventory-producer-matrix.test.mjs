@@ -1,9 +1,9 @@
 // AC173 evidence: the populated-inventory producer end to end.
 //
-// SCOPE NOTE: a green run here does NOT lift the unsupported-populated-inventory gate, does not
-// make the product entry point accept a populated inventory, does not satisfy AC118, AC136, AC137
-// or AC138, and does not mean Phase 2 is ready. AC173 (j) is asserted in the sibling suite: the
-// product path refuses the very documents this one produces.
+// SCOPE NOTE: a green run here does not establish AC118, AC136, AC137 or AC138, and does not mean
+// Phase 2 is ready. AC173 (j) used to be asserted in the sibling suite as "the product path refuses
+// the very documents this one produces"; the unsupported-populated-inventory gate that rested on is
+// retired, and the sibling suite now records the agreement that replaced it.
 //
 // Spec anchors (the current approved coupled set, one effective set):
 //   SM = 2026-07-25-shared-decision-provenance-model.md (approved v1.15) §2, §9
@@ -20,6 +20,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import cp from "node:child_process";
+import crypto from "node:crypto";
 
 import {
   emptyStore, canonicalStoreBytes, sha256Hex, validateAll, canonicalJson, storeDigest,
@@ -44,11 +45,19 @@ const TASK = "TASK-1";
 // TP v1.16: the request names a task, and the CURRENT store must carry a matching TaskState whose
 // baseProvenance witness equals the requested tree. The base-tree store cannot -- its oid depends on
 // its own bytes -- and need not: TaskState is not an immutable section, so B may have none.
-const withTask = (store, baseTreeOid, dpIds = []) => {
+//
+// TP v1.17: the witness's storeDigest is now compared against the base store the producer actually
+// captured, over that file's ORIGINAL bytes. These fixtures used to hardcode the empty-store digest
+// even when the base tree carried a populated store, which the new check correctly refuses -- so the
+// fixtures derive the real raw digest of what was committed. The production equality is not
+// loosened to accommodate a fixture.
+const rawDigest = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
+
+const withTask = (store, baseTreeOid, dpIds = [], baseStoreDigest = storeDigest(emptyStore())) => {
   const s = JSON.parse(JSON.stringify(store));
   s.taskStates = [{
     taskId: TASK,
-    baseProvenance: { treeOid: baseTreeOid, storePath: CANONICAL_STORE_PATH, storeDigest: storeDigest(emptyStore()) },
+    baseProvenance: { treeOid: baseTreeOid, storePath: CANONICAL_STORE_PATH, storeDigest: baseStoreDigest },
     currentTaskDpIds: dpIds,
   }];
   return s;
@@ -70,14 +79,24 @@ function makeRepo(prefix = "ctide-m-") {
     fs.writeFileSync(file, body, "utf8");
   };
   let committed = null;
+  let committedStoreDigest = storeDigest(emptyStore());
+  const storeFile = path.join(dir, ".ctide", "provenance.json");
   return {
     root: dir, git, write,
     remove: (rel) => fs.rmSync(path.join(dir, rel), { force: true }),
-    commit: () => { git("add", "-A"); git("commit", "-qm", "c"); committed = git("rev-parse", "HEAD^{tree}"); return committed; },
+    commit: () => {
+      git("add", "-A"); git("commit", "-qm", "c"); committed = git("rev-parse", "HEAD^{tree}");
+      // The witness digest of the store THIS tree carries, over its original bytes -- or the one
+      // canonical empty-store digest when the tree carries no store at all.
+      committedStoreDigest = fs.existsSync(storeFile)
+        ? rawDigest(fs.readFileSync(storeFile))
+        : storeDigest(emptyStore());
+      return committed;
+    },
     // The CURRENT store always carries the task, witnessing the tree just committed. Base-side
     // stores go through write() directly and stay task-free -- a base tree cannot name its own oid.
     putStore: (store, dpIds) => write(".ctide/provenance.json",
-      canonicalStoreBytes(committed === null ? store : withTask(store, committed, dpIds))),
+      canonicalStoreBytes(committed === null ? store : withTask(store, committed, dpIds, committedStoreDigest))),
     bytes: (rel) => fs.readFileSync(path.join(dir, rel)),
   };
 }
@@ -206,35 +225,87 @@ test("AC173 (a): a new Clause reached by a retag yields exactly one retagged, ne
 
 // --- AC173 (b1)(b2)(b3): the three reachable governance-only cases --------------------------------
 
-// A COLLISION v1.16 CREATES, recorded here rather than asserted away.
+// THE v1.16 COLLISION AND ITS v1.17 RESOLUTION.
 //
-// AC173 (b1) and (b3) want a governance-affected entry for a test whose head binding points at a
-// clause the seed caught because it was RETIRED by a new Transition, or because its exception grant
-// EXPIRED. But §11b.10c v1.16 now charges the post-state binding shared §9's full postChangeBinding
-// row -- active, mechanicallyApplicable, Check A/B and a valid exception chain -- so a live head
-// binding to a retired or expired clause is fail-closed BEFORE any entry is emitted.
+// v1.16 charged the head binding shared §9's whole postChangeBinding row unconditionally, so a
+// governance-only cell -- whose very trigger is that the clause went inactive, drifted or expired --
+// was fail-closed before any entry could be emitted, and all three cells were unreachable. v1.17's
+// witness carve-out resolves two of them: ob-3 is excused if and only if the clause is in
+// transitionedClauses, ob-5 if and only if it is in driftedClauses. Per obligation, never by the
+// lifecycle union.
 //
-// The two requirements cannot both hold: a clause cannot be simultaneously a legal post-state
-// binding and retired/expired. Measured, not inferred -- the two cases below fail on
-// E_HEAD_BINDING_INACTIVE and E_HEAD_BINDING_NOT_APPLICABLE respectively. b2 (drift) is unaffected,
-// because drifting a Source does not make its clause inactive, and it is asserted normally.
-//
-// Nothing is worked around: the spec is untouched, the producer is not taught an exception, and the
-// two cells are asserted as they actually behave so the collision is visible to the next reviewer.
+// (b3) is WITHDRAWN, not deferred, and the two tests below assert both halves of that.
 
-test("AC173 (b1): a head binding to a RETIRED clause is fail-closed, so its governance-only cell is unreachable", () => withRepo(async (repo) => {
+test("AC173 (b1) + AC176 (11c): an inactive clause WITH witness-1 produces the governance-affected entry", () => withRepo(async (repo) => {
   repo.write("hit.test.mjs", tagged(CLAUSE_G, "hit"));
+  repo.write("miss.test.mjs", tagged(CLAUSE_A, "miss"));   // the single-variable control
   repo.write("docs/policy.md", "the anchored sentence\n");
   repo.write(".ctide/provenance.json", canonicalStoreBytes(legal(storeWith({ clauses: [CLAUSE_A, CLAUSE_G] }))));
   const oid = repo.commit();
+  // C adds a newly effective retire Transition whose subject is the bound clause. CLAUSE_G is not
+  // any DP's current terminal and is not exception-backed, so neither INV-4 nor §7 is in play --
+  // otherwise the fixture would be measuring something else.
   repo.putStore(legal(storeWith({ clauses: [CLAUSE_A, CLAUSE_G], transitioned: true })));
 
-  const e = await refusedProduce(repo, oid, "a head binding to a retired clause");
-  assert.strictEqual(e.code, "E_HEAD_BINDING_INACTIVE");
-  assert.match(e.message, /is not active in the current store/);
+  const out = await produce(repo, oid);
+  const map = byPath(out.entries);
+  const hit = map["hit.test.mjs"];
+  assert.ok(hit, "ob-3 is excused by witness-1, so the entry is emitted rather than fail-closed");
+  assert.strictEqual(hit.status, "governance-affected");
+  assert.strictEqual(hit.reason, "governance-affected");
+  assert.strictEqual(hit.baseBodyDigest, hit.headBodyDigest, "both body digests are equal");
+  assert.deepStrictEqual(hit.tagBefore, hit.tagAfter, "tagBefore and tagAfter are canonically equal");
+  assert.ok(!("miss.test.mjs" in map), "the seed-miss control is omitted from entries");
+  assert.strictEqual(out.entries.length, 1, `exactly one entry, got ${out.entries.length}`);
 }));
 
-test("AC173 (b3): a head binding to an EXPIRED exception is fail-closed, so its cell is unreachable too", () => withRepo(async (repo) => {
+test("AC173 (b0-neg)(i)(ii) + AC176 (11d-1)(11d-2): an inactive clause with NO witness-1 stays fail-closed", () => withRepo(async (repo) => {
+  // The transition that retired CLAUSE_G exists ALREADY IN B, so it is not in transitionedClauses:
+  // binding to a clause retired in an earlier run is not this run's governance event.
+  //
+  // The test's BODY changes, which is what puts it in gate scope at all: an unchanged test emits no
+  // entry and is never charged a binding, so a fixture that leaves it untouched proves nothing.
+  repo.write("hit.test.mjs", tagged(CLAUSE_G, "hit"));
+  repo.write("docs/policy.md", "the anchored sentence\n");
+  const retired = { clauses: [CLAUSE_A, CLAUSE_G], transitioned: true };
+  repo.write(".ctide/provenance.json", canonicalStoreBytes(legal(storeWith(retired))));
+  const oid = repo.commit();
+  repo.write("hit.test.mjs", tagged(CLAUSE_G, "hit", " const x = 1; void x;"));
+  repo.putStore(legal(storeWith(retired)));
+
+  const e = await refusedProduce(repo, oid, "an inactive clause with no new transition");
+  assert.strictEqual(e.code, "E_HEAD_BINDING_INACTIVE");
+  assert.strictEqual(e.detail.obligation, "ob-3", "the failure names WHICH obligation failed");
+  assert.strictEqual(e.detail.side, "head");
+  assert.strictEqual(e.detail.testRef.path, "hit.test.mjs", "and which test carried the binding");
+
+  // (11d-2): the union discriminator. The same fixture now also DRIFTS the clause, so it IS in
+  // lifecycleAffectedClauses -- through driftedClauses, which is witness-2 and not ob-3's witness.
+  // An implementation that excuses obligations by union membership would wrongly let this through.
+  const drifting = { clauses: [CLAUSE_A, CLAUSE_G], transitioned: true, drifted: true };
+  const repo2 = makeRepo("ctide-m-union-");
+  try {
+    repo2.write("hit.test.mjs", tagged(CLAUSE_G, "hit"));
+    repo2.write("docs/policy.md", "the anchored sentence\n");
+    repo2.write(".ctide/provenance.json", canonicalStoreBytes(legal(storeWith(drifting))));
+    const oid2 = repo2.commit();
+    repo2.write("hit.test.mjs", tagged(CLAUSE_G, "hit", " const x = 1; void x;"));
+    repo2.write("docs/policy.md", "gone\n");                       // Check B -> zero -> witness-2
+    repo2.putStore(legal(storeWith(drifting)));
+
+    let error = null;
+    try { await produce(repo2, oid2); } catch (e2) { error = e2; }
+    assert.ok(error, "witness-2 must not excuse ob-3: per-obligation matching, never the union");
+    assert.strictEqual(error.code, "E_HEAD_BINDING_INACTIVE");
+    assert.strictEqual(error.detail.obligation, "ob-3");
+  } finally { fs.rmSync(repo2.root, { recursive: true, force: true }); }
+}));
+
+test("AC173 (b3) withdrawn + AC176 (11c): the REQ-side witness-3 positive is unreachable, and not through the carve-out", () => withRepo(async (repo) => {
+  // An exception-backed REQ's head binding necessarily goes through §7, which is NOT inside the
+  // carve-out: expiry makes applicable(REQ, DP) false, and with no DP resolving to it in the current
+  // task the bare form has zero candidates. So the run is fail-closed at §7, and ob-8's exemption
+  // never gets the chance to rescue the cell. (b3) is withdrawn on exactly this ground.
   repo.write("hit.test.mjs", tagged(CLAUSE_G, "hit"));
   repo.write("docs/policy.md", "the anchored sentence\n");
   const shared = { clauses: [CLAUSE_A, CLAUSE_G], expired: true };
@@ -242,9 +313,10 @@ test("AC173 (b3): a head binding to an EXPIRED exception is fail-closed, so its 
   const oid = repo.commit();
   repo.putStore(legal(storeWith(shared)));
 
-  const e = await refusedProduce(repo, oid, "a head binding to an expired exception");
-  assert.strictEqual(e.code, "E_HEAD_BINDING_NOT_APPLICABLE");
-  assert.match(e.message, /not mechanically applicable/);
+  const e = await refusedProduce(repo, oid, "a head binding to an expired exception-backed REQ");
+  assert.strictEqual(e.code, "E_DP_INFERENCE", "§7 stops it, and §7 is not in the carve-out");
+  assert.strictEqual(e.detail.obligation, "§7 bare form");
+  assert.match(e.message, /use the qualified form/);
 }));
 
 test("AC173 (b2 driftedClauses): same path, same body, same tag, seed hit -> exactly one governance-affected", () => withRepo(async (repo) => {

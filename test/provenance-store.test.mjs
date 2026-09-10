@@ -3,7 +3,7 @@
 // Spec anchors (all three approved):
 //   SM  = docs/superpowers/specs/2026-07-25-shared-decision-provenance-model.md (approved v1.15)
 //   IS  = docs/superpowers/specs/2026-07-25-intent-scan-spec.md (approved v1.10)
-//   TP  = docs/superpowers/specs/2026-07-25-test-provenance-spec.md (approved v1.15)
+//   TP  = docs/superpowers/specs/2026-07-25-test-provenance-spec.md (approved v1.17)
 // Those three are the current approved coupled set and must be read as one effective set.
 // Each test names the section / acceptance-criterion it lands. This suite covers the STORE-LAYER
 // subset of the approved criteria only — the orchestrator, inventory, adapter, reviewer,
@@ -26,6 +26,7 @@ import {
   parseCanonicalExpiry, isGregorianLeapYear, NON_CANONICAL_EXPIRY, mechanicallyApplicable, MIGRATION_COMMAND,
   isCanonicalUlid, isCanonicalClauseRef,
 } from "../cressetide/skills/vigil/scripts/provenance-store.mjs";
+import { computeInventoryV2Digest } from "../cressetide/skills/vigil/scripts/changed-test-inventory.mjs";
 
 const NOW = Date.UTC(2026, 6, 26);
 const OPTS = { now: NOW };
@@ -1043,10 +1044,113 @@ test("SM §9: baseProvenance must carry treeOid/storePath/storeDigest, and the e
 
 // --- 7. batch chain & head three-state -------------------------------------------------------------
 
-function batchPayload(over = {}) {
+// TWO FIXED, legal ChangedTestInventoryV2 entry sets, each written out beside the results that
+// exactly cover it. Neither side is derived from the other, and no override regenerates them: a
+// builder that rebuilt the entries from whatever results a case supplied would make every coverage
+// assertion tautological — the very defect the coverage rule exists to catch would silently rebuild
+// a matching inventory and pass. The two sets carry genuinely different content, so a two-batch test
+// really compares two different inventory digests instead of the same one twice.
+//
+// Member names inside each entry are already in strictly ascending code-point order, because TP
+// AC126 (iii) makes an unsorted entry fail closed and forbids the writer sorting it in place.
+const BODY_A = "1".repeat(64);
+const BODY_B_BASE = "2".repeat(64);
+const BODY_B_HEAD = "3".repeat(64);
+const BODY_B_ADDED = "4".repeat(64);
+const IDENTITY = { implementationId: "node-test-v2", parserId: "estree", parserVersion: "1" };
+
+const INVENTORY_SETS = {
+  A: {
+    entries: [{
+      framework: "node-test",
+      headBodyDigest: BODY_A,
+      implementationIdentity: IDENTITY,
+      reason: "content-change",
+      status: "added",
+      tagAfter: { clauseRef: "REQ-0000000000000000000000000A" },
+      tagBefore: null,
+      testRef: { adapterId: "node-test-v2", path: "test/alpha.test.mjs", structuralId: 's:["alpha"]' },
+    }],
+    results: [{
+      testRef: { path: "test/alpha.test.mjs", adapterId: "node-test-v2", structuralId: 's:["alpha"]' },
+      tagBefore: null, tagAfter: { clauseRef: "REQ-0000000000000000000000000A" },
+      observedHeadBodyDigest: BODY_A, findings: [],
+    }],
+  },
+  B: {
+    entries: [{
+      baseBodyDigest: BODY_B_BASE,
+      framework: "node-test",
+      headBodyDigest: BODY_B_HEAD,
+      implementationIdentity: IDENTITY,
+      reason: "content-change",
+      status: "modified",
+      tagAfter: { clauseRef: "REQ-0000000000000000000000000A" },
+      tagBefore: { clauseRef: "REQ-0000000000000000000000000A" },
+      testRef: { adapterId: "node-test-v2", path: "test/beta.test.mjs", structuralId: 's:["beta"]' },
+    }, {
+      framework: "node-test",
+      headBodyDigest: BODY_B_ADDED,
+      implementationIdentity: IDENTITY,
+      reason: "content-change",
+      status: "added",
+      tagAfter: { expl: true },
+      tagBefore: null,
+      testRef: { adapterId: "node-test-v2", path: "test/gamma.test.mjs", structuralId: 's:["gamma"]' },
+    }],
+    results: [{
+      testRef: { path: "test/beta.test.mjs", adapterId: "node-test-v2", structuralId: 's:["beta"]' },
+      tagBefore: { clauseRef: "REQ-0000000000000000000000000A" }, tagAfter: { clauseRef: "REQ-0000000000000000000000000A" },
+      observedBaseBodyDigest: BODY_B_BASE, observedHeadBodyDigest: BODY_B_HEAD, findings: [],
+    }, {
+      testRef: { path: "test/gamma.test.mjs", adapterId: "node-test-v2", structuralId: 's:["gamma"]' },
+      tagBefore: null, tagAfter: { expl: true },
+      observedHeadBodyDigest: BODY_B_ADDED, findings: [],
+    }],
+  },
+};
+
+// baseTreeOid is BASE.treeOid on purpose: TP §2 binds baseProvenance.treeOid to the inventory's own
+// base, and the loader refuses a batch whose two halves witness different trees.
+function inventoryFor(entries, inputProvenanceStoreDigest, over = {}) {
+  const body = {
+    inventoryVersion: 2,
+    baseTreeOid: BASE.treeOid,
+    registryDigest: "b".repeat(64),
+    headViewDigest: "c".repeat(64),
+    inputProvenanceStoreDigest,
+    entries,
+    ...over,
+  };
+  return { ...body, inventoryDigest: computeInventoryV2Digest(body) };
+}
+
+// IS §8 binds THREE values inside one transaction — the pre-state the writer really loaded, the
+// payload's CAS expectation, and the pre-state the inventory was computed against — so the builder
+// needs the store it is about. `digest` overrides the expectation for the FILE entry point, where the
+// authoritative value is sha256(canonicalText(the file's own text)) and not the object's canonical
+// digest; it feeds both the expectation and the inventory, so a case that means to probe one of the
+// two bindings is not stopped by the other.
+function batchPayload(store, over = {}) {
+  const { variant = "A", digest, inventory, snapshot, ...rest } = over;
+  const expected = digest === undefined ? storeDigest(store) : digest;
+  const set = INVENTORY_SETS[variant];
+  const inv = inventory === undefined ? inventoryFor(set.entries, expected) : inventory;
   return {
-    taskId: "TASK-1", batchRecordId: "R-b1", inventoryDigest: "inv-1",
-    batchSnapshot: { taskId: "TASK-1", results: [] }, resolutions: [], ...over,
+    taskId: "TASK-1",
+    batchRecordId: "R-b1",
+    expectedInputProvenanceStoreDigest: expected,
+    batchSnapshot: {
+      taskId: "TASK-1",
+      baseProvenance: BASE,
+      inventoryDigest: inv.inventoryDigest,
+      inventorySnapshot: inv,
+      results: set.results,
+      resolutions: [],
+      ...snapshot,
+    },
+    resolutions: [],
+    ...rest,
   };
 }
 
@@ -1067,7 +1171,7 @@ test("SM §2 head three-state: a committed ref with no batches fails closed", ()
 
 test("IS AC46(i): a clean batch commits with resolutions=[] and invents NO Transition", () => {
   let s = baseFixture();
-  s = apply(s, "commit-test-provenance-batch", batchPayload());
+  s = apply(s, "commit-test-provenance-batch", batchPayload(s));
   const index = indexStore(s);
   assert.strictEqual(s.transitions.length, 0, "clean batch must not fabricate a transition");
   const batch = index.records.get("R-b1");
@@ -1078,8 +1182,10 @@ test("IS AC46(i): a clean batch commits with resolutions=[] and invents NO Trans
 
 test("SM §2 / IS AC49: a second batch chains to the pre-state head and the head advances atomically", () => {
   let s = baseFixture();
-  s = apply(s, "commit-test-provenance-batch", batchPayload());
-  s = apply(s, "commit-test-provenance-batch", batchPayload({ batchRecordId: "R-b2", inventoryDigest: "inv-2" }));
+  s = apply(s, "commit-test-provenance-batch", batchPayload(s));
+  // A genuinely DIFFERENT inventory, not the same one twice: the second batch's digest has to be
+  // able to disagree with the first for the chain assertions to mean anything.
+  s = apply(s, "commit-test-provenance-batch", batchPayload(s, { batchRecordId: "R-b2", variant: "B" }));
   const index = indexStore(s);
   assert.deepStrictEqual(index.records.get("R-b2").previousBatchRef, { kind: "provenance-batch", ref: "R-b1" });
   assert.deepStrictEqual(index.taskStates.get("TASK-1").committedProvenanceBatchRef, { kind: "provenance-batch", ref: "R-b2" });
@@ -1087,10 +1193,12 @@ test("SM §2 / IS AC49: a second batch chains to the pre-state head and the head
 
 test("IS AC49: an explicitly wrong previousBatchRef (stale non-head) is refused", () => {
   let s = baseFixture();
-  s = apply(s, "commit-test-provenance-batch", batchPayload());
-  s = apply(s, "commit-test-provenance-batch", batchPayload({ batchRecordId: "R-b2", inventoryDigest: "inv-2" }));
-  assertRejects(() => apply(s, "commit-test-provenance-batch", batchPayload({
-    batchRecordId: "R-b3", inventoryDigest: "inv-3",
+  s = apply(s, "commit-test-provenance-batch", batchPayload(s));
+  // A genuinely DIFFERENT inventory, not the same one twice: the second batch's digest has to be
+  // able to disagree with the first for the chain assertions to mean anything.
+  s = apply(s, "commit-test-provenance-batch", batchPayload(s, { batchRecordId: "R-b2", variant: "B" }));
+  assertRejects(() => apply(s, "commit-test-provenance-batch", batchPayload(s, {
+    batchRecordId: "R-b3",
     previousBatchRef: { kind: "provenance-batch", ref: "R-b1" }, // the historical non-head
   })), "E_CHAIN_LINK", "chaining to a stale non-head");
 });
@@ -1098,7 +1206,7 @@ test("IS AC49: an explicitly wrong previousBatchRef (stale non-head) is refused"
 test("SM §2: a cross-task previousBatchRef and a multi-tip chain both fail closed at load", () => {
   let s = baseFixture();
   s = apply(s, "init-task", { taskId: "TASK-2", baseProvenance: BASE });
-  s = apply(s, "commit-test-provenance-batch", batchPayload());
+  s = apply(s, "commit-test-provenance-batch", batchPayload(s));
   // Hand-craft the broken CHAIN shapes — but keep each batch record itself well-formed, so the
   // failure is the chain rule under test and not an incidental payload defect.
   const batchRecord = (recordId, taskId, previousBatchRef) => {
@@ -1169,7 +1277,7 @@ test("panel 6 / SM §9: an exception whose expiry has PASSED stops being applica
 
 test("panel 6 / SM §2: a batch ref naming a real record of the WRONG kind does not resolve", () => {
   const s = withAssumption(CODE);
-  assertRejects(() => apply(s, "commit-test-provenance-batch", batchPayload({
+  assertRejects(() => apply(s, "commit-test-provenance-batch", batchPayload(s, {
     recordsToCreate: [reviewRuling("R-e1", { kind: "discipline", discipline: "test" }, "ASSUM-0000000000000000000000000A")],
     resolutions: [{
       subjectRef: "ASSUM-0000000000000000000000000A",
@@ -1410,7 +1518,7 @@ test("panel 3 / IS AC33: a governance ruling whose inputPacketDigest disagrees w
 
 test("panel 2 / SM §9: the committed batchSnapshot carries the inline base witness from TaskState", () => {
   let s = baseFixture();
-  s = apply(s, "commit-test-provenance-batch", batchPayload());
+  s = apply(s, "commit-test-provenance-batch", batchPayload(s));
   const batch = indexStore(s).records.get("R-b1");
   assert.deepStrictEqual(batch.batchSnapshot.baseProvenance, BASE, "the base witness is persisted, not just compared");
   assert.strictEqual(batch.batchDigest, digestOf(batch.batchSnapshot));
@@ -1587,15 +1695,30 @@ test("panel 1 / IS §4: a typed ruling missing its packet, or answering a STALE 
 
 test("panel 2 / SM §9: the loader re-verifies every batch witness against its TaskState", () => {
   let s = baseFixture();
-  s = apply(s, "commit-test-provenance-batch", batchPayload());
-  // Edit the committed snapshot's witness AND recompute its digest, so the record is internally
-  // consistent — exactly the shape that previously loaded cleanly.
+  s = apply(s, "commit-test-provenance-batch", batchPayload(s));
+  // Edit the committed snapshot's witness AND recompute every digest that covers it — the inventory
+  // preimage's own baseTreeOid and inventoryDigest included — so the record stays internally
+  // consistent and the ONLY thing wrong with it is that it disagrees with the TaskState. Moving the
+  // witness alone would now stop at the record-internal base/tree binding instead, which is a
+  // different rule and would leave this one unexercised.
+  const reseated = "f".repeat(40);
   const tampered = {
     ...s,
     records: s.records.map((r) => {
       if (r.recordId !== "R-b1") return r;
-      const snapshot = { ...r.batchSnapshot, baseProvenance: { ...BASE, treeOid: "f".repeat(40) } };
-      return { ...r, batchSnapshot: snapshot, batchDigest: digestOf(snapshot) };
+      const inventorySnapshot = inventoryFor(
+        INVENTORY_SETS.A.entries, r.batchSnapshot.inventorySnapshot.inputProvenanceStoreDigest,
+        { baseTreeOid: reseated });
+      const snapshot = {
+        ...r.batchSnapshot,
+        baseProvenance: { ...BASE, treeOid: reseated },
+        inventoryDigest: inventorySnapshot.inventoryDigest,
+        inventorySnapshot,
+      };
+      return {
+        ...r, inventoryDigest: inventorySnapshot.inventoryDigest,
+        batchSnapshot: snapshot, batchDigest: digestOf(snapshot),
+      };
     }),
   };
   assertRejects(() => validateAll(tampered, OPTS), "E_BATCH_BASE_MISMATCH", "internally consistent but reseated witness");
@@ -1719,14 +1842,20 @@ test("IS §8: resolve-exception mints grant + REQ + scope ruling and resolves th
 test("IS AC45: after deleting all scratch, the batch content is fully rebuildable from the tracked chain", () => {
   const cwd = temporary("prov-rebuild-");
   runTransaction(cwd, "init-task", { taskId: "TASK-1", baseProvenance: BASE }, OPTS);
+  // The CAS expectation comes from the file this transaction will really load, not from a store
+  // object built alongside it.
+  const loaded = loadStore(cwd);
   runTransaction(cwd, "commit-test-provenance-batch",
-    batchPayload({ batchSnapshot: { taskId: "TASK-1", results: [{ testRef: { path: "a", adapterId: "b", structuralId: "c" }, findings: [] }] } }), OPTS);
+    batchPayload(loaded.store, { digest: loaded.digest }), OPTS);
   fs.rmSync(path.join(cwd, ".ctide", "output"), { recursive: true, force: true }); // scratch is gone
   const store = loadStore(cwd).store;
   const index = indexStore(store);
   const head = index.taskStates.get("TASK-1").committedProvenanceBatchRef;
   const batch = index.records.get(head.ref);
-  assert.deepStrictEqual(batch.batchSnapshot.results[0].testRef, { path: "a", adapterId: "b", structuralId: "c" });
+  assert.deepStrictEqual(batch.batchSnapshot.results[0].testRef, INVENTORY_SETS.A.results[0].testRef,
+    "the reviewed test identity survives");
+  assert.deepStrictEqual(batch.batchSnapshot.inventorySnapshot.entries, INVENTORY_SETS.A.entries,
+    "and so does the inventory preimage the review was computed against");
   assert.strictEqual(batch.batchDigest, digestOf(batch.batchSnapshot), "the snapshot, not just a digest, survives");
 });
 
@@ -1760,7 +1889,7 @@ function siblingBatch(evidenceIds, witnessId = "R-w") {
 
 test("IS AC46(iii)/55: three sibling findings on one subject share ONE transition; the snapshot holds transitionRef", () => {
   let s = withAssumption(CODE);
-  s = apply(s, "commit-test-provenance-batch", batchPayload(siblingBatch(["R-e1", "R-e2", "R-e3"])));
+  s = apply(s, "commit-test-provenance-batch", batchPayload(s, siblingBatch(["R-e1", "R-e2", "R-e3"])));
   const index = indexStore(s);
   assert.strictEqual(s.transitions.length, 1, "one transition for the subject");
   const groups = index.records.get("R-b1").batchSnapshot.resolutions;
@@ -1796,7 +1925,7 @@ test("IS AC46(ii): two different subjects produce two groups and two transitions
   };
   const a = mk("ASSUM-0000000000000000000000000A", "R-e1", "R-w1", "T-a");
   const c = mk("ASSUM-0000000000000000000000000C", "R-e2", "R-w2", "T-c");
-  s = apply(s, "commit-test-provenance-batch", batchPayload({
+  s = apply(s, "commit-test-provenance-batch", batchPayload(s, {
     recordsToCreate: [...a.records, ...c.records], resolutions: [a.group, c.group],
     resolutionCarrierUpdates: nulls("DP-1", "DP-2"),
   }));
@@ -1811,7 +1940,7 @@ test("IS AC47: two groups demanding different actions for one subject reject the
   fs.writeFileSync(storePath(cwd), canonicalStoreBytes(s), "utf8");
   const before = fs.readFileSync(storePath(cwd), "utf8");
   const ev = (id) => ({ kind: "review-ruling", ref: id });
-  assertRejects(() => runTransaction(cwd, "commit-test-provenance-batch", batchPayload({
+  assertRejects(() => runTransaction(cwd, "commit-test-provenance-batch", batchPayload(s, {
     recordsToCreate: [
       reviewRuling("R-e1", { kind: "discipline", discipline: "test" }, "ASSUM-0000000000000000000000000A"),
       reviewRuling("R-w", CODE, "ASSUM-0000000000000000000000000A", { resolutionGroupDigest: "x" }),
@@ -1826,7 +1955,7 @@ test("IS AC47: two groups demanding different actions for one subject reject the
 
 test("IS AC50: a resolution ref that is in neither pre-state nor recordsToCreate fails closed", () => {
   const s = withAssumption(CODE);
-  assertRejects(() => apply(s, "commit-test-provenance-batch", batchPayload({
+  assertRejects(() => apply(s, "commit-test-provenance-batch", batchPayload(s, {
     recordsToCreate: [],
     resolutions: [{
       subjectRef: "ASSUM-0000000000000000000000000A",
@@ -1846,7 +1975,7 @@ test("IS AC48/52: a witness whose resolutionGroupDigest omits a sibling is refus
     subjectRef: "ASSUM-0000000000000000000000000A", action: "retire", successor: null,
     semanticEvidenceRefs: [evidence[0]],
   });
-  assertRejects(() => apply(s, "commit-test-provenance-batch", batchPayload({
+  assertRejects(() => apply(s, "commit-test-provenance-batch", batchPayload(s, {
     resolutionCarrierUpdates: nulls("DP-1"),
     recordsToCreate: [
       ...["R-e1", "R-e2"].map((id) => reviewRuling(id, { kind: "discipline", discipline: "test" }, "ASSUM-0000000000000000000000000A")),
@@ -1867,11 +1996,11 @@ test("IS AC53: relatedRefs must equal the derived set (recordsToCreate ∪ resol
   let s = withAssumption(CODE);
   const good = siblingBatch(["R-e1"]);
   // The transaction derives relatedRefs itself; supplying a different set is refused.
-  assertRejects(() => apply(s, "commit-test-provenance-batch", batchPayload({
+  assertRejects(() => apply(s, "commit-test-provenance-batch", batchPayload(s, {
     ...good, relatedRefs: [{ kind: "review-ruling", ref: "R-e1" }],
   })), "E_RELATED_REFS", "hand-supplied relatedRefs that do not match");
 
-  const ok = apply(s, "commit-test-provenance-batch", batchPayload(good));
+  const ok = apply(s, "commit-test-provenance-batch", batchPayload(s, good));
   const derived = indexStore(ok).records.get("R-b1").relatedRefs;
   assert.deepStrictEqual(derived, sortTypedRefs(derived), "relatedRefs are sorted and deduplicated");
   assert.ok(derived.some((r) => r.kind === "transition" && r.ref === "T-b"), "the transition ref is included");
@@ -1881,7 +2010,7 @@ test("IS AC53: relatedRefs must equal the derived set (recordsToCreate ∪ resol
 
 test("SM §9: a batch whose baseProvenance disagrees with the tracked TaskState witness is refused", () => {
   const s = baseFixture();
-  assertRejects(() => apply(s, "commit-test-provenance-batch", batchPayload({
+  assertRejects(() => apply(s, "commit-test-provenance-batch", batchPayload(s, {
     baseProvenance: { ...BASE, treeOid: "c".repeat(40) },
   })), "E_BASE_MISMATCH", "batch witness disagreeing with TaskState");
 });
@@ -1896,7 +2025,7 @@ test("IS AC44: the whole batch lands in ONE transaction — a late validation fa
   // after evidence, witness, transition and DP closure have all been applied in memory.
   const evidence = [{ kind: "review-ruling", ref: "R-e1" }];
   const digest = resolutionGroupDigest({ subjectRef: "ASSUM-0000000000000000000000000A", action: "retire", successor: null, semanticEvidenceRefs: evidence });
-  assertRejects(() => runTransaction(cwd, "commit-test-provenance-batch", batchPayload({
+  assertRejects(() => runTransaction(cwd, "commit-test-provenance-batch", batchPayload(s, {
     recordsToCreate: [
       reviewRuling("R-e1", { kind: "discipline", discipline: "test" }, "ASSUM-0000000000000000000000000A"),
       reviewRuling("R-w", SECURITY, "ASSUM-0000000000000000000000000A", { resolutionGroupDigest: digest }),
@@ -2811,7 +2940,7 @@ test("IS AC81: source 2 inside commit-test-provenance-batch — one CAS, head ad
   const digest = resolutionGroupDigest({
     subjectRef: "REQ-0000000000000000000000000A", action: "supersede", successor: "REQ-0000000000000000000000000X", semanticEvidenceRefs: evidence,
   });
-  const batch = (updates) => batchPayload({
+  const batch = (updates) => batchPayload(s, {
     recordsToCreate: [
       reviewRuling("R-e1", { kind: "discipline", discipline: "test" }, "REQ-0000000000000000000000000A"),
       { ...planGateFor("R-pg", "REQ-0000000000000000000000000A", "REQ-0000000000000000000000000X"), resolutionGroupDigest: digest },
@@ -3002,7 +3131,7 @@ test("IS AC81: source 2 inside a batch persists the group's transition as the wi
   const digest = resolutionGroupDigest({
     subjectRef: "REQ-0000000000000000000000000A", action: "supersede", successor: "REQ-0000000000000000000000000X", semanticEvidenceRefs: evidence,
   });
-  const out = apply(s, "commit-test-provenance-batch", batchPayload({
+  const out = apply(s, "commit-test-provenance-batch", batchPayload(s, {
     recordsToCreate: [
       reviewRuling("R-e1", { kind: "discipline", discipline: "test" }, "REQ-0000000000000000000000000A"),
       { ...planGateFor("R-pg", "REQ-0000000000000000000000000A", "REQ-0000000000000000000000000X"), resolutionGroupDigest: digest },
@@ -3041,7 +3170,7 @@ test("IS §8 lifecycle: a batch retire clears the witness rather than carrying i
   const digest = resolutionGroupDigest({
     subjectRef: "ASSUM-00000000000000000000SHARED", action: "retire", successor: null, semanticEvidenceRefs: evidence,
   });
-  const out = apply(t, "commit-test-provenance-batch", batchPayload({
+  const out = apply(t, "commit-test-provenance-batch", batchPayload(t, {
     recordsToCreate: [
       reviewRuling("R-e1", { kind: "discipline", discipline: "test" }, "ASSUM-00000000000000000000SHARED"),
       reviewRuling("R-w", CODE, "ASSUM-00000000000000000000SHARED", { resolutionGroupDigest: digest }),
@@ -3438,12 +3567,12 @@ test("SM §7: a plan gate must NAME its successor, and all four fields are compa
 
 // --- successorClauseDraft ---------------------------------------------------------------------
 
-function reviseBatch(draft, over = {}) {
+function reviseBatch(store, draft, over = {}) {
   const evidence = [{ kind: "review-ruling", ref: "R-e1" }];
   const digest = resolutionGroupDigest({
     subjectRef: "ASSUM-0000000000000000000000000A", action: "revise", successor: "ASSUM-0000000000000000000000000B", semanticEvidenceRefs: evidence,
   });
-  return batchPayload({
+  return batchPayload(store, {
     recordsToCreate: [
       reviewRuling("R-e1", { kind: "discipline", discipline: "test" }, "ASSUM-0000000000000000000000000A"),
       reviewRuling("R-w", CODE, "ASSUM-0000000000000000000000000A", { resolutionGroupDigest: digest }),
@@ -3470,7 +3599,7 @@ const REVISED_ASSUM = {
 
 test("IS AC57: a batch mints the revise successor ASSUM in the SAME transaction", () => {
   const s = withAssumption(CODE);
-  const out = apply(s, "commit-test-provenance-batch", reviseBatch(REVISED_ASSUM));
+  const out = apply(s, "commit-test-provenance-batch", reviseBatch(s, REVISED_ASSUM));
   const index = indexStore(out);
   assert.ok(index.clauses.get("ASSUM-0000000000000000000000000B"), "the successor was minted here");
   assert.strictEqual(statusOf(index, "ASSUM-0000000000000000000000000A"), "revised");
@@ -3483,14 +3612,14 @@ test("IS AC57: a batch mints the revise successor ASSUM in the SAME transaction"
 test("IS AC58: successorClauseDraft presence rules are exact", () => {
   const s = withAssumption(CODE);
   // successor not in pre-state and no draft
-  assertRejects(() => apply(s, "commit-test-provenance-batch", reviseBatch(undefined)),
+  assertRejects(() => apply(s, "commit-test-provenance-batch", reviseBatch(s, undefined)),
     "E_SUCCESSOR_DRAFT_MISSING", "successor absent from pre-state with no draft");
   // draft id disagreeing with the transition's successor
-  assertRejects(() => apply(s, "commit-test-provenance-batch", reviseBatch({ ...REVISED_ASSUM, id: "ASSUM-0000000000000000000000000C" })),
+  assertRejects(() => apply(s, "commit-test-provenance-batch", reviseBatch(s, { ...REVISED_ASSUM, id: "ASSUM-0000000000000000000000000C" })),
     "E_SUCCESSOR_DRAFT_ID", "draft id != transitionDraft.successor");
   // a retire carries no draft
   const retire = siblingBatch(["R-e1"]);
-  assertRejects(() => apply(s, "commit-test-provenance-batch", batchPayload({
+  assertRejects(() => apply(s, "commit-test-provenance-batch", batchPayload(s, {
     ...retire,
     resolutions: retire.resolutions.map((r) => ({ ...r, successorClauseDraft: REVISED_ASSUM })),
   })), "E_SUCCESSOR_DRAFT_FORBIDDEN", "retire with a draft");
@@ -3499,10 +3628,10 @@ test("IS AC58: successorClauseDraft presence rules are exact", () => {
 test("IS AC59: a batch-minted successor ASSUM is held to its routingOrigin obligations", () => {
   const s = withAssumption(CODE);
   assertRejects(() => apply(s, "commit-test-provenance-batch",
-    reviseBatch({ ...REVISED_ASSUM, routingOrigin: undefined })),
+    reviseBatch(s, { ...REVISED_ASSUM, routingOrigin: undefined })),
     "E_ROUTING_ORIGIN_MISSING", "batch-minted ASSUM with no routingOrigin");
   assertRejects(() => apply(s, "commit-test-provenance-batch",
-    reviseBatch({ ...REVISED_ASSUM, routingOrigin: "user-deferred" })),
+    reviseBatch(s, { ...REVISED_ASSUM, routingOrigin: "user-deferred" })),
     "E_ROUTING_ORIGIN_OBLIGATION", "user-deferred obligations unmet");
 });
 
@@ -3517,7 +3646,7 @@ test("IS AC60/65: a batch mints a REQ only for ASSUM|DEC supersede with a comple
     const digest = resolutionGroupDigest({
       subjectRef: "ASSUM-0000000000000000000000000A", action: "supersede", successor: clause.id, semanticEvidenceRefs: evidence,
     });
-    return batchPayload({
+    return batchPayload(s, {
       recordsToCreate: [
         reviewRuling("R-e1", { kind: "discipline", discipline: "test" }, "ASSUM-0000000000000000000000000A"),
         { ...gate, resolutionGroupDigest: digest },
@@ -3554,7 +3683,7 @@ test("IS AC60/65: a batch mints a REQ only for ASSUM|DEC supersede with a comple
 test("IS AC70: resolutions[] refuses a repeated subjectRef instead of merging siblings", () => {
   const s = withAssumption(CODE);
   const one = siblingBatch(["R-e1"]);
-  const dup = batchPayload({
+  const dup = batchPayload(s, {
     ...one,
     resolutions: [one.resolutions[0], { ...one.resolutions[0] }],
   });
@@ -3567,7 +3696,7 @@ test("IS AC70: resolutions[] refuses a repeated subjectRef instead of merging si
 
 // A batch over one subject with an arbitrary action/successor, so the matrix can be probed directly
 // rather than through replace-terminal.
-function subjectBatch({ subject, action, successor, draft, witness, authorityRef, compatibility, carrier }) {
+function subjectBatch(store, { subject, action, successor, draft, witness, authorityRef, compatibility, carrier }) {
   const evidence = [{ kind: "review-ruling", ref: "R-e1" }];
   const digest = resolutionGroupDigest({
     subjectRef: subject, action, successor: successor === undefined ? null : successor,
@@ -3580,7 +3709,7 @@ function subjectBatch({ subject, action, successor, draft, witness, authorityRef
     authorityRef: authorityRef || CODE, ackRef: witnessRef,
     ...(compatibility === undefined ? {} : { compatibility }),
   };
-  return batchPayload({
+  return batchPayload(store, {
     recordsToCreate: [
       reviewRuling("R-e1", { kind: "discipline", discipline: "test" }, subject),
       { ...w, resolutionGroupDigest: digest },
@@ -3610,19 +3739,19 @@ const DEC_N = {
 test("SM §2 matrix: the successor KIND is a closed set, not a fallthrough", () => {
   const s = withAssumption(CODE);
   // ASSUM revise → ASSUM is the one legal revise successor, and stays legal
-  assert.ok(apply(s, "commit-test-provenance-batch", subjectBatch({
+  assert.ok(apply(s, "commit-test-provenance-batch", subjectBatch(s, {
     subject: "ASSUM-0000000000000000000000000A", action: "revise", successor: "ASSUM-0000000000000000000000000B", draft: ASSUM_B,
   })), "ASSUM revise → ASSUM");
 
   // ASSUM supersede → ASSUM has no row in the matrix
-  assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch({
+  assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch(s, {
     subject: "ASSUM-0000000000000000000000000A", action: "supersede", successor: "ASSUM-0000000000000000000000000B", draft: ASSUM_B,
   })), "E_MATRIX_SUCCESSOR_KIND", "ASSUM supersede → ASSUM");
 
   // REQ supersede → ASSUM has no row either
   let r = withSecondRequirement(baseFixture());
   r = apply(r, "adopt-existing-outcome", { dpId: "DP-1", clauseRef: "REQ-0000000000000000000000000A", resolutionCarrierUpdates: nulls("DP-1") });
-  assertRejects(() => apply(r, "commit-test-provenance-batch", subjectBatch({
+  assertRejects(() => apply(r, "commit-test-provenance-batch", subjectBatch(r, {
     subject: "REQ-0000000000000000000000000A", action: "supersede", successor: "ASSUM-0000000000000000000000000Z",
     draft: { ...ASSUM_B, id: "ASSUM-0000000000000000000000000Z" },
     authorityRef: { kind: "user" },
@@ -3633,7 +3762,7 @@ test("SM §2 matrix: the successor KIND is a closed set, not a fallthrough", () 
 test("SM §2 matrix: ASSUM supersede reaches DEC and REQ, and DEC supersede reaches a new REQ in a batch", () => {
   // ASSUM → DEC, governed by the same principal
   let s = withAssumption(CODE);
-  const decBatch = subjectBatch({
+  const decBatch = subjectBatch(s, {
     subject: "ASSUM-0000000000000000000000000A", action: "supersede", successor: "DEC-0000000000000000000000000N",
     draft: { ...DEC_N, basisRefs: [{ kind: "review-ruling", ref: "R-td" }] },
   });
@@ -3641,7 +3770,7 @@ test("SM §2 matrix: ASSUM supersede reaches DEC and REQ, and DEC supersede reac
   assert.ok(apply(s, "commit-test-provenance-batch", decBatch), "ASSUM supersede → DEC");
 
   // ASSUM → new REQ under a complete plan gate
-  const reqOut = apply(s, "commit-test-provenance-batch", subjectBatch({
+  const reqOut = apply(s, "commit-test-provenance-batch", subjectBatch(s, {
     subject: "ASSUM-0000000000000000000000000A", action: "supersede", successor: "REQ-0000000000000000000000000N", draft: REQ_N,
     authorityRef: { kind: "user" }, witness: planGateFor("R-pg", "ASSUM-0000000000000000000000000A", "REQ-0000000000000000000000000N"),
     compatibility: { impact: "no consumers", disposition: "no-affected-dependents" },
@@ -3650,7 +3779,7 @@ test("SM §2 matrix: ASSUM supersede reaches DEC and REQ, and DEC supersede reac
 
   // TP AC78: DEC → new REQ, driven through the BATCH rather than replace-terminal
   let d = withDecision(CODE);
-  const out = apply(d, "commit-test-provenance-batch", subjectBatch({
+  const out = apply(d, "commit-test-provenance-batch", subjectBatch(d, {
     subject: "DEC-0000000000000000000000000A", action: "supersede", successor: "REQ-0000000000000000000000000N",
     draft: REQ_N, authorityRef: { kind: "user" },
     witness: planGateFor("R-pg", "DEC-0000000000000000000000000A", "REQ-0000000000000000000000000N"),
@@ -3668,7 +3797,7 @@ test("SM §2 matrix: ASSUM supersede reaches DEC and REQ, and DEC supersede reac
 
 test("SM §2: successorClauseDraft consumes the SAME matrix — an ASSUM draft only fits a revise", () => {
   const s = withAssumption(CODE);
-  assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch({
+  assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch(s, {
     subject: "ASSUM-0000000000000000000000000A", action: "supersede", successor: "ASSUM-0000000000000000000000000B", draft: ASSUM_B,
   })), "E_MATRIX_SUCCESSOR_KIND", "an ASSUM draft on a supersede group");
 });
@@ -3676,22 +3805,22 @@ test("SM §2: successorClauseDraft consumes the SAME matrix — an ASSUM draft o
 test("SM §2: compatibility is a BICONDITIONAL — present exactly when supersede lands a REQ", () => {
   const s = withAssumption(CODE);
   // missing where required
-  assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch({
+  assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch(s, {
     subject: "ASSUM-0000000000000000000000000A", action: "supersede", successor: "REQ-0000000000000000000000000N", draft: REQ_N,
     authorityRef: { kind: "user" }, witness: planGateFor("R-pg", "ASSUM-0000000000000000000000000A", "REQ-0000000000000000000000000N"),
   })), "E_COMPAT_MISSING", "supersede → REQ without compatibility");
 
   const compat = { impact: "no consumers", disposition: "no-affected-dependents" };
   // present where forbidden: retire
-  assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch({
+  assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch(s, {
     subject: "ASSUM-0000000000000000000000000A", action: "retire", successor: null, compatibility: compat,
   })), "E_COMPAT_FORBIDDEN", "retire carrying compatibility");
   // present where forbidden: revise
-  assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch({
+  assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch(s, {
     subject: "ASSUM-0000000000000000000000000A", action: "revise", successor: "ASSUM-0000000000000000000000000B", draft: ASSUM_B, compatibility: compat,
   })), "E_COMPAT_FORBIDDEN", "revise carrying compatibility");
   // present where forbidden: supersede landing a DEC
-  const decBatch = subjectBatch({
+  const decBatch = subjectBatch(s, {
     subject: "ASSUM-0000000000000000000000000A", action: "supersede", successor: "DEC-0000000000000000000000000N",
     draft: DEC_N, compatibility: compat,
   });
@@ -3778,7 +3907,7 @@ test("IS AC60/65 + TP AC79: every batch REQ-minting condition fails closed on it
   const before = fs.readFileSync(storePath(cwd), "utf8");
   const headBefore = indexStore(s).taskStates.get("TASK-1").committedProvenanceBatchRef;
   const compat = { impact: "no consumers", disposition: "no-affected-dependents" };
-  const good = () => subjectBatch({
+  const good = () => subjectBatch(s, {
     subject: "ASSUM-0000000000000000000000000A", action: "supersede", successor: "REQ-0000000000000000000000000N", draft: REQ_N,
     authorityRef: { kind: "user" }, witness: planGateFor("R-pg", "ASSUM-0000000000000000000000000A", "REQ-0000000000000000000000000N"), compatibility: compat,
   });
@@ -3813,7 +3942,7 @@ test("IS AC60/65 + TP AC79: every batch REQ-minting condition fails closed on it
   // subject that is neither ASSUM nor DEC
   let r = withSecondRequirement(baseFixture());
   r = apply(r, "adopt-existing-outcome", { dpId: "DP-1", clauseRef: "REQ-0000000000000000000000000A", resolutionCarrierUpdates: nulls("DP-1") });
-  assertRejects(() => apply(r, "commit-test-provenance-batch", subjectBatch({
+  assertRejects(() => apply(r, "commit-test-provenance-batch", subjectBatch(r, {
     subject: "REQ-0000000000000000000000000A", action: "supersede", successor: "REQ-0000000000000000000000000N", draft: REQ_N,
     authorityRef: { kind: "user" }, witness: planGateFor("R-pg", "REQ-0000000000000000000000000A", "REQ-0000000000000000000000000N"), compatibility: compat,
   })), "E_SUCCESSOR_DRAFT_TIER", "a REQ subject cannot mint its successor through the batch");
@@ -3823,7 +3952,7 @@ test("IS AC58: successorClauseDraft presence rules, including an existing succes
   let s = withAssumption(CODE);
   s = withSecondRequirement(s); // REQ-b exists in pre-state
   // successor already in pre-state → the draft is forbidden
-  assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch({
+  assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch(s, {
     subject: "ASSUM-0000000000000000000000000A", action: "supersede", successor: "REQ-0000000000000000000000000B",
     draft: { ...REQ_N, id: "REQ-0000000000000000000000000B" }, authorityRef: { kind: "user" },
     witness: planGateFor("R-pg", "ASSUM-0000000000000000000000000A", "REQ-0000000000000000000000000B"),
@@ -3831,7 +3960,7 @@ test("IS AC58: successorClauseDraft presence rules, including an existing succes
   })), "E_SUCCESSOR_DRAFT_FORBIDDEN", "existing successor carrying a draft");
   // draft with no id / a non-string id
   for (const [id, what] of [[undefined, "no id"], [42, "a non-string id"]]) {
-    assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch({
+    assertRejects(() => apply(s, "commit-test-provenance-batch", subjectBatch(s, {
       subject: "ASSUM-0000000000000000000000000A", action: "revise", successor: "ASSUM-0000000000000000000000000B", draft: { ...ASSUM_B, id },
     })), "E_SUCCESSOR_DRAFT_ID", `draft with ${what}`);
   }
@@ -3844,7 +3973,7 @@ test("SM §2: compatibility presence is OWN-PROPERTY — an explicit null is not
   // A forbidden row that STATES compatibility: null still states it. Reading presence with a
   // nullish test made "the key is there, holding null" indistinguishable from "no key at all".
   const withNullCompat = (over) => {
-    const b = subjectBatch(over);
+    const b = subjectBatch(s, over);
     b.resolutions[0].transitionDraft.compatibility = null;
     return b;
   };
@@ -3902,20 +4031,20 @@ test("TP AC79 + IS AC58: the remaining Phase 1B negatives fail closed at the DIS
   const assumStore = withSecondRequirement(withAssumption(CODE));
 
   const cases = [
-    ["REQ subject minting a successor", reqStore, "E_SUCCESSOR_DRAFT_TIER", () => subjectBatch({
+    ["REQ subject minting a successor", reqStore, "E_SUCCESSOR_DRAFT_TIER", () => subjectBatch(reqStore, {
       subject: "REQ-0000000000000000000000000A", action: "supersede", successor: "REQ-0000000000000000000000000N", draft: REQ_N,
       authorityRef: { kind: "user" }, witness: planGateFor("R-pg", "REQ-0000000000000000000000000A", "REQ-0000000000000000000000000N"), compatibility: compat,
     })],
-    ["successor absent from pre-state with no draft", assumStore, "E_SUCCESSOR_DRAFT_MISSING", () => subjectBatch({
+    ["successor absent from pre-state with no draft", assumStore, "E_SUCCESSOR_DRAFT_MISSING", () => subjectBatch(assumStore, {
       subject: "ASSUM-0000000000000000000000000A", action: "revise", successor: "ASSUM-0000000000000000000000000B",
     })],
-    ["draft id disagreeing with the successor", assumStore, "E_SUCCESSOR_DRAFT_ID", () => subjectBatch({
+    ["draft id disagreeing with the successor", assumStore, "E_SUCCESSOR_DRAFT_ID", () => subjectBatch(assumStore, {
       subject: "ASSUM-0000000000000000000000000A", action: "revise", successor: "ASSUM-0000000000000000000000000B", draft: { ...ASSUM_B, id: "ASSUM-0000000000000000000000000C" },
     })],
-    ["retire carrying a draft", assumStore, "E_SUCCESSOR_DRAFT_FORBIDDEN", () => subjectBatch({
+    ["retire carrying a draft", assumStore, "E_SUCCESSOR_DRAFT_FORBIDDEN", () => subjectBatch(assumStore, {
       subject: "ASSUM-0000000000000000000000000A", action: "retire", successor: null, draft: ASSUM_B,
     })],
-    ["existing successor carrying a draft", assumStore, "E_SUCCESSOR_DRAFT_FORBIDDEN", () => subjectBatch({
+    ["existing successor carrying a draft", assumStore, "E_SUCCESSOR_DRAFT_FORBIDDEN", () => subjectBatch(assumStore, {
       subject: "ASSUM-0000000000000000000000000A", action: "supersede", successor: "REQ-0000000000000000000000000B", draft: { ...REQ_N, id: "REQ-0000000000000000000000000B" },
       authorityRef: { kind: "user" }, witness: planGateFor("R-pg", "ASSUM-0000000000000000000000000A", "REQ-0000000000000000000000000B"), compatibility: compat,
     })],

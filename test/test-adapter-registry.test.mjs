@@ -66,7 +66,14 @@ function scratchLayout(mutate, mutateManifest) {
     "parser-ignore-worker-runner.mjs", "node-test-adapter.mjs", "provenance-store.mjs", "git-object-read.mjs",
     // the shared raw duplicate-member scanner is part of the loader's static import graph, and the
     // shared content view is now part of the node-test component's
-    "json-unique-members.mjs", "adapter-content-view.mjs", "head-view-snapshot.mjs"]) {
+    // provenance-store's static graph grew with the persisted-batch reader: canonical-json.mjs holds
+    // the canonical encoding/digest primitives it re-exports, and changed-test-inventory.mjs is the
+    // canonical inventory authority it hands a persisted inventorySnapshot to. A scratch layout
+    // missing either cannot import the store at all.
+    "json-unique-members.mjs", "adapter-content-view.mjs", "head-view-snapshot.mjs",
+    // batch-result-binding.mjs holds the per-result binding predicates provenance-store shares with
+    // the Step 6 consumer, so it is part of that module's graph too
+    "canonical-json.mjs", "changed-test-inventory.mjs", "batch-result-binding.mjs"]) {
     fs.cpSync(path.join(root, SCRIPTS_REL, file), path.join(vigil, "scripts", file));
   }
   if (mutateManifest) {

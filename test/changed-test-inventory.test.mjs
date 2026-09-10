@@ -19,7 +19,7 @@ import { root, temporary } from "./helpers.mjs";
 import { canonicalJson, compareCodePoint, sha256Hex } from "../cressetide/skills/vigil/scripts/provenance-store.mjs";
 import {
   V2_INVENTORY_KEYS, computeInventoryV2Digest, parseCanonicalInventoryV2,
-  computeInventoryDigest, parseInventory, loadInventory, UNSUPPORTED_POPULATED,
+  computeInventoryDigest, parseInventory, loadInventory, LEGACY_ENVELOPE_REGENERATE,
 } from "../cressetide/skills/vigil/scripts/changed-test-inventory.mjs";
 
 const MODULE = path.join(root, "cressetide", "skills", "vigil", "scripts", "changed-test-inventory.mjs");
@@ -616,26 +616,25 @@ function productRefuses(text, what) {
   return err;
 }
 
-test("the isolated reader parses a v2 inventory that the product entry point refuses, empty or populated", () => {
+test("v2 rollout: the product entry point RETURNS the canonical reader's result, empty or populated", () => {
+  // RETIRED ASSERTION: this case used to require the product path to refuse every v2 envelope under
+  // `unsupported-populated-inventory`. TP §11b.12's six preconditions and the committed-batch consumer
+  // are now independently accepted, so the gate is lifted and the two paths must AGREE rather than
+  // disagree. The isolated reader's own coverage is unchanged and lives in its cases above.
   for (const [text, label] of [
     [docText(seal({})), "an EMPTY canonical v2 envelope"],
     [withEntries([entry()]), "a POPULATED canonical v2 envelope"],
   ]) {
     const read = parseCanonicalInventoryV2(text);
-    assert.ok(Array.isArray(read.entries), `${label}: the isolated component reads it completely`);
-
-    const err = productRefuses(text, label);
-    assert.match(err.message, new RegExp(UNSUPPORTED_POPULATED), `${label}: under the same stable marker`);
-    assert.match(err.message, /validated completely/, `${label}: the refusal is a policy boundary, not a parse failure`);
+    const viaProduct = parseInventory(text);
+    assert.deepStrictEqual(viaProduct, read, `${label}: one authority, one result`);
+    assert.ok(Array.isArray(viaProduct.entries), `${label}: the entries are handed back`);
   }
-
-  // and the empty case is refused for a stated reason, not by accident
-  const empty = productRefuses(docText(seal({})), "the empty envelope");
-  assert.match(empty.message, /an EMPTY one is refused for the same reason a populated one is/,
-    "the message says why an empty v2 envelope gets no exemption");
+  assert.strictEqual(parseInventory(withEntries([entry()])).entries.length, 1,
+    "a populated envelope is no longer a policy refusal");
 });
 
-test("loadInventory refuses a v2 envelope on disk under the same marker", () => {
+test("loadInventory returns a v2 envelope from disk, and refuses a legacy v1 one", () => {
   const dir = temporary("ctide-inv-v2-");
   try {
     for (const [text, label] of [
@@ -644,18 +643,20 @@ test("loadInventory refuses a v2 envelope on disk under the same marker", () => 
     ]) {
       const file = path.join(dir, "changed-test-inventory.json");
       fs.writeFileSync(file, `${text}\n`, "utf8");
-      let err = null;
-      try { loadInventory(file); } catch (e) { err = e; }
-      assert.ok(err, `${label}: refused`);
-      assert.strictEqual(err.name, "InventoryError", `${label}: as an InventoryError`);
-      assert.match(err.message, new RegExp(UNSUPPORTED_POPULATED), `${label}: under the stable marker`);
+      assert.deepStrictEqual(loadInventory(file), parseCanonicalInventoryV2(text),
+        `${label}: read from disk through the one authority`);
     }
 
-    // a legacy v1 clean slice on the same path still loads
+    // RETIRED ASSERTION: a legacy v1 clean slice used to LOAD here. TP §2:274-276 refuses every v1
+    // envelope once v2 is in force, and an empty one is explicitly not a coverage bypass because it
+    // declares neither registryDigest nor headViewDigest.
     const v1Body = { baseTreeOid: OID40, entries: [] };
     const file = path.join(dir, "changed-test-inventory.json");
     fs.writeFileSync(file, JSON.stringify({ ...v1Body, inventoryDigest: computeInventoryDigest(v1Body) }), "utf8");
-    assert.strictEqual(loadInventory(file).baseTreeOid, OID40, "legacy v1 still loads through the product path");
+    let legacy = null;
+    try { loadInventory(file); } catch (e) { legacy = e; }
+    assert.ok(legacy && new RegExp(LEGACY_ENVELOPE_REGENERATE).test(legacy.message),
+      "a legacy v1 clean slice on disk is refused with regenerate guidance");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -670,21 +671,28 @@ test("parseInventory dispatches on the envelope version and fails closed in betw
     [`${docText(seal({}))}`.replace(/^\{/, "{\"entries\":[],"), "an empty v2 with a duplicate root member", "E_DUPLICATE_MEMBER"],
   ]) {
     const err = productRefuses(text, label);
-    assert.ok(!new RegExp(UNSUPPORTED_POPULATED).test(err.message),
+    assert.ok(!new RegExp(LEGACY_ENVELOPE_REGENERATE).test(err.message),
       `${label}: must fail for the malformation, got: ${err.message}`);
     assert.strictEqual(err.code, code, `${label}: reports its own canonical error`);
   }
 
-  // legacy v1 clean slice: still parsed, still digest-checked
-  const v1Body = { baseTreeOid: OID40, entries: [] };
-  const v1 = parseInventory(JSON.stringify({ ...v1Body, inventoryDigest: computeInventoryDigest(v1Body) }));
-  assert.strictEqual(v1.baseTreeOid, OID40);
-
-  // legacy v1 populated: still refused at the same boundary
-  const v1Full = { baseTreeOid: OID40, entries: [entry()] };
-  let e2 = null;
-  try { parseInventory(JSON.stringify({ ...v1Full, inventoryDigest: computeInventoryDigest(v1Full) })); } catch (e) { e2 = e; }
-  assert.ok(e2 && new RegExp(UNSUPPORTED_POPULATED).test(e2.message), "legacy populated is still fail-closed");
+  // Legacy v1, EMPTY and POPULATED alike: recognised as v1 by its exact absence shape and refused with
+  // regenerate guidance. The empty one is the discriminating half -- it used to parse and return.
+  for (const [entries, label] of [[[], "an empty v1 slice"], [[entry()], "a populated v1 document"]]) {
+    const body = { baseTreeOid: OID40, entries };
+    let e2 = null;
+    try { parseInventory(JSON.stringify({ ...body, inventoryDigest: computeInventoryDigest(body) })); } catch (e) { e2 = e; }
+    assert.ok(e2, `${label}: refused`);
+    assert.strictEqual(e2.name, "InventoryError", `${label}: as an InventoryError`);
+    assert.ok(new RegExp(LEGACY_ENVELOPE_REGENERATE).test(e2.message), `${label}: under the regenerate marker`);
+    assert.match(e2.message, /Regenerate the inventory as a v2 envelope/, `${label}: says what to do`);
+  }
+  // A v1 document whose SHAPE is wrong still fails for its shape, so the v1 recognition really is the
+  // exact absence shape and not a catch-all.
+  let shape = null;
+  try { parseInventory(JSON.stringify({ baseTreeOid: OID40, entries: [] })); } catch (e) { shape = e; }
+  assert.ok(shape && !new RegExp(LEGACY_ENVELOPE_REGENERATE).test(shape.message),
+    "a v1-ish document missing inventoryDigest is a shape refusal, not a regenerate one");
 
   // in-between shapes: a discriminator with the wrong key set, and a v2-ish shape with no discriminator
   for (const [doc, label] of [
@@ -696,7 +704,8 @@ test("parseInventory dispatches on the envelope version and fails closed in betw
     try { parseInventory(doc); } catch (e) { err = e; }
     assert.ok(err, `${label}: fail-closed`);
     assert.strictEqual(err.name, "InventoryError", `${label}: as an InventoryError`);
-    assert.ok(!new RegExp(UNSUPPORTED_POPULATED).test(err.message), `${label}: refused for its shape, not as unsupported`);
+    assert.ok(!new RegExp(LEGACY_ENVELOPE_REGENERATE).test(err.message),
+      `${label}: refused for its shape, not as a legacy envelope`);
   }
 });
 
@@ -737,9 +746,8 @@ test("TP AC169 (16)-(20): the two v1.14 reader invariants a single entry can car
     // constructor, so nothing here depends on a second copy of the error type.
     assert.strictEqual(error.name, "InventoryError", label + ": an InventoryError");
     assert.strictEqual(error.code, "E_ENTRY_INVARIANT", label);
-    // Never reported as the product rollout gate: these are canonical-document faults, and the
-    // isolated reader is not where the gate lives.
-    assert.ok(!error.message.startsWith(UNSUPPORTED_POPULATED), label + ": not the populated gate");
+    // Never reported as a rollout/version marker: these are canonical-document faults.
+    assert.ok(!error.message.startsWith(LEGACY_ENVELOPE_REGENERATE), label + ": not a version refusal");
   }
 
   // (19) modified with a moved body AND a changed tag -- accepted, and the tag change is kept. §6's
@@ -771,13 +779,12 @@ test("TP AC169 (16)-(20): the two v1.14 reader invariants a single entry can car
     baseBodyDigest: BODY_BASE, headBodyDigest: BODY_HEAD })]), "moved with a moved body and a changed tag");
   accepted(withEntries([entry({ status: "governance-affected" })]), "governance-affected keeps its own equality");
 
-  // And a document that satisfies v1.14 completely is STILL refused at the product entry point: the
-  // reader deciding a document is well formed is not the product being allowed to act on it.
+  // RETIRED ASSERTION: a document satisfying v1.14 completely used to be refused at the product entry
+  // point regardless. After the v2 rollout the two paths agree — which is the point of lifting the
+  // gate, and is itself the discriminator that the product path is no longer a second opinion.
   const legal = withEntries([entry({ status: "retagged", tagBefore: { clauseRef: REQ }, tagAfter: { clauseRef: DEC },
     baseBodyDigest: BODY_BASE, headBodyDigest: BODY_BASE })]);
-  accepted(legal, "the isolated reader accepts it");
-  let gate = null;
-  try { parseInventory(legal); } catch (e) { gate = e; }
-  assert.ok(gate, "the product entry point must still refuse it");
-  assert.ok(gate.message.startsWith(UNSUPPORTED_POPULATED), gate.message);
+  const isolated = accepted(legal, "the isolated reader accepts it");
+  assert.deepStrictEqual(parseInventory(legal), isolated,
+    "and the product entry point now returns the same result rather than refusing it");
 });

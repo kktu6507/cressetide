@@ -39,9 +39,10 @@
 // no governance-affected, no ChangedTestInventoryV2 entry, no envelope and no inventoryDigest. It
 // computes no digest of any kind, writes nothing, reads no filesystem, Git, environment, network,
 // registry, config or provenance store, and never calls buildDiscoveryAnalysisPreimage: it consumes
-// a preimage that already exists. A green run of this file leaves AC118, AC136, AC137 and AC138
-// exactly as unsatisfied as before, leaves the unsupported-populated-inventory gate standing, and
-// does not make Phase 2 READY.
+// a preimage that already exists. A green run of this file establishes AC118, AC136, AC137 and AC138
+// not at all, and does not make Phase 2 READY. (The clause about leaving the
+// unsupported-populated-inventory gate standing has been dropped rather than reworded: that gate was
+// retired when the public parser rolled to v2. Nothing about this module changed with it.)
 //
 // PURE, IN THE SENSE THAT MATTERS: one argument, one return value, no side effects, no hidden state,
 // and no way to hand it a registry, a parser, a Git executable, an environment, a filesystem, a

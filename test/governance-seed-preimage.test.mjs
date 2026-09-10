@@ -3,8 +3,8 @@
 // SCOPE NOTE: this covers buildGovernanceSeedPreimage() and AC171, and nothing else.
 // produceChangedTestInventoryV2(), AC172, AC173, the governance reverse closure, entry projection,
 // the v2 envelope and all product wiring are NOT implemented and are NOT exercised here. A green run
-// does not satisfy AC118, AC136, AC137 or AC138, does not lift the unsupported-populated-inventory
-// gate, does not make a populated inventory acceptable, and does not mean Phase 2 is ready.
+// does not establish AC118, AC136, AC137 or AC138, and does not mean Phase 2 is ready. (The clause
+// about the unsupported-populated-inventory gate has been dropped: that gate is retired.)
 //
 // Spec anchors (the current approved coupled set, one effective set):
 //   SM  = docs/superpowers/specs/2026-07-25-shared-decision-provenance-model.md (approved v1.15) §2, §9
@@ -209,8 +209,11 @@ async function refused(promise, what, code) {
   return error;
 }
 
+// TP approved v1.17: the seed's request is EXACTLY two keys. taskId belongs to the producer, and
+// naming it here is refused -- that coupling is what made AC171 (B)(ix)/(xi) unreachable under
+// v1.16, because an absent or canonically-empty current store has no TaskState to resolve.
 const build = (repo, baseTreeOid, extra) => buildGovernanceSeedPreimage(
-  extra ? { repoRoot: repo.root, baseTreeOid, taskId: TASK, ...extra } : { repoRoot: repo.root, baseTreeOid, taskId: TASK });
+  extra ? { repoRoot: repo.root, baseTreeOid, ...extra } : { repoRoot: repo.root, baseTreeOid });
 
 // --- (A) carrier shape, ordering, dedupe, deep-freeze -----------------------------------------
 
@@ -290,30 +293,53 @@ test("AC171 (E): the request is exactly { repoRoot, baseTreeOid } and every inje
   await refused(buildGovernanceSeedPreimage("not an object"), "a non-object request", "E_API_ARGUMENTS");
 
   for (const bad of ["HEAD", "main", oid.slice(0, 8), oid.toUpperCase(), "", 42]) {
-    await refused(buildGovernanceSeedPreimage({ repoRoot: repo.root, baseTreeOid: bad, taskId: TASK }),
+    await refused(buildGovernanceSeedPreimage({ repoRoot: repo.root, baseTreeOid: bad }),
       `baseTreeOid ${JSON.stringify(bad)}`, "E_BASE_TREE_OID");
   }
 }));
 
 // --- (B) store capture, version matrix, G1/G2 --------------------------------------------------
 
-// A CONSEQUENCE OF v1.16 worth stating plainly: taskId resolves against G1 unconditionally, and an
-// absent or canonically-empty current store has no TaskState to resolve. So the "G1 absent ->
-// canonical empty v2 digest" rung of AC171 (viii)/(ix) can no longer be reached through the public
-// API -- the run stops earlier, on E_UNKNOWN_TASK. The mapping itself still stands in the spec; what
-// changed is that no three-key request can exercise it. That is recorded here rather than worked
-// around, and the reachable half of the matrix is asserted below.
+// v1.16 made this rung UNREACHABLE: the shared three-key request resolved a task unconditionally,
+// and an absent or canonically-empty current store has no TaskState to resolve, so the run stopped
+// on E_UNKNOWN_TASK before the mapping under test. v1.17 splits the requests, and the rung is a
+// SUCCESS case again -- which is what the spec always said it was.
 
-test("AC171 (B)(ix): an absent or task-less current store cannot name a task, so the run stops there", () => withRepo(async (repo) => {
+test("AC171 (B)(ix): an absent or canonically-empty current store succeeds with the canonical empty digest", () => withRepo(async (repo) => {
   repo.write("README.md", "hello\n");
   const oid = repo.commit();
 
   repo.dropCurrentStore();
-  const absent = await refused(build(repo, oid), "an absent current store", "E_UNKNOWN_TASK");
-  assert.match(absent.message, /names no TaskState/);
+  const absent = await build(repo, oid);
+  assert.strictEqual(absent.inputProvenanceStoreDigest, storeDigest(emptyStore()),
+    "an absent current store maps onto the canonical empty v2 store, and its digest is that store's digest");
+  assert.deepStrictEqual(absent.lifecycleAffectedClauses, [], "and there is nothing to seed");
 
   repo.write(".ctide/provenance.json", canonicalStoreBytes(emptyStore()));
-  await refused(build(repo, oid), "a canonically-empty current store", "E_UNKNOWN_TASK");
+  const explicit = await build(repo, oid);
+  assert.strictEqual(explicit.inputProvenanceStoreDigest, absent.inputProvenanceStoreDigest,
+    "absent and explicitly-empty are the same canonical value, not two states");
+
+  // The seed operation refuses taskId outright: it resolves no task, and accepting the key would
+  // re-create exactly the coupling that made this case unreachable.
+  const e = await refused(build(repo, oid, { taskId: TASK }), "a taskId on the seed request", "E_API_ARGUMENTS");
+  assert.match(e.message, /taskId/);
+}));
+
+test("AC171 (B)(ix): a malformed taskStates section still fails the seed's whole-store schema validation", () => withRepo(async (repo) => {
+  repo.write("README.md", "hello\n");
+  const oid = repo.commit();
+
+  // Not selecting a task is a different thing from not validating one. The store below is legal
+  // everywhere except its taskStates, and the seed must still refuse it.
+  const broken = JSON.parse(JSON.stringify(emptyStore()));
+  broken.taskStates = [{ taskId: TASK }];
+  repo.write(".ctide/provenance.json", `${JSON.stringify(broken)}\n`);
+  // v1.17 §11b.10c layer 1: the AUTHORITATIVE code and cause are preserved as they stand. The
+  // producer no longer re-labels them as its own E_CURRENT_STORE_SCHEMA with the real code demoted
+  // to a `cause` string -- that lost the subject id, which is the whole diagnosis.
+  const e = await refused(build(repo, oid), "a malformed TaskState", "E_SHAPE");
+  assert.match(e.message, /currentTaskDpIds/, "and the upstream message survives verbatim");
 }));
 
 test("AC171 (B)(viii)-(ix): the reachable current-store version matrix", () => withRepo(async (repo) => {
@@ -340,9 +366,9 @@ test("AC171 (B)(viii)-(ix): the reachable current-store version matrix", () => w
   // an unsupported version and malformed bytes are version/schema failures on their own layer
   const v9 = JSON.parse(JSON.stringify(withTask(baseStore(), oid))); v9.provenanceVersion = 9;
   fs.writeFileSync(path.join(repo.root, ".ctide", "provenance.json"), JSON.stringify(v9), "utf8");
-  await refused(build(repo, oid), "an unsupported version", "E_CURRENT_STORE_SCHEMA");
+  await refused(build(repo, oid), "an unsupported version", "E_STORE_VERSION");
   fs.writeFileSync(path.join(repo.root, ".ctide", "provenance.json"), "{ not json", "utf8");
-  await refused(build(repo, oid), "malformed bytes", "E_CURRENT_STORE_SCHEMA");
+  await refused(build(repo, oid), "malformed bytes", "E_STORE_MALFORMED");
 }));
 
 test("AC171 (B)(x)+(xiv): the base store comes from the exact tree, never from the live current store", () => withRepo(async (repo) => {
@@ -368,7 +394,7 @@ test("AC171 (B)(x)+(xiv): the base store comes from the exact tree, never from t
     repo2.write("README.md", "hello\n");
     const oid2 = repo2.commit();
     repo2.putStore(legal(withGrant(baseStore(), { expiry: "2099-01-01" })));
-    const out2 = await buildGovernanceSeedPreimage({ repoRoot: repo2.root, baseTreeOid: oid2, taskId: TASK });
+    const out2 = await buildGovernanceSeedPreimage({ repoRoot: repo2.root, baseTreeOid: oid2 });
     assert.deepStrictEqual(out2.lifecycleAffectedClauses, [REQ("0B")], "a v1 base tree is read-only analysable");
   } finally { fs.rmSync(repo2.root, { recursive: true, force: true }); }
 
@@ -378,13 +404,13 @@ test("AC171 (B)(x)+(xiv): the base store comes from the exact tree, never from t
     const v9 = JSON.parse(JSON.stringify(inBase)); v9.provenanceVersion = 9;
     repo3.write(".ctide/provenance.json", JSON.stringify(v9));
     const oid3 = repo3.commit();
-    await refused(buildGovernanceSeedPreimage({ repoRoot: repo3.root, baseTreeOid: oid3, taskId: TASK }),
+    await refused(buildGovernanceSeedPreimage({ repoRoot: repo3.root, baseTreeOid: oid3 }),
       "a base tree at an unsupported version", "E_BASE_STORE_SCHEMA");
   } finally { fs.rmSync(repo3.root, { recursive: true, force: true }); }
 
   // An object that is not a tree, and one that merely peels to a tree, are both refused.
   const commitOid = repo.git("rev-parse", "HEAD");
-  await refused(buildGovernanceSeedPreimage({ repoRoot: repo.root, baseTreeOid: commitOid, taskId: TASK }),
+  await refused(buildGovernanceSeedPreimage({ repoRoot: repo.root, baseTreeOid: commitOid }),
     "a commit that peels to a tree", "E_BASE_TREE_OID");
 }));
 
@@ -419,7 +445,7 @@ test("AC171 (C)(xvi)-(xvii): expiry membership at the T0 boundary, and the exact
     repoB.write("README.md", "hello\n");
     const oidB = repoB.commit();
     repoB.putStore(inBase); // identical to base: the ONLY possible member is the expired clause
-    const out = await buildGovernanceSeedPreimage({ repoRoot: repoB.root, baseTreeOid: oidB, taskId: TASK });
+    const out = await buildGovernanceSeedPreimage({ repoRoot: repoB.root, baseTreeOid: oidB });
     assert.deepStrictEqual(out.lifecycleAffectedClauses, [REQ("0B")], "a past expiry is expired at T0");
   } finally { fs.rmSync(repoB.root, { recursive: true, force: true }); }
 
@@ -430,7 +456,7 @@ test("AC171 (C)(xvi)-(xvii): expiry membership at the T0 boundary, and the exact
     repoC.write("README.md", "hello\n");
     const oidC = repoC.commit();
     repoC.putStore(live);
-    const out = await buildGovernanceSeedPreimage({ repoRoot: repoC.root, baseTreeOid: oidC, taskId: TASK });
+    const out = await buildGovernanceSeedPreimage({ repoRoot: repoC.root, baseTreeOid: oidC });
     assert.deepStrictEqual(out.lifecycleAffectedClauses, [], "a future expiry is not expired");
   } finally { fs.rmSync(repoC.root, { recursive: true, force: true }); }
 
@@ -442,7 +468,7 @@ test("AC171 (C)(xvi)-(xvii): expiry membership at the T0 boundary, and the exact
     repo.putStore(planted);
     // The refusal is now at G1's CLOCK-FREE schema validation -- before T0 exists -- which is the
     // layer that owns "is this store legal at all", not a membership answer.
-    await refused(build(repo, oid), `planted expiry ${JSON.stringify(bad)}`, "E_CURRENT_STORE_SCHEMA");
+    await refused(build(repo, oid), `planted expiry ${JSON.stringify(bad)}`, "E_SHAPE");
   }
 }));
 
@@ -566,7 +592,7 @@ test("AC171 (D)(xxiii): Check B counts occurrences against the head view; snapsh
     repo2.write("README.md", "nothing matching\n");
     const oid2 = repo2.commit();
     repo2.putStore(snapshotOnly);
-    assert.deepStrictEqual((await buildGovernanceSeedPreimage({ repoRoot: repo2.root, baseTreeOid: oid2, taskId: TASK })).lifecycleAffectedClauses,
+    assert.deepStrictEqual((await buildGovernanceSeedPreimage({ repoRoot: repo2.root, baseTreeOid: oid2 })).lifecycleAffectedClauses,
       [], "snapshot-only never drifts");
   } finally { fs.rmSync(repo2.root, { recursive: true, force: true }); }
 }));
@@ -649,13 +675,16 @@ test("AC171 (B)(vii): exactly two current-store loads, G1 then G2, with nothing 
       '  return real(repoRoot);',
       '}',
     ].join("\n"), "utf8");
-    patch(path.join(scratch, "scripts", "governance-seed-preimage.mjs"),
+    // v1.17: the fixed internal store-loader import lives in the common implementation module the
+    // two operations share; the facade is a re-export. The edit target moved with it, and is still
+    // exactly one point in a scratch copy.
+    patch(path.join(scratch, "scripts", "governance-producer-core.mjs"),
       'from "./current-store-load.mjs"', 'from "./counting-proxy.mjs"');
 
     const script = path.join(scratch, "run.mjs");
     fs.writeFileSync(script, [
       'const m = await import("./scripts/governance-seed-preimage.mjs");',
-      `const out = await m.buildGovernanceSeedPreimage({ repoRoot: ${JSON.stringify(repo.root)}, baseTreeOid: ${JSON.stringify(oid)}, taskId: \"TASK-1\" });`,
+      `const out = await m.buildGovernanceSeedPreimage({ repoRoot: ${JSON.stringify(repo.root)}, baseTreeOid: ${JSON.stringify(oid)} });`,
       'console.log(JSON.stringify({ trace: globalThis.__trace, keys: Object.keys(out).sort() }));',
     ].join("\n"), "utf8");
 
@@ -694,14 +723,17 @@ test("AC171 (B)(xi) negative 2: a store that changes between G1 and G2 fails clo
       '  return text;',
       '}',
     ].join("\n"), "utf8");
-    patch(path.join(scratch, "scripts", "governance-seed-preimage.mjs"),
+    // v1.17: the fixed internal store-loader import lives in the common implementation module the
+    // two operations share; the facade is a re-export. The edit target moved with it, and is still
+    // exactly one point in a scratch copy.
+    patch(path.join(scratch, "scripts", "governance-producer-core.mjs"),
       'from "./current-store-load.mjs"', 'from "./counting-proxy.mjs"');
 
     const script = path.join(scratch, "run.mjs");
     fs.writeFileSync(script, [
       'const m = await import("./scripts/governance-seed-preimage.mjs");',
       'try {',
-      `  const out = await m.buildGovernanceSeedPreimage({ repoRoot: ${JSON.stringify(repo.root)}, baseTreeOid: ${JSON.stringify(oid)}, taskId: \"TASK-1\" });`,
+      `  const out = await m.buildGovernanceSeedPreimage({ repoRoot: ${JSON.stringify(repo.root)}, baseTreeOid: ${JSON.stringify(oid)} });`,
       '  console.log(JSON.stringify({ ok: true, out }));',
       '} catch (e) { console.log(JSON.stringify({ ok: false, code: e.code, message: String(e.message) })); }',
     ].join("\n"), "utf8");
@@ -738,14 +770,17 @@ test("AC171 (B)(xiii): a head view that moves between S1 and S2 stops the run, w
       '  return real(repoRoot);',
       '}',
     ].join("\n"), "utf8");
-    patch(path.join(scratch, "scripts", "governance-seed-preimage.mjs"),
+    // v1.17: the fixed internal store-loader import lives in the common implementation module the
+    // two operations share; the facade is a re-export. The edit target moved with it, and is still
+    // exactly one point in a scratch copy.
+    patch(path.join(scratch, "scripts", "governance-producer-core.mjs"),
       'from "./current-store-load.mjs"', 'from "./counting-proxy.mjs"');
 
     const script = path.join(scratch, "run.mjs");
     fs.writeFileSync(script, [
       'const m = await import("./scripts/governance-seed-preimage.mjs");',
       'try {',
-      `  const out = await m.buildGovernanceSeedPreimage({ repoRoot: ${JSON.stringify(repo.root)}, baseTreeOid: ${JSON.stringify(oid)}, taskId: \"TASK-1\" });`,
+      `  const out = await m.buildGovernanceSeedPreimage({ repoRoot: ${JSON.stringify(repo.root)}, baseTreeOid: ${JSON.stringify(oid)} });`,
       '  console.log(JSON.stringify({ ok: true, keys: Object.keys(out) }));',
       '} catch (e) { console.log(JSON.stringify({ ok: false, code: e.code, message: String(e.message) })); }',
     ].join("\n"), "utf8");
@@ -792,7 +827,7 @@ test("AC171 (C)(xv): T0 is sampled exactly once, after import, and reused for ev
       'armed = true;',
       'let result;',
       'try {',
-      `  const out = await m.buildGovernanceSeedPreimage({ repoRoot: ${JSON.stringify(repo.root)}, baseTreeOid: ${JSON.stringify(oid2)}, taskId: \"TASK-1\" });`,
+      `  const out = await m.buildGovernanceSeedPreimage({ repoRoot: ${JSON.stringify(repo.root)}, baseTreeOid: ${JSON.stringify(oid2)} });`,
       '  result = { ok: true, seed: out.lifecycleAffectedClauses };',
       '} catch (e) { result = { ok: false, code: e.code, message: String(e.message) }; }',
       'console.log(JSON.stringify({ ...result, armedReads: count }));',
@@ -894,8 +929,9 @@ test("AC171 (A)(iii): a non-canonical clause id never reaches the carrier -- ref
     const planted = JSON.parse(JSON.stringify(baseStore()));
     planted.clauses.push({ id, authority: "approved-requirement", kind: "specification", text: "t", sourceRef: "S-hc", taskRef: "TASK-1" });
     repo.write(".ctide/provenance.json", JSON.stringify(planted));
-    const e = await refused(build(repo, oid), `${JSON.stringify(id)} (${why})`, "E_CURRENT_STORE_SCHEMA");
-    assert.match(e.message, /E_CLAUSE_ID_GRAMMAR|not <PREFIX>-<ULID>/, "refused by the id grammar, at the schema layer");
+    const e = await refused(build(repo, oid), `${JSON.stringify(id)} (${why})`, "E_CLAUSE_ID_GRAMMAR");
+    assert.match(e.message, /not <PREFIX>-<ULID>/, "refused by the id grammar, at the schema layer");
+    assert.strictEqual(e.detail, id, "and the authoritative DETAIL survives too -- the offending id itself");
   }
 }));
 
@@ -942,7 +978,7 @@ function clockProbe(scratch, repoRoot, baseTreeOid, t0) {
     "armed = true;",
     "let result;",
     "try {",
-    `  const out = await m.buildGovernanceSeedPreimage({ repoRoot: ${JSON.stringify(repoRoot)}, baseTreeOid: ${JSON.stringify(baseTreeOid)}, taskId: "TASK-1" });`,
+    `  const out = await m.buildGovernanceSeedPreimage({ repoRoot: ${JSON.stringify(repoRoot)}, baseTreeOid: ${JSON.stringify(baseTreeOid)} });`,
     "  result = { ok: true, keys: Object.keys(out).sort() };",
     "} catch (e) { result = { ok: false, code: e.code, message: String(e.message) }; }",
     "console.log(JSON.stringify({ ...result, armedReads: count }));",
@@ -970,8 +1006,8 @@ test("AC171 (C)(xv): a dangling reopenCauseRef in G1 fails BEFORE the clock is r
   try {
     const out = clockProbe(scratch, repo.root, oid, Date.UTC(2030, 5, 15));
     assert.strictEqual(out.ok, false, "a dangling cause witness must not produce a carrier");
-    assert.strictEqual(out.code, "E_CURRENT_STORE_SCHEMA");
-    assert.match(out.message, /E_CAUSE_REF_SHAPE|not a valid TransitionRef/, "refused on the cause ref itself");
+    assert.strictEqual(out.code, "E_CAUSE_REF_SHAPE", "the authoritative code, not a re-labelled wrapper");
+    assert.match(out.message, /not a valid TransitionRef/, "refused on the cause ref itself");
     assert.strictEqual(out.armedReads, 0, `the clock must not have been read, got ${out.armedReads}`);
   } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
 }));
@@ -999,8 +1035,8 @@ test("AC171 (C)(xv): a DP whose terminal disagrees with its status fails BEFORE 
   try {
     const out = clockProbe(scratch, repo.root, oid, Date.UTC(2030, 5, 15));
     assert.strictEqual(out.ok, false, "an incoherent DP terminal must not produce a carrier");
-    assert.strictEqual(out.code, "E_CURRENT_STORE_SCHEMA");
-    assert.match(out.message, /E_INV4_TYPE|type mismatch/, "refused on the terminal type mapping");
+    assert.strictEqual(out.code, "E_INV4_TYPE", "the authoritative code, not a re-labelled wrapper");
+    assert.match(out.message, /type mismatch/, "refused on the terminal type mapping");
     assert.strictEqual(out.armedReads, 0, `the clock must not have been read, got ${out.armedReads}`);
   } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
 }));
@@ -1035,7 +1071,10 @@ test("AC171 (B)(xii): a G2 that fails only TIME-dependent validation is not repo
       "  return text;",
       "}",
     ].join("\n"), "utf8");
-    patch(path.join(scratch, "scripts", "governance-seed-preimage.mjs"),
+    // v1.17: the fixed internal store-loader import lives in the common implementation module the
+    // two operations share; the facade is a re-export. The edit target moved with it, and is still
+    // exactly one point in a scratch copy.
+    patch(path.join(scratch, "scripts", "governance-producer-core.mjs"),
       'from "./current-store-load.mjs"', 'from "./counting-proxy.mjs"');
 
     const out = clockProbe(scratch, repo.root, oid, T0);

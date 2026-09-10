@@ -23,7 +23,7 @@ import {
 } from "../cressetide/skills/vigil/scripts/base-head-declaration-matcher.mjs";
 import { buildDiscoveryAnalysisPreimage } from "../cressetide/skills/vigil/scripts/adapter-discovery-preimage.mjs";
 import {
-  computeInventoryV2Digest, parseInventory, UNSUPPORTED_POPULATED,
+  computeInventoryV2Digest, parseInventory, parseCanonicalInventoryV2,
 } from "../cressetide/skills/vigil/scripts/changed-test-inventory.mjs";
 import { canonicalJson } from "../cressetide/skills/vigil/scripts/provenance-store.mjs";
 
@@ -522,9 +522,11 @@ test("the matcher consumes a preimage the real producer built, unmodified", asyn
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("the product gate is untouched: a v2 envelope is still refused at the product entry point", () => {
-  // This component is not wired into the product entry point, and nothing here lifts the rollout
-  // gate. Asserted rather than asserted-about.
+test("the product entry point returns the canonical result for a v2 envelope, and this component is still not a producer", () => {
+  // This component is not wired into the product entry point. What that means changed when the
+  // rollout gate was retired, so the title and the assertion below now say the same thing: the
+  // product path accepts the envelope, and being able to match declarations still does not make this
+  // module a producer.
   //
   // The envelope below is CANONICALLY VALID -- its digest is computed with the reader's own exported
   // helper -- because parseInventory validates the document fully before it reaches the gate. A
@@ -540,13 +542,18 @@ test("the product gate is untouched: a v2 envelope is still refused at the produ
   };
   const envelope = canonicalJson({ ...body, inventoryDigest: computeInventoryV2Digest(body) });
   let error = null;
+  // RETIRED ASSERTION: the product entry point used to refuse this envelope under
+  // `unsupported-populated-inventory`, and the refusal text named the matcher among the missing
+  // components. Both are now false — the six §11b.12 preconditions and the committed consumer are
+  // accepted, so the product path returns the canonical result.
+  //
+  // The SEMANTIC discriminator this case exists for is unchanged and is asserted below: a pairing
+  // component is not a producer, so being able to MATCH declarations still says nothing about being
+  // allowed to derive an inventory. That is now shown by the matcher's own output, not by a gate.
   try { parseInventory(envelope); } catch (e) { error = e; }
-  assert.ok(error, "a v2 envelope must still be refused at the product entry point");
-  // The reader carries this refusal in its message rather than a code; that is its existing accepted
-  // behaviour and nothing in this round changes it.
-  assert.ok(error.message.startsWith(UNSUPPORTED_POPULATED), error.message);
-  assert.match(error.message, /the base\/head one-to-one matcher/,
-    "the gate still names the matcher among what is missing, because a pairing component is not a producer");
+  assert.strictEqual(error, null, "a well-formed v2 envelope is no longer refused at the product entry point");
+  assert.deepStrictEqual(parseInventory(envelope), parseCanonicalInventoryV2(envelope),
+    "and it returns exactly what the canonical authority returns");
 });
 
 // ---------------------------------------------------------------------------------------------

@@ -3,9 +3,10 @@
 // SCOPE: this captures the head universe once, into memory, and fingerprints it. It does not build
 // a ChangedTestInventory, parse a v2 envelope, match base against head declarations, compute a
 // governance reverse closure, run the S3 consumer freshness recomputation, emit any artifact, write
-// under .ctide/output/**, touch the provenance store, or lift the unsupported-populated-inventory
-// gate. A green run of this file does not satisfy AC118, AC136, AC137 or AC138 and does not mean
-// Phase 2 is ready.
+// under .ctide/output/**, or touch the provenance store. A green run of this file does not establish
+// AC118, AC136, AC137 or AC138 and does not mean Phase 2 is ready. (The retired
+// unsupported-populated-inventory gate has been dropped from this list rather than reworded: it no
+// longer exists, and this module was never on its path.)
 //
 // AUTHORITY: approved test-provenance v1.11 -- section 11b.4 (the tracked explicit-config carrier),
 // section 11b.10 (the four-step head universe, the exact config-path observability exception, the
@@ -50,10 +51,37 @@ const fail = (code, message, detail) => new HeadViewSnapshotError(code, message,
 const GIT_TIMEOUT_MS = 30_000;
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 
-// The closed exclusion set from 11b.10. Nothing else may be added here: a third scratch class has
-// to be written into the spec first, not decided by an implementation.
+// The closed exclusion set from 11b.10. Nothing else may be added here: a further class has to be
+// written into the spec first, not decided by an implementation.
+//
+// `.ctide/ledger/` is the E1 addition (test-provenance v1.18, amendment §D). It is PERSISTENT
+// RUNTIME STATE, not scratch -- references/run-ledger.md records that the tree is never overwritten
+// or truncated -- and it is the tool's own bookkeeping about its runs. Without the exclusion the
+// ledger's own append moves headViewDigest in any repository whose TRACKED .gitignore bytes do not
+// cover it, because run-ledger's nested guard is untracked and untracked guards are not authority
+// here (step 3, below). The consequence was durable rather than momentary: every committed batch
+// stopped re-verifying as soon as any later run appended.
+//
+// COST, stated because step 1 runs BEFORE trackedness is consulted: content under `.ctide/ledger/`
+// is outside the universe whether it is tracked or not, so a file a project deliberately committed
+// there becomes invisible and changing it will not change headViewDigest. That is accepted for a
+// path the runtime contract defines as tool-owned; it is not a statement about `.ctide/` at large.
+// `.ctide/test-provenance-loop/` is the TP v1.21 addition (§D1.4). It is the review-loop
+// controller's own durable bookkeeping -- its state file, its locks, its staging temps, the reviewer
+// and governance inputs the main thread persists there, and the retained writer payloads -- so it is
+// tool-owned in exactly the sense the ledger prefix already is. Without the exclusion, every
+// admission, lock and retained payload would move headViewDigest in any repository whose TRACKED
+// .gitignore bytes do not cover the path, and a batch committed at the start of a loop would stop
+// re-verifying the moment the loop recorded its own next step.
+//
+// The same cost applies, and is accepted for the same reason: content deliberately committed under
+// this prefix is outside the universe whether tracked or not. It is the ONLY head-universe change in
+// that amendment. Exact B is untouched -- the base content view still enumerates every committed
+// leaf with no head exclusions -- and an ADJACENT user prefix such as `.ctide/test-provenance-loops/`
+// or `.ctide/test-provenance-loop-notes.md` stays observable, because this is a `/`-terminated prefix
+// and not a stem match.
 const EXCLUDED_EXACT = new Set([".ctide/provenance.json"]);
-const EXCLUDED_PREFIXES = [".git/", ".ctide/output/"];
+const EXCLUDED_PREFIXES = [".git/", ".ctide/output/", ".ctide/ledger/", ".ctide/test-provenance-loop/"];
 const EXCLUDED_ROOTS = new Set([".git"]);
 
 // §11b.10 step 2, approved v1.11: ONE exact path, never a prefix and never a glob. A consuming
@@ -67,16 +95,30 @@ const GITIGNORE = ".gitignore";
 
 // --- argument shape ---------------------------------------------------------------------------
 
+// OWN keys, not merely the enumerable string ones. Object.keys was wrong in both directions: it hid a
+// legal non-enumerable required key and admitted a hidden or symbol extra one. Symbols are refused
+// before the sort and the message, which are defined over strings; String() is the one rendering a
+// symbol survives. The wanted values are then read ONCE and the caller uses these locals, so nothing a
+// module names can change across its awaits.
 function requireRequest(request, name, keys) {
   if (request === null || typeof request !== "object" || Array.isArray(request)) {
     throw fail("E_API_ARGUMENTS", `${name} expects one options object`);
   }
-  const actual = Object.keys(request).sort();
   const wanted = [...keys].sort();
+  const ownKeys = Reflect.ownKeys(request);
+  const symbols = ownKeys.filter((k) => typeof k !== "string");
+  if (symbols.length > 0) {
+    throw fail("E_API_ARGUMENTS",
+      `${name} refuses the symbol-keyed own properties (${symbols.map(String).join(", ")}); `
+      + `it expects exactly ${JSON.stringify(wanted)}`);
+  }
+  const actual = ownKeys.sort();
   if (actual.length !== wanted.length || actual.some((k, i) => k !== wanted[i])) {
     throw fail("E_API_ARGUMENTS", `${name} expects exactly ${JSON.stringify(wanted)}; got ${JSON.stringify(actual)}`);
   }
-  return request;
+  const captured = {};
+  for (const key of wanted) captured[key] = request[key];
+  return captured;
 }
 
 // --- git ----------------------------------------------------------------------------------------
@@ -259,9 +301,9 @@ function requireCanonicalPath(value, what) {
 //   3. tracked .gitignore exclusion -- for every remaining path
 //   4. closed inclusion -- whatever survives
 // Step 1 lives here. Step 2 is EXPLICIT_CONFIG_PATH, which is deliberately not one of the hard
-// exclusions -- it is neither .ctide/provenance.json nor under .ctide/output/ -- so the exception can
-// never reach past step 1. Step 3 is applied in the ignore-verdict loop, where the exception is
-// honoured; step 4 is the remainder.
+// exclusions -- it is none of .ctide/provenance.json, .ctide/output/ or .ctide/ledger/ -- so the
+// exception can never reach past step 1. Step 3 is applied in the ignore-verdict loop, where the
+// exception is honoured; step 4 is the remainder.
 function isHardExcluded(candidate) {
   if (EXCLUDED_EXACT.has(candidate) || EXCLUDED_ROOTS.has(candidate)) return true;
   return EXCLUDED_PREFIXES.some((prefix) => candidate.startsWith(prefix));
@@ -601,13 +643,14 @@ export async function captureHeadViewSnapshot(request) {
   if (arguments.length !== 1) {
     throw fail("E_API_ARGUMENTS", "captureHeadViewSnapshot takes exactly one argument; a git executable, an environment, an ignore matcher, a filesystem adapter or a capture hook cannot be supplied");
   }
-  requireRequest(request, "captureHeadViewSnapshot", ["repoRoot"]);
+  const { repoRoot } = requireRequest(request, "captureHeadViewSnapshot", ["repoRoot"]);
   // Canonicalise with the filesystem first, because the controlled home is derived from the
   // repository's own filesystem root and must be settled before any Git call is made. One
   // environment for the whole capture, so every Git call below resolves "~" the same way.
-  const requested = canonicalRequestedRoot(request.repoRoot);
+  // `repoRoot` is the captured value; resolveRepoRoot takes it again only to name it in diagnostics.
+  const requested = canonicalRequestedRoot(repoRoot);
   const environment = gitEnvironment(newControlledHome(requested));
-  const root = await resolveRepoRoot(requested, request.repoRoot, environment);
+  const root = await resolveRepoRoot(requested, repoRoot, environment);
 
   // allSettled, not all: if one Git call fails the others must still be waited on rather than left
   // running against a directory the caller may be about to clean up.
@@ -759,13 +802,19 @@ function assertConfigSlotObservable(root, entries) {
 // forbids. Nothing in this module writes, and nothing here can undo a write a caller performs.
 export async function withStableHeadView(request) {
   if (arguments.length !== 1) throw fail("E_API_ARGUMENTS", "withStableHeadView takes exactly one argument");
-  requireRequest(request, "withStableHeadView", ["repoRoot", "evaluate"]);
-  if (typeof request.evaluate !== "function") throw fail("E_API_ARGUMENTS", "withStableHeadView expects evaluate to be a function");
+  const captured = requireRequest(request, "withStableHeadView", ["repoRoot", "evaluate"]);
+  if (typeof captured.evaluate !== "function") throw fail("E_API_ARGUMENTS", "withStableHeadView expects evaluate to be a function");
+  // BOTH values captured: S1 and S2 must describe the same repository, or the comparison below is
+  // between two different subjects rather than a weaker stability check; and the function that runs
+  // must be the one the check above validated.
+  const { repoRoot, evaluate } = captured;
 
-  const first = await captureHeadViewSnapshot({ repoRoot: request.repoRoot });
+  const first = await captureHeadViewSnapshot({ repoRoot });
   // An error from evaluate propagates unchanged: it is the caller's failure, not a stability one.
-  const value = await request.evaluate(first);
-  const second = await captureHeadViewSnapshot({ repoRoot: request.repoRoot });
+  // The ORIGINAL request stays the receiver -- capture fixes which function runs, not what `this` is,
+  // and a callback reading its own caller object is not something this module ever prohibited.
+  const value = await Reflect.apply(evaluate, request, [first]);
+  const second = await captureHeadViewSnapshot({ repoRoot });
   // The brand is what says these two digests came from this module's builder: a refactor that
   // returned anything else from capture would fail here rather than silently compare two numbers of
   // unknown provenance. It is no longer the only place the brand is load-bearing -- consumers

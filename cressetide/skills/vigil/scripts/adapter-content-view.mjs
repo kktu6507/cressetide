@@ -19,9 +19,11 @@
 // is simply absent, and absent is has() === false.
 //
 // WHAT THIS MODULE IS NOT. It builds no inventory, matches nothing between base and head, classifies
-// no status, emits no artifact and writes nothing anywhere. A green run of this file satisfies
-// AC118, AC136, AC137 and AC138 not at all and does not lift the unsupported-populated-inventory
-// gate.
+// no status, emits no artifact and writes nothing anywhere. A green run of this file establishes
+// AC118, AC136, AC137 and AC138 not at all, and does not make Phase 2 READY. (It used to add "and
+// does not lift the unsupported-populated-inventory gate"; that gate no longer exists -- the public
+// parser rolled to v2 and now refuses v1 envelopes instead. Nothing about THIS module changed with
+// it.)
 import fs from "node:fs";
 import path from "node:path";
 
@@ -250,11 +252,19 @@ export async function captureBaseAdapterContentView(request) {
   if (request === null || typeof request !== "object" || Array.isArray(request)) {
     throw fail("E_API_ARGUMENTS", "captureBaseAdapterContentView expects a request object");
   }
-  const keys = Object.keys(request).sort();
+  // OWN keys, not merely the enumerable string ones; symbols refused before the sort and the message.
+  const ownKeys = Reflect.ownKeys(request);
+  const symbols = ownKeys.filter((k) => typeof k !== "string");
+  if (symbols.length > 0) {
+    throw fail("E_API_ARGUMENTS",
+      `captureBaseAdapterContentView refuses the symbol-keyed own properties (${symbols.map(String).join(", ")}); `
+      + 'it expects exactly ["baseTreeOid","repoRoot"]');
+  }
+  const keys = ownKeys.sort();
   if (keys.length !== 2 || keys[0] !== "baseTreeOid" || keys[1] !== "repoRoot") {
     throw fail("E_API_ARGUMENTS", `captureBaseAdapterContentView expects exactly ["baseTreeOid","repoRoot"]; got ${JSON.stringify(keys)}`);
   }
-  const { repoRoot, baseTreeOid } = request;
+  const { repoRoot, baseTreeOid } = request;      // already one read each; unchanged
 
   // Shared v1.14, lexical half. A full, lowercase hex object ID and nothing else -- an abbreviation,
   // a ref, HEAD, a branch name or any revision expression is refused here rather than resolved,

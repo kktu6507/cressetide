@@ -28,7 +28,7 @@ import {
 } from "../cressetide/skills/vigil/scripts/adapter-registry.mjs";
 import { captureHeadViewSnapshot } from "../cressetide/skills/vigil/scripts/head-view-snapshot.mjs";
 import {
-  computeInventoryV2Digest, computeInventoryDigest, parseInventory, loadInventory, UNSUPPORTED_POPULATED,
+  computeInventoryV2Digest, computeInventoryDigest, parseInventory, loadInventory,
 } from "../cressetide/skills/vigil/scripts/changed-test-inventory.mjs";
 import {
   verifySourceFreshness, SourceFreshnessError, EXPLICIT_CONFIG_PATH,
@@ -137,7 +137,15 @@ function scratchScripts(mutateRegistry) {
     // the shared raw duplicate-member scanner is part of both the registry loader's and S3's graph;
     // the shared explicit-config module carries S3's own head carrier rule, and it in turn pulls in
     // the shared content view through the adapter
-    "provenance-store.mjs", "git-object-read.mjs", "json-unique-members.mjs", "explicit-config.mjs", "adapter-content-view.mjs"]) {
+    // canonical-json.mjs holds the canonical encoding/digest primitives provenance-store re-exports;
+    // it is part of that module's graph, so a shipped layout without it cannot even import the store
+    // source-digest-comparison.mjs holds the one definition of the two-digest freshness comparison
+    // and its detail shape, shared with the Step 6 committed consumer; it is in this module's graph
+    "provenance-store.mjs", "canonical-json.mjs", "git-object-read.mjs", "json-unique-members.mjs",
+    // batch-result-binding.mjs holds the per-result binding predicates provenance-store now shares
+    // with the Step 6 consumer; it is part of that module's graph
+    "explicit-config.mjs", "adapter-content-view.mjs", "source-digest-comparison.mjs",
+    "batch-result-binding.mjs"]) {
     fs.cpSync(path.join(root, SCRIPTS_REL, file), path.join(vigil, "scripts", file));
   }
   const registryFile = path.join(vigil, "scripts", "test-adapters.json");
@@ -475,6 +483,64 @@ test("the component has no override surface", async () => {
   } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
 });
 
+// "Exactly these keys" means OWN keys, and the text parsed is the text checked. These divergences are
+// synchronous, so an accessor is needed to reach them; an ordinary object mutated during an await
+// cannot. The operation's own order — parser first, exactly one capture, fresh registry after it,
+// both digest comparisons together — is unchanged and re-asserted here.
+
+test("the request reads OWN keys and reads each owned value exactly once", async () => {
+  const cwd = repoWith();
+  try {
+    const text = await freshText(cwd);
+
+    const hidden = {};
+    Object.defineProperty(hidden, "repoRoot", { value: cwd, enumerable: false });
+    Object.defineProperty(hidden, "inventoryText", { value: text, enumerable: false });
+    assert.deepStrictEqual(Object.keys(hidden), [], "invisible to the enumerable view");
+    assert.strictEqual((await verifySourceFreshness(hidden)).sourceFresh, true,
+      "a request whose required own keys are non-enumerable is legal and is accepted");
+
+    const hiddenExtra = { repoRoot: cwd, inventoryText: text };
+    Object.defineProperty(hiddenExtra, "snapshot", { value: {}, enumerable: false });
+    await refused(verifySourceFreshness(hiddenExtra), "a non-enumerable extra", "E_API_ARGUMENTS");
+
+    const symbolled = { repoRoot: cwd, inventoryText: text };
+    symbolled[Symbol("snapshot")] = {};
+    const error = await refused(verifySourceFreshness(symbolled), "a symbol extra", "E_API_ARGUMENTS");
+    assert.ok(!(error instanceof TypeError), "a typed refusal, not an engine error");
+    assert.match(error.message, /Symbol\(snapshot\)/, "rendered by String(), not flattened to null");
+
+    const counts = { repoRoot: 0, inventoryText: 0 };
+    const values = { repoRoot: cwd, inventoryText: text };
+    const counting = {};
+    for (const name of Object.keys(values)) {
+      Object.defineProperty(counting, name, {
+        enumerable: true, configurable: true, get() { counts[name] += 1; return values[name]; },
+      });
+    }
+    assert.strictEqual((await verifySourceFreshness(counting)).sourceFresh, true);
+    assert.deepStrictEqual(counts, { repoRoot: 1, inventoryText: 1 });
+  } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("capture preserves the parser-first refusal and the one-capture, both-comparison behaviour", async () => {
+  const cwd = repoWith();
+  try {
+    // Parser first: a malformed envelope reports the canonical reader's own error, and it does so
+    // for a repoRoot that could not survive a capture at all — proving no snapshot was taken first.
+    const early = await refused(
+      verifySourceFreshness({ repoRoot: path.join(cwd, "no", "such", "directory"), inventoryText: "{ not json" }),
+      "a malformed envelope with an unusable root", "E_JSON");
+    assert.strictEqual(early.name, "InventoryError", "the parser's own typed error, before any capture");
+
+    // Both comparisons still travel together in one refusal, from one capture.
+    const both = await refused(
+      verifySourceFreshness({ repoRoot: cwd, inventoryText: envelopeText(PLACEHOLDER) }), "both wrong", "E_STALE");
+    assert.strictEqual(both.detail.headViewDigest.matches, false);
+    assert.strictEqual(both.detail.registryDigest.matches, false);
+  } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+});
+
 test("a refusal leaves the repository, the inventory, the store and the scratch directory untouched", async () => {
   const cwd = repoWith({ [EXPLICIT_CONFIG_PATH]: `${CONFIG}\n` });
   try {
@@ -514,18 +580,17 @@ test("verifying freshness does not make a v2 inventory acceptable to the product
     delete emptyBody.inventoryDigest;
     const empty = canonicalJson({ ...emptyBody, inventoryDigest: computeInventoryV2Digest(emptyBody) });
 
+    // RETIRED ASSERTION: both of these used to be refused by the product entry point under
+    // `unsupported-populated-inventory`. The gate is lifted, so the discriminator this case actually
+    // needs is the one below it: verifying freshness and PARSING a document are separate facts, and a
+    // parse result is not a freshness verdict.
     for (const [text, label] of [[populated, "a FRESH populated v2"], [empty, "an empty v2"]]) {
-      let err = null;
-      try { parseInventory(text); } catch (e) { err = e; }
-      assert.ok(err && new RegExp(UNSUPPORTED_POPULATED).test(err.message),
-        `${label}: the product entry point still refuses it`);
+      assert.ok(Array.isArray(parseInventory(text).entries), `${label}: the product entry point reads it`);
     }
 
     const file = writeFile(cwd, ".ctide/output/changed-test-inventory.json", populated);
-    let loadErr = null;
-    try { loadInventory(file); } catch (e) { loadErr = e; }
-    assert.ok(loadErr && new RegExp(UNSUPPORTED_POPULATED).test(loadErr.message),
-      "and so does loadInventory, freshness or no freshness");
+    assert.ok(Array.isArray(loadInventory(file).entries),
+      "and loadInventory reads the same document from disk");
   } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
 });
 

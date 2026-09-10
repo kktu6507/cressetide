@@ -100,6 +100,87 @@ All reviewers report findings as `blocker` / `major` / `minor` (unified vocabula
 - `ui-ux-reviewer`: usability, interaction flow, layout, states, accessibility basics, responsive behavior.
 - `arbiter`: aggregate findings, resolve conflicts, judge readiness, decide failure-memory need.
 
+## Test-provenance fields (TP-active runs)
+
+When the run is TP-active, the packet additionally carries — and the `test-reviewer` handoff must
+receive:
+
+**Inventory classification, three orthogonal fields.** They do not overlap, and no combination is
+guessed into another state:
+
+- **`classification`** — exactly one of `empty` | `non-empty` | `unestablished`.
+- **`entryCount`** — a non-negative integer when the classification is `empty` or `non-empty`;
+  `unknown` when it is `unestablished`.
+- **`reason`** — required **only** when `unestablished`, naming the concrete cause: not produced,
+  producer failure, stale, or another named cause.
+
+`empty` requires `entryCount` 0 and `non-empty` requires `entryCount` > 0. An inconsistent
+combination — `empty` with a non-zero count, `non-empty` with 0, an `unestablished` carrying a count,
+or a missing `reason` on `unestablished` — makes the packet **malformed**; it is not interpreted as
+some other state.
+
+Consequences: an **established** inventory — `empty` with `entryCount` 0, or `non-empty` with a
+positive count — selects the TP semantic review branch (`agents/test-reviewer.agent.md`) and makes
+evidence substitution ineligible. Emptiness is not a fast lane here: D5.2/TP §8 require
+reviewer-authored batch bytes, so a zero-entry inventory is reviewed into a valid batch carrying
+`results: []`. `non-empty` — **including an inventory whose entries are all `governance-affected`** —
+additionally carries D11's explicit mandate for a real reviewer. `unestablished` is a failed required
+provenance path and routes into the existing red-required-check gate before panel selection; it
+reaches no reviewer at all.
+
+**Authoritative reviewer inputs.** A summary is not enough: D5.3 requires the returned batch to carry
+the complete envelope, so the packet supplies the exact values the reviewer copies.
+
+- the exact **`taskId`**;
+- the exact full **`baseProvenance`** — `treeOid`, `storePath`, `storeDigest`;
+- an exact **pointer to the controller-emitted `ChangedTestInventoryV2` artifact**, which the
+  read-only reviewer reads in full;
+- the exact **`inventoryDigest`**, plus the surrounding envelope/digest context;
+- the **tag / clause context** and any **pending governance** those entries depend on;
+- **TP-active state** and the **reviewer output branch** selected for this handoff.
+
+The reviewer **copies** `taskId`, `baseProvenance`, `inventorySnapshot`, `inventoryDigest` and the
+emitted identity values from those authoritative inputs. It does not invent, derive, recompute or
+reformat them — a stated claim is compared and refused, never rewritten away, so a recomputed value
+that differs is simply rejected.
+
+That artifact pointer is an **input to the read-only reviewer**, pointing at the controller's own
+emission. It is not an external proposal-path input to the controller: the controller still receives
+only the exact reviewer-returned batch, persisted by the main thread. The two run in opposite
+directions and carry different objects.
+
+## Persisting the returned batch (main thread)
+
+On **every** TP-active handoff with an **established** inventory — `empty` or `non-empty` alike — the
+reviewer returns one response containing the batch between two standalone sentinel lines
+(`CTIDE_TEST_SEMANTIC_REVIEW_BATCH_BEGIN` / `CTIDE_TEST_SEMANTIC_REVIEW_BATCH_END`), followed by its
+ordinary QA prose. An `unestablished` inventory produces no handoff, so there is nothing to persist.
+The main thread then does exactly this and nothing more:
+
+- **Locate** the two standalone sentinel lines. There must be exactly one of each, BEGIN before END,
+  each a line whose content is exactly that token.
+- **Copy the byte range**: from the first byte after BEGIN's line terminator (LF or CRLF) to the byte
+  immediately before the line terminator that precedes END. That trailing terminator is neither
+  retained nor re-added.
+- **Write those bytes verbatim** to the controller's named review file (`task-<h>.review.json`), then
+  call the controller's submit operation.
+
+It must **not** parse or stringify, pretty-print, sort keys, normalize whitespace or newlines, insert
+or remove a newline or BOM, transcode, sanitize, or paraphrase the batch. Any of those would change
+the bytes the controller hashes and would collapse the raw duplicate members its scanner exists to
+catch. The sentinels and the QA prose **never** reach the file: its content is only the exact
+five-field `TestSemanticReviewBatch` JSON document, with no wrapper.
+
+If a sentinel is missing, duplicated or misordered, or the slice is empty, the reviewer output is
+**unusable** — the selected reviewer did not complete. Apply the existing panel-gap rule
+(`agents/arbiter.agent.md`, *Review sufficiency rules*); do not repair, reconstruct or hand-edit it.
+The main thread never fills in or repairs a missing or malformed field after return: an incomplete
+batch is a reviewer result to rerun, not a draft to finish.
+
+Stated honestly: byte equality from the model's generation through agent transport is a **workflow
+discipline**, not something the controller can mechanically attest — it hashes the persisted file, not
+the reviewer's return. The boundary actually enforced here is *returned slice → persisted bytes*.
+
 ## Full-History Rule
 
 Full thread history is not a review packet. It can contain stale assumptions, abandoned designs, unrelated logs, and sensitive context. Prefer a concise packet with file references and current evidence.

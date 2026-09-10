@@ -5,9 +5,10 @@
 // declarations, their structuralId, their attached tag, their canonical declaration bytes and their
 // effective-oracle dependency closure. It does not enumerate a worktree, read the live filesystem,
 // run adapter discovery or selection, build a ChangedTestInventory, compute or accept a populated
-// inventory, touch the provenance store, or lift the unsupported-populated-inventory gate. A green
-// run of this file does not mean the producer, the consumer freshness recomputation, AC136, AC137,
-// AC138, a populated inventory or Phase 2 is ready.
+// inventory, or touch the provenance store. A green run of this file does not mean the producer, the
+// consumer freshness recomputation, AC136, AC137, AC138 or Phase 2 is ready. (The retired
+// unsupported-populated-inventory gate is no longer named here: it does not exist, and this module
+// was never on its path.)
 //
 // AUTHORITY: approved test-provenance v1.16 (section 2 tag grammar, 11b.2-11b.9f including 11b.8b's
 // @tid AND @src directive exclusion, 11b.11-11b.12) and
@@ -1244,14 +1245,27 @@ const newSession = (view) => ({ view: requireView(view, "view"), modules: new Ma
 
 // --- public API -------------------------------------------------------------------------------------
 
+// OWN keys, not merely the enumerable string ones: Object.keys both refused a legal non-enumerable
+// required key and admitted a hidden or symbol extra one. Symbols are refused before the sort and the
+// message, which are defined over strings. The wanted values are then read ONCE and returned, so the
+// values validated below are the values used.
 function requireRequest(request, name, keys) {
   if (request === null || typeof request !== "object" || Array.isArray(request)) throw fail("E_API_ARGUMENTS", `${name} expects one options object`);
-  const actual = Object.keys(request).sort();
   const wanted = [...keys].sort();
+  const ownKeys = Reflect.ownKeys(request);
+  const symbols = ownKeys.filter((k) => typeof k !== "string");
+  if (symbols.length > 0) {
+    throw fail("E_API_ARGUMENTS",
+      `${name} refuses the symbol-keyed own properties (${symbols.map(String).join(", ")}); `
+      + `it expects exactly ${JSON.stringify(wanted)}`);
+  }
+  const actual = ownKeys.sort();
   if (actual.length !== wanted.length || actual.some((k, i) => k !== wanted[i])) {
     throw fail("E_API_ARGUMENTS", `${name} expects exactly ${JSON.stringify(wanted)}; got ${JSON.stringify(actual)}`);
   }
-  return request;
+  const captured = {};
+  for (const key of wanted) captured[key] = request[key];
+  return captured;
 }
 
 // One module out of an already-captured view. @tid uniqueness is per VIEW (11b.7), and one module
@@ -1259,8 +1273,8 @@ function requireRequest(request, name, keys) {
 // is what closes the cross-file half.
 export async function analyzeModule(request) {
   if (arguments.length !== 1) throw fail("E_API_ARGUMENTS", "analyzeModule takes exactly one argument; a parser, a manifest, an implementation module or executable code cannot be supplied");
-  requireRequest(request, "analyzeModule", ["view", "path"]);
-  return analyzeOne(newSession(request.view), request.path);
+  const captured = requireRequest(request, "analyzeModule", ["view", "path"]);
+  return analyzeOne(newSession(captured.view), captured.path);
 }
 
 // The module set is the CALLER's, because deciding which files an adapter covers is discovery and
@@ -1268,10 +1282,13 @@ export async function analyzeModule(request) {
 // order, and never enumerates anything.
 export async function analyzeView(request) {
   if (arguments.length !== 1) throw fail("E_API_ARGUMENTS", "analyzeView takes exactly one argument");
-  requireRequest(request, "analyzeView", ["view", "modulePaths"]);
-  if (!Array.isArray(request.modulePaths)) throw fail("E_API_ARGUMENTS", "analyzeView expects modulePaths to be an array supplied by the caller");
-  const session = newSession(request.view);
-  const paths = [...request.modulePaths];
+  const captured = requireRequest(request, "analyzeView", ["view", "modulePaths"]);
+  // The array VALIDATED below is the array COPIED below: re-reading the property let a caller pass
+  // Array.isArray with one list and have another analysed. Capture keeps the owned reference; the
+  // existing copy is still what bounds later in-place mutation, and the branded view is never cloned.
+  if (!Array.isArray(captured.modulePaths)) throw fail("E_API_ARGUMENTS", "analyzeView expects modulePaths to be an array supplied by the caller");
+  const session = newSession(captured.view);
+  const paths = [...captured.modulePaths];
   for (const path of paths) requireCanonicalPath(path, "modulePaths[]");
   const seen = new Set();
   for (const path of paths) {

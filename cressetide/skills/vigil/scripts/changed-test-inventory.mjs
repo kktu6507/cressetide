@@ -49,7 +49,12 @@
 // Library only, by design: no CLI entry point, so this file is not another copy of the
 // isInvokedDirectly() cluster the structure validator byte-compares.
 import fs from "node:fs";
-import { canonicalJson, compareCodePoint, sha256Hex } from "./provenance-store.mjs";
+// The canonical primitives come from their own dependency-free module, not from provenance-store.
+// provenance-store now needs THIS module's canonical inventory authority to validate a persisted
+// batch's inventorySnapshot; importing back from it would make the graph store -> inventory -> store
+// and leave evaluation order dependent on which entry point loaded first. Same functions, same
+// single definitions -- provenance-store re-exports them, so its own API is unchanged.
+import { canonicalJson, compareCodePoint, sha256Hex } from "./canonical-json.mjs";
 
 // Per-run derived scratch (docs/runtime-contract.md): rebuildable from Git base/head, never a
 // semantic truth source, read-only for the checker, not committed.
@@ -66,9 +71,16 @@ export const V2_INVENTORY_KEYS = [
   "inputProvenanceStoreDigest", "entries", "inventoryDigest",
 ];
 
-// The stable marker callers and tests can match on, so "this build does not support that yet" is
-// never confused with "that inventory is malformed".
-export const UNSUPPORTED_POPULATED = "unsupported-populated-inventory";
+// The stable marker callers and tests match on, so "regenerate this document" is never confused with
+// "that inventory is malformed".
+//
+// RETIRED: `UNSUPPORTED_POPULATED = "unsupported-populated-inventory"`. It meant "this build does not
+// consume a v2 inventory at all", and that is no longer true -- §11b.12's six preconditions and the
+// committed-batch consumer are all independently accepted, so `parseInventory` now returns the
+// canonical v2 result. The marker was NOT reused for the new v1 refusal: that is a different fact
+// (TP §2:274-276, regenerate a legacy envelope as v2), and giving an old marker a new meaning would
+// leave every existing matcher silently asserting something else.
+export const LEGACY_ENVELOPE_REGENERATE = "legacy-envelope-regenerate";
 
 export class InventoryError extends Error {
   constructor(message, code) {
@@ -146,7 +158,20 @@ const IDENTITY_KEYS = ["implementationId", "parserId", "parserVersion"];
 const SCALAR = { kind: "scalar" };
 const WHITESPACE = new Set([0x20, 0x09, 0x0a, 0x0d]);
 
-function scanDocument(text) {
+// `duplicates` selects the policy, and ONLY the policy:
+//   "reject"  -- the inventory contract: a duplicate member name anywhere in the document is refused
+//                while every occurrence is still observable. This is the default and the behaviour
+//                every existing caller gets.
+//   "allow"   -- locating mode. The duplicate contract belongs to the complete ChangedTestInventoryV2
+//                subtree, NOT to every JSON object that happens to enclose one. When the store
+//                locates a nested inventorySnapshot inside a provenance store, the surrounding
+//                historical document must not acquire an inventory rule it was never written under;
+//                the located subtree is then re-scanned under "reject", which is where the contract
+//                is actually enforced.
+// Each returned node also carries its source span, so a caller can take the exact raw bytes of a
+// nested value instead of re-serialising a parsed object -- a re-serialisation cannot carry a
+// duplicate member, so it cannot be evidence about one.
+function scanDocument(text, { duplicates = "reject" } = {}) {
   let i = 0;
 
   const bad = (what, at = i) => reject("E_JSON", `${what} at offset ${at}`);
@@ -214,16 +239,17 @@ function scanDocument(text) {
   }
 
   function scanObject() {
+    const start = i;
     i += 1;
     const names = [];
     const children = new Map();
     skipWhitespace();
-    if (text[i] === "}") { i += 1; return { kind: "object", names, children }; }
+    if (text[i] === "}") { i += 1; return { kind: "object", names, children, start, end: i }; }
     for (;;) {
       skipWhitespace();
       const nameAt = i;
       const name = scanString();
-      if (children.has(name)) {
+      if (children.has(name) && duplicates === "reject") {
         reject("E_DUPLICATE_MEMBER",
           `the member name ${JSON.stringify(name)} appears twice in one object (offset ${nameAt}). `
           + "Duplicate member names are refused here, while every occurrence is still observable -- "
@@ -238,35 +264,38 @@ function scanDocument(text) {
       children.set(name, child);
       skipWhitespace();
       if (text[i] === ",") { i += 1; continue; }
-      if (text[i] === "}") { i += 1; return { kind: "object", names, children }; }
+      if (text[i] === "}") { i += 1; return { kind: "object", names, children, start, end: i }; }
       bad("expected \",\" or \"}\" in an object");
     }
   }
 
   function scanArray() {
+    const start = i;
     i += 1;
     const items = [];
     skipWhitespace();
-    if (text[i] === "]") { i += 1; return { kind: "array", items }; }
+    if (text[i] === "]") { i += 1; return { kind: "array", items, start, end: i }; }
     for (;;) {
       items.push(scanValue());
       skipWhitespace();
       if (text[i] === ",") { i += 1; continue; }
-      if (text[i] === "]") { i += 1; return { kind: "array", items }; }
+      if (text[i] === "]") { i += 1; return { kind: "array", items, start, end: i }; }
       bad("expected \",\" or \"]\" in an array");
     }
   }
 
   function scanValue() {
     skipWhitespace();
+    const start = i;
     const c = text[i];
     if (c === "{") return scanObject();
     if (c === "[") return scanArray();
-    if (c === "\"") { scanString(); return SCALAR; }
-    if (c === "t") { word("true"); return SCALAR; }
-    if (c === "f") { word("false"); return SCALAR; }
-    if (c === "n") { word("null"); return SCALAR; }
-    if (c === "-" || (c >= "0" && c <= "9")) { scanNumber(); return SCALAR; }
+    const scalar = () => ({ ...SCALAR, start, end: i });
+    if (c === "\"") { scanString(); return scalar(); }
+    if (c === "t") { word("true"); return scalar(); }
+    if (c === "f") { word("false"); return scalar(); }
+    if (c === "n") { word("null"); return scalar(); }
+    if (c === "-" || (c >= "0" && c <= "9")) { scanNumber(); return scalar(); }
     bad(c === undefined ? "unexpected end of document" : `unexpected character ${JSON.stringify(c)}`);
     return SCALAR;
   }
@@ -276,6 +305,47 @@ function scanDocument(text) {
   skipWhitespace();
   if (i !== text.length) bad("trailing content after the document");
   return root;
+}
+
+// Structure-only span tree for ONE document, scanned ONCE.
+//
+// This is how a nested ChangedTestInventoryV2 reaches parseCanonicalInventoryV2 with its original
+// bytes. The alternative -- JSON.parse the enclosing document and re-serialise the sub-object --
+// can never satisfy SM v1.14's duplicate-member obligation: JSON.parse is last-write-wins, so the
+// evidence is already gone, and no amount of re-serialising brings it back.
+//
+// Scanning enforces NO inventory policy. Duplicates are allowed HERE, deliberately, so that a
+// historical store containing some unrelated duplicate is not retroactively judged by a contract
+// that belongs to the inventory subtree. Each located slice is then handed to the canonical reader,
+// which applies the full contract -- duplicates included -- to that subtree.
+//
+// Separated from sliceJsonValue below so a caller with several subtrees to check pays for ONE pass
+// over the document instead of one per subtree: scanning inside a per-record loop is quadratic in
+// the document size, which a store with many batch records feels immediately.
+export function scanJsonSpans(text) {
+  try {
+    return scanDocument(text, { duplicates: "allow" });
+  } catch {
+    return null;                       // not JSON at all: the caller's own parser reports that
+  }
+}
+
+// Returns the EXACT raw source text of one nested value, or null when the path does not exist.
+// `tree` must be the span tree of `text`; `path` is a list of member names and array indices, e.g.
+// ["records", 3, "batchSnapshot", "inventorySnapshot"].
+export function sliceJsonValue(text, tree, path) {
+  let node = tree;
+  for (const step of path) {
+    if (typeof step === "number") {
+      if (!node || node.kind !== "array" || step < 0 || step >= node.items.length) return null;
+      node = node.items[step];
+      continue;
+    }
+    if (!node || node.kind !== "object" || !node.children.has(step)) return null;
+    node = node.children.get(step);
+  }
+  if (!node || typeof node.start !== "number" || typeof node.end !== "number") return null;
+  return text.slice(node.start, node.end);
 }
 
 // --- shape helpers ----------------------------------------------------------------------------------
@@ -626,27 +696,22 @@ export function parseInventory(text) {
   // recognised only by its exact absence shape, so anything in between is fail-closed rather than
   // being read as whichever version it most resembles.
   if (sameKeys(raw, V2_INVENTORY_KEYS)) {
-    // Canonical validation runs FIRST and in full, so a malformed v2 document fails for its own
-    // defect and reports it, rather than disappearing behind the rollout marker.
-    const envelope = parseCanonicalInventoryV2(text);
-    // And then it is refused ANYWAY, empty or populated alike. An empty v2 envelope is not a
-    // harmless subset of a populated one: it still asserts a registryDigest, a headViewDigest and an
-    // inputProvenanceStoreDigest that only an S3 consumer can check, and handing one to a consumer
-    // that cannot check them would let "the universe was empty" pass unproven. The rollout order is
-    // reader before writer, and this build has the reader only.
-    const count = envelope.entries.length;
-    refuse(
-      `${UNSUPPORTED_POPULATED}: the canonical v2 envelope validated completely -- root, entries, ordering `
-      + `and digest -- but this build does not CONSUME a v2 inventory at all; it carries ${count} `
-      + `${count === 1 ? "entry" : "entries"}, and an EMPTY one is refused for the same reason a populated `
-      + "one is. Consuming either needs the §6 producer, the base/head one-to-one matcher, the governance "
-      + "reverse closure and S3 consumer freshness (which is what would recompute registryDigest and "
-      + "headViewDigest). Two of those four are current accepted components -- the base/head one-to-one "
-      + "matcher and the S3 source-freshness verifier -- but NEITHER is product-wired and neither is a "
-      + "producer; the §6 producer and the governance reverse closure are still unimplemented. The "
-      + "canonical v2 reader is a current accepted component too: parseCanonicalInventoryV2() reads the "
-      + "same bytes as an isolated component, which is not the same as this build acting on them",
-    );
+    // V2 ROLLOUT. The canonical authority validates the document in full and its result IS the
+    // product result -- root, entries, ordering, duplicate members and the single digest formula are
+    // all charged there, and a malformed v2 document still reports its OWN defect rather than a
+    // rollout marker, because that validation runs before anything else here.
+    //
+    // §11b.12's six preconditions for accepting a populated inventory -- adapter registry with an
+    // approved parser identity, parser, gitignore engine, producer, canonical parser and S3 consumer
+    // freshness -- are each implemented and independently accepted, as is the committed-batch
+    // consumer. Empty and populated v2 envelopes are treated alike: an empty one asserts the same
+    // registryDigest, headViewDigest and inputProvenanceStoreDigest, and the freshness consumer is
+    // what checks them.
+    //
+    // SCOPE, stated so this is not misread later: this function reads the SCRATCH artifact and serves
+    // Steps 1-4. It is not the Step 6 authority and does not become one -- the accepted committed
+    // consumer reads the committed inventorySnapshot and never opens this file.
+    return parseCanonicalInventoryV2(text);
   }
 
   if (Object.prototype.hasOwnProperty.call(raw, "inventoryVersion")) {
@@ -677,26 +742,23 @@ export function parseInventory(text) {
   }
   if (!Array.isArray(raw.entries)) refuse("changed-test-inventory entries must be an array");
 
-  // The legacy clean-slice boundary, unchanged. A v1 document has no registryDigest and no
-  // headViewDigest, so it cannot prove what universe it covered; a populated one is refused here,
-  // before any entry is inspected, because this build understands none of that entry contract in v1.
-  if (raw.entries.length !== 0) {
-    refuse(
-      `${UNSUPPORTED_POPULATED}: this build reads the canonical envelope for the AC60 historical-consumer `
-      + `clean slice only, so entries[] must be empty; got ${raw.entries.length}. Populated entries need the `
-      + `§6 producer and the per-result body/tag consumers, which are not implemented — the inventory is `
-      + "refused rather than partially parsed",
-    );
-  }
-
-  const expected = computeInventoryDigest(raw);
-  if (raw.inventoryDigest !== expected) {
-    refuse(
-      `changed-test-inventory inventoryDigest ${JSON.stringify(raw.inventoryDigest)} does not equal `
-      + `sha256(canonicalJson({ baseTreeOid, entries })) = ${expected}`,
-    );
-  }
-  return raw;
+  // A WELL-FORMED v1 ENVELOPE, AND IT IS REFUSED ANYWAY. TP §2:274-276: once v2 rolls out, "v1 一律
+  // 拒絕並要求重產", and an `entries: []` v1 document must not become a coverage bypass -- it carries
+  // neither registryDigest nor headViewDigest, so it "根本無法證明自己涵蓋了什麼". Empty and populated
+  // are refused for the SAME reason, which is why the shape is recognised first and the entry count is
+  // reported rather than acted on.
+  //
+  // The shape checks above stay because recognising the exact v1 absence shape is what lets this say
+  // "this is v1, regenerate it" instead of the generic malformed-envelope refusal. computeInventoryDigest
+  // remains exported as the explicit v1 digest formula; it is a formula, never an acceptance route.
+  refuse(
+    `${LEGACY_ENVELOPE_REGENERATE}: this is a legacy v1 inventory envelope carrying ${raw.entries.length} `
+    + `${raw.entries.length === 1 ? "entry" : "entries"}, and every v1 envelope -- empty or populated -- is `
+    + "refused once the v2 rollout is in force. It declares no registryDigest and no headViewDigest, so it "
+    + "cannot prove which universe it covered, and an empty one is not a harmless subset of a populated "
+    + "one. Regenerate the inventory as a v2 envelope",
+  );
+  return raw;                                    // unreachable; refuse() throws
 }
 
 export function loadInventory(file) {

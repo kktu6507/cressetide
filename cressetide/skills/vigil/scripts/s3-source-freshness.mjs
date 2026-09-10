@@ -29,6 +29,8 @@ import {
   readHeadExplicitConfig, registryDigestOf,
 } from "./explicit-config.mjs";
 import { parseCanonicalInventoryV2 } from "./changed-test-inventory.mjs";
+// One definition of the two-digest comparison and its detail shape, shared with the Step 6 consumer.
+import { compareSourceDigests } from "./source-digest-comparison.mjs";
 
 export class SourceFreshnessError extends Error {
   constructor(code, message, detail) {
@@ -49,12 +51,22 @@ export const EXPLICIT_CONFIG_PATH = SHARED_EXPLICIT_CONFIG_PATH;
 
 const REQUEST_KEYS = ["repoRoot", "inventoryText"];
 
+// This helper has exactly one call site -- the public request below -- so charging OWN keys here
+// changes no inner JSON schema. Object.keys was wrong in both directions: it hid a legal
+// non-enumerable required key and admitted a hidden or symbol extra one.
 function exactKeys(value, expected, what, code) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw fail(code, `${what} must be a JSON object`);
   }
-  const actual = Object.keys(value).sort();
   const wanted = [...expected].sort();
+  const ownKeys = Reflect.ownKeys(value);
+  const symbols = ownKeys.filter((k) => typeof k !== "string");
+  if (symbols.length > 0) {
+    throw fail(code,
+      `${what} carries symbol-keyed own properties (${symbols.map(String).join(", ")}); `
+      + `it must declare exactly ${JSON.stringify(wanted)}`);
+  }
+  const actual = ownKeys.sort();
   if (actual.length !== wanted.length || actual.some((k, i) => k !== wanted[i])) {
     const missing = wanted.filter((k) => !actual.includes(k));
     const undeclared = actual.filter((k) => !wanted.includes(k));
@@ -99,21 +111,24 @@ export async function verifySourceFreshness(request) {
       + "be supplied");
   }
   exactKeys(request, REQUEST_KEYS, "the verifySourceFreshness request", "E_API_ARGUMENTS");
-  if (typeof request.repoRoot !== "string" || request.repoRoot === "") {
+  // ONE read of each value, before its own validation; the parse and the single capture below both
+  // use these locals, so the text parsed is the text checked and the root captured is the root read.
+  const { repoRoot, inventoryText } = request;
+  if (typeof repoRoot !== "string" || repoRoot === "") {
     throw fail("E_API_ARGUMENTS", "repoRoot must be a non-empty string");
   }
-  if (typeof request.inventoryText !== "string") {
+  if (typeof inventoryText !== "string") {
     throw fail("E_API_ARGUMENTS", "inventoryText must be a string");
   }
 
   // The envelope first, so a malformed v2 document reports its OWN canonical error rather than
   // being reported as stale. An InventoryError propagates unchanged.
-  const envelope = parseCanonicalInventoryV2(request.inventoryText);
+  const envelope = parseCanonicalInventoryV2(inventoryText);
 
   // S3: one snapshot of the current repository. §11b.9c calls for a third snapshot, and §11b.10's
   // S1/S2 stability protocol belongs to the producer -- capturing twice here would invent an S3/S4
   // protocol no approved text defines.
-  const snapshot = await captureHeadViewSnapshot({ repoRoot: request.repoRoot });
+  const snapshot = await captureHeadViewSnapshot({ repoRoot });
 
   // §11b.9c v1.11: the CURRENT shipped registry, re-read once for this invocation. A cached root
   // would let a second verification report fresh against a registry that has already changed, so
@@ -128,17 +143,16 @@ export async function verifySourceFreshness(request) {
   // BOTH comparisons, then one refusal carrying both. Stopping at the first mismatch would hide the
   // second, and "the head view moved" plus "the registry moved" are two different facts about the
   // world -- a consumer that only ever hears about the first cannot tell them apart.
-  const headMatches = envelope.headViewDigest === headViewDigest;
-  const registryMatches = envelope.registryDigest === registryDigest;
-  if (!headMatches || !registryMatches) {
-    const detail = Object.freeze({
-      headViewDigest: Object.freeze({ declared: envelope.headViewDigest, actual: headViewDigest, matches: headMatches }),
-      registryDigest: Object.freeze({ declared: envelope.registryDigest, actual: registryDigest, matches: registryMatches }),
-    });
-    const stale = [
-      headMatches ? null : "headViewDigest",
-      registryMatches ? null : "registryDigest",
-    ].filter(Boolean);
+  // The comparison itself now has one definition, shared with the Step 6 consumer. It returns data;
+  // this facade's code, message and detail are constructed here exactly as before, so nothing a
+  // caller can observe about this component has changed.
+  const { fresh, stale, detail } = compareSourceDigests(
+    { headViewDigest: envelope.headViewDigest, registryDigest: envelope.registryDigest },
+    { headViewDigest, registryDigest },
+  );
+  const headMatches = detail.headViewDigest.matches;
+  const registryMatches = detail.registryDigest.matches;
+  if (!fresh) {
     throw fail("E_STALE",
       `source freshness failed: ${stale.join(" and ")} ${stale.length === 1 ? "does" : "do"} not match the current `
       + `repository. headViewDigest declared ${JSON.stringify(envelope.headViewDigest)} vs S3 `

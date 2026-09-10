@@ -6,9 +6,10 @@
 // structuralId, canonical declaration bytes and the effective-oracle closure over one captured
 // view. Nothing here runs adapter discovery or selection, builds a ChangedTestInventory, computes
 // an inventoryDigest, matches base against head, or touches the provenance store, because none of
-// that is implemented. A green run of this file does not mean a producer exists, does not satisfy
-// AC136/AC137/AC138, does not lift the unsupported-populated-inventory gate, and does not mean
-// Phase 2 is ready.
+// that is exercised here. A green run of this file does not establish AC136/AC137/AC138 and does not
+// mean Phase 2 is ready. (Two dated clauses are gone rather than reworded: the producer DOES exist
+// now, as its own module and suite, and the unsupported-populated-inventory gate is retired. Neither
+// changes what this file covers.)
 //
 // FIXTURES: every view below is built in memory from string literals, so no fixture is written into
 // the repository and none can be. The one case that needs a real directory -- proving the resolver
@@ -1353,6 +1354,104 @@ test("the public API accepts exactly one options object with an exact key set", 
   assert.strictEqual(await failureOf(() => createContentView({ "../escape.mjs": B("") })), "E_PATH");
   assert.strictEqual(await failureOf(() => createContentView({ "C:/abs.mjs": B("") })), "E_PATH");
   assert.strictEqual(await failureOf(() => createContentView({ "back\\slash.mjs": B("") })), "E_PATH");
+});
+
+// ---------------------------------------------------------------------------------------------
+// Request capture: the list VALIDATED is the list USED, and "exactly these keys" means OWN keys
+//
+// These divergences are synchronous, so an accessor is needed to reach them; an ordinary object
+// mutated during an await cannot. Capture is not a promise to freeze array contents or to clone the
+// branded view — the existing pre-await copy is what bounds later in-place mutation.
+// ---------------------------------------------------------------------------------------------
+
+test("analyzeView analyses the modulePaths it validated, not a list substituted between the two reads",
+  async () => {
+    const one = src(...HEAD, "// @tid alpha", 'test("one", () => { assert.ok(1); });');
+    const two = src(...HEAD, "// @tid beta", 'test("two", () => { assert.ok(1); });');
+    // ONE real branded view holding both modules, each with its own valid, distinct declaration.
+    const view = viewOf({ "one.test.mjs": one, "two.test.mjs": two });
+
+    let reads = 0;
+    const request = { view };
+    Object.defineProperty(request, "modulePaths", {
+      enumerable: true,
+      configurable: true,
+      get() { reads += 1; return reads === 1 ? ["one.test.mjs"] : ["two.test.mjs"]; },
+    });
+
+    const result = await analyzeView(request);
+    assert.deepStrictEqual(result.modules.map((m) => m.path), ["one.test.mjs"],
+      "the analysed module is the one the validated list named");
+    assert.strictEqual(result.modules[0].declarations[0].structuralId, "tid:alpha");
+    assert.strictEqual(reads, 1, "one read, so no second list exists to disagree with the validated one");
+  });
+
+test("analyzeView keeps its ordinary array-copy behaviour: sorting, duplicate refusal and later mutation",
+  async () => {
+    const body = (tid) => src(...HEAD, `// @tid ${tid}`, `test("${tid}", () => { assert.ok(1); });`);
+    const view = viewOf({ "a.test.mjs": body("alpha"), "b.test.mjs": body("beta") });
+
+    // Caller order does not decide analysis order: the copy is sorted by code point, as before.
+    const unsorted = await analyzeView({ view, modulePaths: ["b.test.mjs", "a.test.mjs"] });
+    assert.deepStrictEqual(unsorted.modules.map((m) => m.path), ["a.test.mjs", "b.test.mjs"]);
+
+    // The pre-await copy still bounds an in-place mutation the caller makes afterwards.
+    const owned = ["a.test.mjs"];
+    const pending = analyzeView({ view, modulePaths: owned });
+    owned.push("b.test.mjs");
+    assert.deepStrictEqual((await pending).modules.map((m) => m.path), ["a.test.mjs"],
+      "the copy taken at entry is what was analysed");
+
+    assert.strictEqual(await failureOf(() => analyzeView({ view, modulePaths: ["a.test.mjs", "a.test.mjs"] })),
+      "E_API_ARGUMENTS", "duplicate refusal is unchanged");
+  });
+
+test("both operations read OWN keys and read each owned value exactly once", async () => {
+  const view = viewOf(simple('test("n", () => { assert.ok(1); });'));
+
+  // A required key that is own but not enumerable is a legal request under an own-key contract.
+  const hidden = {};
+  Object.defineProperty(hidden, "view", { value: view, enumerable: false });
+  Object.defineProperty(hidden, "path", { value: "a.test.mjs", enumerable: false });
+  assert.deepStrictEqual(Object.keys(hidden), [], "invisible to the enumerable view");
+  assert.strictEqual((await analyzeModule(hidden)).declarations.length, 1, "and it is accepted");
+
+  // An extra own key is refused however it is hidden, and a symbol is rendered rather than flattened.
+  const hiddenExtra = { view, path: "a.test.mjs" };
+  Object.defineProperty(hiddenExtra, "parser", { value: "other", enumerable: false });
+  assert.strictEqual(await failureOf(() => analyzeModule(hiddenExtra)), "E_API_ARGUMENTS");
+
+  const symbolled = { view, path: "a.test.mjs" };
+  symbolled[Symbol("parser")] = "other";
+  let symbolError = null;
+  try { await analyzeModule(symbolled); } catch (e) { symbolError = e; }
+  assert.strictEqual(symbolError && symbolError.code, "E_API_ARGUMENTS");
+  assert.ok(!(symbolError instanceof TypeError), "a typed refusal, not an engine error");
+  assert.match(symbolError.message, /Symbol\(parser\)/);
+
+  const symbolledView = { view, modulePaths: ["a.test.mjs"] };
+  symbolledView[Symbol("parser")] = "other";
+  assert.strictEqual(await failureOf(() => analyzeView(symbolledView)), "E_API_ARGUMENTS");
+
+  // One read per owned value, for both operations.
+  const counted = (values) => {
+    const counts = {};
+    const request = {};
+    for (const [name, value] of Object.entries(values)) {
+      counts[name] = 0;
+      Object.defineProperty(request, name, {
+        enumerable: true, configurable: true, get() { counts[name] += 1; return value; },
+      });
+    }
+    return { request, counts };
+  };
+  const moduleRequest = counted({ view, path: "a.test.mjs" });
+  await analyzeModule(moduleRequest.request);
+  assert.deepStrictEqual(moduleRequest.counts, { view: 1, path: 1 });
+
+  const viewRequest = counted({ view, modulePaths: ["a.test.mjs"] });
+  await analyzeView(viewRequest.request);
+  assert.deepStrictEqual(viewRequest.counts, { view: 1, modulePaths: 1 });
 });
 
 test("a module path outside the view, or not ESM, is fail-closed", async () => {

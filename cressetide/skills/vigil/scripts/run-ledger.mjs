@@ -7,9 +7,13 @@
 // run-consolidate.mjs reads both to compute on-demand counts. Nothing here stores a rate, score, or
 // percentage — only event facts (see references/run-ledger.md for the schema and lifecycle).
 //
-// Dependency-free (Node built-ins only). Fail-open: every write path swallows fs/git errors and reports a
-// boolean/[] rather than throwing; the CLI always exits 0 and never throws to its caller. Exposes pure
-// functions (buildRunRecord / buildCloseEvent / readRunsLedger) and thin I/O helpers (ledgerDir /
+// Dependency-free at MODULE SCOPE (Node built-ins only), which is what keeps run-reconcile.mjs and
+// run-consolidate.mjs light: the testProvenance collector is reached by a DYNAMIC import inside the
+// append path only, so importing this file's builders never loads the provenance stack. Fail-open:
+// every write path swallows fs/git errors and reports a boolean/[] rather than throwing; the CLI always
+// exits 0 and never throws to its caller. Exposes pure
+// functions (buildRunRecord / buildCloseEvent / readRunsLedger / defaultTestProvenance) and thin
+// synchronous-I/O helpers (ledgerDir /
 // runsLedgerPath / ensureLedgerDir / filesTouched / appendRun / appendClose) for run-reconcile.mjs,
 // run-consolidate.mjs, and the test suite — one shared definition, not per-file copies (the
 // failure-retrieve.mjs / failure-consolidate.mjs sibling-reader convention). main() wraps the CLI under the
@@ -77,6 +81,38 @@ export function filesTouched(cwd, base) {
 // nullable-typed in the schema) or an empty array/string (everything else) — never guessed. Bounded caps:
 // task <= 300 chars, each finding <= 150 chars, findings <= 20 entries, driftMap <= 300 chars,
 // planned.paths <= 50 entries each <= 200 chars — so a pathological input can never bloat the ledger.
+// TP §11 (v1.18 E1): the `testProvenance` block in its ALL-UNAVAILABLE form. One authority for that
+// shape lives here, with the record schema it belongs to, and test-provenance-block.mjs builds its
+// richer blocks from this same template -- so the eighteen keys and their unknown literals cannot
+// drift between the pure builder and the collector.
+//
+// Two literals, and they are not interchangeable. `"unknown"` is an unavailable OBSERVATION; `null`
+// is an established ABSENCE, and neither may be read as the other or coerced to 0/false. The one
+// exception is `converged`, a required combined fail-closed gate whose closed default is `false`.
+// `droppedForNoSource` keeps §11's own unchanged absence literal, `"unreported"`.
+export function defaultTestProvenance() {
+  return {
+    taggedTests: "unknown",
+    inventory: "unknown",
+    findingKinds: "unknown",
+    entriesWithoutFindings: "unknown",
+    oracleDepTriggered: "unknown",
+    governanceAffectedEntries: "unknown",
+    reviewLoopIterations: "unknown",
+    convergenceEpochs: "unknown",
+    converged: false,
+    taskId: null,
+    inventoryDigest: "unknown",
+    batchDigest: "unknown",
+    provenanceBatchRef: "unknown",
+    lastStaleSubject: "unknown",
+    assumTransitions: "unknown",
+    adapterMisses: "unknown",
+    staleBatchRejections: "unknown",
+    droppedForNoSource: "unreported",
+  };
+}
+
 export function buildRunRecord(opts) {
   const o = opts || {};
   const ts = Number.isFinite(o.ts) ? o.ts : 0;
@@ -112,6 +148,10 @@ export function buildRunRecord(opts) {
     planned: { paths: plannedPaths, risk: plannedRisk },
     drift: { outOfScope: driftOutOfScope, mapCorrections: driftMap },
     window: { days: windowDays, status: "open" },
+    // Unconditional, and unconditionally UNAVAILABLE from a pure builder: this function reads no
+    // store, runs no consumer and takes no telemetry parameter, so the only honest block it can
+    // produce is the all-unknown one. The append CLI replaces it with a block it derived ITSELF.
+    testProvenance: defaultTestProvenance(),
   };
 }
 
@@ -188,9 +228,34 @@ const VALID_PANEL_RE = /^(full|substituted:.+)$/;
 export const KNOWN_FLAGS = [
   "--task", "--base", "--verdict", "--verify", "--panel", "--repairs", "--findings", "--planned-paths",
   "--planned-risk", "--drift-outofscope", "--drift-map", "--window-days", "--cwd", "--now",
+  // v1.18 E1. `--task` stays the capped HUMAN prose it has always been; this is the independent
+  // provenance TaskState identity, and the two never share a value or a validation.
+  "--provenance-task",
 ];
 
-function main(argv) {
+// The identity flag's own reading, separate from `get()` because the CLI must tell three states
+// apart that `get()` collapses into one default: absent, present-but-value-less, and repeated. Each
+// non-absent fault is a DIAGNOSTIC -- one record is still appended, fail-open, exit 0 -- and yields
+// the no-identity block rather than a guess.
+export function readProvenanceTaskFlag(args) {
+  const occurrences = args.filter((a) => a === "--provenance-task").length;
+  if (occurrences === 0) return { taskId: null, diagnostic: null };
+  if (occurrences > 1) {
+    return { taskId: null, diagnostic: "--provenance-task was given more than once; no provenance identity is used" };
+  }
+  const value = args[args.indexOf("--provenance-task") + 1];
+  if (value === undefined || KNOWN_FLAGS.includes(value)) {
+    return { taskId: null, diagnostic: "--provenance-task requires a value; no provenance identity is used" };
+  }
+  if (value === "") {
+    return { taskId: null, diagnostic: "--provenance-task was given an empty value; no provenance identity is used" };
+  }
+  return { taskId: value, diagnostic: null };
+}
+
+// ASYNC because the collector it calls reads the store and runs the committed-batch consumer. The
+// pure builder above and the append helpers below stay synchronous; only this entry point awaits.
+async function main(argv) {
   const args = argv.slice(2);
   const sub = args[0];
   // The one shared flag-value lookup EVERY flag in this file goes through. Guards the swallow at its
@@ -243,6 +308,36 @@ function main(argv) {
       driftMap: get("--drift-map", ""),
       windowDays: parseInt(get("--window-days", "14"), 10),
     });
+
+    // TELEMETRY IS DERIVED HERE, NEVER SUPPLIED. The CLI accepts no block, metric, digest or JSON
+    // parameter; it hands the collector a repository root and an identity and takes what the
+    // collector reads for itself. The import is DYNAMIC so the pure builders above -- which
+    // run-reconcile.mjs and run-consolidate.mjs also use -- keep their existing light module graph
+    // and are unaffected by the provenance stack this path pulls in.
+    const identity = readProvenanceTaskFlag(args);
+    if (identity.diagnostic) process.stderr.write(`ctide-ledger: ${identity.diagnostic}\n`);
+    try {
+      const { buildTestProvenanceBlock } = await import("./test-provenance-block.mjs");
+      record.testProvenance = await buildTestProvenanceBlock({
+        repoRoot: cwd, provenanceTaskId: identity.taskId,
+      });
+    } catch (e) {
+      // FAIL-OPEN, and honest about it: the record keeps its unavailable block rather than a
+      // partially derived one, and the run is still recorded.
+      //
+      // ONE FIELD MOVES, and it has to. `null` on taskId asserts "no identity was requested", which
+      // is false when one WAS requested and only the collection failed. That is an unavailable
+      // observation, so the literal is "unknown". No task-id grammar is invented here: this CLI knows
+      // only that a non-empty value was supplied, and whether it names a real TaskState is the
+      // collector's judgment — the collector that could not run. An unvalidated argument is never
+      // echoed back as a known task. The absent and malformed paths keep `null`, because
+      // readProvenanceTaskFlag has already collapsed both to a null identity.
+      if (identity.taskId !== null) record.testProvenance.taskId = "unknown";
+      process.stderr.write(
+        "ctide-ledger: test provenance unavailable — " + (e && e.message ? e.message : e) + "\n",
+      );
+    }
+
     const ok = appendRun(cwd, record);
     if (ok) {
       process.stdout.write("ctide-ledger: appended " + (head || "(no head)") + " (" + files.length + " files)\n");
@@ -265,4 +360,12 @@ function isInvokedDirectly() {
   }
 }
 
-if (isInvokedDirectly()) main(process.argv);
+// The guard itself is unchanged. main() became async when the append path started awaiting the
+// telemetry collector, so its rejection is caught here rather than surfacing as an unhandled
+// rejection: this CLI is fail-open and must still exit 0.
+if (isInvokedDirectly()) {
+  main(process.argv).catch((e) => {
+    process.stderr.write("ctide-ledger: unexpected error — " + (e && e.message ? e.message : e) + "\n");
+    process.exit(0);
+  });
+}

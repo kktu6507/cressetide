@@ -10,10 +10,13 @@
 // NOT the populated-inventory producer. It does NOT match base modules against head modules, and
 // therefore classifies nothing as added, deleted, moved, retagged or body-changed. It computes no
 // inventoryDigest, emits no artifact, is not Step 5 or Step 6, touches no ledger or arbiter, and
-// never reads or writes the provenance store. It is not wired into parseInventory, loadInventory or
-// contract-check: a v2 envelope, empty or populated, is still refused at the product entry point.
-// A green run of this file leaves AC118, AC136, AC137 and AC138 exactly as unsatisfied as before,
-// leaves the unsupported-populated-inventory gate standing, and does not make Phase 2 READY.
+// never reads or writes the provenance store, and it is not wired into parseInventory, loadInventory
+// or contract-check. (The dated claim that used to sit here -- "a v2 envelope, empty or populated, is
+// still refused at the product entry point" -- described the retired unsupported-populated-inventory
+// gate and is no longer true of the product: parseInventory now returns the canonical v2 result and
+// refuses v1 envelopes instead. What remains true is that THIS module is not on that path.)
+// A green run of this file establishes AC118, AC136, AC137 and AC138 not at all, and does not make
+// Phase 2 READY.
 //
 // THE ONE PUBLIC REQUEST IS { repoRoot, baseTreeOid } AND NOTHING ELSE. §11b.10b lists what may not
 // be supplied -- a registry, a registry path or root, a parser, an ignore matcher, a Git executable
@@ -311,13 +314,25 @@ export async function buildDiscoveryAnalysisPreimage(request) {
   if (request === null || typeof request !== "object" || Array.isArray(request)) {
     throw fail("E_API_ARGUMENTS", "buildDiscoveryAnalysisPreimage expects a request object");
   }
-  const actual = Object.keys(request).sort();
+  // OWN keys, not merely the enumerable string ones; symbols refused before the sort and the message.
   const wanted = [...REQUEST_KEYS].sort();
+  const ownKeys = Reflect.ownKeys(request);
+  const symbols = ownKeys.filter((k) => typeof k !== "string");
+  if (symbols.length > 0) {
+    throw fail("E_API_ARGUMENTS",
+      `the buildDiscoveryAnalysisPreimage request carries symbol-keyed own properties `
+      + `(${symbols.map(String).join(", ")}); it must declare exactly ${JSON.stringify(wanted)}`);
+  }
+  const actual = ownKeys.sort();
   if (actual.length !== wanted.length || actual.some((k, i) => k !== wanted[i])) {
     throw fail("E_API_ARGUMENTS",
       `the buildDiscoveryAnalysisPreimage request must declare exactly ${JSON.stringify(wanted)}; got ${JSON.stringify(actual)}`);
   }
-  if (typeof request.repoRoot !== "string" || request.repoRoot === "") {
+  // ONE read of each value. The base tree, the head/stability side and the DECLARED baseTreeOid below
+  // are separated by awaits, so re-reading let the observed base, the observed head and the declared
+  // identity name three different things.
+  const { repoRoot, baseTreeOid } = request;
+  if (typeof repoRoot !== "string" || repoRoot === "") {
     throw fail("E_API_ARGUMENTS", "repoRoot must be a non-empty string");
   }
 
@@ -329,14 +344,14 @@ export async function buildDiscoveryAnalysisPreimage(request) {
 
   // Step 2: the base view, from the object database only.
   const baseView = requireAdapterContentView(
-    await captureBaseAdapterContentView({ repoRoot: request.repoRoot, baseTreeOid: request.baseTreeOid }),
+    await captureBaseAdapterContentView({ repoRoot, baseTreeOid }),
     "the base content view");
 
   // Step 3-5, all inside evaluate. withStableHeadView returns this value only after S2 has matched
   // S1 on both headViewDigest and configCarrierState, so nothing computed here escapes an unstable
   // head view -- and an error thrown here propagates instead of producing a partial preimage.
   const stable = await withStableHeadView({
-    repoRoot: request.repoRoot,
+    repoRoot,
     evaluate: async (s1) => {
       const headView = requireAdapterContentView(projectHeadAdapterContentView(s1), "the head content view");
       // §11b.4d, the two carrier rules, in the order §11b.10b numbers the sides: base is step 2 and
@@ -383,7 +398,7 @@ export async function buildDiscoveryAnalysisPreimage(request) {
   }
 
   return Object.freeze({
-    baseTreeOid: request.baseTreeOid,
+    baseTreeOid,
     headViewDigest: stable.snapshot.headViewDigest,
     registryDigest,
     baseModules,

@@ -221,6 +221,47 @@ test("11b.10 base: the request key set is exact and nothing else can be supplied
   });
 });
 
+// "Exactly these keys" means OWN keys. Object.keys was wrong in both directions: it hid a legal
+// non-enumerable required key and admitted a hidden or symbol extra one. This operation already read
+// each value once; the read-count control pins that so a later refactor cannot regress it silently.
+
+test("11b.10 base: the key check reads OWN keys, and each value is read exactly once", async () => {
+  await withRepo(async (repo) => {
+    repo.write("a.mjs", "export const x = 1;\n");
+    const tree = repo.commit();
+
+    const hidden = {};
+    Object.defineProperty(hidden, "repoRoot", { value: repo.root, enumerable: false });
+    Object.defineProperty(hidden, "baseTreeOid", { value: tree, enumerable: false });
+    assert.deepStrictEqual(Object.keys(hidden), [], "invisible to the enumerable view");
+    assert.strictEqual((await captureBaseAdapterContentView(hidden)).size, 1,
+      "a request whose required own keys are non-enumerable is legal and is accepted");
+
+    const hiddenExtra = { repoRoot: repo.root, baseTreeOid: tree };
+    Object.defineProperty(hiddenExtra, "git", { value: "git", enumerable: false });
+    await refused(captureBaseAdapterContentView(hiddenExtra), "a non-enumerable extra", "E_API_ARGUMENTS");
+
+    const symbolled = { repoRoot: repo.root, baseTreeOid: tree };
+    symbolled[Symbol("git")] = "git";
+    const error = await refused(captureBaseAdapterContentView(symbolled), "a symbol extra", "E_API_ARGUMENTS");
+    assert.ok(!(error instanceof TypeError), "a typed refusal, not an engine error");
+    assert.match(error.message, /Symbol\(git\)/, "rendered by String(), not flattened to null");
+
+    const counts = { repoRoot: 0, baseTreeOid: 0 };
+    const values = { repoRoot: repo.root, baseTreeOid: tree };
+    const counting = {};
+    for (const name of Object.keys(values)) {
+      Object.defineProperty(counting, name, {
+        enumerable: true,
+        configurable: true,
+        get() { counts[name] += 1; return values[name]; },
+      });
+    }
+    assert.strictEqual((await captureBaseAdapterContentView(counting)).size, 1);
+    assert.deepStrictEqual(counts, { repoRoot: 1, baseTreeOid: 1 });
+  });
+});
+
 test("SM v1.14 base: the OID is a full lowercase hex object name, never a revision expression", async () => {
   await withRepo(async (repo) => {
     repo.write("a.mjs", "export const x = 1;\n");
@@ -300,6 +341,11 @@ test("11b.10 base: head exclusions and .gitignore are NOT applied to a committed
     repo.write(".gitignore", "ignored/\n*.ignored\n");
     repo.write(".ctide/provenance.json", '{"provenanceVersion":2}\n');
     repo.write(".ctide/output/report.json", "{}\n");
+    // v1.18 E1 added `.ctide/ledger/` to the HEAD exclusion set. This control exists so that
+    // addition can never be extended to the base capture: B is an immutable committed tree, and
+    // TP ~2347 says the head hard exclusions do not apply to it.
+    repo.write(".ctide/ledger/runs.jsonl", '{"type":"run"}\n');
+    repo.write(".ctide/ledger/.gitignore", "*\n!.gitignore\n");
     repo.write("ignored/still-committed.mjs", "export const x = 1;\n");
     repo.write("thing.ignored", "committed anyway\n");
     repo.write("a.mjs", "export const a = 1;\n");
@@ -308,7 +354,9 @@ test("11b.10 base: head exclusions and .gitignore are NOT applied to a committed
     const tree = repo.git("rev-parse", "HEAD^{tree}");
 
     const base = await captureBaseAdapterContentView({ repoRoot: repo.root, baseTreeOid: tree });
-    for (const p of [".gitignore", ".ctide/provenance.json", ".ctide/output/report.json", "ignored/still-committed.mjs", "thing.ignored", "a.mjs"]) {
+    for (const p of [".gitignore", ".ctide/provenance.json", ".ctide/output/report.json",
+      ".ctide/ledger/runs.jsonl", ".ctide/ledger/.gitignore",
+      "ignored/still-committed.mjs", "thing.ignored", "a.mjs"]) {
       assert.ok(base.has(p), `${p} must survive into the base view`);
     }
     // The head view, by contrast, applies the four-step precedence -- which is exactly why the two
@@ -316,6 +364,9 @@ test("11b.10 base: head exclusions and .gitignore are NOT applied to a committed
     const head = await captureHeadViewSnapshot({ repoRoot: repo.root });
     assert.strictEqual(head.has(".ctide/provenance.json"), false);
     assert.strictEqual(head.has(".ctide/output/report.json"), false);
+    assert.strictEqual(head.has(".ctide/ledger/runs.jsonl"), false,
+      "excluded from the head view even though it is TRACKED here: step 1 precedes trackedness");
+    assert.strictEqual(head.has(".ctide/ledger/.gitignore"), false);
   });
 });
 

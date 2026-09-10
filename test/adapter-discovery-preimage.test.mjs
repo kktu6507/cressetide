@@ -133,6 +133,101 @@ test("11b.10b the request key set is exactly { repoRoot, baseTreeOid }", async (
   });
 });
 
+// --- request capture: the base tree, the head view and the DECLARED identity are one repository -------
+//
+// The base read, the head/stability side and the returned declaration are separated by awaits. Reading
+// the request again at each let those three name different things.
+
+test("capture: a repoRoot mutation during the base await cannot move the head side to another repository",
+  async () => {
+    const first = makeRepo();
+    const second = makeRepo();
+    try {
+      first.write("a.test.mjs", `${NODE_TEST}test("a", () => {});\n`);
+      const baseTreeOid = first.commit();
+      second.write("b.test.mjs", `${NODE_TEST}test("b", () => {});\n`);
+      second.commit();
+
+      const a = await captureHeadViewSnapshot({ repoRoot: first.root });
+      const b = await captureHeadViewSnapshot({ repoRoot: second.root });
+      assert.notStrictEqual(a.headViewDigest, b.headViewDigest, "the premise: the two heads really differ");
+
+      const request = { repoRoot: first.root, baseTreeOid };
+      const pending = buildDiscoveryAnalysisPreimage(request);
+      request.repoRoot = second.root;                       // lands during the base capture's await
+      const preimage = await pending;
+
+      assert.strictEqual(preimage.headViewDigest, a.headViewDigest,
+        "the head belongs to the repository the base was read from");
+      assert.notStrictEqual(preimage.headViewDigest, b.headViewDigest);
+    } finally {
+      for (const repo of [first, second]) fs.rmSync(repo.root, { recursive: true, force: true });
+    }
+  });
+
+test("capture: the DECLARED baseTreeOid is the tree the base view was actually read from", async () => {
+  await withRepo(async (repo) => {
+    repo.write("a.test.mjs", `${NODE_TEST}test("a", () => {});\n`);
+    const baseTreeOid = repo.commit();
+    repo.write("b.test.mjs", `${NODE_TEST}test("b", () => {});\n`);
+    const laterTreeOid = repo.commit();
+    assert.notStrictEqual(baseTreeOid, laterTreeOid, "the premise: two real, different trees");
+
+    const request = { repoRoot: repo.root, baseTreeOid };
+    const pending = buildDiscoveryAnalysisPreimage(request);
+    request.baseTreeOid = laterTreeOid;                     // lands before the declaration is built
+    const preimage = await pending;
+
+    assert.strictEqual(preimage.baseTreeOid, baseTreeOid,
+      "the returned envelope declares the tree it observed, never one substituted afterwards");
+  });
+});
+
+test("capture: each owned value is read exactly once", async () => {
+  await withRepo(async (repo) => {
+    repo.write("a.test.mjs", `${NODE_TEST}test("a", () => {});\n`);
+    const baseTreeOid = repo.commit();
+    const counts = { repoRoot: 0, baseTreeOid: 0 };
+    const values = { repoRoot: repo.root, baseTreeOid };
+    const request = {};
+    for (const name of Object.keys(values)) {
+      Object.defineProperty(request, name, {
+        enumerable: true,
+        configurable: true,
+        get() { counts[name] += 1; return values[name]; },
+      });
+    }
+    const preimage = await buildDiscoveryAnalysisPreimage(request);
+    assert.deepStrictEqual(counts, { repoRoot: 1, baseTreeOid: 1 });
+    assert.strictEqual(preimage.baseTreeOid, baseTreeOid, "and the ordinary result is unchanged");
+  });
+});
+
+test("the key check reads OWN keys: legal non-enumerable ones are accepted, hidden and symbol extras refused",
+  async () => {
+    await withRepo(async (repo) => {
+      repo.write("a.test.mjs", `${NODE_TEST}test("a", () => {});\n`);
+      const baseTreeOid = repo.commit();
+
+      const hidden = {};
+      Object.defineProperty(hidden, "repoRoot", { value: repo.root, enumerable: false });
+      Object.defineProperty(hidden, "baseTreeOid", { value: baseTreeOid, enumerable: false });
+      assert.deepStrictEqual(Object.keys(hidden), [], "invisible to the enumerable view");
+      assert.strictEqual((await buildDiscoveryAnalysisPreimage(hidden)).baseTreeOid, baseTreeOid,
+        "a request whose required own keys are non-enumerable is legal and is accepted");
+
+      const hiddenExtra = { repoRoot: repo.root, baseTreeOid };
+      Object.defineProperty(hiddenExtra, "clock", { value: 1, enumerable: false });
+      await refused(buildDiscoveryAnalysisPreimage(hiddenExtra), "a non-enumerable extra", "E_API_ARGUMENTS");
+
+      const symbolled = { repoRoot: repo.root, baseTreeOid };
+      symbolled[Symbol("clock")] = 1;
+      const error = await refused(buildDiscoveryAnalysisPreimage(symbolled), "a symbol extra", "E_API_ARGUMENTS");
+      assert.ok(!(error instanceof TypeError), "a typed refusal, not an engine error");
+      assert.match(error.message, /Symbol\(clock\)/, "rendered by String(), not flattened to null");
+    });
+  });
+
 // --- the exact shapes (11b.10b) ---------------------------------------------------------------------------
 
 test("11b.10b the return root, module and declaration shapes are exact and deeply frozen", async () => {
@@ -564,6 +659,11 @@ const SCRATCH_GRAPH = [
   "changed-test-inventory.mjs", "explicit-config.mjs", "head-view-snapshot.mjs", "json-unique-members.mjs",
   "node-test-adapter.mjs", "parser-ignore-wrapper.mjs", "parser-ignore-worker.mjs",
   "parser-ignore-worker-runner.mjs", "provenance-store.mjs", "git-object-read.mjs",
+  // The canonical encoding/digest primitives provenance-store and changed-test-inventory both import.
+  // A shipped layout missing it cannot import either module at all.
+  "canonical-json.mjs",
+  // shared with the Step 6 consumer; part of provenance-store's static graph
+  "batch-result-binding.mjs",
 ];
 
 function scratchShippedLayout() {

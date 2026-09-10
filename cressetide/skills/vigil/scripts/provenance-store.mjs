@@ -31,75 +31,48 @@
 // serialisation choice only; it changes no field semantics.
 import fs from "node:fs";
 import path from "node:path";
+// Still needed here by ulid()/makeIdFactory(): only the DIGEST primitives moved out. Without this
+// import the identifier resolves to the global WebCrypto object, which has no randomBytes -- a
+// silent fallback rather than a missing-binding error, so it is named explicitly.
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-// --- errors ------------------------------------------------------------------------------------
+// The canonical encoding, ordering and digest primitives, and the typed error they raise. They used
+// to be DEFINED here, and changed-test-inventory.mjs imported them from here. The persisted-batch
+// reader below needs that module's canonical inventory authority, which would have closed the graph
+// into store -> inventory -> store; moving the dependency-free primitives into their own file breaks
+// that edge without moving any behaviour. Every name is re-exported below, so this module's public
+// API is unchanged and there is still exactly ONE ProvenanceError class.
+import {
+  ProvenanceError, reject, canonicalText, compareCodePoint, canonicalJson, sha256Hex, digestOf,
+} from "./canonical-json.mjs";
+// The ONE canonical ChangedTestInventoryV2 authority. The persisted reader below never
+// re-implements or loosens it: a persisted inventorySnapshot is handed to that parser as raw text.
+// InventoryError comes from the SAME module, so recognising it below adds no dependency edge and no
+// cycle: changed-test-inventory.mjs imports only node:fs and canonical-json.mjs.
+import {
+  InventoryError, parseCanonicalInventoryV2, scanJsonSpans, sliceJsonValue,
+} from "./changed-test-inventory.mjs";
+// The per-result binding RULES, as pure predicates. One definition, charged here at mint time and
+// again by the Step 6 consumer over a persisted store it may not assume this writer produced. They
+// answer with data and carry no diagnostics, so every message below is still this module's own.
+import {
+  statesValue, refTypeFault, tagFault, sideObservationFault, projectionFault, bindingShapeFault,
+} from "./batch-result-binding.mjs";
+
+export {
+  ProvenanceError, reject, canonicalText, compareCodePoint, canonicalJson, sha256Hex, digestOf,
+};
+
+// --- errors and canonical encoding: DEFINED IN ./canonical-json.mjs, re-exported above ----------
 // Every rejection carries a machine-readable code so callers (and the tests) can assert on the
 // reason rather than on prose. `detail` names the offending object wherever one exists.
 
-export class ProvenanceError extends Error {
-  constructor(code, message, detail = null) {
-    super(message);
-    this.name = "ProvenanceError";
-    this.code = code;
-    this.detail = detail;
-  }
-}
-
-export function reject(code, message, detail = null) {
-  throw new ProvenanceError(code, message, detail);
-}
-
-// --- canonical encoding & digest ---------------------------------------------------------------
-// shared model §9: UTF-8 (no BOM), LF, no trimming, no case folding — modifiers are load-bearing.
-// §2 batchDigest: object keys sorted by Unicode code point, no insignificant whitespace. Arrays
-// preserve the order they are given; callers pre-sort the arrays the spec assigns a total order to.
-
-export function canonicalText(value) {
-  if (typeof value !== "string") reject("E_CANON_TYPE", "canonicalText expects a string");
-  return value.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-}
-
-// TRUE code-point order. JavaScript's `<` on strings compares UTF-16 code UNITS, which orders any
-// non-BMP character (a surrogate pair, lead unit 0xD800-0xDBFF) BEFORE U+E000-U+FFFF — the opposite
-// of code-point order. The spec says "Unicode code point", so iterate by code point.
-export function compareCodePoint(a, b) {
-  const x = Array.from(String(a));
-  const y = Array.from(String(b));
-  const n = Math.min(x.length, y.length);
-  for (let i = 0; i < n; i++) {
-    const cx = x[i].codePointAt(0);
-    const cy = y[i].codePointAt(0);
-    if (cx !== cy) return cx < cy ? -1 : 1;
-  }
-  return x.length === y.length ? 0 : x.length < y.length ? -1 : 1;
-}
-
-export function canonicalJson(value) {
-  if (value === null) return "null";
-  const t = typeof value;
-  if (t === "boolean" || t === "number") {
-    if (t === "number" && !Number.isFinite(value)) reject("E_CANON_NUMBER", "non-finite number is not canonicalisable");
-    return JSON.stringify(value);
-  }
-  if (t === "string") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (t === "object") {
-    const keys = Object.keys(value).filter((k) => value[k] !== undefined).sort(compareCodePoint);
-    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(",")}}`;
-  }
-  reject("E_CANON_TYPE", `value of type ${t} is not canonicalisable`);
-  return "";
-}
-
-export function sha256Hex(text) {
-  return crypto.createHash("sha256").update(canonicalText(text), "utf8").digest("hex");
-}
-
-export function digestOf(value) {
-  return sha256Hex(canonicalJson(value));
-}
+// --- canonical encoding & digest: see ./canonical-json.mjs -------------------------------------
+// shared model section 9: UTF-8 (no BOM), LF, no trimming, no case folding -- modifiers are
+// load-bearing. section 2 batchDigest: object keys sorted by Unicode code point, no insignificant
+// whitespace. Arrays preserve the order they are given; callers pre-sort the arrays the spec assigns
+// a total order to. The definitions moved to canonical-json.mjs unchanged and are re-exported above.
 
 // RecordRef / typed-ref ordering: by kind, then ref, code-point order, deduplicated (shared §2 —
 // relatedRefs and sortedSemanticEvidenceRefs both use this; without it the same set submitted in a
@@ -300,10 +273,65 @@ export function storeDigest(store) {
   return sha256Hex(canonicalStoreBytes(store));
 }
 
+// THE RAW INGESTION BOUNDARY for a nested ChangedTestInventoryV2.
+//
+// SM v1.14: the duplicate-member contract must be charged while EVERY member occurrence is still
+// observable. JSON.parse above is last-write-wins, so a duplicate inside a persisted
+// inventorySnapshot is unobservable by the time `store` exists -- and re-serialising the parsed
+// object cannot bring it back, because a re-serialisation has no duplicates by construction. The
+// only honest place is here, against the ORIGINAL text.
+//
+// Scope is deliberate and narrow: the contract applies to the complete ChangedTestInventoryV2
+// subtree, so only that subtree is re-parsed under the inventory reader. The enclosing store -- and
+// every historical record in it -- acquires no new duplicate policy from this, which would be an
+// unrelated restriction imposed as a shortcut. Locating uses a policy-free scan for structure only.
+//
+// The same function is the intended ingestion point for the future writer's caller-supplied payload
+// text; an in-memory payload object carries no occurrence evidence and can never satisfy this rule,
+// which is why the writer slice must hand over bytes.
+export function assertRawInventorySnapshots(text, store) {
+  if (typeof text !== "string") return;
+  const records = store.records || [];
+  // The enclosing document is scanned ONCE per ingestion, and only when there is something to check.
+  // Scanning per record would be quadratic in the document size -- every batch record would re-walk
+  // the whole store -- and a store with many batches pays that immediately. It is a local tree, not
+  // a cache: nothing survives this call, so no stale span can outlive the text it describes.
+  const subjects = [];
+  for (let i = 0; i < records.length; i += 1) {
+    const rec = records[i];
+    if (!rec || rec.kind !== "provenance-batch") continue;
+    if (!rec.batchSnapshot || rec.batchSnapshot.inventorySnapshot === undefined) continue;
+    subjects.push([i, rec]);
+  }
+  if (subjects.length === 0) return;
+  const tree = scanJsonSpans(text);
+  for (const [i, rec] of subjects) {
+    const slice = tree === null ? null : sliceJsonValue(text, tree, ["records", i, "batchSnapshot", "inventorySnapshot"]);
+    if (slice === null) {
+      reject("E_BATCH_RAW_SNAPSHOT",
+        `provenance-batch ${rec.recordId} carries an inventorySnapshot that could not be located in the document `
+        + "text, so its raw member occurrences cannot be checked. The duplicate-member contract is charged on the "
+        + "original bytes, never on a re-serialisation",
+        rec.recordId);
+    }
+    try {
+      parseCanonicalInventoryV2(slice);
+    } catch (error) {
+      if (error && error.detail === undefined) error.detail = rec.recordId;
+      throw error;                     // the inventory reader's own code and message, unchanged
+    }
+  }
+}
+
 export function parseStore(text) {
+  // ONE text for both readings: the raw ingestion check below must see exactly the bytes JSON.parse
+  // saw, or an offset computed on one string would slice the other. canonicalText only strips a BOM
+  // and folds line endings; it does not touch member names, so every duplicate occurrence survives
+  // it intact.
+  const source = canonicalText(text);
   let raw;
   try {
-    raw = JSON.parse(canonicalText(text));
+    raw = JSON.parse(source);
   } catch (e) {
     reject("E_STORE_MALFORMED", `provenance store is not valid JSON: ${e.message}`);
   }
@@ -322,6 +350,7 @@ export function parseStore(text) {
     if (!Array.isArray(v)) reject("E_STORE_MALFORMED", `provenance store section "${section}" must be an array`);
     store[section] = v;
   }
+  assertRawInventorySnapshots(source, store);
   return store;
 }
 
@@ -504,7 +533,47 @@ export function parseCanonicalExpiry(value) {
 // shared §2 mechanicallyApplicable, per clause kind. Deliberately NOT one shared predicate: the
 // spec spells out three different meanings so downstream cannot guess what "source check" means
 // for a DEC or an ASSUM.
+// TP approved v1.17 §11b.10c step 6b: the historical evaluation instant is UNKNOWN, not zero, not
+// "now" and not a fabricated timestamp. This sentinel is module-private and never exported, so no
+// caller can inject it -- it is a MODE, not a clock override: it says "do not evaluate the one limb
+// that needs an instant", and every other limb keeps running unchanged.
+//
+// Three-valued on purpose. A store read at an unknown time has applicability facts of three kinds:
+// definitely false (a non-temporal rule is violated), definitely true (nothing here depends on the
+// clock), and unknown (the answer turns on an expiry comparison). Collapsing unknown to "unexpired"
+// would wrongly REJECT a legitimate historical source-2 reopen -- whose whole postcondition is that
+// the successor is NOT applicable, which is exactly what an expired grant makes true.
+const HISTORICAL_UNKNOWN_TIME = Symbol("historical-unknown-evaluation-instant");
+
+// EACH VERSION KEEPS ITS OWN APPROVED EXPIRY GRAMMAR, on the terminal path as well as at the Source
+// layer. validateStructure() already splits these two lanes -- v2 gets parseCanonicalExpiry()'s exact
+// ASCII YYYY-MM-DD, the legacy lane gets upstream approved v1.11's Date.parse semantics, preserved
+// verbatim. mechanicallyApplicable() used to call parseCanonicalExpiry() unconditionally, so a v1
+// store whose terminal grant carries a perfectly legitimate `2099-01-01T12:00:00Z` was refused with
+// exception-expiry-non-canonical: the current grammar reaching back into a historical store through
+// the one path that had not been made version-aware.
+//
+// Not a second grammar and not a relaxation: both branches are the existing authorities, chosen by
+// the store's own declared version, and a value neither lane accepts still fails closed.
+function expiryInstantOf(index, value) {
+  if (index.store.provenanceVersion === LEGACY_PROVENANCE_VERSION) {
+    const at = Date.parse(value);
+    return Number.isFinite(at) ? at : null;
+  }
+  return parseCanonicalExpiry(value);
+}
+
 export function mechanicallyApplicable(index, clauseId, now = Date.now()) {
+  return mechanicallyApplicableAt(index, clauseId, now);
+}
+
+function mechanicallyApplicableAt(index, clauseId, when) {
+  const historical = when === HISTORICAL_UNKNOWN_TIME;
+  if (!historical && (typeof when !== "number" || !Number.isFinite(when))) {
+    // A non-finite instant must never read as "not expired": `expiresAt <= null` is false, which is
+    // exactly the silent fail-open this model refuses everywhere else.
+    return { ok: false, reason: "non-finite-evaluation-instant" };
+  }
   const clause = index.clauses.get(clauseId);
   if (!clause) return { ok: false, reason: "unknown-clause" };
   if (statusOf(index, clauseId) !== "active") return { ok: false, reason: "not-active" };
@@ -519,10 +588,13 @@ export function mechanicallyApplicable(index, clauseId, now = Date.now()) {
       // Defence in depth: validateStructure already refuses a non-canonical expiry at Source level,
       // so this branch should be unreachable through the transaction entry points. It stays because
       // failing OPEN here would be silent -- null must never read as "not expired".
-      const expiresAt = parseCanonicalExpiry(src.expiry);
+      const expiresAt = expiryInstantOf(index, src.expiry);
       if (expiresAt === null) return { ok: false, reason: "exception-expiry-non-canonical" };
+      // The grammar above is NOT temporal and is charged historically too; only the comparison
+      // against an instant is skipped when that instant is unknown.
+      if (historical) return { ok: true, temporalUnknown: true };
       // shared v1.15 §2: expiryInstant <= T0 is EXPIRED -- exactly equal counts as expired.
-      if (expiresAt <= now) return { ok: false, reason: "exception-expired" };
+      if (expiresAt <= when) return { ok: false, reason: "exception-expired" };
     }
     return { ok: true };
   }
@@ -547,7 +619,11 @@ export function mechanicallyApplicable(index, clauseId, now = Date.now()) {
 }
 
 // ObservationalRef is disclosure-only and explicitly never resolved (shared §2).
-function basisRefsResolvable(index, basisRefs) {
+//
+// Exported as the ONE authority for this limb: TP §11b.10c's ob-9 charges "basisRefs S-n/RecordRef
+// resolvable" at binding validation, and it must not be re-implemented there. A second copy would
+// be a second opinion about what a Source basis is.
+export function basisRefsResolvable(index, basisRefs) {
   for (const ref of basisRefs || []) {
     if (typeof ref === "string") {
       if (ref.startsWith("S-")) {
@@ -676,6 +752,205 @@ export function recordPayloadComplete(rec) {
   }
 }
 
+// --- persisted provenance-batch: version discriminator, snapshot and legacy boundary --------------
+//
+// SM v1.13/v1.14 legacy boundary. A persisted batch record is one of exactly two things, and which
+// one is decided by a DISCRIMINATOR rather than by guessing from shape:
+//
+//   v2      -- carries batchRecordVersion: 2 (the integer, nothing else) and a complete legal
+//              inventorySnapshot. Version present but snapshot missing, snapshot malformed, version
+//              unknown or non-integer: each fails closed ON ITS OWN. There is no downgrade to the
+//              legacy reading -- that downgrade is exactly how a new writer's omission would become
+//              invisible.
+//   legacy  -- no batchRecordVersion at all AND the exact v1.12 root key set. Historical bytes stay
+//              readable without migration or rewriting; a record that lacks the version field but
+//              does not have that shape is not a legacy record and fails closed.
+//
+// The legacy key set below includes `kind`. shared §2 lists a record's PAYLOAD fields, and every
+// persisted record additionally carries its `kind` discriminator; reading the payload list as the
+// literal serialized key set would condemn every real legacy record ever written. `previousBatchRef`
+// must be PRESENT (null is its legal value for a first batch), because absence there is a different
+// shape, not a defaulted one.
+export const BATCH_RECORD_VERSION = 2;
+const LEGACY_BATCH_KEYS = [
+  "batchDigest", "batchSnapshot", "inventoryDigest", "kind",
+  "previousBatchRef", "recordId", "relatedRefs", "taskId",
+];
+
+// Returns { version: 2 } or { version: null } for a legacy record, or an { ok: false } reason.
+// Shape-only: it decides WHICH contract applies, and the contract itself is charged by
+// validateBatchRecords below.
+export function classifyBatchRecord(rec) {
+  const stated = Object.prototype.hasOwnProperty.call(rec, "batchRecordVersion");
+  if (!stated) {
+    const keys = Object.keys(rec).sort(compareCodePoint);
+    const missing = LEGACY_BATCH_KEYS.filter((k) => !keys.includes(k));
+    const extra = keys.filter((k) => !LEGACY_BATCH_KEYS.includes(k));
+    if (missing.length || extra.length) {
+      return {
+        ok: false,
+        code: "E_BATCH_LEGACY_SHAPE",
+        reason: `provenance-batch ${rec.recordId} carries no batchRecordVersion, so it can only be read as a `
+          + `v1.12 legacy record -- but its root key set is not the exact legacy shape`
+          + `${missing.length ? ` (missing: ${missing.join(", ")})` : ""}`
+          + `${extra.length ? ` (undeclared: ${extra.join(", ")})` : ""}. A v2 writer that omitted the version `
+          + "field must fail here rather than be read as history",
+      };
+    }
+    return { ok: true, version: null };
+  }
+  const version = rec.batchRecordVersion;
+  if (typeof version !== "number" || !Number.isInteger(version) || version !== BATCH_RECORD_VERSION) {
+    return {
+      ok: false,
+      code: "E_BATCH_VERSION",
+      reason: `provenance-batch ${rec.recordId} declares batchRecordVersion ${JSON.stringify(version)}; the only `
+        + `known version is the integer ${BATCH_RECORD_VERSION}. An unknown or fractional version is refused `
+        + "rather than read as legacy",
+    };
+  }
+  return { ok: true, version: BATCH_RECORD_VERSION };
+}
+
+// THE READ API THAT SEPARATES "readable" FROM "usable as inventory preimage".
+//
+// A legacy record is historically readable: its recordId, taskId, batchDigest, relatedRefs,
+// previousBatchRef, chain position and the v1.12 batchSnapshot fields are all legitimate reads, and
+// a populated historical `results` array is a fact about that batch, not a reason to reject it. What
+// a legacy record can NEVER supply is an inventory preimage. Every decision that needs one --
+// pre-state binding, derived equality, post-commit inventory correspondence -- must call THIS
+// function and get a refusal, so no future consumer can quietly treat "the record loaded" as proof.
+export function batchInventoryPreimage(rec) {
+  if (!rec || rec.kind !== "provenance-batch") {
+    reject("E_NO_INVENTORY_PREIMAGE", "an inventory preimage can only come from a provenance-batch record",
+      rec && rec.recordId);
+  }
+  const kind = classifyBatchRecord(rec);
+  if (!kind.ok) reject(kind.code, kind.reason, rec.recordId);
+  if (kind.version === null) {
+    reject("E_NO_INVENTORY_PREIMAGE",
+      `provenance-batch ${rec.recordId} is a v1.12 legacy record: it is historically readable, but it carries no `
+      + "inventorySnapshot, so it is NO EVIDENCE for anything that needs an inventory preimage. Reading it must "
+      + "not be mistaken for Phase 2 proof",
+      rec.recordId);
+  }
+  return rec.batchSnapshot.inventorySnapshot;
+}
+
+// The v2 contract, charged on the parsed object. Duplicate member names and the entry source-key
+// order are NOT provable here and are deliberately not claimed: canonicalJson re-serialises, and a
+// re-serialisation has no duplicates and sorted keys by construction. Those two rules are enforced
+// at the raw ingestion boundary in parseStore(), while every occurrence is still observable.
+function assertInventorySnapshot(rec) {
+  const snapshot = rec.batchSnapshot && rec.batchSnapshot.inventorySnapshot;
+  if (snapshot === undefined || snapshot === null) {
+    reject("E_BATCH_SNAPSHOT_MISSING",
+      `provenance-batch ${rec.recordId} declares batchRecordVersion ${BATCH_RECORD_VERSION} but carries no `
+      + "batchSnapshot.inventorySnapshot. A versioned record without its preimage is refused; it is NOT read as legacy",
+      rec.recordId);
+  }
+  // One authority, the canonical inventory reader itself -- exact key set, carrier lexical grammar,
+  // entry schema and conditional fields, entry ordering and the single inventoryDigest formula.
+  try {
+    parseCanonicalInventoryV2(canonicalJson(snapshot));
+  } catch (error) {
+    if (error && error.detail === undefined) error.detail = rec.recordId;
+    throw error;                       // the inventory reader's own code and message, unchanged
+  }
+  if (rec.inventoryDigest !== snapshot.inventoryDigest) {
+    reject("E_BATCH_DERIVED_DIGEST",
+      `provenance-batch ${rec.recordId} declares inventoryDigest ${JSON.stringify(rec.inventoryDigest)} but its `
+      + `inventorySnapshot's own digest is ${JSON.stringify(snapshot.inventoryDigest)}. record.inventoryDigest is `
+      + "DERIVED from the snapshot, never a second authority a caller may supply",
+      rec.recordId);
+  }
+
+  // TP §2 TestSemanticReviewBatch, which is the authority for what a batchSnapshot carries. Each of
+  // these is a field that section lists, and each is checkable from the record alone.
+  const batch = rec.batchSnapshot;
+  const carried = batch.inventoryDigest;
+  if (typeof carried !== "string") {
+    reject("E_BATCH_SNAPSHOT_SHAPE",
+      `provenance-batch ${rec.recordId}: batchSnapshot.inventoryDigest is required and DERIVED from the `
+      + "inventorySnapshot; a v2 batch that omits it states no binding between the two at all",
+      rec.recordId);
+  }
+  if (carried !== snapshot.inventoryDigest) {
+    reject("E_BATCH_DERIVED_DIGEST",
+      `provenance-batch ${rec.recordId}: batchSnapshot.inventoryDigest ${JSON.stringify(carried)} disagrees with the `
+      + `inventorySnapshot it encloses (${JSON.stringify(snapshot.inventoryDigest)})`,
+      rec.recordId);
+  }
+  if (batch.taskId !== rec.taskId) {
+    reject("E_BATCH_SNAPSHOT_SHAPE",
+      `provenance-batch ${rec.recordId}: batchSnapshot.taskId ${JSON.stringify(batch.taskId)} is not the record's own `
+      + `task ${JSON.stringify(rec.taskId)}; one batch belongs to exactly one task`,
+      rec.recordId);
+  }
+  if (!Array.isArray(batch.results)) {
+    reject("E_BATCH_SNAPSHOT_SHAPE",
+      `provenance-batch ${rec.recordId}: batchSnapshot.results must be an array. An absent results[] is not an empty `
+      + "one -- "
+      + "\"reviewed and clean\" and \"never reviewed\" are exactly the two states this field exists to separate",
+      rec.recordId);
+  }
+  // TP §2: baseProvenance.treeOid == inventory.baseTreeOid. Without this a batch could carry a
+  // perfectly self-consistent inventory computed against a DIFFERENT base than the one it witnesses.
+  const treeOid = batch.baseProvenance && batch.baseProvenance.treeOid;
+  if (treeOid !== snapshot.baseTreeOid) {
+    reject("E_BATCH_BASE_TREE_MISMATCH",
+      `provenance-batch ${rec.recordId}: its inline baseProvenance witnesses tree ${JSON.stringify(treeOid)} but its `
+      + `inventorySnapshot was computed against ${JSON.stringify(snapshot.baseTreeOid)}. Recomputing the inventory's `
+      + "own digest cannot repair that: the two would then agree with each other and with nothing else",
+      rec.recordId);
+  }
+  // NOT CHECKED HERE, and deliberately not claimed: results[] being one-to-one with
+  // inventorySnapshot.entries. That completeness invariant belongs to the consumer boundary, which
+  // is a later slice; this reader charges the batch's SHAPE and its derived bindings only.
+}
+
+// SM §2: previousBatchRef is `RecordRef(provenance-batch) | null` -- a stated field with exactly two
+// legal shapes, on BOTH record classes.
+//
+// This is not pedantry about a field's type. The chain walk asks `if (!b.previousBatchRef) continue`,
+// so ANY falsy value -- absent, false, 0, "" -- reads as "this batch begins the chain". A record
+// whose link is malformed would therefore be silently promoted to a chain root, the tip computation
+// would stop seeing it as referenced, and a broken chain would validate. Checking the shape here is
+// what makes that falsiness test mean what it says.
+function assertPreviousBatchRef(rec) {
+  if (!Object.prototype.hasOwnProperty.call(rec, "previousBatchRef")) {
+    reject("E_BATCH_CHAIN_SHAPE",
+      `provenance-batch ${rec.recordId} states no previousBatchRef. A first batch declares it as null; an absent `
+      + "field is a third state the model does not have, and it would be read as \"no predecessor\"",
+      rec.recordId);
+  }
+  const ref = rec.previousBatchRef;
+  if (ref === null) return;
+  if (!ref || typeof ref !== "object" || Array.isArray(ref) || typeof ref.ref !== "string") {
+    reject("E_BATCH_CHAIN_SHAPE",
+      `provenance-batch ${rec.recordId} carries previousBatchRef ${JSON.stringify(ref)}, which is neither null nor a `
+      + "RecordRef. A falsy non-null value would be read as \"this batch begins the chain\"",
+      rec.recordId);
+  }
+  if (ref.kind !== "provenance-batch") {
+    reject("E_BATCH_CHAIN_SHAPE",
+      `provenance-batch ${rec.recordId} chains through a ${JSON.stringify(ref.kind)} ref. A typed ref names the kind `
+      + "it resolves to (External-record contract); a ref that names another kind is not resolvable, however real the "
+      + "record it points at happens to be",
+      rec.recordId);
+  }
+}
+
+function validateBatchRecords(store) {
+  for (const rec of store.records) {
+    if (rec.kind !== "provenance-batch") continue;
+    const kind = classifyBatchRecord(rec);
+    if (!kind.ok) reject(kind.code, kind.reason, rec.recordId);
+    assertPreviousBatchRef(rec);
+    if (kind.version === BATCH_RECORD_VERSION) assertInventorySnapshot(rec);
+  }
+}
+
 // shared §2 DP.scopeRulingRef binding: by == {discipline: intent} ∧ subjectRef == THIS DP. Another
 // DP's legitimate intent ruling must not be borrowable.
 export function scopeCovers(index, clauseId, dp) {
@@ -700,9 +975,13 @@ export function scopeCovers(index, clauseId, dp) {
 }
 
 export function applicable(index, clauseId, dp, now = Date.now()) {
-  const mech = mechanicallyApplicable(index, clauseId, now);
+  const mech = mechanicallyApplicableAt(index, clauseId, now);
   if (!mech.ok) return mech;
-  return scopeCovers(index, clauseId, dp);
+  const scope = scopeCovers(index, clauseId, dp);      // wholly clock-free, and charged historically too
+  if (!scope.ok) return scope;
+  // The unknown-instant flag survives the conjunction: a caller that must distinguish "definitely
+  // applicable" from "applicable unless the grant had expired" cannot get that from ok alone.
+  return mech.temporalUnknown ? { ok: true, temporalUnknown: true } : { ok: true };
 }
 
 export const TERMINAL_FIELD_BY_KIND = { REQ: "resolvedBy", DEC: "decidedBy", ASSUM: "assumedAs" };
@@ -718,9 +997,13 @@ export function currentTerminalRef(dp) {
 // One validateAll(); every transaction runs it over its FINAL snapshot only (intent-scan §8 — the
 // intermediate states of a terminal replacement are never validated and never hit disk).
 
-function validateStructure(store) {
+// The GLOBAL id claimer, as a factory so a second caller can run its own pass with its own `seen`
+// set. The closure body is unchanged, and validateStructure still calls it INTERLEAVED with each
+// object's own checks at the original sites: hoisting every claim into a pre-pass would change which
+// refusal a store carrying both a malformed earlier object and a later duplicate reports first.
+function makeIdClaimer() {
   const seen = new Map();
-  const claim = (id, payload, what) => {
+  return (id, payload, what) => {
     if (id === undefined || id === null || typeof id !== "string" || !id) {
       reject("E_ID_MISSING", `${what} is missing its id`, payload);
     }
@@ -736,6 +1019,87 @@ function validateStructure(store) {
     }
     seen.set(id, canon);
   };
+}
+
+// One clause's own obligations, lifted verbatim out of validateStructure's clause loop so a
+// prospective draft is charged by the same code. The id claim stays with the caller.
+function assertClauseObligations(c) {
+  const kind = clauseKindOf(c.id);
+  if (!kind) reject("E_ID_PREFIX", `clause ${c.id} has no recognised REQ-/DEC-/ASSUM- prefix`, c.id);
+  // IS v1.10 §8, at the layer that owns "is this store legal": a clause id that is not
+  // <PREFIX>-<canonical ULID> never becomes readable state. A downstream reader can therefore
+  // rely on this having happened instead of carrying its own copy of the grammar -- and must
+  // not carry one, because a second copy is a second authority. Nothing is repaired here:
+  // lowercase is not upper-cased, aliases are not mapped, whitespace is not trimmed.
+  if (!isCanonicalClauseRef(c.id)) {
+    reject("E_CLAUSE_ID_GRAMMAR",
+      `clause id ${JSON.stringify(c.id)} is not <PREFIX>-<ULID>: the prefix must be REQ, DEC or ASSUM and the ULID exactly 26 uppercase Crockford bytes whose first byte is 0-7 (IS v1.10 §8). Lowercase, the aliases I/L/O/U, whitespace, a suffix and an overflowing leading byte are all illegal, and none of them is repaired`,
+      c.id);
+  }
+  // INV-3: clauses carry NO authored lifecycle fields; status/revisedBy/supersededBy are derived.
+  for (const forbidden of ["status", "revisedBy", "supersededBy"]) {
+    if (c[forbidden] !== undefined) reject("E_INV3_AUTHORED_LIFECYCLE", `clause ${c.id} must not author ${forbidden} (INV-3: derived from Transitions)`, c.id);
+  }
+  if (kind === "REQ") {
+    if (!REQ_AUTHORITIES.includes(c.authority)) reject("E_ENUM", `REQ ${c.id} has unknown authority ${c.authority}`, c.id);
+    if (!REQ_KINDS.includes(c.kind)) reject("E_ENUM", `REQ ${c.id} has unknown kind ${c.kind}`, c.id);
+    if (typeof c.text !== "string") reject("E_SHAPE", `REQ ${c.id} needs text`, c.id);
+    if (typeof c.sourceRef !== "string") reject("E_SHAPE", `REQ ${c.id} needs sourceRef`, c.id);
+    if (c.authority === "hard-constraint") {
+      if (!c.ownerRef || c.ownerRef.kind !== "source-authority" || typeof c.ownerRef.ref !== "string") {
+        reject("E_SHAPE", `hard-constraint REQ ${c.id} needs ownerRef {kind:"source-authority", ref}`, c.id);
+      }
+    }
+  }
+  if (kind === "DEC") {
+    if (c.layer !== "implementation") reject("E_ENUM", `DEC ${c.id} must have layer "implementation"`, c.id);
+    if (!isReviewerPrincipal(c.approvedBy)) reject("E_SHAPE", `DEC ${c.id} needs a ReviewerPrincipal approvedBy`, c.id);
+    if (typeof c.derivedFrom !== "string") reject("E_SHAPE", `DEC ${c.id} needs derivedFrom`, c.id);
+    if (c.decision === undefined) reject("E_SHAPE", `DEC ${c.id} needs decision`, c.id);
+    if (!Array.isArray(c.alternatives)) reject("E_SHAPE", `DEC ${c.id} needs alternatives[]`, c.id);
+  }
+  if (kind === "ASSUM") {
+    if (!DP_LAYERS.includes(c.layer)) reject("E_ENUM", `ASSUM ${c.id} has unknown layer ${c.layer}`, c.id);
+    if (!isReviewerPrincipal(c.governedBy)) reject("E_SHAPE", `ASSUM ${c.id} needs a ReviewerPrincipal governedBy`, c.id);
+    if (typeof c.derivedFrom !== "string") reject("E_SHAPE", `ASSUM ${c.id} needs derivedFrom`, c.id);
+    if (c.text === undefined) reject("E_SHAPE", `ASSUM ${c.id} needs text`, c.id);
+    if (c.alternative === undefined) reject("E_SHAPE", `ASSUM ${c.id} needs alternative (the rejected reading)`, c.id);
+    if (c.layer === "intent" && !c.scenario) reject("E_SHAPE", `intent-layer ASSUM ${c.id} needs scenario`, c.id);
+  }
+}
+
+// One transition's own obligations, lifted verbatim out of the transition loop.
+function assertTransitionObligations(t) {
+  if (!TRANSITION_ACTIONS.includes(t.action)) reject("E_ENUM", `transition ${t.id} has unknown action ${t.action}`, t.id);
+  if (typeof t.subject !== "string") reject("E_SHAPE", `transition ${t.id} needs subject`, t.id);
+  if (!t.authorityRef || !AUTHORITY_KINDS.includes(t.authorityRef.kind)) {
+    reject("E_ENUM", `transition ${t.id} has unknown authorityRef.kind`, t.id);
+  }
+  if (t.authorityRef.kind === "discipline" && !DISCIPLINES.includes(t.authorityRef.discipline)) {
+    reject("E_ENUM", `transition ${t.id} has unknown authorityRef.discipline`, t.id);
+  }
+  if (t.authorityRef.kind === "source-authority" && typeof t.authorityRef.ref !== "string") {
+    reject("E_SHAPE", `transition ${t.id} source-authority authorityRef needs ref`, t.id);
+  }
+  if (!t.ackRef || typeof t.ackRef.kind !== "string") reject("E_SHAPE", `transition ${t.id} needs ackRef`, t.id);
+  if (t.action === "retire" && t.successor !== null && t.successor !== undefined) {
+    reject("E_SHAPE", `retire transition ${t.id} must have no successor`, t.id);
+  }
+  if (t.action !== "retire" && typeof t.successor !== "string") {
+    reject("E_SHAPE", `transition ${t.id} (${t.action}) needs a successor clause ref`, t.id);
+  }
+}
+
+// A record's BASIC shape only: kind membership and the existing payload contract. Typed review-ruling
+// packet validation deliberately stays at validateGovernanceRulings, after the matrix.
+function assertRecordBasicShape(r) {
+  if (!RECORD_KINDS.includes(r.kind)) reject("E_ENUM", `record ${r.recordId} has unknown kind ${r.kind}`, r.recordId);
+  const payload = recordPayloadComplete(r);
+  if (!payload.ok) reject("E_RECORD_PAYLOAD", payload.reason, r.recordId);
+}
+
+function validateStructure(store) {
+  const claim = makeIdClaimer();
 
   for (const s of store.sources) {
     claim(s.sourceId, s, "source");
@@ -785,78 +1149,22 @@ function validateStructure(store) {
 
   for (const c of store.clauses) {
     claim(c.id, c, "clause");
-    const kind = clauseKindOf(c.id);
-    if (!kind) reject("E_ID_PREFIX", `clause ${c.id} has no recognised REQ-/DEC-/ASSUM- prefix`, c.id);
-    // IS v1.10 §8, at the layer that owns "is this store legal": a clause id that is not
-    // <PREFIX>-<canonical ULID> never becomes readable state. A downstream reader can therefore
-    // rely on this having happened instead of carrying its own copy of the grammar -- and must
-    // not carry one, because a second copy is a second authority. Nothing is repaired here:
-    // lowercase is not upper-cased, aliases are not mapped, whitespace is not trimmed.
-    if (!isCanonicalClauseRef(c.id)) {
-      reject("E_CLAUSE_ID_GRAMMAR",
-        `clause id ${JSON.stringify(c.id)} is not <PREFIX>-<ULID>: the prefix must be REQ, DEC or ASSUM and the ULID exactly 26 uppercase Crockford bytes whose first byte is 0-7 (IS v1.10 §8). Lowercase, the aliases I/L/O/U, whitespace, a suffix and an overflowing leading byte are all illegal, and none of them is repaired`,
-        c.id);
-    }
-    // INV-3: clauses carry NO authored lifecycle fields; status/revisedBy/supersededBy are derived.
-    for (const forbidden of ["status", "revisedBy", "supersededBy"]) {
-      if (c[forbidden] !== undefined) reject("E_INV3_AUTHORED_LIFECYCLE", `clause ${c.id} must not author ${forbidden} (INV-3: derived from Transitions)`, c.id);
-    }
-    if (kind === "REQ") {
-      if (!REQ_AUTHORITIES.includes(c.authority)) reject("E_ENUM", `REQ ${c.id} has unknown authority ${c.authority}`, c.id);
-      if (!REQ_KINDS.includes(c.kind)) reject("E_ENUM", `REQ ${c.id} has unknown kind ${c.kind}`, c.id);
-      if (typeof c.text !== "string") reject("E_SHAPE", `REQ ${c.id} needs text`, c.id);
-      if (typeof c.sourceRef !== "string") reject("E_SHAPE", `REQ ${c.id} needs sourceRef`, c.id);
-      if (c.authority === "hard-constraint") {
-        if (!c.ownerRef || c.ownerRef.kind !== "source-authority" || typeof c.ownerRef.ref !== "string") {
-          reject("E_SHAPE", `hard-constraint REQ ${c.id} needs ownerRef {kind:"source-authority", ref}`, c.id);
-        }
-      }
-    }
-    if (kind === "DEC") {
-      if (c.layer !== "implementation") reject("E_ENUM", `DEC ${c.id} must have layer "implementation"`, c.id);
-      if (!isReviewerPrincipal(c.approvedBy)) reject("E_SHAPE", `DEC ${c.id} needs a ReviewerPrincipal approvedBy`, c.id);
-      if (typeof c.derivedFrom !== "string") reject("E_SHAPE", `DEC ${c.id} needs derivedFrom`, c.id);
-      if (c.decision === undefined) reject("E_SHAPE", `DEC ${c.id} needs decision`, c.id);
-      if (!Array.isArray(c.alternatives)) reject("E_SHAPE", `DEC ${c.id} needs alternatives[]`, c.id);
-    }
-    if (kind === "ASSUM") {
-      if (!DP_LAYERS.includes(c.layer)) reject("E_ENUM", `ASSUM ${c.id} has unknown layer ${c.layer}`, c.id);
-      if (!isReviewerPrincipal(c.governedBy)) reject("E_SHAPE", `ASSUM ${c.id} needs a ReviewerPrincipal governedBy`, c.id);
-      if (typeof c.derivedFrom !== "string") reject("E_SHAPE", `ASSUM ${c.id} needs derivedFrom`, c.id);
-      if (c.text === undefined) reject("E_SHAPE", `ASSUM ${c.id} needs text`, c.id);
-      if (c.alternative === undefined) reject("E_SHAPE", `ASSUM ${c.id} needs alternative (the rejected reading)`, c.id);
-      if (c.layer === "intent" && !c.scenario) reject("E_SHAPE", `intent-layer ASSUM ${c.id} needs scenario`, c.id);
-    }
+    assertClauseObligations(c);
   }
 
   for (const t of store.transitions) {
     claim(t.id, t, "transition");
-    if (!TRANSITION_ACTIONS.includes(t.action)) reject("E_ENUM", `transition ${t.id} has unknown action ${t.action}`, t.id);
-    if (typeof t.subject !== "string") reject("E_SHAPE", `transition ${t.id} needs subject`, t.id);
-    if (!t.authorityRef || !AUTHORITY_KINDS.includes(t.authorityRef.kind)) {
-      reject("E_ENUM", `transition ${t.id} has unknown authorityRef.kind`, t.id);
-    }
-    if (t.authorityRef.kind === "discipline" && !DISCIPLINES.includes(t.authorityRef.discipline)) {
-      reject("E_ENUM", `transition ${t.id} has unknown authorityRef.discipline`, t.id);
-    }
-    if (t.authorityRef.kind === "source-authority" && typeof t.authorityRef.ref !== "string") {
-      reject("E_SHAPE", `transition ${t.id} source-authority authorityRef needs ref`, t.id);
-    }
-    if (!t.ackRef || typeof t.ackRef.kind !== "string") reject("E_SHAPE", `transition ${t.id} needs ackRef`, t.id);
-    if (t.action === "retire" && t.successor !== null && t.successor !== undefined) {
-      reject("E_SHAPE", `retire transition ${t.id} must have no successor`, t.id);
-    }
-    if (t.action !== "retire" && typeof t.successor !== "string") {
-      reject("E_SHAPE", `transition ${t.id} (${t.action}) needs a successor clause ref`, t.id);
-    }
+    assertTransitionObligations(t);
   }
 
   for (const r of store.records) {
     claim(r.recordId, r, "record");
-    if (!RECORD_KINDS.includes(r.kind)) reject("E_ENUM", `record ${r.recordId} has unknown kind ${r.kind}`, r.recordId);
-    const payload = recordPayloadComplete(r);
-    if (!payload.ok) reject("E_RECORD_PAYLOAD", payload.reason, r.recordId);
+    assertRecordBasicShape(r);
   }
+  // The persisted-batch version discriminator, the v2 inventorySnapshot contract and the legacy
+  // exact absence shape. Clock-free, so every entry point that runs validateStructure -- current,
+  // schema-only and historical -- charges them identically.
+  validateBatchRecords(store);
 
   for (const d of store.decisionPoints) {
     claim(d.id, d, "decisionPoint");
@@ -1023,7 +1331,16 @@ function assertCompatibilityPresence(t) {
 }
 
 function validateTransitionMatrix(index) {
-  for (const t of index.store.transitions) {
+  for (const t of index.store.transitions) assertTransitionMatrixRow(index, t);
+}
+
+// ONE row of the matrix, for ONE transition, resolving its subject, successor and witness from the
+// SUPPLIED index. The persisted loop passes its own index; the prospective operation passes the
+// staged index, which is how an unminted successor's `approvedBy` (line "rerouted" below) becomes
+// readable at all. There is deliberately no successorKind option: the row derives kinds itself, and a
+// bare kind string could not supply the successor object this row dereferences.
+function assertTransitionMatrixRow(index, t) {
+  {
     const subject = index.clauses.get(t.subject);
     const kind = clauseKindOf(t.subject);
     const auth = t.authorityRef;
@@ -1057,14 +1374,14 @@ function validateTransitionMatrix(index) {
         if (ack.targetConstraintRef !== t.subject) {
           reject("E_WITNESS_TARGET", `transition ${t.id}: constraint-revocation targets a different constraint`, t.id);
         }
-        continue;
+        return;
       }
       // approved-requirement | compatibility
       if (auth.kind !== "user") {
         reject("E_MATRIX_AUTHORITY", `transition ${t.id}: REQ ${t.action} needs authorityRef.kind=user`, t.id);
       }
       assertUserClauseWitness(index, t, ack);
-      continue;
+      return;
     }
 
     if (kind === "DEC") {
@@ -1073,10 +1390,10 @@ function validateTransitionMatrix(index) {
       if (successorKind === "REQ") {
         if (auth.kind !== "user") reject("E_MATRIX_AUTHORITY", `transition ${t.id}: DEC → REQ is a product ruling and needs authorityRef.kind=user`, t.id);
         assertUserClauseWitness(index, t, ack);
-        continue;
+        return;
       }
       assertGoverningPrincipal(index, t, ack, subject.approvedBy, "DEC");
-      continue;
+      return;
     }
 
     if (kind === "ASSUM") {
@@ -1084,7 +1401,7 @@ function validateTransitionMatrix(index) {
       if (t.action === "supersede" && successorKind === "REQ") {
         if (auth.kind !== "user") reject("E_MATRIX_AUTHORITY", `transition ${t.id}: ASSUM → REQ needs authorityRef.kind=user`, t.id);
         assertUserClauseWitness(index, t, ack);
-        continue;
+        return;
       }
       if (t.action === "supersede" && successorKind === "DEC") {
         // governedBy ∨ arbiter ∨ formally rerouted current review principal — the last needs a
@@ -1098,11 +1415,11 @@ function validateTransitionMatrix(index) {
           && ack.subjectRef === subject.derivedFrom;
         if (!rerouted) assertGoverningPrincipal(index, t, ack, subject.governedBy, "ASSUM");
         else assertRulingSubjectBinding(index, t, ack, subject);
-        continue;
+        return;
       }
       // revise | retire
       assertGoverningPrincipal(index, t, ack, subject.governedBy, "ASSUM");
-      continue;
+      return;
     }
 
     reject("E_MATRIX_SUBJECT", `transition ${t.id}: unknown subject clause kind`, t.id);
@@ -1277,6 +1594,19 @@ function validateTaskStatesAndHeads(index) {
       }
       if (prev.taskId !== taskId) {
         reject("E_CHAIN_CROSS_TASK", `batch ${b.recordId} chains to a batch of a different task (${prev.taskId})`, b.recordId);
+      }
+      // SM v1.13 rollout order: along one task's chain the record version is MONOTONICALLY
+      // NON-DECREASING. v2 after a legacy head is an in-place upgrade and is allowed -- history is
+      // neither migrated nor rewritten. Legacy after v2 is the detectable signature of a writer that
+      // stopped emitting the version field, and it is refused rather than read as history.
+      const here = classifyBatchRecord(b);
+      const there = classifyBatchRecord(prev);
+      if (here.ok && there.ok && there.version === BATCH_RECORD_VERSION && here.version === null) {
+        reject("E_CHAIN_VERSION_REGRESSION",
+          `batch ${b.recordId} is a v1.12 legacy record but chains onto ${prev.recordId}, which is `
+          + `batchRecordVersion ${BATCH_RECORD_VERSION}. A task's chain version never decreases; this is exactly `
+          + "the signal that a writer stopped emitting the version field, and history is not rewritten to hide it",
+          b.recordId);
       }
     }
   }
@@ -1874,8 +2204,14 @@ function validateReopenCauseCoherence(index, now, phase = "all") {
     }
     // The ONLY clock-dependent check here. Skipped in the clock-free pass; the checks after it
     // keep running, and validateAll() still evaluates all of them in this same order.
+    //
+    // The postcondition is NEGATED -- it rejects an APPLICABLE successor -- so the historical pass
+    // must reject only what is applicable for reasons that do not involve the clock at all. A
+    // successor whose applicability turns on an expiry the historical read cannot evaluate is
+    // exactly the source-2 reopen this rule exists to permit, and forcing "unexpired" there would
+    // reject the legitimate case. Both signs stay deterministic on every non-temporal rule.
     const app = phase === "clock-free" ? { ok: false } : applicable(index, t.successor, d, now);
-    if (app.ok) {
+    if (app.ok && !app.temporalUnknown) {
       reject(
         "E_CAUSE_POSTCONDITION",
         `DP ${d.id} records a source-2 reopen against ${t.id}, but its successor ${t.successor} IS applicable to this DP — such a DP is repointed, not reopened`,
@@ -1926,6 +2262,61 @@ export function validateStoreSchema(store) {
   return { ok: true, index };
 }
 
+// The version-aware HISTORICAL pass -- TP approved v1.17 §11b.10c step 6b.
+//
+// Same validators, same order, same rules as validateAll()/validateLegacyV1() for the version being
+// read. The ONE difference is that no current instant is imposed on a store that was written at an
+// instant this component does not know: the expiry-versus-instant comparison is treated as unknown
+// in BOTH directions (INV-4's positive one and the reopen cause's negated one). Everything else --
+// structure, identity, refs, the transition matrix, governance rulings, routing origins, carrier
+// coherence, Check A, the exception chain's target/authority/owner, the full scopeCovers predicate,
+// the expiry GRAMMAR, TaskState heads -- is charged exactly as it is now.
+//
+// This is deliberately NOT validateStoreSchema(): a schema-only shortcut would also drop Check A,
+// scopeCovers and the DP-specific applicability rules, and a store that was already invalid when it
+// was written would start passing. A probe demonstrates it: a base store whose exception terminal
+// expires in 2099 but carries no scopeRulingRef passes validateStoreSchema() and must not pass here.
+//
+// PROOF BOUNDARY, stated rather than implied: nothing here persists or reconstructs the instant at
+// which the historical store was written, so this does NOT attest that a grant was unexpired then.
+// It preserves the non-temporal rules and refuses their violations. No fabricated instant, no clock
+// override, no way for a caller to supply one.
+export function validateHistoricalStore(store) {
+  if (store.provenanceVersion === LEGACY_PROVENANCE_VERSION) return validateHistoricalLegacyV1(store);
+  validateStructure(store);
+  const index = indexStore(store);
+  validateCarrierCoherence(index);
+  validateReopenCauseCoherence(index, HISTORICAL_UNKNOWN_TIME);
+  validateRefs(index);
+  validateMergeReconciliation(index);
+  validateTransitionMatrix(index);
+  validateGovernanceRulings(index);
+  validateRoutingOrigins(index);
+  validateInvariants(index, HISTORICAL_UNKNOWN_TIME);
+  validateTaskStatesAndHeads(index);
+  return { ok: true, index };
+}
+
+// The v1 half of the same rule: validateLegacyV1()'s exact validator list, under the unknown
+// instant. validateStructure() keys the v2-only reopenCauseRef and the v1.15 expiry rules on
+// provenanceVersion, so each historical version keeps its OWN grammar rather than acquiring the
+// current one through a shared validator.
+export function validateHistoricalLegacyV1(store) {
+  if (store.provenanceVersion !== LEGACY_PROVENANCE_VERSION) {
+    reject("E_STORE_VERSION", `legacy historical validation expects provenanceVersion ${LEGACY_PROVENANCE_VERSION}`);
+  }
+  validateStructure(store);
+  const index = indexStore(store);
+  validateCarrierCoherence(index);
+  validateRefs(index);
+  validateMergeReconciliation(index);
+  validateTransitionMatrix(index);
+  validateGovernanceRulings(index);
+  validateInvariants(index, HISTORICAL_UNKNOWN_TIME);
+  validateTaskStatesAndHeads(index);
+  return { ok: true, index };
+}
+
 export function validateAll(store, options = {}) {
   const now = options.now === undefined ? Date.now() : options.now;
   validateStructure(store);
@@ -1940,6 +2331,274 @@ export function validateAll(store, options = {}) {
   validateInvariants(index, now);
   validateTaskStatesAndHeads(index);
   return { ok: true, index };
+}
+
+// WHICH successorClauseDraft presences are forbidden, as a DESCRIPTOR rather than a refusal, so the
+// writer below and the loop controller's unlock adapter charge the SAME rule while each raises its
+// own declared code. It reports only what is true; it throws nothing and remaps nothing.
+//
+// The discriminator is `!== undefined`, exactly as the writer's own gate has always been: an ABSENT
+// optional field carries no obligation, while a STATED `null` is a statement and is forbidden on the
+// two rows below. Direct object callers therefore see unchanged behaviour, and a JSON-ingesting
+// caller can still distinguish absence from a stated null before it converts anything.
+//
+// Internal reuse only. This is not a public caller operation.
+export function successorDraftPresenceFault(clauseDraft, successorId, existsInPre) {
+  if (clauseDraft === undefined) return null;          // absent: no obligation at all
+  if (successorId === null) return "retire";           // a retire mints nothing
+  if (existsInPre) return "exists";                    // an existing successor is cited, not minted
+  return null;
+}
+
+// --- prospective transition authority (TP v1.20) ----------------------------------------------------
+//
+// WHAT IT IS. One synchronous, pure question: would this transition, with this successor and this
+// witness, be AUTHORIZED by the existing matrix? It stages the drafted objects beside the pre-state,
+// charges each object's own source-owned obligations, and runs the SAME matrix row the persisted loop
+// runs. It answers nothing else.
+//
+// WHY A STAGED INDEX. The ASSUM→DEC rerouted row dereferences `index.clauses.get(t.successor).approvedBy`,
+// so an unminted successor is only reachable if the index the row is given contains it. A kind string
+// cannot supply that principal, which is why there is no successorKind option.
+//
+// WHAT IT IS NOT. Not a completed transaction, applicability judgment, source-freshness verdict, CAS,
+// mint permission or Step 6 result. It performs no I/O, takes no lock, samples no clock and mutates
+// nothing. validateAll and validateStoreSchema are NEVER run on the staged union: its DP terminals,
+// carriers and task heads deliberately stay unmoved, so those validators would fail for reasons that
+// have nothing to do with authority. The controller separately owns finding/evidence coverage,
+// witness novelty and task/fingerprint binding; none of that is claimed here, and the helper is not
+// given the evidence list those checks need.
+
+const PROSPECTIVE_CANDIDATE_KEYS = ["citedRecords", "successorDraft", "transitionDraft", "witness"];
+const PROSPECTIVE_WITNESS_KEYS = ["record", "recordId", "source"];
+const PROSPECTIVE_OP = "assertProspectiveTransitionAuthority";
+
+// Own keys, not merely the enumerable string ones, then ONE read of each wanted value. A permitted
+// non-enumerable own key stays permitted; a hidden or symbol EXTRA is refused, with the symbol
+// rendered by String() rather than flattened to null by JSON.stringify.
+function prospectiveOwnKeys(value, wanted, what) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    reject("E_API_ARGUMENTS", `${what} must be a JSON object`, PROSPECTIVE_OP);
+  }
+  const ownKeys = Reflect.ownKeys(value);
+  const symbols = ownKeys.filter((k) => typeof k !== "string");
+  if (symbols.length > 0) {
+    reject("E_API_ARGUMENTS",
+      `${what} carries symbol-keyed own properties (${symbols.map(String).join(", ")}); it must declare exactly `
+      + `${JSON.stringify(wanted)}`, PROSPECTIVE_OP);
+  }
+  const actual = ownKeys.sort(compareCodePoint);
+  if (actual.length !== wanted.length || actual.some((k, i) => k !== wanted[i])) {
+    reject("E_API_ARGUMENTS",
+      `${what} must declare exactly ${JSON.stringify(wanted)}; got ${JSON.stringify(actual)}`, PROSPECTIVE_OP);
+  }
+  const captured = {};
+  for (const key of wanted) captured[key] = value[key];
+  return captured;
+}
+
+const isPlainObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+
+function assertPreIndexShape(preIndex) {
+  if (!isPlainObject(preIndex)) {
+    reject("E_API_ARGUMENTS", `${PROSPECTIVE_OP}: preIndex must be the index of an already validated current store`, PROSPECTIVE_OP);
+  }
+  for (const map of ["sources", "clauses", "transitions", "records", "dps", "taskStates"]) {
+    if (!(preIndex[map] instanceof Map)) {
+      reject("E_API_ARGUMENTS", `${PROSPECTIVE_OP}: preIndex.${map} must be the Map indexStore() builds`, PROSPECTIVE_OP);
+    }
+  }
+  if (!isPlainObject(preIndex.store)) {
+    reject("E_API_ARGUMENTS", `${PROSPECTIVE_OP}: preIndex.store must be the store it indexes`, PROSPECTIVE_OP);
+  }
+  for (const section of STORE_SECTIONS) {
+    if (!Array.isArray(preIndex.store[section])) {
+      reject("E_API_ARGUMENTS", `${PROSPECTIVE_OP}: preIndex.store.${section} must be an array`, PROSPECTIVE_OP);
+    }
+  }
+}
+
+/**
+ * Assert that a prospective transition would be authorized by the existing matrix.
+ *
+ * @param {object} preIndex the index of the caller's OWN fully validated current store — obtained
+ *   after validateStoreSchema and validateAll. This is a PRECONDITION, not an assertion that a bare
+ *   caller-built index is trusted authority: this operation validates no current store for anyone.
+ * @param {{ transitionDraft: object, successorDraft: object|null,
+ *           witness: { source: "persisted"|"draft", recordId: string, record: object|null },
+ *           citedRecords: object[] }} candidate exactly four own keys.
+ * @returns {void} throws on refusal. Arity, shape, type and candidate-relationship misuse is
+ *   E_API_ARGUMENTS; a global id collision keeps the source-owned E_DUPLICATE_ID /
+ *   E_ID_PAYLOAD_CONFLICT; every other refusal is the existing validator's own typed cause.
+ */
+export function assertProspectiveTransitionAuthority(preIndex, candidate) {
+  if (arguments.length !== 2) {
+    reject("E_API_ARGUMENTS",
+      `${PROSPECTIVE_OP} takes exactly two arguments; a clock, a callback, a verdict, a file path or a `
+      + "semantic-evidence list cannot be supplied", PROSPECTIVE_OP);
+  }
+  assertPreIndexShape(preIndex);
+
+  const c = prospectiveOwnKeys(candidate, PROSPECTIVE_CANDIDATE_KEYS, `the ${PROSPECTIVE_OP} candidate`);
+  const { transitionDraft, successorDraft, citedRecords } = c;
+  const witness = prospectiveOwnKeys(c.witness, PROSPECTIVE_WITNESS_KEYS, "candidate.witness");
+
+  if (!isPlainObject(transitionDraft)) {
+    reject("E_API_ARGUMENTS", "candidate.transitionDraft must be an object", PROSPECTIVE_OP);
+  }
+  if (successorDraft !== null && !isPlainObject(successorDraft)) {
+    reject("E_API_ARGUMENTS", "candidate.successorDraft must be a clause object or null", PROSPECTIVE_OP);
+  }
+  if (!Array.isArray(citedRecords)) {
+    reject("E_API_ARGUMENTS", "candidate.citedRecords must be an array of drafted records", PROSPECTIVE_OP);
+  }
+  for (const [n, record] of citedRecords.entries()) {
+    if (!isPlainObject(record)) {
+      reject("E_API_ARGUMENTS", `candidate.citedRecords[${n}] must be a record object`, PROSPECTIVE_OP);
+    }
+  }
+  if (witness.source !== "persisted" && witness.source !== "draft") {
+    reject("E_API_ARGUMENTS", `candidate.witness.source must be "persisted" or "draft"`, PROSPECTIVE_OP);
+  }
+  if (typeof witness.recordId !== "string" || witness.recordId === "") {
+    reject("E_API_ARGUMENTS", "candidate.witness.recordId must be a non-empty string", PROSPECTIVE_OP);
+  }
+
+  // --- candidate relationships (R1-R4) --------------------------------------------------------------
+  // These decide whether the candidate can be READ as this transition's authority at all, so they run
+  // before any source-owned validation. An action outside the closed set has no applicable row here
+  // and is left to assertTransitionObligations' own E_ENUM below.
+  const action = transitionDraft.action;
+  const successorId = transitionDraft.successor;
+  if (action === "retire") {
+    if (successorId !== undefined && successorId !== null) {
+      reject("E_API_ARGUMENTS", "a retire candidate states a successor; retire has none", PROSPECTIVE_OP);
+    }
+    if (successorDraft !== null) {
+      reject("E_API_ARGUMENTS", "a retire candidate carries a successorDraft; retire mints nothing", PROSPECTIVE_OP);
+    }
+  } else if (TRANSITION_ACTIONS.includes(action)) {
+    if (typeof successorId !== "string" || successorId === "") {
+      reject("E_API_ARGUMENTS", `a ${action} candidate needs transitionDraft.successor as a clause id`, PROSPECTIVE_OP);
+    }
+    const exists = preIndex.clauses.has(successorId);
+    if (exists && successorDraft !== null) {
+      reject("E_API_ARGUMENTS",
+        `successor ${successorId} already exists in the pre-state, so it is cited rather than drafted`, PROSPECTIVE_OP);
+    }
+    if (!exists && successorDraft === null) {
+      reject("E_API_ARGUMENTS",
+        `successor ${successorId} does not exist in the pre-state and no successorDraft mints it`, PROSPECTIVE_OP);
+    }
+    if (!exists && successorDraft.id !== successorId) {
+      reject("E_API_ARGUMENTS",
+        `successorDraft.id ${JSON.stringify(successorDraft.id)} is not the successor `
+        + `${JSON.stringify(successorId)} the transition names`, PROSPECTIVE_OP);
+    }
+  }
+
+  if (witness.source === "persisted") {
+    if (witness.record !== null) {
+      reject("E_API_ARGUMENTS", "a persisted witness carries record:null; the store holds the record", PROSPECTIVE_OP);
+    }
+    if (!preIndex.records.has(witness.recordId)) {
+      reject("E_API_ARGUMENTS", `persisted witness ${witness.recordId} does not exist in the pre-state`, PROSPECTIVE_OP);
+    }
+  } else {
+    if (!isPlainObject(witness.record)) {
+      reject("E_API_ARGUMENTS", "a draft witness needs its record object", PROSPECTIVE_OP);
+    }
+    if (witness.record.recordId !== witness.recordId) {
+      reject("E_API_ARGUMENTS", "candidate.witness.record.recordId must equal candidate.witness.recordId", PROSPECTIVE_OP);
+    }
+    if (preIndex.records.has(witness.recordId)) {
+      reject("E_API_ARGUMENTS", `draft witness ${witness.recordId} already exists in the pre-state`, PROSPECTIVE_OP);
+    }
+  }
+
+  // R4: the witness the candidate declares must be the one the matrix will actually resolve. A
+  // malformed ackRef is left to assertTransitionObligations' own E_SHAPE rather than dereferenced.
+  const resolvedWitness = witness.source === "persisted" ? preIndex.records.get(witness.recordId) : witness.record;
+  const ackRef = transitionDraft.ackRef;
+  if (isPlainObject(ackRef) && typeof ackRef.kind === "string" && typeof ackRef.ref === "string") {
+    if (ackRef.ref !== witness.recordId || ackRef.kind !== resolvedWitness.kind) {
+      reject("E_API_ARGUMENTS",
+        `transitionDraft.ackRef ${JSON.stringify({ kind: ackRef.kind, ref: ackRef.ref })} is not the declared `
+        + `witness ${JSON.stringify({ kind: resolvedWitness.kind, ref: witness.recordId })}; an unused declared `
+        + "witness cannot stand in for the one the matrix resolves", PROSPECTIVE_OP);
+    }
+  }
+
+  // --- 1. global id claims, on the RAW arrays, before any candidate indexing -------------------------
+  // All six pre-state sections first, then every drafted object in its declared order. A Map built
+  // before this point would absorb a duplicate and hide it, so nothing is indexed until it passes.
+  const claim = makeIdClaimer();
+  for (const s of preIndex.store.sources) claim(s.sourceId, s, "source");
+  for (const clause of preIndex.store.clauses) claim(clause.id, clause, "clause");
+  for (const t of preIndex.store.transitions) claim(t.id, t, "transition");
+  for (const r of preIndex.store.records) claim(r.recordId, r, "record");
+  for (const d of preIndex.store.decisionPoints) claim(d.id, d, "decisionPoint");
+  for (const ts of preIndex.store.taskStates) claim(ts.taskId, ts, "taskState");
+  for (const r of citedRecords) claim(r.recordId, r, "cited record");
+  if (witness.source === "draft") claim(witness.record.recordId, witness.record, "draft witness record");
+  claim(transitionDraft.id, transitionDraft, "prospective transition");
+  if (successorDraft !== null) claim(successorDraft.id, successorDraft, "prospective successor clause");
+
+  // --- 2. each NEW object's own source-owned obligations ---------------------------------------------
+  // The persisted witness already passed current-store validation and is not re-charged here.
+  assertTransitionObligations(transitionDraft);
+  if (successorDraft !== null) assertClauseObligations(successorDraft);
+  if (witness.source === "draft") assertRecordBasicShape(witness.record);
+  for (const record of citedRecords) assertRecordBasicShape(record);
+
+  // --- 3. the staged union, store-shaped, with every pre-state array COPIED ---------------------------
+  const staged = {
+    provenanceVersion: preIndex.store.provenanceVersion,
+    sources: [...preIndex.store.sources],
+    clauses: successorDraft === null
+      ? [...preIndex.store.clauses]
+      : [...preIndex.store.clauses, successorDraft],
+    transitions: [...preIndex.store.transitions, transitionDraft],
+    records: [
+      ...preIndex.store.records,
+      ...citedRecords,
+      ...(witness.source === "draft" ? [witness.record] : []),
+    ],
+    decisionPoints: [...preIndex.store.decisionPoints],
+    taskStates: [...preIndex.store.taskStates],
+  };
+  const stagedIndex = indexStore(staged);
+
+  // --- 4. the existing ref, ruling and routing validators, in their existing order --------------------
+  validateRefs(stagedIndex);
+  validateGovernanceRulings(stagedIndex);
+  validateRoutingOrigins(stagedIndex);
+  if (successorDraft !== null) {
+    const successorKind = clauseKindOf(successorDraft.id);
+    if (successorKind === "DEC" || successorKind === "ASSUM") {
+      // validateRefs does not charge every clause's basisRefs, so the ONE authority for that limb is
+      // called here explicitly, against the STAGED index so a legal citation of a drafted ruling
+      // resolves. Its reason becomes the source's own typed unresolved-reference refusal.
+      const basis = basisRefsResolvable(stagedIndex, successorDraft.basisRefs);
+      if (!basis.ok) {
+        reject("E_DANGLING_REF",
+          `prospective ${successorKind} ${successorDraft.id}: ${basis.reason}`, successorDraft.id);
+      }
+    }
+  }
+
+  // --- 5. freshness of the rulings THIS candidate newly consumes, against the PRE-state ---------------
+  // The consumed set is derived, not declared: newlyConsumedRulingRefs walks new clauses' basisRefs,
+  // new transitions' ackRefs and moved DP carriers, so an unused historical record is not in it. Only
+  // an actual TYPED review-ruling is sent to the packet reader; an untyped one carries no packet.
+  for (const recordId of newlyConsumedRulingRefs(preIndex.store, staged)) {
+    const record = stagedIndex.records.get(recordId);
+    if (!record || record.kind !== "review-ruling" || record.rulingKind === undefined) continue;
+    assertRulingPacketFresh(preIndex, record);
+  }
+
+  // --- 6. the SHARED matrix row, once, on the staged index --------------------------------------------
+  assertTransitionMatrixRow(stagedIndex, transitionDraft);
 }
 
 // --- shared transaction helpers --------------------------------------------------------------------
@@ -2079,6 +2738,33 @@ const CARRIER_UPDATE_KEYS = {
   "unchanged-null": ["action", "dpId"],
 };
 
+// The per-action closed key set, as a PURE DESCRIPTOR, on the `successorDraftPresenceFault`
+// precedent. TP v1.21 §D5.1/§D5.4 require the loop controller to charge this same rule over its
+// governance input at every read; a second copy of the table there could drift from this one while
+// each looked correct alone, and the two would then disagree about what a valid carrier update is.
+//
+// It reports the fault as DATA and throws nothing, so this writer keeps its own E_CARRIER_SHAPE
+// message and its position after E_CARRIER_ACTION, and the controller raises its own refusal.
+//
+// Only the SHAPE half is shared. Per-DP coverage — which DPs this transaction actually mutated, and
+// therefore must declare — is transaction-derived and stays below, unfactored: the controller has no
+// transaction and must not pretend to one.
+export function carrierUpdateShapeFault(update) {
+  if (!update || typeof update !== "object" || Array.isArray(update)) return { kind: "not-object" };
+  if (typeof update.dpId !== "string" || update.dpId === "") return { kind: "dp-id" };
+  if (!Object.prototype.hasOwnProperty.call(CARRIER_UPDATE_KEYS, update.action)) {
+    return { kind: "unknown-action", action: update.action };
+  }
+  const keys = Object.keys(update).sort(compareCodePoint);
+  const expected = [...CARRIER_UPDATE_KEYS[update.action]].sort(compareCodePoint);
+  if (canonicalJson(keys) === canonicalJson(expected)) return null;
+  return {
+    kind: "keys",
+    missing: expected.filter((k) => !keys.includes(k)),
+    extra: keys.filter((k) => !expected.includes(k)),
+  };
+}
+
 // IS v1.7 §8 clear source 2. Upstream SM §8's closed list defines the SEMANTIC MEMBER "terminal
 // clause invalidated with no successor (INV-4)"; the string below is intent-scan v1's SERIALIZATION
 // of that member, whose authority is the intent-scan spec. It is not a new trigger member, and
@@ -2205,11 +2891,12 @@ function applyCarrierUpdates(store, draft, payload, command, now) {
     if (!allowed.includes(u.action)) {
       reject("E_CARRIER_ACTION", `${command}: carrier action "${u.action}" is not one of ${allowed.join(", ")} for this transaction`, u.dpId);
     }
-    const keys = Object.keys(u).sort(compareCodePoint);
-    const expected = [...CARRIER_UPDATE_KEYS[u.action]].sort(compareCodePoint);
-    if (canonicalJson(keys) !== canonicalJson(expected)) {
-      const extra = keys.filter((k) => !expected.includes(k));
-      const missing = expected.filter((k) => !keys.includes(k));
+    // The shared descriptor decides the key set; this call site keeps the code, the message and its
+    // position after E_CARRIER_ACTION. Only the `keys` fault is reachable here: an unknown action was
+    // already refused above, and a missing dpId by E_SHAPE at the top of the loop.
+    const shape = carrierUpdateShapeFault(u);
+    if (shape !== null && shape.kind === "keys") {
+      const { missing, extra } = shape;
       reject(
         "E_CARRIER_SHAPE",
         `${command}: DP ${u.dpId}: a "${u.action}" carrier update's key set is not the canonical closed set`
@@ -2645,16 +3332,553 @@ defineTransaction("reopen-dp", (store, payload, ctx) => {
 // intent-scan §8: 0..N ResolutionGroupDraft. A clean batch is resolutions=[] — it must not invent
 // a Transition. Siblings on one subject share one Transition; two groups demanding different
 // successors or actions for one subject reject the whole batch.
+// --- the v2 batch write contract --------------------------------------------------------------------
+
+const V2_DIGEST_SPELLING = /^[0-9a-f]{64}$/;
+
+// THE THREE VALUES THAT MUST AGREE, bound inside the SAME locked transaction, before anything is
+// written. They are three DIFFERENT facts, and the specs keep their failures apart on purpose:
+//
+//   1. the actual pre-state         -- what this transaction really loaded (private context)
+//   2. the caller's expectation     -- payload.expectedInputProvenanceStoreDigest (required)
+//   3. the inventory's own preimage -- inventorySnapshot.inputProvenanceStoreDigest
+//
+// 1 != 2 is AC121: the store moved after the producer ran and the caller did not notice.
+// 2 != 3 is AC123: the caller DID notice and refreshed its own expectation, but submitted the same
+// stale inventory. The CAS then passes, which is precisely why AC123 forbids merging the two: the
+// second failure is invisible to the first.
+function assertBatchWriteBinding(store, payload, ctx) {
+  const where = payload.batchRecordId;
+  const expected = payload.expectedInputProvenanceStoreDigest;
+  if (typeof expected !== "string" || !V2_DIGEST_SPELLING.test(expected)) {
+    reject("E_CAS_EXPECTATION",
+      `commit-test-provenance-batch: expectedInputProvenanceStoreDigest must be 64 lowercase hex; got `
+      + `${JSON.stringify(expected)}. It is sha256(canonicalText(the store file's text)) -- the same notation the `
+      + "loader and the producer use (AC120)",
+      where);
+  }
+
+  // 1 vs 2.
+  const source = ctx.source || { origin: "memory" };
+  if (source.origin === "file") {
+    if (expected !== source.loadedDigest) {
+      reject("E_CAS_MISMATCH",
+        `commit-test-provenance-batch: the store this transaction loaded hashes to ${source.loadedDigest}, but the `
+        + `payload expects ${expected}. Another writer moved the store after the inventory was produced; nothing is written`,
+        where);
+    }
+  } else if (expected !== storeDigest(store)) {
+    // HONEST IN-MEMORY SEMANTICS. The pure helper was handed a parsed object and no file bytes, so
+    // the only pre-state it can speak about is that object's canonical serialisation. That is a
+    // WEAKER statement than the file-backed CAS -- it cannot see a pretty-printed or BOM/CRLF file
+    // at all, because there is no file -- and it is not a substitute for it.
+    reject("E_CAS_MISMATCH",
+      `commit-test-provenance-batch: the in-memory pre-state canonicalises to ${storeDigest(store)}, but the payload `
+      + `expects ${expected}. NOTE: no file was read on this path, so this compares the canonical digest of the store `
+      + "OBJECT; the file-backed writer compares the digest of the text it actually loaded",
+      where);
+  }
+
+  // The snapshot, and 2 vs 3.
+  const batch = payload.batchSnapshot;
+  if (!batch || typeof batch !== "object" || Array.isArray(batch)) {
+    reject("E_PAYLOAD_MISSING", "commit-test-provenance-batch: batchSnapshot must be an object", where);
+  }
+  const snapshot = batch.inventorySnapshot;
+  if (snapshot === undefined || snapshot === null) {
+    reject("E_BATCH_SNAPSHOT_MISSING",
+      "commit-test-provenance-batch: batchSnapshot.inventorySnapshot is required. An opaque inventoryDigest proves "
+      + "nothing about which pre-state its preimage used, which is the whole reason the preimage is persisted",
+      where);
+  }
+  if (snapshot.inputProvenanceStoreDigest !== expected) {
+    reject("E_INVENTORY_BINDING",
+      `commit-test-provenance-batch: the payload expects pre-state ${expected} but its inventorySnapshot was computed `
+      + `against ${JSON.stringify(snapshot.inputProvenanceStoreDigest)}. Updating the CAS expectation while resubmitting `
+      + "the same inventory is a DIFFERENT failure from a CAS mismatch, and it is refused on its own",
+      where);
+  }
+
+  // The snapshot itself, through the accepted canonical authority. WHICH BYTES it sees is the whole
+  // question, so both branches are named explicitly:
+  //
+  //   text path   -- the ORIGINAL submitted document. Duplicate member names and entry source key
+  //                  order exist only there: JSON.parse is last-write-wins, and re-serialising the
+  //                  parsed object afterwards cannot recover what it dropped. The object applied
+  //                  below was derived FROM this text by runTransactionFromPayloadText, so there is
+  //                  one input and one authority -- nothing to reconcile.
+  //   object path -- JSON.stringify, NOT canonicalJson. A JS object cannot carry a duplicate, but
+  //                  its enumerable key order is observable, and AC126 (iii) says an unsorted entry
+  //                  is fail-closed and "不得由 writer 就地排序後放行". canonicalJson would sort and
+  //                  pass, i.e. repair in place; JSON.stringify preserves what the caller built, so
+  //                  an unsorted entry is refused. Callers canonicalise before submitting.
+  const text = source.payloadText;
+  if (typeof text === "string") {
+    const tree = scanJsonSpans(text);
+    const slice = tree === null ? null : sliceJsonValue(text, tree, ["batchSnapshot", "inventorySnapshot"]);
+    if (slice === null) {
+      reject("E_BATCH_RAW_SNAPSHOT",
+        "commit-test-provenance-batch: batchSnapshot.inventorySnapshot could not be located in the submitted payload "
+        + "text, so its original member occurrences cannot be checked",
+        where);
+    }
+    parseCanonicalInventoryV2(slice);
+  } else {
+    const serialised = JSON.stringify(snapshot);
+    if (typeof serialised !== "string") {
+      reject("E_BATCH_SNAPSHOT_SHAPE", "commit-test-provenance-batch: inventorySnapshot is not serialisable", where);
+    }
+    parseCanonicalInventoryV2(serialised);
+  }
+
+  // TP §2 TestSemanticReviewBatch is the caller's typed proposal, and every field it lists without a
+  // `?` is REQUIRED. "Derived" licenses the writer to own record.inventoryDigest; it does not license
+  // repairing an incomplete proposal. TP §6's proposal-time freshness compares batch.taskId and
+  // batch.inventoryDigest BEFORE Step 5 -- a field the writer invents at commit time could never
+  // have been compared then.
+  if (typeof batch.inventoryDigest !== "string") {
+    reject("E_BATCH_SNAPSHOT_SHAPE",
+      "commit-test-provenance-batch: batchSnapshot.inventoryDigest is required and is compared against the "
+      + "inventorySnapshot; it is not filled in by the writer",
+      where);
+  }
+  if (batch.inventoryDigest !== snapshot.inventoryDigest) {
+    reject("E_BATCH_DERIVED_DIGEST",
+      `commit-test-provenance-batch: batchSnapshot.inventoryDigest ${JSON.stringify(batch.inventoryDigest)} disagrees `
+      + `with the inventorySnapshot it encloses (${JSON.stringify(snapshot.inventoryDigest)})`,
+      where);
+  }
+  if (batch.taskId !== payload.taskId) {
+    reject("E_BATCH_SNAPSHOT_SHAPE",
+      `commit-test-provenance-batch: batchSnapshot.taskId ${JSON.stringify(batch.taskId)} is not the task being `
+      + `committed (${JSON.stringify(payload.taskId)})`,
+      where);
+  }
+  if (!Array.isArray(batch.results)) {
+    reject("E_BATCH_SNAPSHOT_SHAPE",
+      "commit-test-provenance-batch: batchSnapshot.results must be an array. An absent results[] is not an empty one",
+      where);
+  }
+  return snapshot;
+}
+
+// The per-result binding RULES now have one definition in batch-result-binding.mjs, shared with the
+// Step 6 consumer, which charges them again over a persisted store it may not assume this writer
+// produced. Only pure predicates moved: they answer with DATA and carry no code or message, so every
+// diagnostic below is still this transaction's own, word for word.
+function assertRefType(supplied, validated, id, where) {
+  const fault = refTypeFault(supplied, validated);
+  if (fault === null) return;
+  if (fault.kind === "not-object") {
+    reject("E_RESULT_SHAPE", `commit-test-provenance-batch: result ${id}'s testRef must be an object`, where);
+  }
+  if (fault.kind === "ghosts") {
+    reject("E_RESULT_SHAPE",
+      `commit-test-provenance-batch: result ${id}'s testRef declares ${JSON.stringify(fault.ghosts)} holding undefined. The `
+      + "result is the operand nothing else validates, and a key that exists on the object but has no JSON image is "
+      + "neither absent nor a value",
+      where);
+  }
+  if (fault.kind === "keys") {
+    reject("E_RESULT_SHAPE",
+      `commit-test-provenance-batch: result ${id}'s testRef declares ${canonicalJson(fault.suppliedKeys)} while `
+      + `the inventory entry it reviews declares ${canonicalJson(fault.validatedKeys)}. testRef is an exact key `
+      + "set; an undeclared annotation is not carried through on the result side either",
+      where);
+  }
+  reject("E_RESULT_SHAPE",
+    `commit-test-provenance-batch: result ${id}'s testRef does not equal the entry's validated testRef`, where);
+}
+
+function assertBindingShape(binding, id, where) {
+  const fault = bindingShapeFault(binding);
+  if (fault === null) return;
+  if (fault.kind === "not-binding") {
+    reject("E_FINDING_SHAPE",
+      `commit-test-provenance-batch: result ${id} carries a finding binding that is not { clauseRef, dpRef? }`, where);
+  }
+  if (fault.kind === "undeclared-key") {
+    reject("E_FINDING_SHAPE",
+      `commit-test-provenance-batch: result ${id}: a finding binding declares only clauseRef and an optional dpRef`, where);
+  }
+  reject("E_FINDING_SHAPE",
+    `commit-test-provenance-batch: result ${id}: a supplied finding binding dpRef is a non-empty string; a binding `
+    + `with no DP qualifier OMITS the key rather than stating ${JSON.stringify(fault.value)}`,
+    where);
+}
+
+// TP §2's `clauseRef?` / `dpRef?` are a SHORTHAND PROJECTION of the entry's binding, and an entry has
+// TWO sides. A single-side rule is refutable in both directions: `added` has no base clause, and a
+// `deleted` ASSUM test -- which AC10b still requires a result for -- has no post-state clause at all.
+// So the pair must jointly match ONE actual side; a clause taken from one side with the DP of the
+// other describes a binding that never existed. `finding.binding` names the particular affected
+// binding and is a separate field, not this projection.
+function assertResultProjection(result, entry, id, where) {
+  const fault = projectionFault(result, entry);
+  if (fault === null) return;
+  if (fault.kind === "undefined-field") {
+    reject("E_RESULT_BINDING",
+      `commit-test-provenance-batch: result ${id} declares ${fault.field} holding undefined. State the projection or omit `
+      + "the key; an unstated field is not the same claim as a stated empty one",
+      where);
+  }
+  if (fault.kind === "no-side") {
+    reject("E_RESULT_BINDING",
+      `commit-test-provenance-batch: result ${id} projects a clauseRef/dpRef, but neither side of its entry binds a `
+      + "clause (TP §2: an EXPL entry omits the field)",
+      where);
+  }
+  if (fault.kind === "dp-alone") {
+    reject("E_RESULT_BINDING",
+      `commit-test-provenance-batch: result ${id} projects a dpRef with no clauseRef; §7's DP qualifies a clause `
+      + "binding and cannot stand alone",
+      where);
+  }
+  reject("E_RESULT_BINDING",
+    `commit-test-provenance-batch: result ${id} projects ${canonicalJson(fault.stated)}, `
+    + "which is not either side of its entry's binding taken whole. The clause and its DP come from ONE side, and a "
+    + "side with no DP qualifier is projected by OMITTING dpRef",
+    where);
+}
+
+// TP §6's `Resolution` discriminated union, and the part of its anti-borrowing contract that is
+// DECIDABLE inside this transaction. Spelling follows the fields of the same name that already exist
+// in this store: `semanticEvidenceRef` is a typed RecordRef like the group's `semanticEvidenceRefs`,
+// and `transitionRef` is a Transition id like the persisted `ResolutionGroup.transitionRef`.
+const RESOLUTION_KEYS = {
+  "this-round": ["mode", "semanticEvidenceRef", "transitionRef"],
+  "historical-convergence": ["mode", "transitionRef"],
+};
+
+// WHAT THIS PROVES, AND WHAT IT DOES NOT. Charged here: the union's shape, that the refs resolve,
+// that the claimed evidence really is about THIS task, test, sides, finding kind and binding, that
+// the transition's subject is the bound clause, and -- when the transition is minted by this very
+// transaction -- that the claimed evidence is inside the group whose coverage digest was just
+// verified. NOT charged here, and never to be advertised as proved: outcome correspondence with the
+// post binding (TP §6:793-795), historical base-store membership of the transition and its successor
+// chain (§6:798-809), and the `--provenance` convergence verdict. Those are Step 6's.
+function assertFindingResolution(result, finding, id, claims, payload, where) {
+  const ref = finding.resolutionRef;
+  if (finding.kind !== "assum-reading-change") {
+    reject("E_FINDING_RESOLUTION",
+      `commit-test-provenance-batch: only an assum-reading-change finding carries a resolutionRef; result ${id} `
+      + `attached one to ${finding.kind}`,
+      where);
+  }
+  if (!ref || typeof ref !== "object" || Array.isArray(ref) || !RESOLUTION_KEYS[ref.mode]) {
+    reject("E_FINDING_RESOLUTION",
+      `commit-test-provenance-batch: result ${id}'s resolutionRef must declare mode "this-round" or `
+      + `"historical-convergence"; got ${JSON.stringify(ref && ref.mode)}`,
+      where);
+  }
+  const wanted = RESOLUTION_KEYS[ref.mode];
+  const keys = Object.keys(ref).sort(compareCodePoint);
+  if (keys.length !== wanted.length || keys.some((k, i) => k !== wanted[i])) {
+    reject("E_FINDING_RESOLUTION",
+      `commit-test-provenance-batch: result ${id}'s ${ref.mode} resolutionRef must declare exactly `
+      + `${JSON.stringify(wanted)}; got ${JSON.stringify(keys)}`,
+      where);
+  }
+  if (typeof ref.transitionRef !== "string" || ref.transitionRef === "") {
+    reject("E_FINDING_RESOLUTION",
+      `commit-test-provenance-batch: result ${id}'s resolutionRef.transitionRef must be a Transition id`, where);
+  }
+  const transition = claims.transitions.get(ref.transitionRef);
+  if (transition === undefined) {
+    reject("E_FINDING_RESOLUTION",
+      `commit-test-provenance-batch: result ${id} cites Transition ${JSON.stringify(ref.transitionRef)}, which is neither `
+      + "in the pre-state nor minted by this transaction",
+      where);
+  }
+  // A resolution names the binding it resolves, and §6 compares that binding to the Transition's
+  // subject -- so the finding must state it.
+  if (finding.binding === undefined) {
+    reject("E_FINDING_RESOLUTION",
+      `commit-test-provenance-batch: result ${id} carries a resolutionRef but no finding binding; the contract compares `
+      + "the Transition's subject against that binding's clauseRef",
+      where);
+  }
+  if (transition.subject !== finding.binding.clauseRef) {
+    reject("E_FINDING_RESOLUTION",
+      `commit-test-provenance-batch: result ${id} resolves ${JSON.stringify(finding.binding.clauseRef)} through a `
+      + `Transition whose subject is ${JSON.stringify(transition.subject)}`,
+      where);
+  }
+  if (ref.mode === "historical-convergence") {
+    // The closed shape and a resolvable existing Transition are all this layer can honestly charge:
+    // proving the Transition and its successor chain live in the base store needs the baseProvenance
+    // Git read, which this transaction has no repository context for and must not invent.
+    return;
+  }
+
+  const evidenceRef = ref.semanticEvidenceRef;
+  if (!evidenceRef || typeof evidenceRef !== "object" || typeof evidenceRef.ref !== "string"
+      || typeof evidenceRef.kind !== "string") {
+    reject("E_FINDING_RESOLUTION",
+      `commit-test-provenance-batch: result ${id}'s semanticEvidenceRef must be a typed RecordRef`, where);
+  }
+  const evidence = claims.records.get(evidenceRef.ref);
+  if (!evidence || evidence.kind !== evidenceRef.kind) {
+    reject("E_REF_UNRESOLVABLE",
+      `commit-test-provenance-batch: result ${id} cites ${evidenceRef.kind}/${evidenceRef.ref}, which is neither in the `
+      + "pre-state nor in recordsToCreate",
+      where);
+  }
+  // THE CARRIER ITSELF, before anything about what it says. TP §6:558-560 fixes it independently of
+  // how the Transition arose -- "semantic evidence draft（by = {discipline: test}；subjectRef = 該
+  // ASSUM clause ref；testRef 與 body digests 置於 payload）" -- and §6:572 makes it a test-reviewer
+  // RULING. Charging it only through the current group left prior-transaction references unchecked,
+  // and §6:808 says a Transition absent from the base store may ONLY use this-round: exempting those
+  // refs would leave the carrier unchecked on the one mode they can legally use. Valid prior refs stay
+  // legal; this constrains WHAT may be cited, never WHEN the Transition was minted.
+  if (evidence.kind !== "review-ruling") {
+    reject("E_EVIDENCE_BINDING",
+      `commit-test-provenance-batch: result ${id} claims ${evidenceRef.ref} as semantic evidence, but it is a `
+      + `${evidence.kind}. The carrier is a test-reviewer review-ruling`,
+      where);
+  }
+  if (!principalsEqual(evidence.by, { kind: "discipline", discipline: "test" })) {
+    reject("E_EVIDENCE_BINDING",
+      `commit-test-provenance-batch: result ${id}'s evidence ${evidenceRef.ref} was issued by `
+      + `${canonicalJson(evidence.by ?? null)}. Only the test discipline determines that a reading changed; another `
+      + "principal's ruling is a governance act, not per-test semantic evidence",
+      where);
+  }
+  // The subject is the ASSUM whose reading changed. `finding.kind` is a caller-supplied label and does
+  // not by itself establish the referenced clause's tier, so the canonical identity is charged here --
+  // TP §2:227 builds the assum-reading-change candidate set from `tagBefore == ASSUM-x` entries, and
+  // §6:559 names the subject as that ASSUM. Clause EXISTENCE is deliberately not re-checked: T.subject
+  // == finding.binding.clauseRef is already enforced above and the final-snapshot transition matrix
+  // resolves it, so a well-spelled but nonexistent ASSUM still fails, one layer later.
+  if (!isCanonicalClauseRef(finding.binding.clauseRef) || clauseKindOf(finding.binding.clauseRef) !== "ASSUM") {
+    reject("E_EVIDENCE_BINDING",
+      `commit-test-provenance-batch: result ${id} claims per-test semantic evidence for `
+      + `${JSON.stringify(finding.binding.clauseRef)}, which is not a canonical ASSUM clause ref`,
+      where);
+  }
+  if (evidence.subjectRef !== finding.binding.clauseRef) {
+    reject("E_EVIDENCE_BINDING",
+      `commit-test-provenance-batch: result ${id}'s evidence ${evidenceRef.ref} is about `
+      + `${JSON.stringify(evidence.subjectRef)}, not the ASSUM ${JSON.stringify(finding.binding.clauseRef)} this `
+      + "finding binds. A ruling about the successor is not evidence about the clause being resolved",
+      where);
+  }
+
+  // When THIS transaction mints the Transition, the group's evidence set is known and its coverage
+  // digest has just been verified -- so an evidence ref outside that set is provably uncovered by the
+  // very witness the Transition acknowledges. A pre-existing Transition carries no such set here, and
+  // demanding one would reject a legitimate reference (Step 6 proves that case).
+  const mintedEvidence = claims.mintedEvidenceByTransition.get(ref.transitionRef);
+  if (mintedEvidence !== undefined && !mintedEvidence.has(canonicalJson({ kind: evidenceRef.kind, ref: evidenceRef.ref }))) {
+    reject("E_FINDING_RESOLUTION",
+      `commit-test-provenance-batch: result ${id} claims ${evidenceRef.ref} against Transition ${ref.transitionRef}, which `
+      + "this transaction mints -- but that resolution group's verified witness coverage does not include it",
+      where);
+  }
+
+  // TP §6:786-791, on the carrier TP §6:558-560 defines: an ordinary review-ruling record whose
+  // payload carries the downstream fields. shared §2 payloads are MINIMUM and shared line 4 permits
+  // downstream fields, so no new record kind or rulingKind is involved. These are MANDATORY for a
+  // record a this-round claim names: an omitted field refuses the claim rather than being skipped.
+  if (evidence.taskId !== payload.taskId) {
+    reject("E_EVIDENCE_BINDING",
+      `commit-test-provenance-batch: result ${id}'s evidence ${evidenceRef.ref} states taskId `
+      + `${JSON.stringify(evidence.taskId)}, not this task ${JSON.stringify(payload.taskId)}. An earlier run's evidence `
+      + "cannot be spent here",
+      where);
+  }
+  if (canonicalJson(evidence.testRef ?? null) !== canonicalJson(result.testRef)) {
+    reject("E_EVIDENCE_BINDING",
+      `commit-test-provenance-batch: result ${id}'s evidence ${evidenceRef.ref} is about a different test `
+      + `(${canonicalJson(evidence.testRef ?? null)}); a sibling's evidence is not this test's`,
+      where);
+  }
+  if (evidence.findingKind !== "assum-reading-change") {
+    reject("E_EVIDENCE_BINDING",
+      `commit-test-provenance-batch: result ${id}'s evidence ${evidenceRef.ref} states findingKind `
+      + `${JSON.stringify(evidence.findingKind)}`,
+      where);
+  }
+  if (canonicalJson(evidence.binding ?? null) !== canonicalJson(finding.binding)) {
+    reject("E_EVIDENCE_BINDING",
+      `commit-test-provenance-batch: result ${id}'s evidence ${evidenceRef.ref} records a different binding than the `
+      + "finding it is claimed for",
+      where);
+  }
+  // Side names differ ON PURPOSE and are not normalised: the evidence spells them baseBodyDigest /
+  // headBodyDigest (TP §6:788) and the result spells them observedBaseBodyDigest /
+  // observedHeadBodyDigest (TP §2:524-525). Only the sides that actually exist are stated.
+  for (const [carried, observed] of [
+    ["baseBodyDigest", "observedBaseBodyDigest"],
+    ["headBodyDigest", "observedHeadBodyDigest"],
+  ]) {
+    if (evidence[carried] === undefined && result[observed] === undefined) continue;
+    if (evidence[carried] !== result[observed]) {
+      reject("E_EVIDENCE_BINDING",
+        `commit-test-provenance-batch: result ${id}'s evidence ${evidenceRef.ref} states ${carried} `
+        + `${JSON.stringify(evidence[carried])} against the reviewed ${JSON.stringify(result[observed])}. The evidence `
+        + "must be about the body under review, on exactly the sides that exist",
+        where);
+    }
+  }
+}
+
+// TP §2 TestSemanticReviewBatch: results[] is one-to-one with, and completely covers, the inventory's
+// entries -- "reviewer ran but skipped four tests" must not read as reviewed-clean. TP §6 adds the
+// proposal-time bindings: the tags and the observed body digests a reviewer states are the ones the
+// inventory actually carries. Both are Step 5 obligations, so they are charged HERE, by the writer,
+// before anything is persisted.
+function assertResultsCoverInventory(batch, snapshot, payload, claims, where) {
+  const results = batch.results;
+  const key = (ref) => canonicalJson([ref?.path, ref?.adapterId, ref?.structuralId]);
+  const entries = new Map();
+  for (const entry of snapshot.entries) entries.set(key(entry.testRef), entry);
+
+  const seen = new Set();
+  for (const result of results) {
+    if (!result || typeof result !== "object") {
+      reject("E_RESULT_SHAPE", "commit-test-provenance-batch: every result must be an object", where);
+    }
+    const id = key(result.testRef);
+    const entry = entries.get(id);
+    if (entry === undefined) {
+      reject("E_RESULT_COVERAGE",
+        `commit-test-provenance-batch: result ${id} names no entry in this inventory. results[] is one-to-one with `
+        + "entries[]; a result for a test the inventory does not list reviewed something else",
+        where);
+    }
+    if (seen.has(id)) {
+      reject("E_RESULT_COVERAGE", `commit-test-provenance-batch: entry ${id} has more than one result`, where);
+    }
+    seen.add(id);
+
+    // The tuple above is the COVERAGE INDEX; the exact declared type is charged against the entry the
+    // canonical reader validated.
+    assertRefType(result.testRef, entry.testRef, id, where);
+
+    // TP §2:526 lists tagBefore/tagAfter WITHOUT the `?` that six of their neighbours in the same
+    // block carry, so both are REQUIRED on every result -- and §2:546 states the obligation as an
+    // equality, which presupposes both operands exist. Presence first, then the value: `?? null` let
+    // an `added` entry's required `tagBefore: null` be satisfied by omitting the field entirely, which
+    // is §2:325's forbidden reverse-normalisation. The ENTRY side needs no such guard -- the canonical
+    // reader already enforced the common-seven exact key set, so both keys are present there.
+    for (const side of ["tagBefore", "tagAfter"]) {
+      const fault = tagFault(result, entry, side);
+      if (fault === null) continue;
+      if (fault.kind === "absent") {
+        reject("E_RESULT_BINDING",
+          `commit-test-provenance-batch: result ${id} states no ${side}. TP §2 declares it without an optional marker, `
+          + `so the ${side === "tagBefore" ? "added" : "deleted"} case states its null side AS null; an absent or `
+          + "undefined field is a different statement and is not read as one",
+          where);
+      }
+      reject("E_RESULT_BINDING",
+        `commit-test-provenance-batch: result ${id} states ${side} ${canonicalJson(fault.stated)} where the inventory `
+        + `carries ${canonicalJson(fault.carried)}: a review of a different binding is not a review of this entry `
+        + "(TP §6 proposal-time freshness)",
+        where);
+    }
+    for (const side of ["base", "head"]) {
+      const fault = sideObservationFault(result, entry, side);
+      if (fault === null) continue;
+      if (fault.kind === "missing") {
+        reject("E_RESULT_BINDING",
+          `commit-test-provenance-batch: result ${id} states no ${fault.observed} while its entry carries a ${side}-side `
+          + "body digest. An unstated observation cannot be checked against anything",
+          where);
+      }
+      if (fault.kind === "extra") {
+        reject("E_RESULT_BINDING",
+          `commit-test-provenance-batch: result ${id} states ${fault.observed} for a ${side} side its entry does not have`,
+          where);
+      }
+      reject("E_RESULT_BINDING",
+        `commit-test-provenance-batch: result ${id} observed ${side} body ${JSON.stringify(fault.stated)} but the `
+        + `inventory carries ${JSON.stringify(fault.carried)}. The reviewer saw a different body than the one under review`,
+        where);
+    }
+
+    assertResultProjection(result, entry, id, where);
+
+    const findings = result.findings;
+    if (!Array.isArray(findings)) {
+      reject("E_RESULT_SHAPE",
+        `commit-test-provenance-batch: result ${id} needs a findings array; no finding means clean, and an absent `
+        + "array means nothing at all",
+        where);
+    }
+    for (const finding of findings) {
+      if (!finding || typeof finding !== "object" || !FINDING_KIND_ORDER.includes(finding.kind)) {
+        reject("E_FINDING_KIND",
+          `commit-test-provenance-batch: result ${id} carries an unknown finding kind ${JSON.stringify(finding && finding.kind)}`,
+          where);
+      }
+      // TP §2: `evidence` is the one Finding field with no `?`. A finding that names nothing
+      // specific cannot be acted on, and the two optional fields below are marked optional there.
+      if (typeof finding.evidence !== "string" || finding.evidence === "") {
+        reject("E_FINDING_SHAPE",
+          `commit-test-provenance-batch: result ${id} carries a ${finding.kind} finding with no evidence string`,
+          where);
+      }
+      if (finding.binding !== undefined) assertBindingShape(finding.binding, id, where);
+      if (finding.resolutionRef !== undefined) {
+        assertFindingResolution(result, finding, id, claims, payload, where);
+      }
+    }
+  }
+  if (seen.size !== snapshot.entries.length) {
+    const missing = [...entries.keys()].filter((k) => !seen.has(k));
+    reject("E_RESULT_COVERAGE",
+      `commit-test-provenance-batch: ${missing.length} inventory entr${missing.length === 1 ? "y has" : "ies have"} no `
+      + `result (${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ", …" : ""}). A partially reviewed batch must `
+      + "not read as reviewed-clean",
+      where);
+  }
+}
+
 defineTransaction("commit-test-provenance-batch", (store, payload, ctx) => {
-  requireFields(payload, ["taskId", "batchSnapshot", "inventoryDigest", "batchRecordId"], "commit-test-provenance-batch");
+  requireFields(payload,
+    ["taskId", "batchSnapshot", "batchRecordId", "expectedInputProvenanceStoreDigest"],
+    "commit-test-provenance-batch");
+  // AC124: record.inventoryDigest is DERIVED from the snapshot. A caller-supplied top-level digest
+  // is a second authority for the same fact, and the pair could disagree; the field is refused
+  // outright rather than compared, so no write can depend on which copy was believed.
+  if (payload.inventoryDigest !== undefined) {
+    reject("E_PAYLOAD_FORBIDDEN",
+      "commit-test-provenance-batch: payload.inventoryDigest is derived from batchSnapshot.inventorySnapshot and "
+      + "may not be supplied. A caller-provided copy would be a second authority for the same value",
+      payload.batchRecordId);
+  }
   const resolutions = payload.resolutions || [];
   if (!Array.isArray(resolutions)) reject("E_PAYLOAD_MISSING", "commit-test-provenance-batch: resolutions must be an array", resolutions);
+  const inventorySnapshot = assertBatchWriteBinding(store, payload, ctx);
   const draft = clone(store);
   const ts = draft.taskStates.find((t) => t.taskId === payload.taskId);
   if (!ts) reject("E_UNKNOWN_TASK", `commit-test-provenance-batch: unknown task ${payload.taskId}`, payload.taskId);
+  // LEGACY SUPPLEMENTAL CONSISTENCY CHECK, kept for compatibility. `payload.baseProvenance` is a
+  // top-level key IS §8 never defines; removing the comparison would be a weakening, so it stays --
+  // but it is NOT the batch's witness and never supplies or replaces one. The required witness is
+  // batchSnapshot.baseProvenance, charged immediately below.
   if (payload.baseProvenance !== undefined
       && canonicalJson(payload.baseProvenance) !== canonicalJson(ts.baseProvenance)) {
     reject("E_BASE_MISMATCH", "commit-test-provenance-batch: the batch's baseProvenance must equal the tracked TaskState witness", payload.taskId);
+  }
+  // TP §2 lists baseProvenance in the typed proposal with no `?`, and states its obligation as an
+  // EQUALITY with the tracked TaskState. The old writer silently overwrote whatever the caller sent,
+  // so a batch claiming a different base was rewritten to look correct and its claim could never
+  // fail. It is now required and compared before anything is derived from it.
+  const claimedBase = payload.batchSnapshot.baseProvenance;
+  if (claimedBase === undefined || claimedBase === null) {
+    reject("E_BATCH_SNAPSHOT_SHAPE",
+      "commit-test-provenance-batch: batchSnapshot.baseProvenance is required. A batch that does not state which base "
+      + "it was reviewed against states a claim nothing can disagree with",
+      payload.batchRecordId);
+  }
+  if (canonicalJson(claimedBase) !== canonicalJson(ts.baseProvenance)) {
+    reject("E_BASE_MISMATCH",
+      `commit-test-provenance-batch: batchSnapshot.baseProvenance does not equal task ${payload.taskId}'s tracked `
+      + "witness. The stated witness is compared, never overwritten",
+      payload.batchRecordId);
   }
 
   // 2) mint the records this transaction creates, so every ref below can resolve.
@@ -2705,6 +3929,25 @@ defineTransaction("commit-test-provenance-batch", (store, payload, ctx) => {
     });
   }
 
+  // What a this-round resolution claim may resolve against. Transitions come from the pre-state AND
+  // from this transaction's drafts -- a pre-existing reference is legitimate (a Transition minted by
+  // an earlier command in the same task is still "this round"), so membership in payload.resolutions
+  // is NOT required. `mintedEvidenceByTransition` records only the groups minted here, where the
+  // verified coverage set is known and a claim outside it is provably uncovered.
+  const claims = {
+    records: byId,
+    transitions: new Map(store.transitions.map((t) => [t.id, t])),
+    mintedEvidenceByTransition: new Map(),
+  };
+  for (const [, group] of bySubject) {
+    claims.transitions.set(group.transition.id, group.transition);
+    claims.mintedEvidenceByTransition.set(
+      group.transition.id,
+      new Set(group.evidence.map((ref) => canonicalJson({ kind: ref.kind, ref: ref.ref }))),
+    );
+  }
+  assertResultsCoverInventory(payload.batchSnapshot, inventorySnapshot, payload, claims, payload.batchRecordId);
+
   for (const [subjectRef, group] of bySubject) {
     const evidence = sortTypedRefs(group.evidence);
     const expected = resolutionGroupDigest({
@@ -2713,16 +3956,37 @@ defineTransaction("commit-test-provenance-batch", (store, payload, ctx) => {
       successor: group.transition.successor === undefined ? null : group.transition.successor,
       semanticEvidenceRefs: evidence,
     });
+    // COVERAGE IS CHARGED ON THE TRANSITION'S ACTUAL ACK, and the group's declared witness must name
+    // that same record. TP §6:792 requires "T.ackRef 的治理 witness 明確引用 semanticEvidenceRef", and
+    // resolutionGroupDigest is that reference. Checking only `governanceWitnessRef` left a real hole:
+    // a group could name covering witness G while transitionDraft.ackRef named another otherwise
+    // valid same-principal/same-subject witness G2 whose digest covers nothing, and the Transition
+    // that landed cited G2. shared §2:290-295 already lists the conditional resolutionGroupDigest on
+    // review-ruling AND plan-gate, so this applies to every allowed witness kind with no exemption.
+    const ackRef = group.transition.ackRef;
+    if (!ackRef || typeof ackRef !== "object" || typeof ackRef.ref !== "string" || typeof ackRef.kind !== "string") {
+      reject("E_WITNESS_UNRESOLVABLE",
+        `commit-test-provenance-batch: the transition for ${subjectRef} carries no usable ackRef`, subjectRef);
+    }
     for (const witnessRef of group.witnesses) {
-      const rec = draft.records.find((r) => r.recordId === witnessRef.ref);
-      if (!rec) reject("E_REF_UNRESOLVABLE", `governance witness ${witnessRef.ref} does not resolve`, witnessRef.ref);
-      if (rec.resolutionGroupDigest !== expected) {
-        reject(
-          "E_WITNESS_COVERAGE",
-          `governance witness ${witnessRef.ref} does not cover this resolution group — resolutionGroupDigest mismatch (a missing sibling evidence ref, or a different action/successor, changes the digest)`,
-          witnessRef.ref,
-        );
+      if (canonicalJson(witnessRef) !== canonicalJson({ kind: ackRef.kind, ref: ackRef.ref })) {
+        reject("E_WITNESS_COVERAGE",
+          `commit-test-provenance-batch: group ${subjectRef} declares governance witness ${canonicalJson(witnessRef)} `
+          + `while its Transition acknowledges ${canonicalJson(ackRef)}. The persisted group must not advertise a `
+          + "witness the Transition does not cite",
+          subjectRef);
       }
+    }
+    const ack = draft.records.find((r) => r.recordId === ackRef.ref);
+    if (!ack || ack.kind !== ackRef.kind) {
+      reject("E_REF_UNRESOLVABLE", `governance witness ${ackRef.ref} does not resolve`, ackRef.ref);
+    }
+    if (ack.resolutionGroupDigest !== expected) {
+      reject(
+        "E_WITNESS_COVERAGE",
+        `governance witness ${ackRef.ref} does not cover this resolution group — resolutionGroupDigest mismatch (a missing sibling evidence ref, or a different action/successor, changes the digest)`,
+        ackRef.ref,
+      );
     }
     // IS v1.8 successorClauseDraft. Order inside the transaction: successor clause → Transition →
     // DP closure/carrier → batch record/TaskState head. Only the final snapshot is validated.
@@ -2730,10 +3994,11 @@ defineTransaction("commit-test-provenance-batch", (store, payload, ctx) => {
     const existsInPre = successorId !== null && preClauseIds.has(successorId);
     const clauseDraft = group.draft;
     if (clauseDraft !== undefined) {
-      if (successorId === null) {
+      const presence = successorDraftPresenceFault(clauseDraft, successorId, existsInPre);
+      if (presence === "retire") {
         reject("E_SUCCESSOR_DRAFT_FORBIDDEN", `commit-test-provenance-batch: subject ${subjectRef} retires, so it carries no successorClauseDraft`, subjectRef);
       }
-      if (existsInPre) {
+      if (presence === "exists") {
         reject("E_SUCCESSOR_DRAFT_FORBIDDEN", `commit-test-provenance-batch: successor ${successorId} already exists in pre-state, so it is cited rather than minted`, subjectRef);
       }
       if (!clauseDraft || typeof clauseDraft.id !== "string") {
@@ -2797,6 +4062,10 @@ defineTransaction("commit-test-provenance-batch", (store, payload, ctx) => {
   const snapshot = canonicalizeBatchSnapshot({
     ...payload.batchSnapshot,
     baseProvenance: ts.baseProvenance,
+    // Both copies are DERIVED from the validated inventorySnapshot, never carried over from the
+    // payload: there is one authority for this value and it is the preimage itself.
+    inventoryDigest: inventorySnapshot.inventoryDigest,
+    inventorySnapshot,
     resolutions: persistedGroups,
   });
   const previousBatchRef = ts.committedProvenanceBatchRef || null;
@@ -2807,8 +4076,13 @@ defineTransaction("commit-test-provenance-batch", (store, payload, ctx) => {
   const batchRecord = {
     recordId: payload.batchRecordId,
     kind: "provenance-batch",
+    // SM v1.13: every NEW record carries the version discriminator. Without it the accepted reader
+    // classifies this record as v1.12 legacy -- historically readable, but carrying no
+    // inventory-preimage authority at all, which is the opposite of what this writer just proved.
+    batchRecordVersion: BATCH_RECORD_VERSION,
     taskId: payload.taskId,
-    inventoryDigest: payload.inventoryDigest,
+    // DERIVED from the validated snapshot, never from the payload: one authority for this value.
+    inventoryDigest: inventorySnapshot.inventoryDigest,
     batchSnapshot: snapshot,
     batchDigest: digestOf(snapshot),
     relatedRefs: sortTypedRefs(relatedRefs),
@@ -2850,11 +4124,41 @@ export function dispatchVersion(store, command) {
   reject("E_STORE_VERSION", `unsupported provenanceVersion ${JSON.stringify(v)}`, command);
 }
 
+// --- the private transaction context ---------------------------------------------------------------
+//
+// THE TRUST BOUNDARY, stated once. Two facts a v2 batch write depends on cannot be taken from the
+// caller, because the caller is the party they are supposed to constrain:
+//
+//   the actual pre-state digest  -- sha256(canonicalText(the file text runTransactionLocked really
+//                                  loaded)). It is captured by loadStore() inside the lock and handed
+//                                  down as a private argument. It is NEVER read from `options` or
+//                                  `payload`, never recomputed by re-serialising the parsed object
+//                                  (canonicalStoreBytes sorts and re-indents, so a pretty-printed or
+//                                  differently ordered file would hash to something the upstream CAS
+//                                  never saw), and never refreshed by a second read.
+//   the original payload TEXT    -- the bytes a caller actually submitted. Duplicate member names and
+//                                  source key order exist only there; JSON.parse is last-write-wins,
+//                                  so an object cannot carry that evidence. It enters through
+//                                  runTransactionFromPayloadText, which takes TEXT as its ONE
+//                                  untrusted input and derives the payload object from it. Accepting
+//                                  bytes is not accepting a caller-supplied capture context: there is
+//                                  nothing to reconcile, because the object IS the text's parse.
+//
+// `source.origin` distinguishes the two entry points honestly:
+//   "file"   -- runTransaction/withStoreLock/runTransactionLocked: real bytes, real CAS.
+//   "memory" -- the pure applyTransaction(store, …) helper: there are NO file bytes here, so the
+//               pre-state notion available is the canonical digest of the object it was handed. That
+//               is a weaker statement and is labelled as such wherever it is used; it is not, and
+//               must never be presented as, the file-backed CAS.
 export function applyTransaction(store, command, payload, options = {}) {
+  return applyTransactionFrom(store, command, payload, options, { origin: "memory", payloadText: null });
+}
+
+function applyTransactionFrom(store, command, payload, options, source) {
   const apply = TRANSACTIONS[command];
   if (!apply) reject("E_UNKNOWN_COMMAND", `unknown command "${command}"`, command);
   const lane = dispatchVersion(store, command);
-  const ctx = { now: options.now === undefined ? Date.now() : options.now };
+  const ctx = { now: options.now === undefined ? Date.now() : options.now, source };
   const preIndex = indexStore(store);
   const next = apply(store, payload || {}, ctx);
 
@@ -2956,11 +4260,38 @@ export function withStoreLock(file, fn) {
   }
 }
 
+// The object entry point: no submitted document exists, so there is no raw text and the object's own
+// enumerable key order is the only ordering evidence available (see assertBatchWriteBinding).
 export function runTransaction(cwd, command, payload, options = {}) {
-  return withStoreLock(storePath(cwd), () => runTransactionLocked(cwd, command, payload, options));
+  return withStoreLock(storePath(cwd), () => runTransactionLocked(cwd, command, payload, null, options));
 }
 
-function runTransactionLocked(cwd, command, payload, options = {}) {
+// The TEXT entry point. It takes the submitted bytes as its ONE untrusted input and derives the
+// payload object from them itself, so a caller cannot hand over a text/object pair that disagree:
+// duplicate member names and source key order stay observable, and the object applied is exactly this
+// text's parse. Both CLI forms go through here. Parse failure is typed like any other payload fault.
+export function runTransactionFromPayloadText(cwd, command, payloadText, options = {}) {
+  if (typeof payloadText !== "string") {
+    reject("E_PAYLOAD_JSON", "runTransactionFromPayloadText requires the submitted payload text", command);
+  }
+  let payload;
+  try {
+    payload = JSON.parse(payloadText);
+  } catch (e) {
+    reject("E_PAYLOAD_JSON", `payload text is not valid JSON: ${e.message}`, command);
+  }
+  return withStoreLock(storePath(cwd), () => runTransactionLocked(cwd, command, payload, payloadText, options));
+}
+
+// The FILE-BACKED half every file lane shares: capture the file, charge the caller's CAS
+// expectation, dispatch the persisted version, validate the current store, and derive the next store
+// through the PRIVATE captured-text context. runTransactionLocked adds serialization and
+// publication on top of it; previewTestProvenanceBatch (below) adds neither.
+//
+// Extracted so there is exactly ONE definition of that sequence and its diagnostic precedence. The
+// order, the codes and the `validate` early-return shape are unchanged; `next === null` is how this
+// helper reports that early return to its callers.
+function deriveFromLoadedFile(cwd, command, payload, payloadText, options) {
   const loaded = loadStore(cwd);
   if (options.expectedStoreDigest !== undefined && options.expectedStoreDigest !== loaded.digest) {
     reject("E_CAS_MISMATCH", `store digest is ${loaded.digest}, expected ${options.expectedStoreDigest}`, loaded.digest);
@@ -2973,15 +4304,28 @@ function runTransactionLocked(cwd, command, payload, options = {}) {
 
   if (lane === "current") {
     validateAll(loaded.store, { now: options.now });
-    if (command === "validate") {
-      return { command, changed: false, storeDigest: loaded.digest, path: loaded.file };
-    }
+    if (command === "validate") return { loaded, lane, next: null };
   }
   // legacy-migration lane: the pre-state is NOT put through the v2 invariants. The migration
   // transaction owns it — validateLegacyV1 plus the TaskState and mixed-version guards — and the
   // full v2 validateAll runs on the resulting snapshot.
 
-  const next = applyTransaction(loaded.store, command, payload, options);
+  // The authoritative pre-state digest is the one loadStore() just captured from the file's own
+  // text. It is passed as a private argument, not through `options`: an option a caller can set is a
+  // value a caller can choose, and this one exists to constrain them.
+  const next = applyTransactionFrom(loaded.store, command, payload, options, {
+    origin: "file",
+    loadedDigest: loaded.digest,
+    payloadText: typeof payloadText === "string" ? payloadText : null,
+  });
+  return { loaded, lane, next };
+}
+
+function runTransactionLocked(cwd, command, payload, payloadText, options = {}) {
+  const { loaded, next } = deriveFromLoadedFile(cwd, command, payload, payloadText, options);
+  if (next === null) {
+    return { command, changed: false, storeDigest: loaded.digest, path: loaded.file };
+  }
   const bytes = canonicalStoreBytes(next);
 
   const dir = path.dirname(loaded.file);
@@ -3011,6 +4355,125 @@ function runTransactionLocked(cwd, command, payload, options = {}) {
   return { command, changed: true, storeDigest: sha256Hex(bytes), path: loaded.file };
 }
 
+// --- read-only file-backed preview (TP v1.19) -----------------------------------------------------
+//
+// WHAT IT IS. One read-only operation that answers "what record would committing this payload
+// produce, against the store file as it stands right now?" — and answers it with the SAME loaded-text
+// authority, the SAME validation order and the SAME private derivation the real writer uses, because
+// it shares deriveFromLoadedFile with it.
+//
+// WHY NOT applyTransaction ON A PARSED STORE. That path takes assertBatchWriteBinding's MEMORY
+// branch, which compares the payload's expectedInputProvenanceStoreDigest against
+// storeDigest(<object>) -- a re-serialisation. A valid pretty-printed store file (with or without a
+// BOM or CRLF endings) CAN have loadStore().digest different from storeDigest(parsedStore), so an
+// object preview raises E_CAS_MISMATCH on files the real text writer and the committed consumer both
+// accept. "Can", not "does": pretty printing is not one defined byte form, and disqualifying the
+// object path needs only that SOME legal file the writer accepts is one the object path refuses.
+// BOM or line-ending changes ALONE are normalised by canonicalText and do not by themselves create
+// that difference; the byte form that does is a different serialisation, such as pretty printing.
+//
+// WHAT IT DOES NOT DO. It takes no lock, writes nothing, publishes nothing, and performs no CAS
+// operation. It does not commit, does not establish that a commit succeeded, does not prove Step 6
+// convergence, and does not attest that any external reviewer ran. A preview verdict is never
+// accepted by the writer in place of the writer's own validation, and never authorises a stale
+// write: the writer re-loads, re-validates and re-checks CAS under its own lock regardless.
+const PREVIEW_COMMAND = "commit-test-provenance-batch";
+const PREVIEW_REQUEST_KEYS = ["payloadText", "repoRoot"];
+
+/**
+ * Derive the batch record a commit-test-provenance-batch payload would produce, without writing.
+ *
+ * @param {{ repoRoot: string, payloadText: string }} request exactly two own keys. No second
+ *   argument, no options, command, context, clock, store, index, digest, callback or verdict: each
+ *   of those is a value a caller could choose, and this operation exists to derive rather than to
+ *   accept them.
+ * @returns {{ inputProvenanceStoreDigest: string, expectedBatchRecord: object }} the helper's own
+ *   captured loadStore().digest, and the complete canonical record the writer derives —
+ *   recordId, kind, batchRecordVersion, taskId, inventoryDigest, batchSnapshot (with the validated
+ *   inventory and the derived resolution groups), batchDigest, relatedRefs and previousBatchRef.
+ *
+ * API shape and type misuse is E_API_ARGUMENTS. Every submitted-JSON and domain fault keeps its own
+ * typed source cause, unwrapped: the payload's raw boundary, the canonical inventory reader, the
+ * batch write binding and the store's invariants all report exactly as they do for a real write.
+ */
+export function previewTestProvenanceBatch(request) {
+  if (arguments.length !== 1) {
+    reject("E_API_ARGUMENTS",
+      "previewTestProvenanceBatch takes exactly one argument; an options object, a command, a store, an index, a "
+      + "clock, a digest, a context or a callback cannot be supplied", PREVIEW_COMMAND);
+  }
+  if (request === null || typeof request !== "object" || Array.isArray(request)) {
+    reject("E_API_ARGUMENTS", "the previewTestProvenanceBatch request must be a JSON object", PREVIEW_COMMAND);
+  }
+  // OWN keys, which is what the contract says -- not merely the enumerable string ones. Object.keys
+  // reports neither a non-enumerable `options` nor any symbol key, so a request carrying one was
+  // admitted while the contract forbids it. Neither Reflect.ownKeys nor Object.keys invokes an
+  // accessor: both read descriptors, so this check cannot itself observe a changing value.
+  const ownKeys = Reflect.ownKeys(request);
+  const symbolKeys = ownKeys.filter((key) => typeof key !== "string");
+  if (symbolKeys.length > 0) {
+    // Refused BEFORE the sort and the message below, so both operate on strings only. Not because
+    // compareCodePoint would throw -- it String-coerces safely -- but for exact semantics and an
+    // accurate diagnostic: JSON.stringify renders a symbol inside an array as `null`, and template
+    // interpolation of a bare symbol throws TypeError, so either would cost this refusal the name of
+    // the key that caused it. String() is the one rendering that survives.
+    reject("E_API_ARGUMENTS",
+      `the previewTestProvenanceBatch request carries symbol-keyed own properties (${symbolKeys.map(String).join(", ")}); `
+      + `it must declare exactly the two string keys ${JSON.stringify(PREVIEW_REQUEST_KEYS)}`, PREVIEW_COMMAND);
+  }
+  const keys = ownKeys.sort(compareCodePoint);
+  if (keys.length !== PREVIEW_REQUEST_KEYS.length || keys.some((k, i) => k !== PREVIEW_REQUEST_KEYS[i])) {
+    reject("E_API_ARGUMENTS",
+      `the previewTestProvenanceBatch request must declare exactly ${JSON.stringify(PREVIEW_REQUEST_KEYS)}; got `
+      + `${JSON.stringify(keys)}`, PREVIEW_COMMAND);
+  }
+
+  // EXACTLY ONE read of each value, here, and locals from this point on.
+  //
+  // runTransactionFromPayloadText is safe because its payloadText is a PARAMETER BINDING: a binding
+  // cannot be an accessor, so every use of it is the same value. Reading `request.payloadText` again
+  // for the type guard, the parse and the derivation had no such guarantee -- an enumerable getter
+  // could return a document with a duplicate inventory member to the parse and a clean one to the raw
+  // boundary, and the preview would then accept what the real writer refuses with E_DUPLICATE_MEMBER
+  // (and, with the reads reversed, refuse a document it never parsed). Capturing once restores the
+  // writer's mechanism rather than approximating it, and is what makes "no paired caller object/text
+  // authority exists" a property of the code instead of a convention. The capture is placed AFTER the
+  // own-key check so a malformed request is refused without invoking any accessor at all.
+  const repoRoot = request.repoRoot;
+  const payloadText = request.payloadText;
+
+  if (typeof repoRoot !== "string" || repoRoot === "") {
+    reject("E_API_ARGUMENTS", "repoRoot must be a non-empty string", PREVIEW_COMMAND);
+  }
+  if (typeof payloadText !== "string") {
+    reject("E_API_ARGUMENTS", "payloadText must be a string", PREVIEW_COMMAND);
+  }
+
+  // The payload is parsed HERE, from the captured text, exactly as runTransactionFromPayloadText
+  // parses its own parameter. Empty text reaches this same check.
+  let payload;
+  try {
+    payload = JSON.parse(payloadText);
+  } catch (e) {
+    reject("E_PAYLOAD_JSON", `payload text is not valid JSON: ${e.message}`, PREVIEW_COMMAND);
+  }
+
+  // No lock: this reads the file once and derives in memory. The writer's own lock, capture, CAS and
+  // publication are untouched, and nothing here can be mistaken for them. The SAME captured text that
+  // was parsed above is what reaches the raw payload boundary.
+  const { loaded, next } = deriveFromLoadedFile(repoRoot, PREVIEW_COMMAND, payload, payloadText, {});
+
+  // The record is identified by the head the transaction just advanced to, not by trusting the
+  // payload's own id: the transaction has already validated the task and the chain link, so its
+  // resulting head IS the record it derived.
+  const ts = next.taskStates.find((t) => t.taskId === payload.taskId);
+  const expected = next.records.find((r) => r.recordId === ts.committedProvenanceBatchRef.ref);
+  return Object.freeze({
+    inputProvenanceStoreDigest: loaded.digest,
+    expectedBatchRecord: clone(expected),
+  });
+}
+
 // --- CLI ---------------------------------------------------------------------------------------
 
 export function parseArgs(argv) {
@@ -3034,22 +4497,47 @@ export function main(argv) {
     process.exit(command ? 0 : 2);
   }
   const cwd = options.cwd || process.cwd();
-  let payload = {};
+  // BOTH forms submit TEXT. Parsing here and forwarding only the object would throw away the one
+  // place duplicate member names and source key order still exist, and it would differ between the
+  // two forms for no reason a caller could predict. Reading a file can fail on its own (ENOENT,
+  // EACCES); that is an argument fault, reported with the same exit 2 as malformed JSON.
+  let payloadText = "{}";
   try {
-    if (options["payload-file"]) payload = JSON.parse(fs.readFileSync(options["payload-file"], "utf8"));
-    else if (options.payload) payload = JSON.parse(options.payload);
+    if (options["payload-file"]) payloadText = fs.readFileSync(options["payload-file"], "utf8");
+    else if (options.payload) payloadText = options.payload;
+  } catch (e) {
+    process.stderr.write(`${canonicalJson({ ok: false, code: "E_PAYLOAD_READ", message: e.message })}\n`);
+    process.exit(2);
+  }
+  try {
+    JSON.parse(payloadText);
   } catch (e) {
     process.stderr.write(`${canonicalJson({ ok: false, code: "E_PAYLOAD_JSON", message: e.message })}\n`);
     process.exit(2);
   }
   try {
-    const result = runTransaction(cwd, command, payload, {
+    const result = runTransactionFromPayloadText(cwd, command, payloadText, {
       expectedStoreDigest: options["expect-digest"],
     });
     process.stdout.write(`${canonicalJson({ ok: true, ...result })}\n`);
     process.exit(0);
   } catch (e) {
-    const code = e instanceof ProvenanceError ? e.code : "E_UNEXPECTED";
+    // TWO KNOWN CLASSES, recognised by identity. The canonical inventory reader has its own error
+    // class and the same `.code` contract, and this module deliberately re-throws its refusals
+    // unchanged (see assertInventorySnapshot), so flattening them to E_UNEXPECTED would hide a typed,
+    // diagnosable refusal behind the one code that tells a caller nothing.
+    //
+    // Recognition is by CLASS, not by a naming pattern. `code` is an ordinary own property that any
+    // object can carry, so trusting an `E_`-shaped string would promote a future implementation bug --
+    // or a third-party error that happens to match -- into an authoritative domain verdict. Anything
+    // else, an fs errno included, stays E_UNEXPECTED.
+    //
+    // InventoryError's `code` is optional in its constructor -- its uncoded `refuse()` path exists for
+    // the product entry point this module never calls. The guard is still written, because "the class
+    // is known" and "the instance carries a code" are two facts, and dropping an undefined `code` from
+    // the emitted object would leave a machine reader with no code field at all.
+    const known = e instanceof ProvenanceError || e instanceof InventoryError;
+    const code = known && typeof e.code === "string" ? e.code : "E_UNEXPECTED";
     process.stderr.write(`${canonicalJson({ ok: false, code, message: e.message, detail: e.detail ?? null })}\n`);
     process.exit(1);
   }
