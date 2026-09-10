@@ -298,7 +298,18 @@ test("harness settings: one Bash-matched PreToolUse hook, with hostile paths ref
   }
   // A SPACE must be accepted, not refused: `process.execPath` on Windows is routinely
   // `C:\Program Files\nodejs\node.exe`, and the surrounding double quotes are what handle it.
-  assert.equal(hookCommandFault("C:\\Program Files\\nodejs\\node.exe"), null);
+  // The path must be HOST-absolute — the validator uses host `path.isAbsolute` by contract, and
+  // the harness only ever hands it host-controlled paths.
+  const spacedAbsolute = process.platform === "win32"
+    ? "C:\\Program Files\\nodejs\\node.exe"
+    : "/opt/Program Files/nodejs/node";
+  assert.equal(hookCommandFault(spacedAbsolute), null, "a space in a host-absolute path is quoted, not refused");
+  // The complement, asserted one way only: a Windows drive path is correctly not absolute on POSIX,
+  // and broadening the validator to accept foreign-platform absolutes would weaken a real guard.
+  // The mirror does not hold — `path.win32.isAbsolute("/abs")` is true — so it is not asserted.
+  if (process.platform !== "win32") {
+    assert.match(hookCommandFault("C:\\Program Files\\nodejs\\node.exe"), /not absolute/, "a foreign Windows path is refused on POSIX");
+  }
   assert.equal(hookCommandFault(process.execPath), null, "this machine's node path must be usable");
   assert.throws(() => buildHookSettings({ nodePath: "/usr/bin/node", guardPath: '/h/g"x.mjs', configPath: "/h/c.json" }),
     /guard: the path contains/);
@@ -1328,7 +1339,14 @@ test("audit manifest: deterministic, name-sorted, and sensitive to any byte", ()
 
 test("audit names: only plain basenames inside the directory are accepted", () => {
   assert.equal(unsafeAuditName("1-2-abc.json"), null);
-  for (const bad of ["", ".", "..", "a/b.json", "..\\b.json", "/abs.json"]) {
+  // Both separator conventions, on every host: a backslash name is its own basename under POSIX
+  // rules but traverses under Windows rules, so it must be refused either way. Drive-qualified and
+  // UNC forms are covered for the same reason, and the dot / NUL guards are unchanged.
+  for (const bad of [
+    "", ".", "..", "a/b.json", "..\\b.json", "/abs.json",
+    "dir\\a.json", "..\\..\\a.json", "C:\\abs.json", "C:x.json", "\\\\server\\share\\a.json",
+    "a\0b.json",
+  ]) {
     assert.ok(unsafeAuditName(bad), JSON.stringify(bad));
   }
   assert.ok(unsafeAuditName(7));

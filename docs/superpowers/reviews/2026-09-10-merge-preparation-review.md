@@ -135,7 +135,83 @@ remains exactly as accurate as before. What does change is that document's own b
 was going to change from normalisation regardless, which is why the blank line was removed in the
 same commit rather than left as a recurring diff warning.
 
-## 5. Scope boundaries
+## 5. First cross-platform CI, and what it found
+
+PR CI on the first candidate ran link-check and zizmor green, with typos failing separately. Ubuntu
+and macOS both reported **2,137 tests, 2,129 passing, 2 skipped, 6 failing**. Windows **completed** —
+it did not time out — reporting **2,137 tests, 2,132 passing, 4 skipped, 1 failing**, with a test step
+of **842,922 ms**; its single failure is the real-symlink case addressed below. Because `npm test`
+failed on every platform, the evaluation step, the Linux-only plugin validation and the release
+publisher's syntax check did not run anywhere in this PR.
+
+**Five of the six test failures are defects in the tests, not in the product** — assumptions encoded
+as universal facts. No product contract changed in response, and no `head-view-snapshot.mjs`
+behaviour was altered.
+
+- **A real working-tree symlink** was created but never staged, while the test expected
+  `tracked: true`. Trackedness is index membership, so `false` was correct. Both states are now
+  asserted, before and after staging.
+- **Two mode fixtures** used `update-index --chmod=+x`, which moves the index mode only. Where the
+  worktree bit is observable the observed mode correctly wins, so on POSIX the digest never moved.
+  One test additionally asserted the **opposite of its own title** — it claimed observed-mode
+  precedence while only staging an index mode, and was green on Windows for the wrong reason. It now
+  moves the worktree bit with the index left alone, asserts both directions, and a separately
+  labelled fixture pins `core.filemode=false` **for itself only** to keep the index fallback covered
+  without deleting the POSIX contract.
+- **A hook-path fixture** hard-coded a Windows absolute path as a must-accept example. The validator
+  is host-native by contract, so that path is correctly not absolute on POSIX. The fixture now uses a
+  host-appropriate absolute path *containing a space*, preserving the original intent, and adds the
+  POSIX-side rejection of a foreign Windows path. The validator was not broadened.
+- **One genuine helper defect.** `unsafeAuditName` in `eval/loop-e2e/run-scenario.mjs` used
+  host-native `path.basename`, so `..\b.json` was accepted on POSIX and would traverse on Windows —
+  a validator whose verdict on identical input flips with the host. It now requires the name to be
+  its own basename under **both** separator conventions, which also covers drive-qualified and UNC
+  forms. The dot and NUL guards are unchanged.
+
+**One failure is deliberately left red.** A tracked child under an ancestor junction is correctly
+refused; the *untracked* branch of the same test does not reject on POSIX, and we do not yet know
+whether the capture omitted the entry or resolved through the link — those have opposite fixes, so
+the question stays open. A temporary, clearly marked diagnostic takes **one** capture and both
+records it and asserts on it, so the observations describe exactly the capture that decides the
+result. The refusal requirement is unchanged in strength — both the error type and the
+`E_UNSUPPORTED_ENTRY` code are asserted — so the test remains red on POSIX. The diagnostic blocks
+nothing, replaces no bytes and logs no outside content; it reports a presence boolean for the fixture
+sentinel, records every failed snapshot read, and marks the scan complete only when a snapshot
+existed and nothing errored, so an absent sentinel on an incomplete scan is "not established" rather
+than "safe". File-content reads and readlink metadata are recorded as separate observations.
+Actual Linux and macOS evidence is required before the assertion is changed.
+
+**Typos configuration.** Two sealed upstream vendored files are excluded by exact path, because their
+bytes are pinned and whitelisting their words would silence real misspellings in our own source. The
+canonical `ASSUM` clause prefix is accepted as project vocabulary. Two opaque strings — a ULID-shaped
+fixture id and a generated run-root suffix — are exempted as whole identifiers so the generic words
+stay checked. One deliberately misspelled flag is exempted by an exact-literal regex rather than by
+allowing a bare generic token. Separately, a missing space between "is" and a 40+ character hex
+digest was corrected in three historical dialogue documents (eight occurrences); **every digest digit
+is unchanged** and no other prose was touched.
+
+**Windows job budget.** The validation workflow now allows Windows 20 minutes; ubuntu and macOS stay
+at 15. The measured 842,922 ms test step inside a ~14m37s job left roughly 23 seconds for the later
+steps. That job completed and reported a real failure, so this is prospective headroom for steps it
+never reached, not a response to a timeout. No trigger, concurrency, permission, test or gate change
+accompanies it.
+
+**Frozen-set impact.** The protected-123 comparison still differs by exactly one file —
+`cressetide/.claude-plugin/plugin.json` — and the 127-file archive is unchanged.
+`eval/loop-e2e/run-scenario.mjs` is **not** a member of either frozen set: those pin the private
+harness's own dependencies, of which this directory contributes `eval/loop-e2e/bash-guard.mjs`. The
+helper is a maintainer file and is not distributed in `cressetide/`. Its new bytes are nonetheless
+unverified by any prior native evidence, which predates the change and never covered this file. The
+coverage they have so far is a scoped local run — **171 tests, 168 passing, 3 skipped, 0 failing** —
+plus a separate set of 18 portable-basename counter-cases exercising the pure helper under both
+`path.posix` and `path.win32` rules. Those 18 are not part of the Node test-runner count and were not
+run on a POSIX host. Frozen archives and every published prior result are untouched, and nothing is
+replayed.
+
+CI for the exact final commit has not run. The scoped local results above are not a cross-platform
+result, the helper has not passed CI, and no acceptance is claimed ahead of it.
+
+## 6. Scope boundaries
 
 This preparation carries no efficiency claim. The efficiency investigation is closed with **L3
 unexecuted** — see the [final disposition](2026-09-10-efficiency-final-disposition.md) — and merging

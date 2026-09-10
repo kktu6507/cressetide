@@ -527,10 +527,17 @@ function boundaryBindingFault(harnessRoot, boundary) {
 
 export const auditSnapshot = auditDir => (fs.existsSync(auditDir) ? fs.readdirSync(auditDir).sort() : []);
 
-/** A record filename must be a plain basename inside the audit directory — never a path. */
+/** A record filename must be a plain basename inside the audit directory — never a path.
+ *
+ *  Checked against BOTH separator conventions, not the host's. `path.basename` is host-native, so
+ *  on POSIX a Windows-style `..\b.json` is its own basename and was accepted, while the same name
+ *  traverses on Windows: a validator whose verdict on identical input flips with the host is the
+ *  defect. `path.win32.basename` also strips drive-qualified (`C:x.json`) and UNC names. */
 export function unsafeAuditName(name) {
   if (typeof name !== "string" || name === "") return "the record name is empty";
-  if (name !== path.basename(name)) return `the record name is not a plain basename: ${JSON.stringify(name)}`;
+  if (name !== path.posix.basename(name) || name !== path.win32.basename(name)) {
+    return `the record name is not a plain basename: ${JSON.stringify(name)}`;
+  }
   if (name === "." || name === ".." || name.includes("\0")) return `the record name is unsafe: ${JSON.stringify(name)}`;
   return null;
 }

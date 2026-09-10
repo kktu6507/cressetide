@@ -20,7 +20,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    # Windows runs the same suite far slower: a measured 842,922 ms test step inside a ~14m37s job,
+    # against a 15-minute cap, left the later steps roughly 23 seconds. That job COMPLETED and
+    # reported a real test failure — it did not time out — so this is prospective headroom for the
+    # steps it never reached, not a response to a timeout. Other platforms are unchanged.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 20 || 15 }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:

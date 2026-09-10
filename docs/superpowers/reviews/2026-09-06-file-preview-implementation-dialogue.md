@@ -24,7 +24,7 @@ The real Claude process completed with actual exit0,4 turns,221.796 seconds. The
 
 ## Bounded correction: phase10p3
 
-Claude completed the two-file correction with actual exit0,28 turns,299.178 seconds. The165-path guard passed at2026-09-06T06:31:12.210Z. Final source SHA256 is2fe501b768475f5da418107217048b0620bd0e29a3c7f250cdef44b0b79af5f3; the18-test file SHA256 is79707d75df665e736a91f89d14616374a79991278733fdc0561ea0b43f3e8fc3.
+Claude completed the two-file correction with actual exit0,28 turns,299.178 seconds. The165-path guard passed at2026-09-06T06:31:12.210Z. Final source SHA256 is 2fe501b768475f5da418107217048b0620bd0e29a3c7f250cdef44b0b79af5f3; the18-test file SHA256 is 79707d75df665e736a91f89d14616374a79991278733fdc0561ea0b43f3e8fc3.
 
 Corrected and finally restored code passed18/18 preview and38/38 batch-writer tests, both actual exits0. A faithful temporary reversal of only the helper boundary made the four new tests fail while all14 prior preview tests and38 writer tests still passed. An earlier reversal accidentally retained dead capture lines and observed four reads; Claude disclosed and redid it with the faithful original three-read body. Neither temporary form remains in final source. Codex checked the final single-capture code and independently reran its original actual-emitter discriminator: one text read, both preview and actual writer refuse E_DUPLICATE_MEMBER, raw store unchanged, actual exit0. Fixed-candidate regression and acceptance follow separately.
 

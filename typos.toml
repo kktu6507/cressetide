@@ -6,7 +6,26 @@
 [files]
 # The CJK READMEs mix scripts and romanized terms (a false-positive surface with no EN dictionary
 # value), so they are excluded from English dictionary checks.
-extend-exclude = ["README.zh-TW.md", "README.ja.md"]
+#
+# The two vendored files are SEALED UPSTREAM BYTES pinned to their published releases: `ignore`
+# spells its own constant `EXCAPED`, and `acorn` carries `initalization` plus Unicode script
+# abbreviations (Nd/Beng/Tham/Vai/Maka) as data. Correcting them would break the vendor pin;
+# whitelisting those words globally would silence real misspellings in our own source. Listed as
+# EXACT PATHS rather than a `vendor/**` glob, so any future vendored file needs its own decision.
+extend-exclude = [
+  "README.zh-TW.md",
+  "README.ja.md",
+  "cressetide/skills/vigil/vendor/ignore-7.0.6.js",
+  "cressetide/skills/vigil/vendor/acorn-8.18.0.mjs",
+]
+
+[default]
+# One deliberately misspelled flag inside the "a misspelled flag" fixture in
+# test/changed-test-inventory-artifact.test.mjs, whose assertion is /unknown flag/ — the
+# misspelling IS the fixture. Matched as this exact literal rather than allowing a bare generic
+# token, so that correction stays caught everywhere else. `\b` confines the exemption to this exact
+# flag: without it the pattern would also match longer spellings that merely start with it.
+extend-ignore-re = ['--base-tre\b']
 
 [default.extend-words]
 # Project terms, accepted as-is (identity mapping = "this word is valid"). Conservative seed:
@@ -26,3 +45,20 @@ releas = "releas"           # regex stem in orchestration-check.js: releas(?:e|i
 OT = "OT"                   # uppercase-run token from "OTPs" (one-time passwords) in browser-evidence.md
 fo = "fo"                   # PowerShell abbreviated -fo (Force) flag inside a destructive-guard deny-list TEST FIXTURE command
 entrys = "entrys"           # literal WRONG spelling the round-3 pluralization bug fix (summarizeMemoryHealth/pluralize() in doctor.mjs) closed; quoted deliberately in code comments and a test title to show exactly what the bug looked like, never a real misspelling in prose
+
+# Canonical clause-reference prefix: REQ- / DEC- / ASSUM- followed by a ULID. It is a machine
+# literal — it appears in product regexes (node-test-adapter.mjs, changed-test-inventory.mjs),
+# in the approved spec text and inside asserted error strings — and is never the word "ASSUME".
+# Word-level (not identifier-level) because it must also match inside `assum_reading_change`.
+ASSUM = "ASSUM"
+assum = "assum"
+Assum = "Assum"
+
+# Whole opaque strings, exempted as complete identifiers so the generic words THER and ue stay
+# checked everywhere else in the repository.
+[default.extend-identifiers]
+# A deliberately opaque ULID-shaped fixture id, four uses in test/provenance-store.test.mjs.
+"0000000000000000000000THER" = "0000000000000000000000THER"
+# A retained generated run-root suffix inside 2026-09-09-efficiency-positive-v2-plan-evidence.json;
+# recorded evidence bytes are not edited to satisfy a spell check.
+"ueJU2i" = "ueJU2i"

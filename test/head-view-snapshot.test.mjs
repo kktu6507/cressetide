@@ -116,6 +116,18 @@ const REAL_SYMLINKS = (() => {
     return fs.lstatSync(path.join(dir, "link")).isSymbolicLink();
   } catch { return false; } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 })();
+// Whether the WORKTREE carries an observable executable bit. On POSIX it does, and the observed
+// mode is what the head view reports; on Windows it does not, and the staged index mode is all
+// there is. Measured rather than branched on process.platform, and cleaned up like the probes above.
+const MODE_CAPABLE = (() => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-hvs-mode-"));
+  try {
+    const probe = path.join(dir, "probe.txt");
+    fs.writeFileSync(probe, "x");
+    fs.chmodSync(probe, 0o755);
+    return (fs.lstatSync(probe).mode & 0o111) !== 0;
+  } catch { return false; } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+})();
 
 // ---------------------------------------------------------------------------------------------
 // AC130: head view composition and ignore authority
@@ -536,9 +548,21 @@ test("AC133 a link whose target does not exist still captures", async () => {
 test("AC133 an actual working-tree symlink is read with readlink and never followed", { skip: !REAL_SYMLINKS }, async () => {
   await inRepo(async (repo) => {
     seed(repo);
+    // Real working-tree symlink semantics, so the index records 120000 rather than a plain blob.
+    repo.git("config", "core.symlinks", "true");
     fs.symlinkSync("lib/helper.mjs", path.join(repo.root, "real-link"));
+    const digest = sha256(Buffer.from("lib/helper.mjs", "utf8"));
+
+    // Trackedness is INDEX MEMBERSHIP. The link is created here and not staged, so it is untracked
+    // until `git add` puts it in the index; both states are asserted below. (The earlier version
+    // created the link, never added it, and expected tracked:true.)
+    const untracked = await repo.capture();
+    assert.deepStrictEqual(untracked.entry("real-link"), { mode: "120000", type: "symlink", contentDigest: digest, tracked: false });
+    assert.strictEqual(untracked.read("real-link").toString("utf8"), "lib/helper.mjs", "readlink bytes, not the target's contents");
+
+    repo.git("add", "real-link");
     const s1 = await repo.capture();
-    assert.deepStrictEqual(s1.entry("real-link"), { mode: "120000", type: "symlink", contentDigest: sha256(Buffer.from("lib/helper.mjs", "utf8")), tracked: true });
+    assert.deepStrictEqual(s1.entry("real-link"), { mode: "120000", type: "symlink", contentDigest: digest, tracked: true });
     assert.strictEqual(s1.read("real-link").toString("utf8"), "lib/helper.mjs");
   });
 });
@@ -662,7 +686,13 @@ test("AC135 every single-variable change to the universe changes headViewDigest"
       ["add a path", () => repo.write("added.txt", "new\n")],
       ["delete a path", () => repo.remove("added.txt")],
       ["rename with the same bytes", () => repo.git("mv", "docs/notes.md", "docs/renamed.md")],
-      ["mode 100644 -> 100755", () => repo.git("update-index", "--chmod=+x", "subject.txt")],
+      // The index alone does not move this where the worktree bit is observable: on POSIX the
+      // observed 0644 wins and the digest would not change. Do both, so each platform sees a real
+      // mode change through whichever channel it actually honours.
+      ["mode 100644 -> 100755", () => {
+        repo.git("update-index", "--chmod=+x", "subject.txt");
+        if (MODE_CAPABLE) fs.chmodSync(path.join(repo.root, "subject.txt"), 0o755);
+      }],
       ["raw content change", () => repo.write("subject.txt", "content changed\n")],
       ["LF -> CRLF only", () => repo.write("subject.txt", "content changed\r\n")],
       ["add a BOM only", () => repo.write("subject.txt", Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("content changed\r\n", "utf8")]))],
@@ -995,7 +1025,87 @@ test("a tracked child under an ancestor junction is fail-closed and never reads 
       const otherLink = path.join(repo.root, "untracked-dir");
       fs.symlinkSync(outside, otherLink, linkKind);
       try {
-        assert.strictEqual(await failureOf(() => repo.capture()), "E_UNSUPPORTED_ENTRY", "untracked side");
+        // TEMPORARY phase36 DIAGNOSTIC. The tracked branch above passes on POSIX while this
+        // untracked branch does not, and we do not yet know whether the capture omitted the entry
+        // or resolved through the link — those have opposite fixes. ONE capture serves both the
+        // record and the assertion, so the observations describe exactly the capture that decides
+        // the result; a second capture would let them describe different work. The refusal
+        // requirement below is unchanged in strength and still fails on POSIX, so CI stays red
+        // until the evidence is discussed. Nothing here blocks or replaces bytes, and no outside
+        // content is logged — only a presence boolean.
+        const watched = [otherLink, outside];
+        const beneath = (p) => typeof p === "string" && watched.some((w) => p === w || p.startsWith(w + path.sep));
+        const realReadFileSync = fs.readFileSync;
+        const realReadlinkSync = fs.readlinkSync;
+        let readFileBeneathWatched = false;
+        let readlinkBeneathWatched = false;
+        let observed = null;
+        let thrown = null;
+        try {
+          fs.readFileSync = function (p, ...rest) { if (beneath(p)) readFileBeneathWatched = true; return realReadFileSync.call(this, p, ...rest); };
+          fs.readlinkSync = function (p, ...rest) { if (beneath(p)) readlinkBeneathWatched = true; return realReadlinkSync.call(this, p, ...rest); };
+          observed = await repo.capture();
+        } catch (e) {
+          thrown = { code: (e && e.code) || null, name: (e && e.name) || null, detail: (e && e.detail) || null };
+        } finally {
+          fs.readFileSync = realReadFileSync;
+          fs.readlinkSync = realReadlinkSync;
+        }
+
+        let snapshotPaths = null;
+        let untrackedDirEntry = null;
+        let untrackedDirReadlinkBytes = null;
+        let sentinelReachableFromSnapshot = false;
+        // A read that FAILED is not a read that found nothing. Every failure is recorded, and the
+        // scan only counts as complete when a snapshot existed and nothing errored — so a `false`
+        // sentinel result on an incomplete scan is "not established", never "safe".
+        const readErrors = [];
+        if (observed !== null) {
+          snapshotPaths = observed.paths();
+          for (const p of snapshotPaths) {
+            try {
+              if (observed.read(p).toString("utf8").includes(SENTINEL.trim())) sentinelReachableFromSnapshot = true;
+            } catch (e) {
+              readErrors.push({ path: p, code: (e && e.code) || null, name: (e && e.name) || null });
+            }
+          }
+          if (observed.has("untracked-dir")) {
+            untrackedDirEntry = observed.entry("untracked-dir");
+            try {
+              untrackedDirReadlinkBytes = observed.read("untracked-dir").toString("utf8");
+            } catch (e) {
+              untrackedDirReadlinkBytes = null;
+              readErrors.push({ path: "untracked-dir", code: (e && e.code) || null, name: (e && e.name) || null });
+            }
+          }
+        }
+        const sentinelScanComplete = observed !== null && readErrors.length === 0;
+        const others = repo.git("ls-files", "--others").split("\n").map((l) => l.trim()).filter((l) => l !== "" && l.includes("untracked-dir"));
+        console.log(`PHASE36-ANCESTOR-DIAGNOSTIC ${JSON.stringify({
+          tag: "phase36ancestor",
+          platform: process.platform,
+          linkKind,
+          thrown,
+          lsFilesOthersUntrackedDir: others,
+          snapshotPaths,
+          untrackedDirEntry,
+          untrackedDirReadlinkBytes,
+          hasUntrackedDirChild: observed === null ? null : observed.has("untracked-dir/f.txt"),
+          hasTrackedDirChild: observed === null ? null : observed.has("dir/f.txt"),
+          sentinelReachableFromSnapshot,
+          sentinelScanComplete,
+          readErrors,
+          // Content reads and readlink metadata are recorded separately: reading a link's target
+          // string at the leaf is not the same event as reading bytes from outside the repository.
+          readFileBeneathWatched,
+          readlinkBeneathWatched,
+        })}`);
+
+        // The same capture the record above describes. Both the error TYPE and the code are
+        // asserted, matching the strength of the `failureOf` helper this replaces — a different
+        // error carrying a coincidentally equal `code` would not satisfy it.
+        assert.strictEqual(thrown && thrown.name, "HeadViewSnapshotError", "untracked side: expected a HeadViewSnapshotError");
+        assert.strictEqual(thrown && thrown.code, "E_UNSUPPORTED_ENTRY", "untracked side");
       } finally { try { fs.unlinkSync(otherLink); } catch { fs.rmdirSync(otherLink); } }
     });
     // Cleanup walked the repo, and the external directory came through untouched.
@@ -1083,7 +1193,10 @@ test("an observed symlink-to-blob change is a blob, and the index carrier only s
   });
 });
 
-test("an observed mode change on an ordinary blob is respected over the index mode", async () => {
+// The title says OBSERVED mode wins, so the body must move the observed mode and leave the index
+// alone. The earlier version only staged an index mode and asserted 100755 — the opposite of its
+// own title — and was green only where the worktree bit is not observable at all.
+test("an observed mode change on an ordinary blob is respected over the index mode", { skip: !MODE_CAPABLE }, async () => {
   await inRepo(async (repo) => {
     seed(repo);
     repo.write("plain.txt", "plain\n");
@@ -1091,7 +1204,35 @@ test("an observed mode change on an ordinary blob is respected over the index mo
     const before = await repo.capture();
     assert.strictEqual(before.entry("plain.txt").mode, "100644");
 
-    // Stage an executable bit; with no observed change the index mode is what stands.
+    // Only the worktree bit moves; the index deliberately stays 100644.
+    fs.chmodSync(path.join(repo.root, "plain.txt"), 0o755);
+    assert.match(repo.git("ls-files", "--stage", "plain.txt"), /^100644 /, "the index is left non-executable on purpose");
+    const executable = await repo.capture();
+    assert.strictEqual(executable.entry("plain.txt").mode, "100755", "the observed executable bit wins");
+    assert.notStrictEqual(executable.headViewDigest, before.headViewDigest);
+
+    // And the inverse direction: an observed NON-executable file over a staged executable mode.
+    repo.git("update-index", "--chmod=+x", "plain.txt");
+    fs.chmodSync(path.join(repo.root, "plain.txt"), 0o644);
+    assert.match(repo.git("ls-files", "--stage", "plain.txt"), /^100755 /, "the index now says executable");
+    const reverted = await repo.capture();
+    assert.strictEqual(reverted.entry("plain.txt").mode, "100644", "the observed non-executable mode wins over the staged bit");
+  });
+});
+
+// The fallback the platform above cannot reach: with nothing observable to contradict it, the
+// staged index mode is what stands. `core.filemode` is pinned false for THIS FIXTURE ONLY — it is
+// the condition Windows has natively, and pinning it here keeps the fallback covered without
+// deleting the POSIX contract asserted above.
+test("with core.filemode false the staged index mode stands, because nothing observable contradicts it", async () => {
+  await inRepo(async (repo) => {
+    seed(repo);
+    repo.git("config", "core.filemode", "false");
+    repo.write("plain.txt", "plain\n");
+    repo.commit("plain");
+    const before = await repo.capture();
+    assert.strictEqual(before.entry("plain.txt").mode, "100644");
+
     repo.git("update-index", "--chmod=+x", "plain.txt");
     const staged = await repo.capture();
     assert.strictEqual(staged.entry("plain.txt").mode, "100755");
