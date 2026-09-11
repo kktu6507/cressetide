@@ -4,9 +4,9 @@ All notable changes to Cressetide will be documented in this file.
 
 ## [Unreleased]
 
-## [0.7.2] - Unreleased
+## [0.7.2] - 2026-09-11
 
-版本已在 manifest 宣告，尚未發布：本節沒有發布日期，也還沒有對應的 `v0.7.2` tag 或 release 資產。v0.7.1 仍是目前已發佈的版本。
+發布與驗證證據見 `EVIDENCE.md`。
 
 出貨內容的修正：
 
