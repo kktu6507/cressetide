@@ -38,7 +38,7 @@ jobs:
           fi
       - name: Verify Dependabot metadata and commit signatures
         id: metadata
-        uses: dependabot/fetch-metadata@d7267f607e9d3fb96fc2fbe83e0af444713e90b7
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98
         with:
           github-token: ${{ github.token }}
       - name: Apply the dependency auto-merge policy
