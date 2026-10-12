@@ -1,6 +1,6 @@
 # Ops Profile (peacetime map) + Map preparation
 
-Loaded in **Map preparation** (`/ctide:map` or an explicit "prepare for incidents" request) and consulted at the start of every wartime run. The profile is the peacetime map that makes wartime start at 30 seconds instead of 30 minutes: where the logs are, how to roll back, who may approve what. It lives at `.ctide/map/SYSTEM_MAP.md` and is committed to git.
+Loaded in **Map preparation** (`/ctide:map` or an explicit "prepare for incidents" request) and consulted at the start of every wartime run. The profile is the peacetime map that lets a wartime run start from recorded facts instead of a live search: where the logs are, how to roll back, who may approve what. It lives at `.ctide/map/SYSTEM_MAP.md` and is committed to git.
 
 ## Profile fields
 

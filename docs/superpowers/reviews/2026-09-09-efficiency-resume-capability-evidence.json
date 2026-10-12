@@ -1,0 +1,149 @@
+{
+  "at": "2026-09-08T16:54:21.419Z",
+  "root": "<TMP>\\ctide-eff-resume-ag7flv",
+  "status": "capability observed",
+  "independentReviewer": "Codex",
+  "question": "Does explicit --tools Read,Write restore actual Write on --resume after a Read-only/plan invocation?",
+  "actualWriteRestored": true,
+  "readmeUnchanged": true,
+  "onlyExpectedOutputFileAdded": true,
+  "phases": [
+    {
+      "phase": "read",
+      "sessionId": "5ab1948e-dfb0-4ea5-ab20-6d11fd3b2e31",
+      "rawSha256": "8298b5f29bb988f2b6aba56bc7028b2c20541a503ec6288ba79d0ff898dbc274",
+      "tools": [
+        "Read"
+      ],
+      "permissionMode": "plan",
+      "actualCallId": "toolu_01WCNYWrcZw12gksJmpsnXZ6",
+      "estimatedUsd": 0.05752599999999999,
+      "usage": {
+        "input_tokens": 4,
+        "cache_creation_input_tokens": 4603,
+        "cache_read_input_tokens": 6752,
+        "output_tokens": 324,
+        "output_tokens_details": {
+          "thinking_tokens": 176
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 4603,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 57,
+            "cache_read_input_tokens": 5505,
+            "cache_creation_input_tokens": 345,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 345
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "modelUsage": {
+        "claude-opus-5": {
+          "inputTokens": 4,
+          "outputTokens": 324,
+          "cacheReadInputTokens": 6752,
+          "cacheCreationInputTokens": 4603,
+          "webSearchRequests": 0,
+          "costUSD": 0.05752599999999999,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
+          "thinkingTokens": 176,
+          "canonicalModel": "claude-opus-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "elapsedMs": 7681
+    },
+    {
+      "phase": "write",
+      "sessionId": "5ab1948e-dfb0-4ea5-ab20-6d11fd3b2e31",
+      "rawSha256": "d7b4a7fd05f569a828117ceaa36f195e8f5ad4d17c2c1cb665137061ef6ae80a",
+      "tools": [
+        "Read",
+        "Write"
+      ],
+      "permissionMode": "acceptEdits",
+      "actualCallId": "toolu_01BvXFK2h5T1FFupA6PtivCg",
+      "estimatedUsd": 0.0612245,
+      "usage": {
+        "input_tokens": 4,
+        "cache_creation_input_tokens": 5133,
+        "cache_read_input_tokens": 7799,
+        "output_tokens": 239,
+        "output_tokens_details": {
+          "thinking_tokens": 44
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 5133,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 67,
+            "cache_read_input_tokens": 6316,
+            "cache_creation_input_tokens": 300,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 300
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "modelUsage": {
+        "claude-opus-5": {
+          "inputTokens": 4,
+          "outputTokens": 239,
+          "cacheReadInputTokens": 7799,
+          "cacheCreationInputTokens": 5133,
+          "webSearchRequests": 0,
+          "costUSD": 0.0612245,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 64000,
+          "thinkingTokens": 44,
+          "canonicalModel": "claude-opus-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "elapsedMs": 6095
+    }
+  ],
+  "estimatedTotalUsd": 0.1187505,
+  "cumulativeExperimentEstimateUsd": 2.8189985,
+  "costBasis": "CLI price-table estimates, not billing; discussion/implementation sessions excluded",
+  "limits": [
+    "Fresh no-plugin/no-Git/no-Agent/no-Bash diagnostic; not a workflow outcome or product cost comparison.",
+    "Does not establish plugin/settings/hook behavior on resume; positive workflow must observe those independently.",
+    "Old S2 strict-profile rejection remains terminal and unchanged."
+  ],
+  "sources": {
+    ".ctide/collaboration/phase25i-resume-diagnostic.mjs": "3ad7271183abf42cc11085ef3f5c076f2a950d3ca381c6f85de1b5c83a5e6e2f",
+    "eval/efficiency/protocol.mjs": "082addcc0be248848390f52dfbc4a2039f90fe539eb782c2cc91e230d505db47",
+    "eval/efficiency/l1b-driver.mjs": "733d2599e3669940751f31f6ed71f3f03582911f036a3fc34700a5ba12a31e9f",
+    "eval/efficiency/stream-usage.mjs": "1764c624c0702440ae75aa09fb3fec9aa008d237fb3c9a96bc7f2f1674fc8670"
+  }
+}

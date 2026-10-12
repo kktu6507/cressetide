@@ -752,10 +752,10 @@ test("validate-structure: garden 9d FAILS on drift in the map.mjs/ship.mjs mirro
   }
 });
 
-test("validate-structure: garden 9d FAILS on drift/extraction/marker-loss in the isInvokedDirectly() entry-point cluster (14 CLI scripts)", () => {
+test("validate-structure: garden 9d FAILS on drift/extraction/marker-loss in the isInvokedDirectly() entry-point cluster (15 CLI scripts)", () => {
   for (const [mutate, expected] of [
     // Single-site body drift: one forward-direction file's isInvokedDirectly() body diverges from
-    // the rest of the 13-file cluster. doctor.mjs is first in the file list and stays unmutated, so
+    // the rest of the 14-file cluster. doctor.mjs is first in the file list and stays unmutated, so
     // it is the reference body every other site is compared against.
     [(tree) => {
       const p = path.join(tree, "cressetide", "skills", "vigil", "scripts", "run-ledger.mjs");
@@ -772,9 +772,15 @@ test("validate-structure: garden 9d FAILS on drift/extraction/marker-loss in the
     [(tree) => {
       const p = path.join(tree, "eval", "check-model-provenance.mjs");
       fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace(
-        "// isInvokedDirectly() kept in sync with the other 13 CLI entry points (documented copy — see garden hash guard)\n", ""
+        "// isInvokedDirectly() kept in sync with the other 14 CLI entry points (documented copy — see garden hash guard)\n", ""
       ), "utf8");
     }, /garden 9d: eval\/check-model-provenance\.mjs lost the isInvokedDirectly\(\) sync marker/],
+    // provenance-store.mjs is the newest member of the cluster (its CLI shipped before the site
+    // was registered): drifting its body must now be caught exactly like any older forward site.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "vigil", "scripts", "provenance-store.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("!process.argv[1]", "!process.argv[2]"), "utf8");
+    }, /garden 9d: isInvokedDirectly\(\) drifted between cressetide\/skills\/doctor\/scripts\/doctor\.mjs and cressetide\/skills\/vigil\/scripts\/provenance-store\.mjs/],
   ]) {
     const tree = copyRepoTree();
     try {

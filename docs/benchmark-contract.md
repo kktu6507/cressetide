@@ -1,8 +1,15 @@
 # Benchmark contract: where a score is safe, and where it never appears
 
 Cressetide's live work — a real plan, a real implementation, a real review, a real verdict — never
-stores or reports a score, pass-rate, or percentage. Not in the final report, not in the run ledger,
-not in `run-consolidate.mjs`'s digest. This document states why, states the **one** place a score is
+stores or reports a **quality or outcome** score: no pass-rate, no recall or accuracy percentage, no
+computed success rate, anywhere. Not in the final report, not in the run ledger, not in
+`run-consolidate.mjs`'s digest. The scope of that prohibition is *what is being measured*, not the
+`%` character: the final report's Cost table carries a `Share` column
+(`cressetide/skills/vigil/references/final-report.md`) that decomposes the run's own observed token
+counts across its rows and sums to 100%. That is an accounting breakdown of a measured quantity, not
+a statement of how well the run performed, so it falls outside this rule. It is the existing, fixed
+contract in that file, and naming it here is not a licence to introduce another live percentage.
+This document states why, states the **one** place a score is
 permitted, and points at the mechanisms that already exist there so a future benchmark effort extends
 them instead of duplicating or contradicting them. It defines no new command and adds no new fixtures
 — this is a policy document only.
@@ -28,12 +35,12 @@ that invites investigation, not optimization) does better and more safely — se
 `references/run-ledger.md` and `docs/advanced/retro-practice.md` for how counts, not scores, drive this
 repo's own cross-run learning loop.
 
-**So: live-work artifacts never carry a score, rate, or percentage.** The final report
+**So: live-work artifacts never carry a quality or outcome score, rate, or percentage.** The final report
 (`references/final-report.md`), the run ledger and its `close` events (`references/run-ledger.md`), and
 `run-consolidate.mjs`'s digest all report only event facts — and, when a retro looks back over several
 of them, **paired counts** (e.g. a first-pass-clean count is never shown without its escaped-rework
 counterpart in the same breath, `docs/advanced/retro-practice.md`). None of the three ever reports a
-computed rate.
+computed quality or outcome rate.
 
 ## The one place a score is permitted: a closed-world benchmark
 

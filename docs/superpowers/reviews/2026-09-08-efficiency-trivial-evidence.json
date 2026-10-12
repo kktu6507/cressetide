@@ -1,0 +1,244 @@
+{
+  "ok": true,
+  "faults": [],
+  "root": "<TMP>\\ctide-eff-trivial-4HaWXN",
+  "requested": {
+    "model": "claude-opus-5",
+    "effort": "xhigh",
+    "permissionMode": "acceptEdits",
+    "tools": [
+      "Read",
+      "Edit",
+      "Write",
+      "Grep",
+      "Glob",
+      "Skill",
+      "Agent"
+    ],
+    "expectedInitTools": [
+      "Read",
+      "Edit",
+      "Write",
+      "Grep",
+      "Glob",
+      "Skill",
+      "Task"
+    ],
+    "probeEnv": {
+      "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1",
+      "CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-5",
+      "CLAUDE_CODE_SUBAGENT_MODEL_FORCE": "1"
+    },
+    "addDir": null
+  },
+  "plugin": {
+    "source": "cressetide",
+    "manifestPath": ".claude-plugin/plugin.json",
+    "name": "ctide",
+    "version": "0.6.0",
+    "fileCount": 110
+  },
+  "observed": {
+    "init": {
+      "model": "claude-opus-5",
+      "permissionMode": "acceptEdits",
+      "apiKeySource": "none",
+      "outputStyle": "default",
+      "cwd": "<TMP>\\ctide-eff-trivial-4HaWXN\\consumer",
+      "tools": [
+        "Edit",
+        "Glob",
+        "Grep",
+        "Read",
+        "Skill",
+        "Task",
+        "Write"
+      ],
+      "agents": [
+        "Explore",
+        "Plan",
+        "claude",
+        "ctide:arbiter",
+        "ctide:architecture-reviewer",
+        "ctide:cartographer",
+        "ctide:code-reviewer",
+        "ctide:implementer",
+        "ctide:intent-reviewer",
+        "ctide:navigator",
+        "ctide:operability-reviewer",
+        "ctide:security-reviewer",
+        "ctide:test-reviewer",
+        "ctide:ui-ux-reviewer",
+        "general-purpose",
+        "statusline-setup"
+      ],
+      "plugins": [
+        "ctide"
+      ],
+      "mcpServers": [],
+      "slashCommands": [
+        "__remote-workflow",
+        "advisor",
+        "agents",
+        "auto-mode-setup",
+        "autocompact",
+        "batch",
+        "claude-api",
+        "clear",
+        "code-review",
+        "color",
+        "compact",
+        "config",
+        "context",
+        "ctide:doctor",
+        "ctide:map",
+        "ctide:salvage",
+        "ctide:ship",
+        "ctide:vigil",
+        "dataviz",
+        "debug",
+        "deep-research",
+        "design",
+        "design-consent",
+        "design-revoke",
+        "design-sync",
+        "doctor",
+        "effort",
+        "extra-usage",
+        "fast",
+        "fewer-permission-prompts",
+        "goal",
+        "heapdump",
+        "import",
+        "init",
+        "insights",
+        "list-agents",
+        "loop",
+        "mcp",
+        "model",
+        "recap",
+        "reload-plugins",
+        "reload-skills",
+        "rename",
+        "run",
+        "run-skill-generator",
+        "schedule",
+        "security-review",
+        "simplify",
+        "skill-doctor",
+        "team-onboarding",
+        "ultrareview",
+        "update-config",
+        "usage",
+        "usage-credits",
+        "verify",
+        "workflow-authoring",
+        "workflow-launch-exec"
+      ]
+    },
+    "sessionId": "3d8f946e-1b71-49c3-a430-6b9c9730deda",
+    "toolCalls": [
+      {
+        "name": "Grep"
+      },
+      {
+        "name": "Read",
+        "filePath": "<TMP>\\ctide-eff-trivial-4HaWXN\\consumer\\README.md"
+      },
+      {
+        "name": "Edit",
+        "filePath": "<TMP>\\ctide-eff-trivial-4HaWXN\\consumer\\README.md"
+      }
+    ],
+    "activationObserved": false,
+    "subagent": {
+      "evidence": "counters",
+      "spawned": 0,
+      "counters": {
+        "spawned": 0,
+        "completed": 0,
+        "failed": 0,
+        "spawned_by_subagents": 0,
+        "started_in_background": 0,
+        "max_depth": 0,
+        "requested.background": 0,
+        "requested.foreground": 0,
+        "requested.unset": 0,
+        "killed.parent": 0,
+        "killed.user": 0,
+        "killed.system": 0,
+        "refused.depth_limit": 0,
+        "refused.concurrency_limit": 0,
+        "refused.budget": 0
+      },
+      "byTypeKeys": [],
+      "activity": false
+    },
+    "usage": {
+      "inputTokens": 8,
+      "cacheCreationInputTokens": 12378,
+      "cacheReadInputTokens": 35605,
+      "outputTokens": 455
+    },
+    "modelUsage": {
+      "claude-opus-5": {
+        "inputTokens": 8,
+        "cacheCreationInputTokens": 12378,
+        "cacheReadInputTokens": 35605,
+        "outputTokens": 455,
+        "costUsd": 0.15299749999999998,
+        "costBasis": "list",
+        "provider": "firstParty"
+      }
+    },
+    "totalCostUsd": 0.15299749999999998,
+    "consumerFiles": {
+      "README.md": "54a07620f4a43815576b7a7af554bb9ed543faed7c27eca4c6b58a65e2f47866"
+    }
+  },
+  "cli": {
+    "observedVersion": "2.1.263",
+    "commandSha256": "0b35df94c1307004f07b738390bfef8dfca5e9af29aaf6517f305bf086b95b03"
+  },
+  "sources": {
+    "eval/efficiency/stream-usage.mjs": "1764c624c0702440ae75aa09fb3fec9aa008d237fb3c9a96bc7f2f1674fc8670",
+    "eval/efficiency/protocol.mjs": "082addcc0be248848390f52dfbc4a2039f90fe539eb782c2cc91e230d505db47",
+    "eval/efficiency/l1b-driver.mjs": "733d2599e3669940751f31f6ed71f3f03582911f036a3fc34700a5ba12a31e9f",
+    ".ctide/collaboration/trivial-consumer-probe.mjs": "8b0e273044cc00cdae0fd23237f1c7004fe2237a90b2b20dc2edc99add75064f"
+  },
+  "pluginFileCount": 110,
+  "rawPaths": {
+    "stdout": "<TMP>\\ctide-eff-trivial-4HaWXN\\raw.stdout.jsonl",
+    "stderr": "<TMP>\\ctide-eff-trivial-4HaWXN\\raw.stderr.txt"
+  },
+  "claim": [
+    "Trivial stratum only: one call, one expected byte-exact edit, deterministic diff and scope grading.",
+    "The claim is NEGATIVE — ctide and ctide:vigil were registered and Skill/Agent were available, and neither was used.",
+    "Availability is asserted from init so that non-activation is meaningful rather than an unavailable capability.",
+    "Requested tool names and observed init labels are pinned separately: this binary reports `Task` in init while the real call carries `Agent`, per the known-child probe raw.",
+    "Subagent counters must be positively known and all zero here, because the subagent tool is available — unknown is never read as zero.",
+    "This shows nothing about non-trivial workflow behaviour, plan-gate or hook enforcement, and authorises nothing at L2.",
+    "No git baseline was created; scope is graded by exact recursive file inventory.",
+    "Estimates from the CLI price table, not provider billing. Failed cost is retained, never replaced."
+  ],
+  "independentAudit": {
+    "at": "2026-09-08T15:10:06.539Z",
+    "reviewer": "Codex",
+    "rawSha256": "816c0930385e5dddc54500c0c3c2dff75459ad39a17fac21e340226dfc11cce8",
+    "offlineTests": {
+      "tests": 17,
+      "pass": 17,
+      "fail": 0
+    },
+    "checks": "Actual registration and tool availability, no activation, fresh session and exact model, all four token categories, cost, only the exact README edit, consumer tool paths, and all 110 copied/source plugin files independently checked.",
+    "modelCallElapsedMs": 11183,
+    "concurrency": "The separate Claude design discussion overlapped this model call; latency is descriptive and not a controlled timing comparison.",
+    "codeChanges": "No distributed plugin change. This is an observed current-default trivial control."
+  },
+  "experimentCosts": {
+    "priorEstimateUsd": 1.77292,
+    "thisAttemptUsd": 0.15299749999999998,
+    "cumulativeEstimateUsd": 1.9259175,
+    "basis": "CLI price-table estimates, not provider billing or actual subscription charges; implementation/discussion sessions excluded."
+  }
+}

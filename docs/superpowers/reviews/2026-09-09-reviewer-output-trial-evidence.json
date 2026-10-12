@@ -1,0 +1,595 @@
+{
+  "schema": "phase30-partial-root-audit-v1",
+  "auditedAt": "2026-09-09T14:10:15.602Z",
+  "scope": "10 actual role calls before semantic hold; no completed comparison or savings claim",
+  "launchSeal": "e66a2946397f5d8ef42bf9cffd7ca186f260b01602326443baac6121ae086959",
+  "protectedSourceCount": 123,
+  "allFrozenSourceCount": 127,
+  "faults": [],
+  "mechanicalEvidenceConsistent": true,
+  "arms": {
+    "A": {
+      "root": "<TMP>\\ctide-eff-ePrFPJ",
+      "manifestSha256": "da88053dd85e4d10359310f42625476a7a8b1e5207fcfa774fd52715637532c7",
+      "mechanicalCallsAccepted": 5,
+      "independentlyJudgedCases": 2,
+      "judgedPasses": 2,
+      "reviewerEstimatedUsd": 0.485406,
+      "allCallsEstimatedUsd": 0.588318,
+      "calls": [
+        {
+          "step": 0,
+          "role": "reviewer",
+          "fixtureId": "01-js-missing-return",
+          "sessionId": "e93c0cd6-6d64-4ce2-b840-927fc6120efa",
+          "estimatedUsd": 0.19432349999999998,
+          "elapsedMs": 58571,
+          "grade": null,
+          "usage": {
+            "inputTokens": 4,
+            "cacheCreationInputTokens": 8703,
+            "cacheReadInputTokens": 8347,
+            "outputTokens": 4124
+          },
+          "modelUsage": {
+            "claude-opus-5": {
+              "inputTokens": 4,
+              "cacheCreationInputTokens": 8703,
+              "cacheReadInputTokens": 8347,
+              "outputTokens": 4124,
+              "costUsd": 0.19432349999999998,
+              "costBasis": "list",
+              "provider": "firstParty"
+            }
+          },
+          "subagent": {
+            "evidence": "counters",
+            "spawned": 0,
+            "counters": {
+              "spawned": 0,
+              "completed": 0,
+              "failed": 0,
+              "spawned_by_subagents": 0,
+              "started_in_background": 0,
+              "max_depth": 0,
+              "requested.background": 0,
+              "requested.foreground": 0,
+              "requested.unset": 0,
+              "killed.parent": 0,
+              "killed.user": 0,
+              "killed.system": 0,
+              "refused.depth_limit": 0,
+              "refused.concurrency_limit": 0,
+              "refused.budget": 0
+            },
+            "byTypeKeys": [],
+            "activity": false
+          },
+          "stdoutPath": "<TMP>\\ctide-eff-ePrFPJ\\raw\\step-00.stdout.jsonl",
+          "stdoutSha256": "eb37902e5baaa7caa9ac160e42c5ebf0dc5e9c8256b1141d585cb48536396bf7",
+          "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "step": 1,
+          "role": "judge",
+          "fixtureId": "01-js-missing-return",
+          "sessionId": "62d38b38-59f9-4c7f-9a1a-75ff009ee11c",
+          "estimatedUsd": 0.052385,
+          "elapsedMs": 8951,
+          "grade": {
+            "pass": true,
+            "result": "hit",
+            "rationale": "Expected=hit. The reviewer explicitly and confidently flagged the ground-truth defect: the missing `return` in the `if (!items.length)` branch causes fall-through so an empty list triggers two terminal writes (204 then 200 with an empty body), violating \"exactly one response per call\". It is filed as a blocker at snippet.js:2-6 with an accurate control-flow explanation, a correct note that `end()` returns `res` and cannot short-circuit, and the correct minimal fix (`return res.status(204).end();`). Other remarks are explicitly hedged/out-of-scope and add no false positives."
+          },
+          "usage": {
+            "inputTokens": 2,
+            "cacheCreationInputTokens": 4040,
+            "cacheReadInputTokens": 0,
+            "outputTokens": 479
+          },
+          "modelUsage": {
+            "claude-opus-5": {
+              "inputTokens": 2,
+              "cacheCreationInputTokens": 4040,
+              "cacheReadInputTokens": 0,
+              "outputTokens": 479,
+              "costUsd": 0.052385,
+              "costBasis": "list",
+              "provider": "firstParty"
+            }
+          },
+          "subagent": {
+            "evidence": "counters",
+            "spawned": 0,
+            "counters": {
+              "spawned": 0,
+              "completed": 0,
+              "failed": 0,
+              "spawned_by_subagents": 0,
+              "started_in_background": 0,
+              "max_depth": 0,
+              "requested.background": 0,
+              "requested.foreground": 0,
+              "requested.unset": 0,
+              "killed.parent": 0,
+              "killed.user": 0,
+              "killed.system": 0,
+              "refused.depth_limit": 0,
+              "refused.concurrency_limit": 0,
+              "refused.budget": 0
+            },
+            "byTypeKeys": [],
+            "activity": false
+          },
+          "stdoutPath": "<TMP>\\ctide-eff-ePrFPJ\\raw\\step-01.stdout.jsonl",
+          "stdoutSha256": "a55566653add6e116f6f3929253de4e35c644d09b9a1c1eed49e24c25d32e485",
+          "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "step": 2,
+          "role": "reviewer",
+          "fixtureId": "02-py-off-by-one",
+          "sessionId": "3c775ff7-bee2-4508-8bfb-d95faa46ad4a",
+          "estimatedUsd": 0.141557,
+          "elapsedMs": 55001,
+          "grade": null,
+          "usage": {
+            "inputTokens": 4,
+            "cacheCreationInputTokens": 3904,
+            "cacheReadInputTokens": 13194,
+            "outputTokens": 3836
+          },
+          "modelUsage": {
+            "claude-opus-5": {
+              "inputTokens": 4,
+              "cacheCreationInputTokens": 3904,
+              "cacheReadInputTokens": 13194,
+              "outputTokens": 3836,
+              "costUsd": 0.141557,
+              "costBasis": "list",
+              "provider": "firstParty"
+            }
+          },
+          "subagent": {
+            "evidence": "counters",
+            "spawned": 0,
+            "counters": {
+              "spawned": 0,
+              "completed": 0,
+              "failed": 0,
+              "spawned_by_subagents": 0,
+              "started_in_background": 0,
+              "max_depth": 0,
+              "requested.background": 0,
+              "requested.foreground": 0,
+              "requested.unset": 0,
+              "killed.parent": 0,
+              "killed.user": 0,
+              "killed.system": 0,
+              "refused.depth_limit": 0,
+              "refused.concurrency_limit": 0,
+              "refused.budget": 0
+            },
+            "byTypeKeys": [],
+            "activity": false
+          },
+          "stdoutPath": "<TMP>\\ctide-eff-ePrFPJ\\raw\\step-02.stdout.jsonl",
+          "stdoutSha256": "1c68f6147d6353f9134b1a55df1356f7fb1cf6e7327d0d3354a00344434cd96a",
+          "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "step": 3,
+          "role": "judge",
+          "fixtureId": "02-py-off-by-one",
+          "sessionId": "2f677785-c55b-4673-9017-172fd3366e98",
+          "estimatedUsd": 0.050527,
+          "elapsedMs": 8034,
+          "grade": {
+            "result": "hit",
+            "pass": true,
+            "rationale": "The review's top finding is exactly the ground-truth defect: it flags as a blocker that `range(len(a))` lets `i` reach `len(a)-1`, so line 4 evaluates `a[len(a)]` and raises `IndexError`, and it prescribes the correct fix `range(len(a) - 1)`. It also gives accurate concrete traces (`[5]` crashes immediately; `[1,2,3]` crashes after computing 3 and 5). The secondary note about `n = 1` returning the `float(\"-inf\")` sentinel after the fix is a legitimate, correctly-hedged follow-on observation, and the optional `zip(a, a[1:])` simplification is explicitly marked as not a defect — neither dilutes the hit."
+          },
+          "usage": {
+            "inputTokens": 2,
+            "cacheCreationInputTokens": 3878,
+            "cacheReadInputTokens": 624,
+            "outputTokens": 457
+          },
+          "modelUsage": {
+            "claude-opus-5": {
+              "inputTokens": 2,
+              "cacheCreationInputTokens": 3878,
+              "cacheReadInputTokens": 624,
+              "outputTokens": 457,
+              "costUsd": 0.050527,
+              "costBasis": "list",
+              "provider": "firstParty"
+            }
+          },
+          "subagent": {
+            "evidence": "counters",
+            "spawned": 0,
+            "counters": {
+              "spawned": 0,
+              "completed": 0,
+              "failed": 0,
+              "spawned_by_subagents": 0,
+              "started_in_background": 0,
+              "max_depth": 0,
+              "requested.background": 0,
+              "requested.foreground": 0,
+              "requested.unset": 0,
+              "killed.parent": 0,
+              "killed.user": 0,
+              "killed.system": 0,
+              "refused.depth_limit": 0,
+              "refused.concurrency_limit": 0,
+              "refused.budget": 0
+            },
+            "byTypeKeys": [],
+            "activity": false
+          },
+          "stdoutPath": "<TMP>\\ctide-eff-ePrFPJ\\raw\\step-03.stdout.jsonl",
+          "stdoutSha256": "ac300b59089b6533650d3fc95451de436321f87dff77de0d680b92a73becb866",
+          "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "step": 4,
+          "role": "reviewer",
+          "fixtureId": "03-go-nil-before-check",
+          "sessionId": "aaa57574-c156-4c8a-b804-749c7f23f2bd",
+          "estimatedUsd": 0.1495255,
+          "elapsedMs": 61205,
+          "grade": null,
+          "usage": {
+            "inputTokens": 4,
+            "cacheCreationInputTokens": 3754,
+            "cacheReadInputTokens": 13181,
+            "outputTokens": 4215
+          },
+          "modelUsage": {
+            "claude-opus-5": {
+              "inputTokens": 4,
+              "cacheCreationInputTokens": 3754,
+              "cacheReadInputTokens": 13181,
+              "outputTokens": 4215,
+              "costUsd": 0.1495255,
+              "costBasis": "list",
+              "provider": "firstParty"
+            }
+          },
+          "subagent": {
+            "evidence": "counters",
+            "spawned": 0,
+            "counters": {
+              "spawned": 0,
+              "completed": 0,
+              "failed": 0,
+              "spawned_by_subagents": 0,
+              "started_in_background": 0,
+              "max_depth": 0,
+              "requested.background": 0,
+              "requested.foreground": 0,
+              "requested.unset": 0,
+              "killed.parent": 0,
+              "killed.user": 0,
+              "killed.system": 0,
+              "refused.depth_limit": 0,
+              "refused.concurrency_limit": 0,
+              "refused.budget": 0
+            },
+            "byTypeKeys": [],
+            "activity": false
+          },
+          "stdoutPath": "<TMP>\\ctide-eff-ePrFPJ\\raw\\step-04.stdout.jsonl",
+          "stdoutSha256": "212304307e5e5aaedd083d8b4effe405b7e5e7992134fae7f1929c2eddf6be1a",
+          "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ]
+    },
+    "B": {
+      "root": "<TMP>\\ctide-eff-vymYHz",
+      "manifestSha256": "d839e27bbf0fec32fbf9307a612aa767ceebfb967a23891e45f12dcc6b4786a3",
+      "mechanicalCallsAccepted": 5,
+      "independentlyJudgedCases": 2,
+      "judgedPasses": 2,
+      "reviewerEstimatedUsd": 0.453834,
+      "allCallsEstimatedUsd": 0.557123,
+      "calls": [
+        {
+          "step": 0,
+          "role": "reviewer",
+          "fixtureId": "01-js-missing-return",
+          "sessionId": "09a4712d-9fa8-4841-ac28-4da733252667",
+          "estimatedUsd": 0.1699215,
+          "elapsedMs": 59043,
+          "grade": null,
+          "usage": {
+            "inputTokens": 4,
+            "cacheCreationInputTokens": 6488,
+            "cacheReadInputTokens": 10943,
+            "outputTokens": 3982
+          },
+          "modelUsage": {
+            "claude-opus-5": {
+              "inputTokens": 4,
+              "cacheCreationInputTokens": 6488,
+              "cacheReadInputTokens": 10943,
+              "outputTokens": 3982,
+              "costUsd": 0.1699215,
+              "costBasis": "list",
+              "provider": "firstParty"
+            }
+          },
+          "subagent": {
+            "evidence": "counters",
+            "spawned": 0,
+            "counters": {
+              "spawned": 0,
+              "completed": 0,
+              "failed": 0,
+              "spawned_by_subagents": 0,
+              "started_in_background": 0,
+              "max_depth": 0,
+              "requested.background": 0,
+              "requested.foreground": 0,
+              "requested.unset": 0,
+              "killed.parent": 0,
+              "killed.user": 0,
+              "killed.system": 0,
+              "refused.depth_limit": 0,
+              "refused.concurrency_limit": 0,
+              "refused.budget": 0
+            },
+            "byTypeKeys": [],
+            "activity": false
+          },
+          "stdoutPath": "<TMP>\\ctide-eff-vymYHz\\raw\\step-00.stdout.jsonl",
+          "stdoutSha256": "4ce3581586b3168fff33559d4d9ecb95c85117d52cd9a17f370b8091677436d8",
+          "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "step": 1,
+          "role": "judge",
+          "fixtureId": "01-js-missing-return",
+          "sessionId": "0884d47f-c232-404c-a1b7-b19687d7a8ec",
+          "estimatedUsd": 0.047542,
+          "elapsedMs": 8836,
+          "grade": {
+            "rationale": "Expected hit. The reviewer's single blocker is exactly the ground-truth defect: no `return` after `res.status(204).end()`, so execution falls through and the handler attempts a second terminal response on an empty list, violating \"exactly one response per call.\" Anchored to the right lines with the correct minimal fix. Slight over-specification of runtime behavior (claims ERR_HTTP_HEADERS_SENT throw) doesn't change that the defect is correctly identified; the one speculative lead was explicitly hedged and kept out of the findings index.",
+            "result": "hit",
+            "pass": true
+          },
+          "usage": {
+            "inputTokens": 2,
+            "cacheCreationInputTokens": 3567,
+            "cacheReadInputTokens": 624,
+            "outputTokens": 462
+          },
+          "modelUsage": {
+            "claude-opus-5": {
+              "inputTokens": 2,
+              "cacheCreationInputTokens": 3567,
+              "cacheReadInputTokens": 624,
+              "outputTokens": 462,
+              "costUsd": 0.047542,
+              "costBasis": "list",
+              "provider": "firstParty"
+            }
+          },
+          "subagent": {
+            "evidence": "counters",
+            "spawned": 0,
+            "counters": {
+              "spawned": 0,
+              "completed": 0,
+              "failed": 0,
+              "spawned_by_subagents": 0,
+              "started_in_background": 0,
+              "max_depth": 0,
+              "requested.background": 0,
+              "requested.foreground": 0,
+              "requested.unset": 0,
+              "killed.parent": 0,
+              "killed.user": 0,
+              "killed.system": 0,
+              "refused.depth_limit": 0,
+              "refused.concurrency_limit": 0,
+              "refused.budget": 0
+            },
+            "byTypeKeys": [],
+            "activity": false
+          },
+          "stdoutPath": "<TMP>\\ctide-eff-vymYHz\\raw\\step-01.stdout.jsonl",
+          "stdoutSha256": "54d8d647a0088387b3403c0883e626bd79dc0704d243d6b10fa231e4b24a87a2",
+          "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "step": 2,
+          "role": "reviewer",
+          "fixtureId": "02-py-off-by-one",
+          "sessionId": "d68a7f1f-fa1a-42b8-ba2a-7bcf3676d0ba",
+          "estimatedUsd": 0.1266485,
+          "elapsedMs": 47022,
+          "grade": null,
+          "usage": {
+            "inputTokens": 4,
+            "cacheCreationInputTokens": 3752,
+            "cacheReadInputTokens": 13567,
+            "outputTokens": 3293
+          },
+          "modelUsage": {
+            "claude-opus-5": {
+              "inputTokens": 4,
+              "cacheCreationInputTokens": 3752,
+              "cacheReadInputTokens": 13567,
+              "outputTokens": 3293,
+              "costUsd": 0.1266485,
+              "costBasis": "list",
+              "provider": "firstParty"
+            }
+          },
+          "subagent": {
+            "evidence": "counters",
+            "spawned": 0,
+            "counters": {
+              "spawned": 0,
+              "completed": 0,
+              "failed": 0,
+              "spawned_by_subagents": 0,
+              "started_in_background": 0,
+              "max_depth": 0,
+              "requested.background": 0,
+              "requested.foreground": 0,
+              "requested.unset": 0,
+              "killed.parent": 0,
+              "killed.user": 0,
+              "killed.system": 0,
+              "refused.depth_limit": 0,
+              "refused.concurrency_limit": 0,
+              "refused.budget": 0
+            },
+            "byTypeKeys": [],
+            "activity": false
+          },
+          "stdoutPath": "<TMP>\\ctide-eff-vymYHz\\raw\\step-02.stdout.jsonl",
+          "stdoutSha256": "25a528149581626216d7bdd4eabf69b2379162e4040bac354091b790b679fd90",
+          "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "step": 3,
+          "role": "judge",
+          "fixtureId": "02-py-off-by-one",
+          "sessionId": "66ac2614-9e40-4087-bc50-e04a3ea209a3",
+          "estimatedUsd": 0.055747,
+          "elapsedMs": 12203,
+          "grade": {
+            "result": "hit",
+            "pass": true,
+            "rationale": "Expected=hit. The reviewer's lead finding is a `blocker` at snippet.py:3 stating that `range(len(a))` combined with the `a[i+1]` read on line 4 makes the last iteration evaluate `a[len(a)]`, raising IndexError for every non-empty input, and prescribes the exact correct fix `for i in range(len(a) - 1):`. It supports this with concrete failing inputs and a corrected code block. This is an unambiguous, precise identification of the seeded off-by-one — not a vaguely related comment. The secondary observation (post-fix, a single-element list returns the `-inf` sentinel) is correctly downgraded to `minor` and framed as underspecified, so it adds no confident false claim."
+          },
+          "usage": {
+            "inputTokens": 2,
+            "cacheCreationInputTokens": 3510,
+            "cacheReadInputTokens": 624,
+            "outputTokens": 813
+          },
+          "modelUsage": {
+            "claude-opus-5": {
+              "inputTokens": 2,
+              "cacheCreationInputTokens": 3510,
+              "cacheReadInputTokens": 624,
+              "outputTokens": 813,
+              "costUsd": 0.055747,
+              "costBasis": "list",
+              "provider": "firstParty"
+            }
+          },
+          "subagent": {
+            "evidence": "counters",
+            "spawned": 0,
+            "counters": {
+              "spawned": 0,
+              "completed": 0,
+              "failed": 0,
+              "spawned_by_subagents": 0,
+              "started_in_background": 0,
+              "max_depth": 0,
+              "requested.background": 0,
+              "requested.foreground": 0,
+              "requested.unset": 0,
+              "killed.parent": 0,
+              "killed.user": 0,
+              "killed.system": 0,
+              "refused.depth_limit": 0,
+              "refused.concurrency_limit": 0,
+              "refused.budget": 0
+            },
+            "byTypeKeys": [],
+            "activity": false
+          },
+          "stdoutPath": "<TMP>\\ctide-eff-vymYHz\\raw\\step-03.stdout.jsonl",
+          "stdoutSha256": "82d67e0023814554ac0f7688be48ef30d5e02e21f16bcebb2eff99ea73c3a107",
+          "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "step": 4,
+          "role": "reviewer",
+          "fixtureId": "03-go-nil-before-check",
+          "sessionId": "0f36a7c0-98fb-4c85-a036-0890319ee0ff",
+          "estimatedUsd": 0.15726400000000001,
+          "elapsedMs": 65484,
+          "grade": null,
+          "usage": {
+            "inputTokens": 4,
+            "cacheCreationInputTokens": 3759,
+            "cacheReadInputTokens": 13558,
+            "outputTokens": 4515
+          },
+          "modelUsage": {
+            "claude-opus-5": {
+              "inputTokens": 4,
+              "cacheCreationInputTokens": 3759,
+              "cacheReadInputTokens": 13558,
+              "outputTokens": 4515,
+              "costUsd": 0.15726400000000001,
+              "costBasis": "list",
+              "provider": "firstParty"
+            }
+          },
+          "subagent": {
+            "evidence": "counters",
+            "spawned": 0,
+            "counters": {
+              "spawned": 0,
+              "completed": 0,
+              "failed": 0,
+              "spawned_by_subagents": 0,
+              "started_in_background": 0,
+              "max_depth": 0,
+              "requested.background": 0,
+              "requested.foreground": 0,
+              "requested.unset": 0,
+              "killed.parent": 0,
+              "killed.user": 0,
+              "killed.system": 0,
+              "refused.depth_limit": 0,
+              "refused.concurrency_limit": 0,
+              "refused.budget": 0
+            },
+            "byTypeKeys": [],
+            "activity": false
+          },
+          "stdoutPath": "<TMP>\\ctide-eff-vymYHz\\raw\\step-04.stdout.jsonl",
+          "stdoutSha256": "fa8ec9f4681c218d6554b1382555a251b6be85b5120ac7f49f9a571459a435f7",
+          "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ]
+    }
+  },
+  "totalEstimatedUsd": 1.145441,
+  "costBasis": "pinned CLI price-table estimate, not billing; excludes ALL collaboration and prior experiments",
+  "reviewerEconomicDecision": "unavailable: experiment halted before complete quality screen",
+  "confirmation": {
+    "calls": 0,
+    "packageSha256": "5d64c6b34b967e3d361f4911f0d14fc13cd53811197d9007d05acd5187e7342f",
+    "unexposedToCandidateAuthor": true
+  },
+  "rootFindings": {
+    "baselineTimeout": "phase30c discussion distinguishes plausible resource risk from unsupported caller-bound clause; no automatic preservation target",
+    "candidateHTTPMethod": "GET-to-HEAD recommendation violates named GET contract; local counterexample GET200/HEAD405",
+    "candidateEvidence": "does compile assertion despite no observed build summary or execution"
+  },
+  "counterexample": {
+    "sourceSha256": "25b983a42f3d7f5fb2a1d4cab5bcd847d0f8b2db70c1b8eb24a8ae0aecbf276b",
+    "result": {
+      "scope": "Actual local HTTP counterexample to the reviewer-suggested GET-to-HEAD substitution; not execution of the Go fixture",
+      "node": "v24.19.0",
+      "GET": 200,
+      "HEAD": 405,
+      "requiredGETPredicate": true,
+      "proposedHEADPredicate": false,
+      "ok": true
+    }
+  }
+}

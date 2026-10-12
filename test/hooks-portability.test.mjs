@@ -40,7 +40,8 @@ const cmdFor = (event, file) => {
 const NONPLAN = JSON.stringify({ tool_name: "Bash", tool_input: { command: "echo hi" } });
 const PLANWRITE = JSON.stringify({ tool_name: "Write", permission_mode: "plan", tool_input: { file_path: "/tmp/x.txt" } });
 
-// Which `<shell> -c` shells exist here? bash is everywhere; pwsh/powershell typically only on Windows.
+// Which `<shell> -c` shells exist here? Availability is probed rather than assumed:
+// bash is common on Unix-like hosts, while pwsh/powershell are common on Windows.
 function shellOK(sh) {
   const r = cp.spawnSync(sh, ["-c", "exit 0"], { stdio: "ignore" });
   return r.error == null && r.status === 0;
@@ -140,7 +141,10 @@ function dguardSuite(label, shell) {
   });
 }
 if (BASH) dguardSuite("bash", BASH);
+else test("bash unavailable on this platform -> destructive-guard shell suite skipped", { skip: true }, () => {});
+
 if (PWSH) dguardSuite("powershell", PWSH);
+else test("powershell unavailable on this platform -> destructive-guard shell suite skipped", { skip: true }, () => {});
 
 // (3) PowerShell StrictMode regression. A ${...} template token in the command is an
 // UNSET PowerShell variable; under Set-StrictMode it throws a TERMINATING error BEFORE node starts,

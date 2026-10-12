@@ -3,6 +3,40 @@
 This document defines the release procedure. It does not record that any step,
 tag, asset, attestation, or publication has occurred.
 
+## When to bump the version
+
+Bump when the change is **perceptible to someone running ctide** — a new or removed
+skill, agent or command; changed hook decisions, verdicts, severities or sentinels;
+a changed `.ctide/` contract; or new runtime behaviour a user can observe. Internal
+refactors, tests, CI, and maintainer-only tooling under `eval/` do not require a bump
+on their own.
+
+The first two requirements below are enforced by `npm run validate`; the third is a
+convention this document sets, and nothing checks it for you.
+
+1. **Parity — enforced.** The root `package.json` version and
+   `cressetide/.claude-plugin/plugin.json` version must be identical. Bumping one
+   without the other fails validation.
+2. **Changelog heading — enforced.** `CHANGELOG.md` must contain a `## [x.y.z]` heading
+   matching the manifest version. A version with no section fails validation.
+3. **Undated until published — convention.** A version that is declared but not yet
+   released is written `## [x.y.z] - Unreleased`. Add the date when the release is
+   actually published.
+
+Validation checks that the plugin version is valid semver, that the two manifests agree,
+and that a heading for that version is present. It does not inspect what follows the
+version in the heading, and it knows nothing about publication state — so keeping an
+unreleased version undated is a review obligation, not a gate.
+
+**Declaring a version is not publishing a release.** A bump changes what the manifest
+reports and what the plugin identifies itself as; it creates no tag, no archive, no
+checksum and no attestation. Publication is the procedure below: an immutable `vX.Y.Z`
+tag, version parity verified *at that tag*, a deterministic archive, and exactly the two
+published assets. Between a bump and a release, the default branch legitimately reports a
+version for which no release exists — the marketplace entry that references this
+repository lives in the separate `kktu6507/plugins` marketplace, so an unreleased bump on
+this branch publishes nothing by itself.
+
 ## Release contract
 
 - The release identity is read from the explicit tag's Git blobs, never from
@@ -98,9 +132,27 @@ with only `contents: write`, followed by an independent provenance job with
 provided only to the individual steps that call `gh`; checkout credentials are
 not persisted.
 
+Signing may use either the OpenPGP or the SSH format; `git tag -s` follows
+whichever `gpg.format` is configured. To verify an SSH-signed tag locally, point
+Git at an allowed-signers file held **outside the checkout** — a trust store you
+control — containing a public key you have independently established as the
+signer's:
+
+```bash
+git -c gpg.ssh.allowedSignersFile='/absolute/path/allowed_signers' verify-tag vX.Y.Z
+```
+
+The file format and lookup rules are documented at
+<https://git-scm.com/docs/git-config#Documentation/git-config.txt-gpgsshallowedSignersFile>.
+Never place private key material in the repository, and never trust a public key
+merely because it was found inside the same unverified checkout. GitHub's own
+signature verification is a separate check from local trust; neither substitutes
+for the other.
+
 Do not describe the release as complete until the final tag commit has a green
 required check set and GitHub exposes the expected immutable assets and
-attestation.
+attestation. This document defines the procedure only; the evidence recorded for
+a given release belongs in `EVIDENCE.md`.
 
 ## Verify published evidence
 

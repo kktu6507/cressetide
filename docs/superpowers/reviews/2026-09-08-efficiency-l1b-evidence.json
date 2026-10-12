@@ -1,0 +1,1015 @@
+{
+  "schema": "cressetide-constrained-reviewer-baseline-v1",
+  "date": "2026-09-08",
+  "recordedAt": "2026-09-08T13:51:24.005Z",
+  "scope": "Constrained-excerpt prompt-body replay, not native activation or comparative development efficacy",
+  "method": "system-prompt-replay",
+  "activationVerified": false,
+  "model": "claude-opus-5",
+  "effort": "xhigh",
+  "cli": {
+    "version": "2.1.263",
+    "sha256": "0b35df94c1307004f07b738390bfef8dfca5e9af29aaf6517f305bf086b95b03"
+  },
+  "childEnvOverrides": {
+    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1"
+  },
+  "permissionMode": {
+    "requested": "manual",
+    "observed": "default"
+  },
+  "sourceHashes": {
+    "cressetide/agents/code-reviewer.agent.md": "59f4d4cdee9991ae5798a44d75e2668e4e21019b0de08b860c7f29c9f2d857de",
+    "cressetide/skills/vigil/references/review-packet.md": "8d01fd4a597febc383132e6e9eab35d20b91540e20c8fc1b93a66dd577a27e0f",
+    "cressetide/skills/vigil/references/reviewer-common.md": "2ba8fb2624c3bdba8a5bd5a8cce1511ae458139751470576d128ed5dbdc5b692",
+    "eval/manifest.yaml": "fcdd2136507831c3f435b80ccd81972712fcf8d7d53f5c779bed1e9758f86daf",
+    "eval/efficiency/stream-usage.mjs": "1764c624c0702440ae75aa09fb3fec9aa008d237fb3c9a96bc7f2f1674fc8670",
+    "eval/efficiency/protocol.mjs": "082addcc0be248848390f52dfbc4a2039f90fe539eb782c2cc91e230d505db47",
+    "eval/efficiency/l1b-driver.mjs": "733d2599e3669940751f31f6ed71f3f03582911f036a3fc34700a5ba12a31e9f",
+    "eval/fixtures/01-js-missing-return.md": "8b3925c899a2787c3f026ab898b03e00756923d257bfa9cf1f16a140ffd885e6",
+    "eval/fixtures/02-py-off-by-one.md": "93bd7b2c1272454d1d9f762741a3f0caa62fa22f49d1923a0ac248bc51d979bc",
+    "eval/fixtures/03-go-nil-before-check.md": "c5202850458372c12fa877078048daffacaa75fd48d1f430edbd60fd8effac15",
+    "eval/fixtures/04-py-mutable-default.md": "151840f8d2b3e0aefa979675df31108b479d942fb954ff42668d731c09a7d8d8",
+    "eval/fixtures/05-js-foreach-await.md": "7993811b1eec0701811a19d5132124ba05a08d4f80a727eadab4147ba8f9f952",
+    "eval/fixtures/06-clean-js-guard.md": "825d00d0b4a415e56bcdd69ba17d8dbb9d09a394e1909281f7e1642a0c5287d7",
+    "eval/fixtures/07-clean-py-bounds.md": "ec133aa5c82059588c86c29bad9f844965a825d1a79ad9e4ae0308e7007c190f"
+  },
+  "promptDigests": {
+    "agentFrontmatter": "48e367c5fc27abbaaab56d0fc9e91e6dab5bb2f66253ffbfa5132b02f6181792",
+    "reviewerSystemPrompt": "c09639569335c220a9580784c6be9816e1beb91af35d8fd0380e1bd332b466e0",
+    "sharedContract": "741e2b3d4c313f9c0ee807003fb3ba1ae09f6e8b2dabb17f197f18ac7a9155a6",
+    "judgeSystemPrompt": "8b1947cfaa96005691083f1b1d0df3abf6085bb91cbdac24368ce7879f38b38c",
+    "judgeSchema": "9e86f3541b69b85ec69547574459532942d8030f0320d3f6712dd7545a1e1d12"
+  },
+  "manifestSha256": "759d5d15444d8093cae1698a6a5fd1507dffd095b8cb314ea9f46d11756f546e",
+  "scores": {
+    "hitRecall": "5/5",
+    "cleanControlAcceptance": "2/2",
+    "hitPass": 5,
+    "hitTotal": 5,
+    "cleanPass": 2,
+    "cleanTotal": 2
+  },
+  "rows": [
+    {
+      "id": "01-js-missing-return",
+      "lang": "JavaScript",
+      "expected": "hit",
+      "result": "hit",
+      "pass": true,
+      "rationale": "Expected hit. The reviewer's sole blocker is the missing `return` after `res.status(204).end()`, with an accurate trace of the fall-through causing a double terminal write on empty input, and the correct minimal fix (`return res.status(204).end();`). This matches the ground-truth defect exactly. The only other note (map callback arity) is explicitly hedged and not admitted as a finding, so it does not detract."
+    },
+    {
+      "id": "02-py-off-by-one",
+      "lang": "Python",
+      "expected": "hit",
+      "result": "hit",
+      "pass": true,
+      "rationale": "Ground truth is the off-by-one pairwise scan bound causing IndexError on the last iteration. The reviewer's primary blocker states exactly this: `range(len(a))` lets `i` reach `len(a)-1`, `a[i+1]` becomes `a[len(a)]`, raising IndexError, with the correct fix `for i in range(len(a) - 1):`. It is anchored to snippet.py:3-4 with concrete failing inputs. The secondary `-inf` sentinel observation for 1-element lists is filed as an explicitly underspecified minor, which does not undermine the hit."
+    },
+    {
+      "id": "03-go-nil-before-check",
+      "lang": "Go",
+      "expected": "hit",
+      "result": "hit",
+      "pass": true,
+      "rationale": "The review flags, as its top blocker at snippet.go:3, that `ok := resp.StatusCode == 200` dereferences `resp` before the `if err != nil` guard, correctly noting that `http.Get` returns a nil `*http.Response` on transport failure, supplying concrete panic-triggering inputs, and prescribing the exact fix (hoist the error guard above the status read). This matches the ground-truth defect exactly. The two extra items (literal 200 vs http.StatusOK, undrained body) are explicitly framed as optional minors and do not detract."
+    },
+    {
+      "id": "04-py-mutable-default",
+      "lang": "Python",
+      "expected": "hit",
+      "result": "hit",
+      "pass": true,
+      "rationale": "Ground truth is the mutable default argument bug (`seen={}`/`out=[]` evaluated once at def time, shared across calls). The reviewer's top blocker names exactly this: defaults evaluated once into `__defaults__`, mutated in place with no rebinding, demonstrated with a concrete two-call counterexample violating the \"each call is independent\" contract, and fixed via None sentinel plus a local `out`. The supporting major/minor findings are the same root cause and do not detract. Clear hit."
+    },
+    {
+      "id": "05-js-foreach-await",
+      "lang": "JavaScript",
+      "expected": "hit",
+      "result": "hit",
+      "pass": true,
+      "rationale": "Ground truth: Array.prototype.forEach does not await its async callback, so saveAll resolves before any save settles and rejections are unhandled. The reviewer flagged exactly this as two blockers on snippet.js:2-5 — forEach discards the async callback's returned promise (citing the spec step where the Call result is unused), so `return \\\"done\\\"` fulfills saveAll one microtask after dispatch, before any save completes; and a rejecting save settles the discarded promise, so saveAll still fulfills with \\\"done\\\" instead of rejecting, with the orphaned rejection surfacing as an unhandled rejection. It prescribes the correct fixes: `await Promise.all(items.map(item => save(item)))` or `for (const item of items) await save(item)`. Precise, correctly located, mechanism-accurate hit; no confident spurious blockers."
+    },
+    {
+      "id": "06-clean-js-guard",
+      "lang": "JavaScript",
+      "expected": "clean",
+      "result": "clean-ok",
+      "pass": true,
+      "rationale": "Fixture is a correct control: the `return` after `res.status(204).end()` is present, so there is exactly one response per call. The reviewer filed zero findings and explicitly verified the guard/return at lines 2-4 and the single 200 send at line 7, even naming and rejecting the classic missing-return double-send defect. Its only speculative lead (`items.map(renderRow)` passing index/array) was hedged, marked `[unverified]`, and deliberately excluded from the findings index, so it is not a confident blocker or major. No false positive; precision preserved."
+    },
+    {
+      "id": "07-clean-py-bounds",
+      "lang": "Python",
+      "expected": "clean",
+      "result": "clean-ok",
+      "pass": true,
+      "rationale": "Fixture is a correct control (`range(len(a) - 1)` keeps `a[i+1]` in bounds; `len(a) < 2` returns None). The reviewer explicitly traced the loop bound, the seed value, and the negative/last-pair cases, concluded \"Findings: none — no blocker, major, or minor issue admitted,\" and declined to file speculative input-validation or docstring findings. The only suggestions offered (skipping the redundant first iteration, a generator-expression rewrite) are explicitly labeled optional and explicitly not recommended, which is well below the false-positive threshold. No confident blocker or major was raised, so precision is preserved."
+    }
+  ],
+  "roleTotals": {
+    "reviewer": {
+      "calls": 7,
+      "estimatedUsd": 1.0667205,
+      "retainedReviewerTextCharacters": 44551,
+      "tokens": {
+        "inputTokens": 30,
+        "cacheCreationInputTokens": 29474,
+        "cacheReadInputTokens": 100811,
+        "outputTokens": 28857
+      }
+    },
+    "judge": {
+      "calls": 7,
+      "estimatedUsd": 0.338945,
+      "retainedReviewerTextCharacters": null,
+      "tokens": {
+        "inputTokens": 18,
+        "cacheCreationInputTokens": 24644,
+        "cacheReadInputTokens": 11830,
+        "outputTokens": 3460
+      }
+    }
+  },
+  "accounting": {
+    "completedBaselineRoleCalls": 14,
+    "retainedFailedPilotRoleCalls": 1,
+    "estimatedBaselineUsd": 1.4056655,
+    "retainedFailedPilotUsd": 0.1671225,
+    "estimatedCombinedUsd": 1.572788,
+    "baselineBudgetUsd": 3,
+    "globalCeilingUsd": 28,
+    "costBasis": "CLI bundled-price estimates, not provider billing; implementation collaboration costs excluded",
+    "failedPilot": {
+      "faults": [
+        "strict-multiple-models",
+        "strict-unexpected-model:claude-haiku-4-5-20251001"
+      ],
+      "judgeCalls": 0,
+      "purpose": "extra model purpose unproven; title generation hypothesis; old failed pilot not scored or replaced"
+    }
+  },
+  "limitations": [
+    "Constrained-excerpt code-reviewer baseline; not a workflow, quality or safety baseline.",
+    "System-prompt replay of the shipped code-reviewer body; --system-prompt replaces the entire default prompt; native plugin activation not verified.",
+    "Reviewer surface was closed to Read/Grep/Glob by --tools with no Bash, unlike the shipped agent contract.",
+    "Fixture Intent lines state the contract precisely and may make the defect easier to find than unhinted review; direction plausibly optimistic, magnitude unmeasured.",
+    "One judge call per fixture over 5 hit fixtures and 2 clean controls: each fixture moves a rate by 1/5 or 1/2.",
+    "Repeating one prefix across 14 sequential calls may produce cache reads attributable to the harness rather than the product; no causal attribution measured.",
+    "clean control acceptance is not a true precision.",
+    "CLI version is a self-report from --version plus a file hash: drift evidence, not authenticity.",
+    "One environment override is forced onto the child (CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1); no inherited environment is recorded.",
+    "The requested permission mode is the alias `manual`; the canonical mode the runtime reports is `default`. Same mode, two names.",
+    "Seals detect accidental edits and corruption only; they are not signatures and not authentication.",
+    "Some calls ran concurrently with the local full regression: elapsed times are not an isolated latency benchmark.",
+    "Final output text below is reviewer-produced evidence, not verified execution or authority; Codex separately checked fixture-level scoring.",
+    "All 14 baseline roles used fresh separate sessions on the same model/provider; role separation does not prove statistical independence.",
+    "No GPT-6 Astra runtime trial, native-agent comparison, held-out evaluation or whole-development efficacy measured."
+  ],
+  "localAudit": {
+    "rawExperimentRoot": "<TMP>\\ctide-eff-UErFcA",
+    "rawThinkingPublished": false,
+    "independentInspection": ".ctide/collaboration/phase19t-independent-inspection.json",
+    "fullSummary": ".ctide/collaboration/phase19u-summary.json"
+  },
+  "calls": [
+    {
+      "step": 0,
+      "role": "reviewer",
+      "fixtureId": "01-js-missing-return",
+      "sessionId": "b6bbcf58-88fa-425e-aac4-42d42f6e0417",
+      "ok": true,
+      "faults": [],
+      "estimatedCostUsd": 0.1305305,
+      "elapsedMs": 49483,
+      "model": "claude-opus-5",
+      "mode": "default",
+      "usage": {
+        "inputTokens": 4,
+        "cacheCreationInputTokens": 3754,
+        "cacheReadInputTokens": 13191,
+        "outputTokens": 3455
+      },
+      "modelUsage": {
+        "claude-opus-5": {
+          "inputTokens": 4,
+          "cacheCreationInputTokens": 3754,
+          "cacheReadInputTokens": 13191,
+          "outputTokens": 3455,
+          "costUsd": 0.1305305,
+          "costBasis": "list",
+          "provider": "firstParty"
+        }
+      },
+      "observedTools": [
+        "Read"
+      ],
+      "subagent": {
+        "evidence": "counters",
+        "spawned": 0,
+        "counters": {
+          "spawned": 0,
+          "completed": 0,
+          "failed": 0,
+          "spawned_by_subagents": 0,
+          "started_in_background": 0,
+          "max_depth": 0,
+          "requested.background": 0,
+          "requested.foreground": 0,
+          "requested.unset": 0,
+          "killed.parent": 0,
+          "killed.user": 0,
+          "killed.system": 0,
+          "refused.depth_limit": 0,
+          "refused.concurrency_limit": 0,
+          "refused.budget": 0
+        },
+        "byTypeKeys": [],
+        "activity": false
+      },
+      "grade": null,
+      "stdoutSha256": "d0e4334f387e81b95e67013da2d6c7b0b7b5aeb6620bd01336f68547fd71767f",
+      "finalReview": "## Analysis\n\n**What I examined.** The full excerpt as written to `snippet.js` (lines 1–7), read directly; it matches the packet verbatim. Scope is the single function `handleList`; `renderRow` and `res` are undefined external symbols and are treated as correct per the task framing (`res` is treated as an Express-style response with `status`/`end`/`send`).\n\n**Confirmed defect: the 204 branch has no `return`.**\n\nLine 2–4 (`snippet.js:2`) opens the empty-list guard and line 3 sends the terminal 204, but the `if` block ends at line 4 without returning. Control flow therefore falls through to lines 5–6 unconditionally.\n\nConcrete input: `handleList([], res)`.\n- `snippet.js:2` — `[].length` is `0`, `!0` is `true`, so the guard is entered.\n- `snippet.js:3` — `res.status(204).end()` commits the response: headers flushed, stream ended.\n- `snippet.js:5` — execution continues (no `return`); `[].map(renderRow)` evaluates to `[]`.\n- `snippet.js:6` — `[].join(\"\\n\")` is `\"\"`, then `res.status(200).send(\"\")` attempts a **second** response on an already-committed request.\n\nThat is a direct violation of both stated requirements: \"send an empty 204 response and **STOP**\" and \"**Exactly one response per call**.\"\n\n**Failure mechanism, stated precisely.** In Express, `res.send()` on a string body sets response headers (`Content-Type`, and `Content-Length`/`ETag`) via `res.set` → `ServerResponse.setHeader`. After `end()` has flushed headers, `setHeader` throws `ERR_HTTP_HEADERS_SENT` (\"Cannot set headers after they are sent to the client\"). So the empty-list path does not merely log noise — it throws synchronously out of the handler. Depending on whether the call site is wrapped, that surfaces as an unhandled exception, an error-middleware hop on an already-committed response, or a rejected promise. Even on a `res` implementation that tolerates late `setHeader`, the write-after-end on line 6 still violates the one-response contract. The `res.status(200)` on line 6 is likewise a post-commit `statusCode` assignment that cannot take effect — the client already received `204`.\n\nNote the failure is *only* on the empty path, which is exactly the path the guard was written to protect; the non-empty path (`items.length > 0`) behaves correctly — guard skipped, one `200` with joined rows. That asymmetry is why this is the kind of bug that passes a happy-path smoke test and fails on the first empty result set.\n\n**Refutation attempt.** I looked for anything that would make the fall-through harmless:\n- Is there an implicit early exit? No — line 3 is a plain expression statement; `.end()` returns the response object, not a control transfer. There is no `return`, no `throw`, no `else`.\n- Could `res.send` on a committed response be a documented no-op that would keep it to \"one response\"? Not in Express/Node semantics — as above, the header write throws. And even a hypothetically forgiving `res` would still leave line 6 as a second response attempt, which the stated contract forbids outright.\n- Is the guard maybe unreachable, making the branch dead? No — `items` is the function's own parameter and `[]` is a legal, expected input (the requirement exists precisely for it).\n- Could an outer wrapper catch and swallow it? Not visible in scope, and swallowing would still leave the contract violated; it cannot make the code correct.\n\nThe finding survives refutation.\n\n**Lead I did not file as a finding.** `items.map(renderRow)` at `snippet.js:5` passes `renderRow` directly as the callback, so it is invoked as `renderRow(element, index, array)` — three arguments, not one. This is the classic `['1','2','3'].map(parseInt)` hazard: if `renderRow` ever takes an optional second parameter (an index-like or options argument), the extra `index`/`array` arguments silently change output. I cannot confirm a defect here because `renderRow` is an undefined external symbol I am instructed to treat as correct, and nothing in the excerpt reveals its arity. `[unverified]` — reading `renderRow`'s signature would settle it in one line. I raise it only as a caution, not as an index entry.\n\n**Non-issues.** `res.status(204).end()` is the correct way to emit a bodyless 204 — `send()` with a body would be wrong there, so line 3 itself is right; the bug is purely the missing exit. No null/undefined guard on `items` (`items.length` would throw on `null`) is a caller-contract matter outside the shown logic and not implied by the stated intent. `rows.join(\"\\n\")` with no trailing newline is a formatting choice, not a correctness issue against the stated intent.\n\n**Fix.** Smallest safe change — make the guard terminal at `snippet.js:3`:\n\n```js\nif (!items.length) {\n  return res.status(204).end();\n}\n```\n\n(Equivalently `res.status(204).end(); return;` — either restores \"STOP\" and exactly one response per call. No restructuring is warranted.)\n\n## Findings index\n\n**Scope reviewed:** `snippet.js:1–7`, `handleList` in full; correctness against the stated response contract (204-and-stop on empty; exactly one response per call).\n\n- **blocker** · `snippet.js:2-6` · Empty-list guard lacks a `return`, so `handleList([], res)` falls through from the 204 at line 3 into lines 5–6 and issues a second response — `res.status(200).send(\"\")` — on an already-committed request; in Express this throws `ERR_HTTP_HEADERS_SENT` out of the handler, and it violates both \"STOP\" and \"exactly one response per call\". · Confirmed by reading `snippet.js:1-7`: line 3 is a bare expression statement, the `if` block closes at line 4 with no `return`/`throw`/`else`, and lines 5–6 are unguarded; traced `[]` through `.length → 0`, `.map → []`, `.join → \"\"`. · Fix: `return res.status(204).end();` at line 3.\n\n- *(not admitted — `[unverified]`)* `snippet.js:5` · `items.map(renderRow)` passes `renderRow` the `(element, index, array)` triple; wrong output if `renderRow` has arity > 1. Cannot confirm — `renderRow` is out of scope. Would be settled by reading its signature; if arity > 1, wrap as `items.map((it) => renderRow(it))`.\n\n**Recommended correction:** add the missing `return` on the 204 branch. Nothing else in the excerpt requires change."
+    },
+    {
+      "step": 1,
+      "role": "judge",
+      "fixtureId": "01-js-missing-return",
+      "sessionId": "1076ba28-d99f-4b02-8ce9-05578d9cbc1c",
+      "ok": true,
+      "faults": [],
+      "estimatedCostUsd": 0.045955,
+      "elapsedMs": 8522,
+      "model": "claude-opus-5",
+      "mode": "default",
+      "usage": {
+        "inputTokens": 2,
+        "cacheCreationInputTokens": 3817,
+        "cacheReadInputTokens": 0,
+        "outputTokens": 311
+      },
+      "modelUsage": {
+        "claude-opus-5": {
+          "inputTokens": 2,
+          "cacheCreationInputTokens": 3817,
+          "cacheReadInputTokens": 0,
+          "outputTokens": 311,
+          "costUsd": 0.045955,
+          "costBasis": "list",
+          "provider": "firstParty"
+        }
+      },
+      "observedTools": [
+        "StructuredOutput"
+      ],
+      "subagent": {
+        "evidence": "counters",
+        "spawned": 0,
+        "counters": {
+          "spawned": 0,
+          "completed": 0,
+          "failed": 0,
+          "spawned_by_subagents": 0,
+          "started_in_background": 0,
+          "max_depth": 0,
+          "requested.background": 0,
+          "requested.foreground": 0,
+          "requested.unset": 0,
+          "killed.parent": 0,
+          "killed.user": 0,
+          "killed.system": 0,
+          "refused.depth_limit": 0,
+          "refused.concurrency_limit": 0,
+          "refused.budget": 0
+        },
+        "byTypeKeys": [],
+        "activity": false
+      },
+      "grade": {
+        "pass": true,
+        "rationale": "Expected hit. The reviewer's sole blocker is the missing `return` after `res.status(204).end()`, with an accurate trace of the fall-through causing a double terminal write on empty input, and the correct minimal fix (`return res.status(204).end();`). This matches the ground-truth defect exactly. The only other note (map callback arity) is explicitly hedged and not admitted as a finding, so it does not detract.",
+        "result": "hit"
+      },
+      "stdoutSha256": "16a955a2d447d0bf949cd692a16bfcdb8ec43c580f11465bb4b2261060f88fd3"
+    },
+    {
+      "step": 2,
+      "role": "reviewer",
+      "fixtureId": "02-py-off-by-one",
+      "sessionId": "85a7bb1b-8db2-4c9d-b6e1-6d0cd4cb75d7",
+      "ok": true,
+      "faults": [],
+      "estimatedCostUsd": 0.1156265,
+      "elapsedMs": 41365,
+      "model": "claude-opus-5",
+      "mode": "default",
+      "usage": {
+        "inputTokens": 4,
+        "cacheCreationInputTokens": 3756,
+        "cacheReadInputTokens": 13193,
+        "outputTokens": 2858
+      },
+      "modelUsage": {
+        "claude-opus-5": {
+          "inputTokens": 4,
+          "cacheCreationInputTokens": 3756,
+          "cacheReadInputTokens": 13193,
+          "outputTokens": 2858,
+          "costUsd": 0.1156265,
+          "costBasis": "list",
+          "provider": "firstParty"
+        }
+      },
+      "observedTools": [
+        "Read"
+      ],
+      "subagent": {
+        "evidence": "counters",
+        "spawned": 0,
+        "counters": {
+          "spawned": 0,
+          "completed": 0,
+          "failed": 0,
+          "spawned_by_subagents": 0,
+          "started_in_background": 0,
+          "max_depth": 0,
+          "requested.background": 0,
+          "requested.foreground": 0,
+          "requested.unset": 0,
+          "killed.parent": 0,
+          "killed.user": 0,
+          "killed.system": 0,
+          "refused.depth_limit": 0,
+          "refused.concurrency_limit": 0,
+          "refused.budget": 0
+        },
+        "byTypeKeys": [],
+        "activity": false
+      },
+      "grade": null,
+      "stdoutSha256": "0217765c48d6ea69aa8385fcce033074ae74620e8cbbb641bf8a611f1cd32d72",
+      "finalReview": "## Analysis\n\n**What I examined.** `snippet.py:1-7` in full (7 lines, the entire function). No repository, no tests, no other files present (`Glob` scope is a single-file temp dir), so there are no repo conventions or call sites to weigh against — the stated intent is the only reference contract. I could not execute Python (no Bash in this sandbox), so the finding below is anchored + named-mechanism rather than anchored + reproduced; the mechanism is deterministic Python list semantics, not a probabilistic guess.\n\n**The loop bound is off by one.** `snippet.py:3` iterates `for i in range(len(a))`, i.e. `i` reaches `len(a) - 1`. Line 4 then evaluates `a[i + 1]` = `a[len(a)]`, which is out of bounds for a Python `list` and raises `IndexError: list index out of range`. The last valid pair is `(a[len(a)-2], a[len(a)-1])`, so the bound must be `range(len(a) - 1)`.\n\nConcrete inputs: `max_adjacent_sum([1, 2])` → `i=0` computes `1+2=3` and sets `best=3`, then `i=1` evaluates `a[1] + a[2]` → `IndexError`. `max_adjacent_sum([5])` → `i=0` evaluates `a[0] + a[1]` → `IndexError`. This is not an edge case: **every** non-empty list — the entire stated input domain — crashes on its final iteration. The function never returns a value for any input it is contracted to accept.\n\n**Refutation attempt.** I looked for anything that would save it and found nothing: there is no `try`/`except` (the function body is 6 lines, all read at `snippet.py:2-7`), no early `break`, no length guard before the loop, and no slicing that would bound the access. The only way `a[i + 1]` could survive is if `a` were not a real list — e.g. a `collections.defaultdict` or a wrap-around sequence type — but the intent explicitly says \"non-empty list\", and for `list` Python raises rather than returning a default. The one input that does *not* crash is the empty list (`range(0)` is empty, so it silently returns `-inf`) — which is precisely the case the contract excludes. The bug is inverted relative to what any accidental guard would protect.\n\n**Secondary contract gap, visible only after the fix.** Once line 3 becomes `range(len(a) - 1)`, a single-element list produces zero iterations and returns the `float(\"-inf\")` sentinel from line 2. A 1-element list has no adjacent pair, so \"maximum sum of any two adjacent elements\" is undefined there; returning `-inf` leaks a float sentinel into what is otherwise an integer-domain result and will silently poison downstream arithmetic or comparisons instead of failing loudly. The intent statement does not say which behavior is wanted for `len(a) == 1`, so this is genuinely underspecified — but it should be decided explicitly (raise `ValueError`, or document the sentinel) rather than falling out of the initializer by accident. I am filing this as `minor` because it is a specification gap the fix must confront, not a demonstrated wrong answer against a stated criterion.\n\n**Simplification (optional, not a defect).** After correcting the bound, the whole body reduces to `return max(a[i] + a[i + 1] for i in range(len(a) - 1))`, which makes the pair-count relationship (`n - 1` pairs for `n` elements) structurally obvious and removes the sentinel initializer that caused the secondary gap. `zip(a, a[1:])` is the other idiomatic spelling but copies a slice; with no repo conventions present I would not push either form over a correct explicit loop.\n\n**Efficiency.** Single pass, O(n) time, O(1) space — appropriate, no concerns. The defect is correctness, not performance.\n\n## Findings index\n\n**Scope reviewed:** `snippet.py:1-7` (entire `max_adjacent_sum` function); no other files exist in the working directory.\n\n- `blocker` · `snippet.py:3-4` · `range(len(a))` lets `i` reach `len(a)-1`, so `a[i + 1]` indexes `a[len(a)]` and raises `IndexError` on the final iteration for **every** non-empty list (`[1,2]` → crash after computing `3`; `[5]` → crash immediately); the function never returns for any contracted input · read all 7 lines, confirmed no `try`/`except`, `break`, or length guard exists to bound the access; not executed (no Bash in sandbox), mechanism is deterministic Python list indexing · change line 3 to `for i in range(len(a) - 1):`.\n- `minor` · `snippet.py:2,7` · after the bound is fixed, a 1-element list yields zero iterations and returns the `float(\"-inf\")` sentinel — a float leaking into an integer-domain result for an input where no adjacent pair exists; intent does not specify this case · read the initializer at line 2 and the unconditional `return best` at line 7 · decide explicitly: `raise ValueError(\"need at least 2 elements\")` when `len(a) < 2`, or document the sentinel.\n\n**Recommended corrections (smallest safe fix first):**\n1. `snippet.py:3` → `for i in range(len(a) - 1):` — this alone makes the function correct for all lists of length ≥ 2.\n2. Optionally collapse the body to `return max(a[i] + a[i + 1] for i in range(len(a) - 1))`, pairing it with an explicit `len(a) < 2` guard to resolve the sentinel gap."
+    },
+    {
+      "step": 3,
+      "role": "judge",
+      "fixtureId": "02-py-off-by-one",
+      "sessionId": "bc2b4713-2b58-43e8-aebf-06b979077c05",
+      "ok": true,
+      "faults": [],
+      "estimatedCostUsd": 0.039882,
+      "elapsedMs": 8470,
+      "model": "claude-opus-5",
+      "mode": "default",
+      "usage": {
+        "inputTokens": 2,
+        "cacheCreationInputTokens": 2851,
+        "cacheReadInputTokens": 624,
+        "outputTokens": 442
+      },
+      "modelUsage": {
+        "claude-opus-5": {
+          "inputTokens": 2,
+          "cacheCreationInputTokens": 2851,
+          "cacheReadInputTokens": 624,
+          "outputTokens": 442,
+          "costUsd": 0.039882,
+          "costBasis": "list",
+          "provider": "firstParty"
+        }
+      },
+      "observedTools": [
+        "StructuredOutput"
+      ],
+      "subagent": {
+        "evidence": "counters",
+        "spawned": 0,
+        "counters": {
+          "spawned": 0,
+          "completed": 0,
+          "failed": 0,
+          "spawned_by_subagents": 0,
+          "started_in_background": 0,
+          "max_depth": 0,
+          "requested.background": 0,
+          "requested.foreground": 0,
+          "requested.unset": 0,
+          "killed.parent": 0,
+          "killed.user": 0,
+          "killed.system": 0,
+          "refused.depth_limit": 0,
+          "refused.concurrency_limit": 0,
+          "refused.budget": 0
+        },
+        "byTypeKeys": [],
+        "activity": false
+      },
+      "grade": {
+        "rationale": "Ground truth is the off-by-one pairwise scan bound causing IndexError on the last iteration. The reviewer's primary blocker states exactly this: `range(len(a))` lets `i` reach `len(a)-1`, `a[i+1]` becomes `a[len(a)]`, raising IndexError, with the correct fix `for i in range(len(a) - 1):`. It is anchored to snippet.py:3-4 with concrete failing inputs. The secondary `-inf` sentinel observation for 1-element lists is filed as an explicitly underspecified minor, which does not undermine the hit.",
+        "result": "hit",
+        "pass": true
+      },
+      "stdoutSha256": "a76b2c171ed67663799bc132fd300d4a8cea5912731b59e83546a78168c52697"
+    },
+    {
+      "step": 4,
+      "role": "reviewer",
+      "fixtureId": "03-go-nil-before-check",
+      "sessionId": "35c734dc-dada-4560-9e6a-64b8d82a9847",
+      "ok": true,
+      "faults": [],
+      "estimatedCostUsd": 0.131206,
+      "elapsedMs": 51798,
+      "model": "claude-opus-5",
+      "mode": "default",
+      "usage": {
+        "inputTokens": 4,
+        "cacheCreationInputTokens": 3747,
+        "cacheReadInputTokens": 13182,
+        "outputTokens": 3485
+      },
+      "modelUsage": {
+        "claude-opus-5": {
+          "inputTokens": 4,
+          "cacheCreationInputTokens": 3747,
+          "cacheReadInputTokens": 13182,
+          "outputTokens": 3485,
+          "costUsd": 0.131206,
+          "costBasis": "list",
+          "provider": "firstParty"
+        }
+      },
+      "observedTools": [
+        "Read"
+      ],
+      "subagent": {
+        "evidence": "counters",
+        "spawned": 0,
+        "counters": {
+          "spawned": 0,
+          "completed": 0,
+          "failed": 0,
+          "spawned_by_subagents": 0,
+          "started_in_background": 0,
+          "max_depth": 0,
+          "requested.background": 0,
+          "requested.foreground": 0,
+          "requested.unset": 0,
+          "killed.parent": 0,
+          "killed.user": 0,
+          "killed.system": 0,
+          "refused.depth_limit": 0,
+          "refused.concurrency_limit": 0,
+          "refused.budget": 0
+        },
+        "byTypeKeys": [],
+        "activity": false
+      },
+      "grade": null,
+      "stdoutSha256": "93888f015422b0c2b9f13f5cfa540b6cc8dac7113d683d06fef86310a8dd7ae7",
+      "finalReview": "## Analysis\n\n**What I examined.** The whole function, `snippet.go:1-9` — nine lines, so the \"read the enclosing scope whole\" floor is trivially met. No repo, no other files (`Glob` on the working dir shows only the snippet), so there are no repo conventions to grep for; I state that rather than pretending to have checked one. No toolchain available, so I did not compile or run anything and I make no claim that it builds.\n\n**The defect: statement order dereferences `resp` before the error check.**\n\n`snippet.go:3` reads `ok := resp.StatusCode == 200`, and the `if err != nil` guard is at `snippet.go:4` — one line *after* the dereference. Go evaluates statements in order, so the guard never protects line 3.\n\nThe `net/http` contract makes the consequence concrete: `http.Get` returns `(*http.Response, error)`, and on a transport failure it returns a **nil** `*http.Response` alongside the error. Concrete inputs that hit this: `isUp(\"http://127.0.0.1:1\")` (connection refused), `isUp(\"http://nonexistent.invalid\")` (DNS failure), `isUp(\"://bad\")` (URL parse error — fails before any transport is attempted). In each case line 3 dereferences a nil pointer and the function panics with `runtime error: invalid memory address or nil pointer dereference` instead of returning `false`. That is a direct violation of the stated intent's second sentence: \"A transport error must return false, not panic.\"\n\n**Refutation attempt.** I looked for the guard I might have missed. Three angles:\n\n1. *Is `resp` ever non-nil when `err != nil`?* Yes — exactly one documented case: when `CheckRedirect` fails, `Get` returns a non-nil `Response` with a non-nil error. But that is a narrow, opt-in case, and it does not rescue the common transport errors above, where `resp` is definitively nil. The panic stands.\n2. *Does Go short-circuit or defer evaluation somehow?* No. `:=` on line 3 is an ordinary assignment with immediate field-selector evaluation on a pointer; there is no lazy evaluation in Go that would postpone it past line 4.\n3. *Is the excerpt perhaps trimmed, with a nil check above?* No — line 1 is the function signature and line 2 is the call; there is nothing between them.\n\nThe finding survives all three. Fix is one line of movement, not a rewrite: hoist the `if err != nil { return false }` guard to immediately after line 2, then `defer resp.Body.Close()`, then compute and return the status comparison.\n\n**Things I checked that are genuinely fine — worth saying so, to prevent churn.**\n\n- *Body-leak on the error path.* At first glance, returning `false` at line 5 skips the `defer` on line 7, so the `CheckRedirect` case (non-nil `resp` + non-nil `err`) looks like a leaked body. It isn't: `net/http` documents that in that specific case `Response.Body` is already closed. And placing `defer` *after* the error check is the correct ordering — deferring before the nil check would itself panic. So once the guard is hoisted, the existing `defer` placement is right as written. No change needed there.\n- *Non-200 handling.* Any non-200 status correctly yields `false` via `ok`. The \"iff … 200\" half of the intent is satisfied; only the panic half is broken.\n- *No double-close, no shadowing, no `errors.Is` subtleties.* Nothing else in the nine lines misbehaves.\n\n**Minor points, offered as optional.** Comparing against the literal `200` rather than `http.StatusOK` is a readability nit; with no repo present I cannot confirm a convention either way, so I am not going to press it. Separately, closing the body without draining it (`io.Copy(io.Discard, resp.Body)`) prevents keep-alive connection reuse — a real but small efficiency point that matters only if `isUp` is polled in a hot loop against the same host; for a one-shot health check it is noise. Neither is release-gating, and I would not block on either.\n\n**Scope note.** The panic is the only correctness defect here. I am not padding the list — the remaining seven lines are correct once the guard moves.\n\n## Findings index\n\n**Scope reviewed:** `snippet.go:1-9` (`isUp`), full function, against the stated intent. No other files present; no toolchain run.\n\n- **blocker** · `snippet.go:3` · `ok := resp.StatusCode == 200` dereferences `resp` before the `err != nil` guard on line 4; `http.Get` returns a nil `*http.Response` on transport failure, so `isUp(\"http://127.0.0.1:1\")` (connection refused), `isUp(\"http://nonexistent.invalid\")` (DNS failure), or `isUp(\"://bad\")` (URL parse error) panic with a nil pointer dereference instead of returning `false` — violating the intent's \"a transport error must return false, not panic\". · Confirmed by reading `snippet.go:1-9` in full (guard is one line below the dereference; no earlier nil check exists) and applying the documented `net/http` return contract; not executed — no Go toolchain in the sandbox. Refutation attempted: the only documented non-nil-`resp`-with-error case is `CheckRedirect` failure, which does not cover these transport errors. · Fix: move `if err != nil { return false }` to directly after the `http.Get` call, then `defer resp.Body.Close()`, then `return resp.StatusCode == 200`.\n- **minor** · `snippet.go:3` · Literal `200` instead of `http.StatusOK`; readability only, no behavioral impact. · Confirmed by reading line 3; no repo present to establish a convention either way. · Fix (optional): use `http.StatusOK`.\n- **minor** · `snippet.go:7` · Body closed without draining, preventing keep-alive connection reuse; only material if `isUp` is polled repeatedly against one host. · Confirmed by reading line 7; no evidence of hot-loop usage in the excerpt. · Fix (optional): `io.Copy(io.Discard, resp.Body)` before close.\n\n**Recommended correction (smallest safe fix):**\n```go\nfunc isUp(url string) bool {\n\tresp, err := http.Get(url)\n\tif err != nil {\n\t\treturn false\n\t}\n\tdefer resp.Body.Close()\n\treturn resp.StatusCode == http.StatusOK\n}\n```\n\n**Applicability:** applicable.\n**Best-practice alignment:** the check-error-immediately-then-defer-cleanup ordering is the canonical Go `net/http` idiom; the current code inverts it. Everything else conforms.\n**Efficiency / simplification opportunities:** none material. The `ok` temporary disappears naturally once the guard is hoisted, which is simplification for free rather than a separate change. Body draining is optional and situational.\n**Non-issues / out of scope:** `defer` placement after the error check is correct as written and should not be moved earlier; the `CheckRedirect` path does not leak the body (stdlib closes it); non-200 handling is correct."
+    },
+    {
+      "step": 5,
+      "role": "judge",
+      "fixtureId": "03-go-nil-before-check",
+      "sessionId": "035e2ee0-72b2-4f5a-b97c-01dc8f1d2425",
+      "ok": true,
+      "faults": [],
+      "estimatedCostUsd": 0.0564465,
+      "elapsedMs": 11761,
+      "model": "claude-opus-5",
+      "mode": "default",
+      "usage": {
+        "inputTokens": 4,
+        "cacheCreationInputTokens": 3803,
+        "cacheReadInputTokens": 4593,
+        "outputTokens": 644
+      },
+      "modelUsage": {
+        "claude-opus-5": {
+          "inputTokens": 4,
+          "cacheCreationInputTokens": 3803,
+          "cacheReadInputTokens": 4593,
+          "outputTokens": 644,
+          "costUsd": 0.0564465,
+          "costBasis": "list",
+          "provider": "firstParty"
+        }
+      },
+      "observedTools": [
+        "StructuredOutput"
+      ],
+      "subagent": {
+        "evidence": "counters",
+        "spawned": 0,
+        "counters": {
+          "spawned": 0,
+          "completed": 0,
+          "failed": 0,
+          "spawned_by_subagents": 0,
+          "started_in_background": 0,
+          "max_depth": 0,
+          "requested.background": 0,
+          "requested.foreground": 0,
+          "requested.unset": 0,
+          "killed.parent": 0,
+          "killed.user": 0,
+          "killed.system": 0,
+          "refused.depth_limit": 0,
+          "refused.concurrency_limit": 0,
+          "refused.budget": 0
+        },
+        "byTypeKeys": [],
+        "activity": false
+      },
+      "grade": {
+        "result": "hit",
+        "pass": true,
+        "rationale": "The review flags, as its top blocker at snippet.go:3, that `ok := resp.StatusCode == 200` dereferences `resp` before the `if err != nil` guard, correctly noting that `http.Get` returns a nil `*http.Response` on transport failure, supplying concrete panic-triggering inputs, and prescribing the exact fix (hoist the error guard above the status read). This matches the ground-truth defect exactly. The two extra items (literal 200 vs http.StatusOK, undrained body) are explicitly framed as optional minors and do not detract."
+      },
+      "stdoutSha256": "5a31f8f22168326d895f29d8901c366ee53ad43d4c5c4685f7427655b1638c29"
+    },
+    {
+      "step": 6,
+      "role": "reviewer",
+      "fixtureId": "04-py-mutable-default",
+      "sessionId": "b43733e6-8a8a-4c86-a150-8b6cc86b03f4",
+      "ok": true,
+      "faults": [],
+      "estimatedCostUsd": 0.170452,
+      "elapsedMs": 72520,
+      "model": "claude-opus-5",
+      "mode": "default",
+      "usage": {
+        "inputTokens": 4,
+        "cacheCreationInputTokens": 3827,
+        "cacheReadInputTokens": 13174,
+        "outputTokens": 5023
+      },
+      "modelUsage": {
+        "claude-opus-5": {
+          "inputTokens": 4,
+          "cacheCreationInputTokens": 3827,
+          "cacheReadInputTokens": 13174,
+          "outputTokens": 5023,
+          "costUsd": 0.170452,
+          "costBasis": "list",
+          "provider": "firstParty"
+        }
+      },
+      "observedTools": [
+        "Glob",
+        "Read"
+      ],
+      "subagent": {
+        "evidence": "counters",
+        "spawned": 0,
+        "counters": {
+          "spawned": 0,
+          "completed": 0,
+          "failed": 0,
+          "spawned_by_subagents": 0,
+          "started_in_background": 0,
+          "max_depth": 0,
+          "requested.background": 0,
+          "requested.foreground": 0,
+          "requested.unset": 0,
+          "killed.parent": 0,
+          "killed.user": 0,
+          "killed.system": 0,
+          "refused.depth_limit": 0,
+          "refused.concurrency_limit": 0,
+          "refused.budget": 0
+        },
+        "byTypeKeys": [],
+        "activity": false
+      },
+      "grade": null,
+      "stdoutSha256": "f8b8445a9852309d9195a476bbff4af5975526a31c293c05487739147d7190e5",
+      "finalReview": "I read the on-disk copy at `snippet.py:1-6`; it is byte-identical to the excerpt in the packet. `Glob **/*` confirms `snippet.py` is the only file present — there is no surrounding repo, no test suite, no linter/formatter config, and no existing in-repo `dedupe` or memoization helper to compare conventions against, so I have no repository pattern to cite and no lint/typecheck/build summary line to quote. I have no `Bash` tool in this invocation (only `Read`/`Grep`/`Glob`), so I could not execute the reproducing input; every claim below is anchored to a line plus a named, deterministic CPython semantic rather than to an observed run, and I grade it as such.\n\n## Analysis\n\n**The defaults are evaluated once, at `def` time.** `snippet.py:1` declares `seen={}` and `out=[]`. CPython evaluates default-argument expressions a single time when the `def` statement executes, and stores the resulting objects in `dedupe.__defaults__`. Every call that omits those arguments binds the *same* dict and the *same* list object. Nothing in the body rebinds them — `snippet.py:4` mutates `seen` in place via `seen[it] = True` and `snippet.py:5` mutates `out` in place via `out.append(it)` — so both objects accumulate across calls for the lifetime of the module.\n\nConcrete failure against the stated contract (\"Each call is independent — calling it twice on different inputs must not share state\"):\n\n- `dedupe([1, 2, 1])` → returns `[1, 2]`. Correct in isolation.\n- `dedupe([3, 3, 4])` → `seen` already holds `{1: True, 2: True}`, `out` already holds `[1, 2]`; result is `[1, 2, 3, 4]`. Expected `[3, 4]`.\n\nThe second call is wrong in both directions at once, which is worth separating because they are two distinct faults sharing one root cause: the stale `out` **adds** elements that were never in `items`, and the stale `seen` **drops** elements that were. The drop is the more dangerous half because it is silent — `dedupe([1, 2])` called a second time returns `[1, 2]` (the leftover `out`, which coincidentally equals the right answer) and looks correct while actually having appended nothing. A caller testing round-trips on repeated identical input would not see the bug; a caller with `dedupe([1,2])` then `dedupe([2,3])` gets `[1,2,3]` instead of `[2,3]`. This is data corruption on the returned value, not a stylistic complaint.\n\n**The returned object is not a new list.** The intent says \"returns a new list of `items`\". `snippet.py:6` returns `out`, which on the default path *is* the object stored in `dedupe.__defaults__[1]`. Two consequences beyond the accumulation above: (a) two results captured from separate calls are the same object, so `a = dedupe([1]); b = dedupe([2]); a is b` is `True` and `a` retroactively appears to contain `2`; (b) an ordinary caller mutation such as `r = dedupe([1]); r.append(99)` writes straight into the function's default, so the next call's baseline already contains `99`. I list this separately from the accumulation finding because it has a different trigger (caller-side mutation, no second `dedupe` call required) and would survive a partial fix that only reset `seen`.\n\n**Attempt to refute.** I looked for the things that would make this a false positive. Is there a rebinding I missed — `seen = dict(seen)` or `out = list(out)` — that would make each call fresh? No; `snippet.py:2-6` is the entire body and contains no assignment to either name, only subscript-assign and `.append`, both in-place. Is there a caller that already sanitizes by passing `out=[]` explicitly on every call? The stated public signature is `dedupe(items, seen={})` — it does not even mention `out`, so the contract's own call shape is the two-arg/one-arg form that takes the shared defaults; a hypothetical disciplined caller passing both is not the documented usage. Is this a deliberate memoization idiom, like the accumulator-default trick used for caching? That defence fails on its own terms here: the stated intent explicitly forbids cross-call state, and even in genuine memoization the *result* list would not be shared. Is `seen` being a caller-supplied parameter itself the bug? No — the intent's signature exposes `seen`, so a caller that deliberately passes its own dict to share state across calls is exercising the documented API, and I am not flagging that. The defect is confined to the *default* path. The finding survives.\n\n**Signature deviation.** `out` is a third public parameter that the stated signature `dedupe(items, seen={})` does not include. Even after the mutable-default bug is fixed, exposing an output accumulator lets a caller pass a pre-populated list and get back a result that is not a deduplicated view of `items`. It should be a local. I rate this minor on its own because the correct fix for the blocker removes it anyway.\n\n**Things I checked and consider fine / out of scope.** Order preservation is correct: the single forward pass at `snippet.py:2` appends on first sight only, so relative order of first occurrences is preserved as required. Membership uses `in` on a dict, which is O(1) average, so the loop is O(n) — there is no efficiency concern to raise, and switching `seen` to a `set` would be marginally more idiomatic but the intent's signature explicitly names a dict, so I am not flagging it. Unhashable elements (e.g. `dedupe([[1], [2]])`) raise `TypeError` at `snippet.py:3`; the intent's dict-based signature implies hashable inputs, so I treat that as the accepted contract rather than a defect. No error-handling, `except`, retry, or fallback path is touched, so the silent-failure lens does not apply. No concurrency or resource-lifetime concerns beyond the shared-default aliasing already covered.\n\n**Smallest safe fix** — sentinel default, `out` demoted to a local, stated signature restored:\n\n```python\ndef dedupe(items, seen=None):\n    if seen is None:\n        seen = {}\n    out = []\n    for it in items:\n        if it not in seen:\n            seen[it] = True\n            out.append(it)\n    return out\n```\n\nThis keeps the deliberate ability to pass an explicit `seen` for cross-call sharing, and guarantees a fresh result list on every call.\n\n## Findings index\n\n**Scope reviewed:** `snippet.py:1-6` (`dedupe`), entire excerpt; no other files exist in the working directory.\n\n- **blocker** · `snippet.py:1,4,5` · Mutable default arguments `seen={}` / `out=[]` are evaluated once at `def` time and mutated in place, so state persists across calls: `dedupe([1,2,1])` → `[1,2]`, then `dedupe([3,3,4])` → `[1,2,3,4]` instead of `[3,4]` — directly violates \"Each call is independent\". · Read `snippet.py:1-6` in full; confirmed no rebinding of `seen`/`out` in the body, only in-place `seen[it]=True` and `out.append(it)`; mechanism is CPython's once-only default evaluation into `__defaults__` (named, not executed — no Bash tool available). · Default both to `None` and rebind inside the function; make `out` a local `out = []`.\n- **major** · `snippet.py:6` · Return value is the shared default list object, not a new list as the intent requires: `a = dedupe([1]); b = dedupe([2])` yields `a is b`, and a caller-side `r.append(99)` writes into the function default, poisoning subsequent calls without any further `dedupe` call. · Read `snippet.py:5-6`; `out` is never copied or rebound before being returned. · Same fix — construct `out` locally per call so each result is a distinct new list.\n- **minor** · `snippet.py:1` · `out` is a public third parameter absent from the stated signature `dedupe(items, seen={})`; a caller passing a pre-populated `out` gets a result that is not a deduplication of `items`. · Compared `snippet.py:1` against the intent's stated signature. · Remove `out` from the parameter list; it is an implementation detail.\n\n**Recommended correction:** apply the sentinel-default rewrite shown above; it resolves all three findings in one local change and preserves the intended ability to pass an explicit `seen`."
+    },
+    {
+      "step": 7,
+      "role": "judge",
+      "fixtureId": "04-py-mutable-default",
+      "sessionId": "b7b1905d-e0fb-4632-8417-fe02d0edd5c1",
+      "ok": true,
+      "faults": [],
+      "estimatedCostUsd": 0.048757,
+      "elapsedMs": 7650,
+      "model": "claude-opus-5",
+      "mode": "default",
+      "usage": {
+        "inputTokens": 2,
+        "cacheCreationInputTokens": 3776,
+        "cacheReadInputTokens": 624,
+        "outputTokens": 427
+      },
+      "modelUsage": {
+        "claude-opus-5": {
+          "inputTokens": 2,
+          "cacheCreationInputTokens": 3776,
+          "cacheReadInputTokens": 624,
+          "outputTokens": 427,
+          "costUsd": 0.048757,
+          "costBasis": "list",
+          "provider": "firstParty"
+        }
+      },
+      "observedTools": [
+        "StructuredOutput"
+      ],
+      "subagent": {
+        "evidence": "counters",
+        "spawned": 0,
+        "counters": {
+          "spawned": 0,
+          "completed": 0,
+          "failed": 0,
+          "spawned_by_subagents": 0,
+          "started_in_background": 0,
+          "max_depth": 0,
+          "requested.background": 0,
+          "requested.foreground": 0,
+          "requested.unset": 0,
+          "killed.parent": 0,
+          "killed.user": 0,
+          "killed.system": 0,
+          "refused.depth_limit": 0,
+          "refused.concurrency_limit": 0,
+          "refused.budget": 0
+        },
+        "byTypeKeys": [],
+        "activity": false
+      },
+      "grade": {
+        "rationale": "Ground truth is the mutable default argument bug (`seen={}`/`out=[]` evaluated once at def time, shared across calls). The reviewer's top blocker names exactly this: defaults evaluated once into `__defaults__`, mutated in place with no rebinding, demonstrated with a concrete two-call counterexample violating the \"each call is independent\" contract, and fixed via None sentinel plus a local `out`. The supporting major/minor findings are the same root cause and do not detract. Clear hit.",
+        "result": "hit",
+        "pass": true
+      },
+      "stdoutSha256": "10276d2687aa0939223fbc733077db77c53b648206e516418e14037228bb65a9"
+    },
+    {
+      "step": 8,
+      "role": "reviewer",
+      "fixtureId": "05-js-foreach-await",
+      "sessionId": "75a0dd5b-97be-4aae-9dc7-45c1319a000f",
+      "ok": true,
+      "faults": [],
+      "estimatedCostUsd": 0.2166325,
+      "elapsedMs": 78840,
+      "model": "claude-opus-5",
+      "mode": "default",
+      "usage": {
+        "inputTokens": 6,
+        "cacheCreationInputTokens": 6631,
+        "cacheReadInputTokens": 21685,
+        "outputTokens": 5578
+      },
+      "modelUsage": {
+        "claude-opus-5": {
+          "inputTokens": 6,
+          "cacheCreationInputTokens": 6631,
+          "cacheReadInputTokens": 21685,
+          "outputTokens": 5578,
+          "costUsd": 0.2166325,
+          "costBasis": "list",
+          "provider": "firstParty"
+        }
+      },
+      "observedTools": [
+        "Glob",
+        "Read"
+      ],
+      "subagent": {
+        "evidence": "counters",
+        "spawned": 0,
+        "counters": {
+          "spawned": 0,
+          "completed": 0,
+          "failed": 0,
+          "spawned_by_subagents": 0,
+          "started_in_background": 0,
+          "max_depth": 0,
+          "requested.background": 0,
+          "requested.foreground": 0,
+          "requested.unset": 0,
+          "killed.parent": 0,
+          "killed.user": 0,
+          "killed.system": 0,
+          "refused.depth_limit": 0,
+          "refused.concurrency_limit": 0,
+          "refused.budget": 0
+        },
+        "byTypeKeys": [],
+        "activity": false
+      },
+      "grade": null,
+      "stdoutSha256": "3335188206fbd4a9793934acf6badec505a439d0746a0249b9c20288fc096a50",
+      "finalReview": "## Analysis\n\n**What I examined.** Read `snippet.js:1-6` in full (identical to the packet excerpt, 6 lines + trailing newline). Ran `Glob **/*` — `snippet.js` is the only file present, so there is no repo precedent to grep for and no local convention that could justify the pattern; I judge it purely against ECMA-262 semantics and the stated intent. No Bash tool is exposed to me in this sandbox, so I could not execute the failing input; the findings below are anchored + named-mechanism (read, not run). The mechanism is deterministic language semantics rather than environment-dependent behavior, so I am not tagging them `[unverified]` — I can name the exact spec step that produces the wrong outcome.\n\n**The root cause.** `Array.prototype.forEach` invokes its callback and *discards the return value* (ECMA-262 23.1.3.15, step 6.c.ii: the result of the callback `Call` is unused; there is no `await`, and `forEach` is not promise-aware). The callback at `snippet.js:2` is `async`, so each invocation runs synchronously only up to its first `await`, then returns a **pending promise** that `forEach` throws away. Control returns to `saveAll`, which immediately hits `return \"done\"` at `snippet.js:5`. Both clauses of the stated intent are therefore violated, and they fail independently:\n\n**Criterion 1 — \"resolves only AFTER all saves complete.\"** Not met. Concrete input: `items = [a]`, `save = () => new Promise(r => setTimeout(r, 100))`. `await saveAll([a])` yields `\"done\"` after a single microtask turn (~t≈0), while `save` settles at t≈100ms. Callers that sequence work after `saveAll` (commit, respond 200, tear down a transaction, exit the process) run against un-persisted data. With N items this is N in-flight writes racing an already-resolved caller.\n\n**Criterion 2 — \"if any save rejects, `saveAll` must reject.\"** Not met, and it fails through a second, distinct path. When `save(item)` rejects, the rejection settles the *discarded* callback promise. Nothing is attached to it, so: (a) `saveAll` has already fulfilled with `\"done\"` — the caller sees success for a failed persist (wrong result, potential data loss reported as OK); and (b) the rejection surfaces as an unhandled rejection, which under Node ≥15's default `--unhandled-rejections=throw` terminates the process, and in browsers fires `unhandledrejection`. So the same line yields both a silently swallowed fault *and* an out-of-band crash — the error never reaches the one place the contract says it must.\n\n**Refutation attempt (survived).** I tried to kill finding 2 by assuming `save` is effectively synchronous — if `save` returns a non-thenable, all the real work completes before line 5 and criterion 1 becomes benign in practice. Criterion 2 still fails: a synchronous `throw` inside an `async` callback is captured into that callback's rejected promise, which `forEach` still discards, so `saveAll` still fulfills with `\"done\"`. The rejection defect holds for both sync-throwing and async-rejecting `save`. I also checked whether a caller could compensate — no caller is in scope, and the excerpt's contract is the stated intent, so there is no sanitizing boundary to rely on. Per instructions I treat `save` as correct and capable of rejecting.\n\n**On the fix and concurrency (not a defect).** The intent specifies no ordering, so `await Promise.all(items.map((item) => save(item)))` is the smallest safe fix: it preserves the current parallel dispatch, attaches a handler to every promise (eliminating the unhandled-rejection path), and rejects on the first failure as required. Note that `Promise.all` rejects while sibling saves are still in flight — that satisfies the written intent; only switch to `Promise.allSettled` + an aggregate error if the real requirement is \"attempt all, then report.\" If `save` must run sequentially (ordering or backpressure constraints not stated here), `for (const item of items) await save(item);` is equally correct. I am not flagging the parallel-vs-sequential choice, since the intent does not constrain it.\n\n**Not flagged.** The `\"done\"` return value is unused by the contract but harmless. No `items` validation — nothing in the intent implies it, and I won't pad. There are no lint/typecheck/build artifacts in this sandbox, so I make no claim about the file compiling or passing checks.\n\n## Findings index\n\n**Scope reviewed:** `snippet.js:1-6` (entire file, whole `saveAll` function) against the two-clause stated intent.\n\n- `blocker` · `snippet.js:2-5` · Violates intent clause 1: `forEach` discards the async callback's promise (ECMA-262 23.1.3.15 step 6.c.ii — callback result unused, no `await`), so `return \"done\"` at line 5 fulfills `saveAll` one microtask after dispatch, before any `save` settles; with `save = () => new Promise(r => setTimeout(r, 100))`, `await saveAll([a])` returns at t≈0 vs save at t≈100ms, so callers sequencing on `saveAll` act on un-persisted data · Confirmed by reading `snippet.js:1-6` in full and applying `forEach` + async-function semantics; not executed (no Bash in this sandbox) · Replace lines 2-4 with `await Promise.all(items.map((item) => save(item)));`.\n- `blocker` · `snippet.js:2-5` · Violates intent clause 2: a rejecting `save(item)` settles the promise `forEach` discarded, so `saveAll` still fulfills with `\"done\"` — a failed persist is reported as success (silently swallowed fault, potential data loss) — and the orphaned rejection becomes an unhandled rejection that terminates the process under Node ≥15's default `--unhandled-rejections=throw` · Confirmed by reading the enclosing function whole (`snippet.js:1-6`); survives refutation — a synchronous `throw` from `save` is captured into the same discarded callback promise, so the defect holds for sync-throwing and async-rejecting `save` alike · Same fix: `Promise.all` attaches a handler to every promise and propagates the first rejection out of `saveAll`.\n\n**Recommended correction (smallest safe fix):**\n```js\nasync function saveAll(items) {\n  await Promise.all(items.map((item) => save(item)));\n  return \"done\";\n}\n```\nUse `for (const item of items) await save(item);` instead only if sequential execution is actually required; use `Promise.allSettled` + an aggregate error only if the requirement is \"attempt every item, then report failures.\"\n\n**Applicability:** applicable.\n**Best-practice alignment:** `forEach` with an `async` callback is a well-known anti-pattern precisely because `forEach` is not promise-aware; the idiomatic constructs are `Promise.all(map(...))` for concurrent work or `for...of` + `await` for sequential. No repo conventions exist to consult — `Glob **/*` returned only `snippet.js`.\n**Efficiency / simplification opportunities:** none beyond the fix. `Promise.all` + `map` keeps the existing parallel dispatch, so the correction costs no throughput and is one line shorter than the current block.\n**Non-issues / out of scope:** parallel-vs-sequential execution (intent does not constrain ordering); the unused `\"done\"` return value; absence of `items` validation; behavior of the external `save` symbol, treated as correct per instructions."
+    },
+    {
+      "step": 9,
+      "role": "judge",
+      "fixtureId": "05-js-foreach-await",
+      "sessionId": "5b5a8c73-421d-4e14-86eb-51090e78daa7",
+      "ok": true,
+      "faults": [],
+      "estimatedCostUsd": 0.0622905,
+      "elapsedMs": 13258,
+      "model": "claude-opus-5",
+      "mode": "default",
+      "usage": {
+        "inputTokens": 4,
+        "cacheCreationInputTokens": 4025,
+        "cacheReadInputTokens": 4741,
+        "outputTokens": 786
+      },
+      "modelUsage": {
+        "claude-opus-5": {
+          "inputTokens": 4,
+          "cacheCreationInputTokens": 4025,
+          "cacheReadInputTokens": 4741,
+          "outputTokens": 786,
+          "costUsd": 0.0622905,
+          "costBasis": "list",
+          "provider": "firstParty"
+        }
+      },
+      "observedTools": [
+        "StructuredOutput"
+      ],
+      "subagent": {
+        "evidence": "counters",
+        "spawned": 0,
+        "counters": {
+          "spawned": 0,
+          "completed": 0,
+          "failed": 0,
+          "spawned_by_subagents": 0,
+          "started_in_background": 0,
+          "max_depth": 0,
+          "requested.background": 0,
+          "requested.foreground": 0,
+          "requested.unset": 0,
+          "killed.parent": 0,
+          "killed.user": 0,
+          "killed.system": 0,
+          "refused.depth_limit": 0,
+          "refused.concurrency_limit": 0,
+          "refused.budget": 0
+        },
+        "byTypeKeys": [],
+        "activity": false
+      },
+      "grade": {
+        "result": "hit",
+        "pass": true,
+        "rationale": "Ground truth: Array.prototype.forEach does not await its async callback, so saveAll resolves before any save settles and rejections are unhandled. The reviewer flagged exactly this as two blockers on snippet.js:2-5 — forEach discards the async callback's returned promise (citing the spec step where the Call result is unused), so `return \\\"done\\\"` fulfills saveAll one microtask after dispatch, before any save completes; and a rejecting save settles the discarded promise, so saveAll still fulfills with \\\"done\\\" instead of rejecting, with the orphaned rejection surfacing as an unhandled rejection. It prescribes the correct fixes: `await Promise.all(items.map(item => save(item)))` or `for (const item of items) await save(item)`. Precise, correctly located, mechanism-accurate hit; no confident spurious blockers."
+      },
+      "stdoutSha256": "46eefbb2af0bf6c684b07d26e205c1b4c91a254dc98673acf7f0ff6b70b97a08"
+    },
+    {
+      "step": 10,
+      "role": "reviewer",
+      "fixtureId": "06-clean-js-guard",
+      "sessionId": "62cf564a-1819-49fa-9c0b-4576d0450851",
+      "ok": true,
+      "faults": [],
+      "estimatedCostUsd": 0.13078749999999997,
+      "elapsedMs": 50708,
+      "model": "claude-opus-5",
+      "mode": "default",
+      "usage": {
+        "inputTokens": 4,
+        "cacheCreationInputTokens": 3865,
+        "cacheReadInputTokens": 13185,
+        "outputTokens": 3421
+      },
+      "modelUsage": {
+        "claude-opus-5": {
+          "inputTokens": 4,
+          "cacheCreationInputTokens": 3865,
+          "cacheReadInputTokens": 13185,
+          "outputTokens": 3421,
+          "costUsd": 0.13078749999999997,
+          "costBasis": "list",
+          "provider": "firstParty"
+        }
+      },
+      "observedTools": [
+        "Glob",
+        "Read"
+      ],
+      "subagent": {
+        "evidence": "counters",
+        "spawned": 0,
+        "counters": {
+          "spawned": 0,
+          "completed": 0,
+          "failed": 0,
+          "spawned_by_subagents": 0,
+          "started_in_background": 0,
+          "max_depth": 0,
+          "requested.background": 0,
+          "requested.foreground": 0,
+          "requested.unset": 0,
+          "killed.parent": 0,
+          "killed.user": 0,
+          "killed.system": 0,
+          "refused.depth_limit": 0,
+          "refused.concurrency_limit": 0,
+          "refused.budget": 0
+        },
+        "byTypeKeys": [],
+        "activity": false
+      },
+      "grade": null,
+      "stdoutSha256": "f64108411ecb0fe47c53000e6ad7a445fb02a49dd44a121192e6da18ad94eae3",
+      "finalReview": "## Analysis\n\n**Scope reviewed:** `snippet.js:1-8` — the whole of `handleList`. I confirmed via `Read` that the file on disk is byte-identical to the excerpt in the packet (8 lines + trailing newline), and via `Glob **/*` that `snippet.js` is the only file present — so there is no repo tree to grep for existing conventions, no lint/build/test output to cite, and `renderRow` / `res` are external symbols I am instructed to treat as correct. No lint or build summary line exists in the packet; I assert nothing about compilation.\n\n**Against the stated intent, trace by trace:**\n\n1. *Empty ⇒ empty 204 and STOP.* `snippet.js:2` uses `!items.length`. In real JS semantics `length === 0` is falsy, so `!0 === true` and the guard fires exactly on the empty case. `snippet.js:3` sends `204` with `.end()` — no body, which is the correct pairing (a 204 must not carry an entity body; using `.send()` here would be the sloppier form). `snippet.js:4` has the `return`, so control genuinely stops.\n\n2. *Otherwise render rows and send 200 exactly once.* Lines 6–7 are reachable only when `items.length` is truthy, i.e. only when the 204 branch did not run. There is exactly one `res.status(200).send(...)` call and no loop, no callback, and no second write path around it.\n\n**I actively tried to refute the obvious candidate defect** — this function's shape is the classic \"missing `return` after the early response\" template, where the empty case sends `204` and then falls through to also send `200`, producing an `ERR_HTTP_HEADERS_SENT` on every empty-list request. That defect is *not* present here: the `return` is on `snippet.js:4`. I looked for the other double-send shapes too (a `res` write inside `renderRow`'s call path is not observable from this excerpt and is excluded by the \"treat external symbols as correct\" instruction; there is no `else`-less fallthrough, no async gap between the guard and the send). I could not construct any input for which the function writes twice or writes the wrong status.\n\n**Leads I looked at and rejected as non-findings, with reasons:**\n\n- `items.map(renderRow)` at `snippet.js:6` passes three arguments (`element, index, array`) to `renderRow`. This is a genuine JS footgun when the callee has arity > 1 (the `[\"1\",\"2\",\"3\"].map(parseInt)` class of bug). I cannot name a concrete failing input because `renderRow`'s signature is outside the excerpt and I am directed to treat it as correct — so this stays here as `[unverified]` prose and is deliberately **not** filed as a finding. Reading `renderRow`'s declaration would confirm or kill it in one line; if it turns out to accept an options/context second parameter, it becomes real.\n- `items == null` throws a `TypeError` at `snippet.js:2`. The stated contract describes only \"empty\" vs \"non-empty\" and implies an array argument; there is no requirement of null-tolerance, and adding a guard would be inventing a contract the intent does not state. Non-issue.\n- Response `Content-Type` on the 200 path: `res.send(string)` yields `text/html; charset=utf-8` in Express. Given the name `renderRow`, that is plausibly intended, and the intent states nothing about content type. Out of scope.\n- Sparse arrays (e.g. `[,,]`) would have `map` skip holes while `join` still emits separators. I have no evidence such input occurs, and the intent does not address it. Speculative; not filed.\n\n**Efficiency / simplification:** nothing to change. Single pass `map` + one `join`, no intermediate concatenation in a loop, no redundant work on either path. The function is already the smallest correct form; proposing a rewrite here would be pure churn.\n\n**Best-practice alignment:** correct for the idiom — `.end()` rather than `.send()` for the bodyless 204, early return instead of an `else` arm, `const` for the derived value, single-responsibility and no hidden mutation of `items`. Nothing here conflicts with Node/Express conventions.\n\n**Non-issues / out of scope:** validation of `items`/`res` (caller's contract, not stated in the intent), `renderRow`'s own correctness and error behavior (external symbol), content-type negotiation, status-code policy beyond 204/200, and anything about surrounding routing or middleware — none of that is visible in the excerpt.\n\n## Findings index\n\n**Applicability:** applicable.\n\n**Scope reviewed:** `snippet.js:1-8` (`handleList`), verified byte-identical to the packet excerpt; sole file in the working directory.\n\n**Findings:** none. No `blocker`, `major`, or `minor` findings. The excerpt is **clean** against the stated intent: the empty case sends a bodyless `204` and returns at `snippet.js:3-4`, and the non-empty case sends `200` exactly once at `snippet.js:7`, with the two paths made mutually exclusive by the `return`.\n\n**Unfiled lead (analysis channel only):** `[unverified]` `snippet.js:6` — `items.map(renderRow)` forwards `index` and the source array as extra arguments; harmless if `renderRow` is unary, wrong if it takes a second parameter. Confirmed only by reading `renderRow`'s declaration, which is outside this excerpt and instructed to be treated as correct. Not admitted as a finding.\n\n**Recommended corrections:** none."
+    },
+    {
+      "step": 11,
+      "role": "judge",
+      "fixtureId": "06-clean-js-guard",
+      "sessionId": "29f6bf79-7efa-4552-a329-f66708c88c2c",
+      "ok": true,
+      "faults": [],
+      "estimatedCostUsd": 0.040627,
+      "elapsedMs": 8786,
+      "model": "claude-opus-5",
+      "mode": "default",
+      "usage": {
+        "inputTokens": 2,
+        "cacheCreationInputTokens": 2818,
+        "cacheReadInputTokens": 624,
+        "outputTokens": 485
+      },
+      "modelUsage": {
+        "claude-opus-5": {
+          "inputTokens": 2,
+          "cacheCreationInputTokens": 2818,
+          "cacheReadInputTokens": 624,
+          "outputTokens": 485,
+          "costUsd": 0.040627,
+          "costBasis": "list",
+          "provider": "firstParty"
+        }
+      },
+      "observedTools": [
+        "StructuredOutput"
+      ],
+      "subagent": {
+        "evidence": "counters",
+        "spawned": 0,
+        "counters": {
+          "spawned": 0,
+          "completed": 0,
+          "failed": 0,
+          "spawned_by_subagents": 0,
+          "started_in_background": 0,
+          "max_depth": 0,
+          "requested.background": 0,
+          "requested.foreground": 0,
+          "requested.unset": 0,
+          "killed.parent": 0,
+          "killed.user": 0,
+          "killed.system": 0,
+          "refused.depth_limit": 0,
+          "refused.concurrency_limit": 0,
+          "refused.budget": 0
+        },
+        "byTypeKeys": [],
+        "activity": false
+      },
+      "grade": {
+        "result": "clean-ok",
+        "pass": true,
+        "rationale": "Fixture is a correct control: the `return` after `res.status(204).end()` is present, so there is exactly one response per call. The reviewer filed zero findings and explicitly verified the guard/return at lines 2-4 and the single 200 send at line 7, even naming and rejecting the classic missing-return double-send defect. Its only speculative lead (`items.map(renderRow)` passing index/array) was hedged, marked `[unverified]`, and deliberately excluded from the findings index, so it is not a confident blocker or major. No false positive; precision preserved."
+      },
+      "stdoutSha256": "fda81f2bf108a3a869a3ad644b3aef67c782302a9610b6c43144475d6dd85b61"
+    },
+    {
+      "step": 12,
+      "role": "reviewer",
+      "fixtureId": "07-clean-py-bounds",
+      "sessionId": "3dfb6c44-ae32-4ec5-8072-09936c9155d6",
+      "ok": true,
+      "faults": [],
+      "estimatedCostUsd": 0.17148549999999999,
+      "elapsedMs": 70043,
+      "model": "claude-opus-5",
+      "mode": "default",
+      "usage": {
+        "inputTokens": 4,
+        "cacheCreationInputTokens": 3894,
+        "cacheReadInputTokens": 13201,
+        "outputTokens": 5037
+      },
+      "modelUsage": {
+        "claude-opus-5": {
+          "inputTokens": 4,
+          "cacheCreationInputTokens": 3894,
+          "cacheReadInputTokens": 13201,
+          "outputTokens": 5037,
+          "costUsd": 0.17148549999999999,
+          "costBasis": "list",
+          "provider": "firstParty"
+        }
+      },
+      "observedTools": [
+        "Glob",
+        "Read"
+      ],
+      "subagent": {
+        "evidence": "counters",
+        "spawned": 0,
+        "counters": {
+          "spawned": 0,
+          "completed": 0,
+          "failed": 0,
+          "spawned_by_subagents": 0,
+          "started_in_background": 0,
+          "max_depth": 0,
+          "requested.background": 0,
+          "requested.foreground": 0,
+          "requested.unset": 0,
+          "killed.parent": 0,
+          "killed.user": 0,
+          "killed.system": 0,
+          "refused.depth_limit": 0,
+          "refused.concurrency_limit": 0,
+          "refused.budget": 0
+        },
+        "byTypeKeys": [],
+        "activity": false
+      },
+      "grade": null,
+      "stdoutSha256": "1ad3633276edc3b4c46e379436663a1b8a48a71a087d59033858a7fc3fe03b98",
+      "finalReview": "## Analysis\n\n**What I examined.** `snippet.py:1-9` in full (the whole function is 9 lines; the enclosing scope *is* the diff). `Glob **/*` returned only `snippet.py` — no repo, no sibling modules, no linter/formatter config (`.editorconfig`, `ruff.toml`, `setup.cfg`), and no existing call sites. So there is no in-repo convention to compare naming, typing, or docstring style against; I state that rather than inventing one. No Bash in this environment, so every claim below is a **read + hand-trace of Python semantics**, not an executed run — I grade my own evidence accordingly and have not asserted any test/lint result I did not see.\n\n**Guard.** `snippet.py:2-3` returns `None` for `len(a) < 2`, covering `n == 0` and `n == 1` exactly as the intent states. This also establishes the precondition the rest of the body relies on.\n\n**Seed.** `snippet.py:4` seeds `best = a[0] + a[1]`. Two things matter here, and both are right:\n- It is safe only because of the `n >= 2` guard above — which holds.\n- It seeds with a **real candidate pair**, not `0` and not `-inf`. This is the specific point where this shape of function most often breaks: a `best = 0` seed returns `0` for all-negative input, which is not any adjacent pair. Traced `[-1, -2, -3]`: `best = -3`; `i=0 → s=-3` (not `>`); `i=1 → s=-5` (not `>`); returns `-3`, the true maximum. Traced `[-5, -3]`: returns `-8`. Correct.\n\n**Loop bound — the strongest candidate defect, and its refutation.** The most likely failure for this function is an off-by-one that silently drops the final pair (`range(len(a) - 2)`) or overruns (`range(len(a))` → `IndexError` on `a[i+1]`). I tried to confirm one and could not:\n- `range(len(a) - 1)` yields `i ∈ [0, len(a) - 2]`.\n- Maximum index read is `a[i + 1]` at `i = len(a) - 2`, i.e. `a[len(a) - 1]` — the last valid index. No `IndexError` for any `n >= 2`.\n- The last iteration reads `a[n-2] + a[n-1]` — the final adjacent pair **is** covered.\n- Pair coverage is `{(i, i+1) : 0 <= i <= n-2}`, which is exactly the `n-1` adjacent pairs, no more and no fewer.\n\nTraced `[1, 2, 3]`: `best = 3`; `i=0 → 3`; `i=1 → 5 > 3 → best = 5`; returns `5` (pairs are `3` and `5`). Traced `[1, -10, 1, 1]`: seed `-9`; `i=0 → -9`; `i=1 → -9`; `i=2 → 2 → best = 2`; returns `2`, and that value comes from the *last* pair — which is precisely the case a dropped-final-pair bug would get wrong. The finding died under refutation, so I am not filing it.\n\nFor `n >= 2`, `range(len(a) - 1)` is always non-empty (at minimum `range(1)`), so `best` is never returned unexamined in a way that would differ from the seed — and even if the loop body never ran, the seed is already a valid pair. No path returns a non-pair value.\n\n**Python-specific semantics I checked rather than assumed.**\n- `>` (strict) as the update comparison is correct for a maximum; ties simply retain the earlier pair, and since only the *sum* is returned, tie-breaking is unobservable.\n- Integers are arbitrary-precision, so no overflow on the `+` at `snippet.py:6`. Float `inf` propagates as normal.\n- `NaN`: with `[nan, 1, 2, 3]`, `best = nan` and every `s > nan` is `False`, so the result is `nan`. This is identical to built-in `max([nan, 3]) == nan` — it is Python's own ordering semantics under a non-total order, not a defect introduced here, and the intent says nothing about NaN.\n- The function does not mutate `a` and holds no state across calls; it is pure. Nothing to leak, no resource lifetime, no concurrency surface.\n\n**Omissions I checked for against the implied contract.** The name/signature imply \"list of numbers, `n < 2` → `None`\" and nothing more. `a = None` or a generator raises `TypeError` at `len(a)`, and non-numeric or mixed elements raise at `+` — but the stated intent scopes input to a list, and there is no validation requirement in the excerpt or any callers visible to me to contradict. Flagging input validation here would be speculation about a contract that was not stated, so I am not filing it. No missing docstring/type-hint finding either: with no other file in the tree I cannot show a convention exists to violate, and inventing one would be exactly the cosmetic churn I am supposed to refuse.\n\n**Bottom line: I found no defect.** The three plausible failure modes for this function shape — unguarded index, sentinel seed breaking all-negative input, off-by-one on the loop bound — are each concretely refuted above with a traced input. I am not padding the index with the redundant-first-iteration observation; it is a correctness no-op and belongs under simplification, as optional.\n\n---\n\n## Findings index\n\n**Scope reviewed:** `snippet.py:1-9`, `max_adjacent_sum` (entire function; sole file in the working directory, confirmed via `Glob **/*`).\n\n**Findings:** none. No blocker, major, or minor issue admitted. The excerpt is clean against the stated intent.\n\n**Recommended corrections:** none required.\n\n**Applicability:** applicable — reviewed; zero findings.\n\n**Best-practice alignment:** Idiomatic, readable Python. `O(n)` time, `O(1)` space — optimal for this problem. Guard-clause-first structure, pure function, no mutation of the argument, correct strict-`>` maximum tracking, and a seed chosen from real data rather than a sentinel (the choice that makes all-negative input correct). No repo conventions were available to compare against (no config files present), so I make no naming/typing/docstring claim.\n\n**Efficiency / simplification opportunities:** Non-blocking and genuinely optional. The loop starts at `i = 0`, recomputing the same pair already used to seed `best` at `snippet.py:4` — one redundant addition and comparison, constant cost, no correctness effect. Starting at `range(1, len(a) - 1)` would remove it, and `max(a[i] + a[i+1] for i in range(len(a) - 1))` after the guard would be more compact. I recommend **neither**: the current form is correct and clear, and the explicit seed is what makes the negative-input case obviously right to a reader. Changing it would be churn without benefit.\n\n**Non-issues / out of scope:** `TypeError` on `None`/generator/non-numeric input (outside the stated list-of-numbers contract; no visible caller implies a validation duty). `NaN` propagation (matches built-in `max` semantics). Tie-breaking between equal-sum pairs (unobservable — only the sum is returned). Absence of docstring/type hints (no repo convention available to substantiate a violation). Requirement fidelity beyond the stated intent belongs to `intent-reviewer`; the absence of tests for the `n < 2`, all-negative, and last-pair cases belongs to `test-reviewer` — I note those three as the cases worth covering, but do not score them here."
+    },
+    {
+      "step": 13,
+      "role": "judge",
+      "fixtureId": "07-clean-py-bounds",
+      "sessionId": "a7f5eb23-bbff-4939-aabd-4705a0fa29a9",
+      "ok": true,
+      "faults": [],
+      "estimatedCostUsd": 0.044987,
+      "elapsedMs": 7541,
+      "model": "claude-opus-5",
+      "mode": "default",
+      "usage": {
+        "inputTokens": 2,
+        "cacheCreationInputTokens": 3554,
+        "cacheReadInputTokens": 624,
+        "outputTokens": 365
+      },
+      "modelUsage": {
+        "claude-opus-5": {
+          "inputTokens": 2,
+          "cacheCreationInputTokens": 3554,
+          "cacheReadInputTokens": 624,
+          "outputTokens": 365,
+          "costUsd": 0.044987,
+          "costBasis": "list",
+          "provider": "firstParty"
+        }
+      },
+      "observedTools": [
+        "StructuredOutput"
+      ],
+      "subagent": {
+        "evidence": "counters",
+        "spawned": 0,
+        "counters": {
+          "spawned": 0,
+          "completed": 0,
+          "failed": 0,
+          "spawned_by_subagents": 0,
+          "started_in_background": 0,
+          "max_depth": 0,
+          "requested.background": 0,
+          "requested.foreground": 0,
+          "requested.unset": 0,
+          "killed.parent": 0,
+          "killed.user": 0,
+          "killed.system": 0,
+          "refused.depth_limit": 0,
+          "refused.concurrency_limit": 0,
+          "refused.budget": 0
+        },
+        "byTypeKeys": [],
+        "activity": false
+      },
+      "grade": {
+        "rationale": "Fixture is a correct control (`range(len(a) - 1)` keeps `a[i+1]` in bounds; `len(a) < 2` returns None). The reviewer explicitly traced the loop bound, the seed value, and the negative/last-pair cases, concluded \"Findings: none — no blocker, major, or minor issue admitted,\" and declined to file speculative input-validation or docstring findings. The only suggestions offered (skipping the redundant first iteration, a generator-expression rewrite) are explicitly labeled optional and explicitly not recommended, which is well below the false-positive threshold. No confident blocker or major was raised, so precision is preserved.",
+        "result": "clean-ok",
+        "pass": true
+      },
+      "stdoutSha256": "496e19e02b22b75e050939078e65be0878acae2d915282215f34d739da643679"
+    }
+  ]
+}

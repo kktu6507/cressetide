@@ -1,0 +1,1310 @@
+# Shared Decision & Provenance Model（共同決策與溯源模型）
+
+> Current coupled-set addendum, 2026-09-06: **shared approved v1.15 + intent-scan approved v1.10 + test-provenance approved v1.21**. TP v1.21 adds the approved [durable review-loop controller amendment](2026-09-06-test-provenance-loop-amendment.md) to the v1.20 set. This approves the specified controller and caller/ledger contracts; implementation requires separate review and acceptance. Earlier current-set/status notes are historical. [Independent approval](../reviews/2026-09-06-loop-controller-spec-codex-review.md).
+
+> Current coupled-set addendum, 2026-09-06: **shared approved v1.15 + intent-scan approved v1.10 + test-provenance approved v1.20**. TP v1.20 adds only the approved [pure prospective-authority prerequisite](2026-09-06-test-provenance-prospective-authority-amendment.md) to the accepted v1.19 specification set. It releases no controller, epoch unlock, HEAD prefix or caller/ledger-loop change and accepts no implementation. Earlier current-set notes are historical. [Independent approval](../reviews/2026-09-06-prospective-authority-spec-codex-review.md).
+
+> Current coupled-set addendum, 2026-09-06: **shared approved v1.15 + intent-scan approved v1.10 + test-provenance approved v1.19**. TP v1.19 comprises the v1.17 base, approved E1 telemetry/ledger amendment and the separately approved [read-only file-preview amendment](2026-09-06-test-provenance-file-preview-amendment.md). This narrow approval releases no other D loop requirement and accepts no implementation. Earlier coupled-set/status notes are historical; upstream normative text remains unchanged. [Independent approval](../reviews/2026-09-06-file-preview-spec-codex-review.md).
+
+> Current coupled-set addendum, 2026-09-06: **shared approved v1.15 + intent-scan approved v1.10 + test-provenance approved v1.18**. TP v1.18 is the v1.17 base plus the separately approved [E1 telemetry/ledger amendment](2026-09-06-test-provenance-telemetry-ledger-amendment.md), limited to its stated deltas. Earlier coupled-set/status references below preserve their historical context. Upstream normative text is unchanged; implementation acceptance and D/whole-flow readiness do not follow from specification approval. [Independent approval](../reviews/2026-09-06-telemetry-ledger-spec-codex-review.md).
+
+- 狀態：**approved v1.15**（2026-08-21 由使用者明確核准；前置 draft 內容已由獨立 Codex 審查並 ACCEPT；**本次未執行 agent-duel panel，因此不得稱為 panel 放行**）。**與 test-provenance v1.15 同步 promotion —— 兩者是同一次核准，不得分開採用。** **前一 approved baseline 為 shared approved v1.14（下游對位為 test-provenance approved v1.14）。** **current approved coupled set 現為 shared approved v1.15 ＋ intent-scan approved v1.10 ＋ test-provenance approved v1.17**；三者為同一生效集合，不得分開採用。**下游版號更新註記（status-only）**：本句原記 test-provenance approved v1.15，該下游已於 **2026-08-22 promote 為 approved v1.16**，故此處的 coupled-set reference 隨之更新；**2026-09-05 該下游再 promote 為 approved v1.17**（Codex 依使用者委任之獨立複審與核准，**非** panel、**非**使用者當日另一次直接核准），本 reference 隨之再更新。**兩次都只更新這一個 reference** —— **shared 仍為 approved v1.15**，版本未動、未重新 promotion、契約內容一字未改，亦不代表任何 implementation 已完成或被接受。**本次 promotion 只使契約正式生效，不代表任何 implementation 已完成或被接受**：`lifecycleAffectedClauses` 的 v1.15 derivation、下游的 populated inventory producer 與 `GovernanceSeedPreimage` 皆**未實作、未接受**，governance reverse closure、artifact emission 與 Step 5／6、ledger、arbiter wiring **仍未完成**，既有 writer 的 exact expiry grammar remediation **尚未完成**；**不得**接受 populated inventory、**不得**解除 `unsupported-populated-inventory`、**AC118／AC136／AC137／AC138 一律不得宣稱已滿足**、**Phase 2 不得宣稱 READY**。 **v1.15 delta**：一處，為 §9 `lifecycleAffectedClauses` 的**四個 seed 集合從未有 derivation**。本文件 approved v1.14 只在 §9 寫出四個集合名與各一句括號註解（`semanticallyChangedClauses`／`transitionedClauses`／`driftedClauses`／`expiredClauses`），**沒有**任何機械推導；下游 test-provenance 的 `governance-affected` 反向閉包卻**完全**以此集合為 seed。兩個都說得通的 producer 因此會對同一份 store 算出不同的 membership，而 `Source.expiry` 在 approved v1.14 中只有「`expiry: 期限`」一行，**沒有**格式、時區或比較語義 —— 同一份 exception-grant 可以被判成已過期，也可以被判成未過期。本版在 §9 新增 **v1.15 lifecycle seed derivation**：定義 `B`（`baseTreeOid` tree 內的 historical immutable store）、`C`（同一次 invocation fresh-load 的 current store G1）、`H`（通過 S1／S2 的 captured head view）與 `T0`（G1 parse／validation 完成後、第一個 time-dependent 判定之前，自 host UTC wall clock **恰取樣一次**）；B／C 的 version matrix 與 **cross-snapshot immutability**（typed-ID set difference ＋ shared-ID exact-equality assertion，同 ID payload 不同即 integrity failure）；四個集合各自的 exact derivation；以及 union 的 canonical ClauseRef 輸出。同輪在 §2 `Source` 補上 `expiry` 的 **exact authority**（ASCII `YYYY-MM-DD`、唯一 instant `00:00:00.000Z`、`expiryInstant <= T0` 即已過期），並在 §9 新增精簡的 **v1.15 acceptance matrix**。**§2 同輪補上該收緊的 direct cutover boundary**（由獨立 draft review 指出缺漏，已逐項查證）：**不升 `provenanceVersion`、不新增 discriminator、不新增 persisted 欄位**；rollout evidence **如實記錄** writer 不在 `main`、不在任何 release tag，**但存在於 remote feature branch**，故只主張「沒有**已觀察到**的 non-canonical subject」，**不**主張其不存在、**不**宣稱全球沒有遠端或持久資料；日後出現不合 grammar 的 persisted 值**一律 no-write fail-closed**、原始 bytes 位元不變，**不得** silently normalize，`Source` immutable 故不得原地改寫；並明寫**目前沒有任何已授權 transaction 能修復該欄位**（既有 `migrate-store-v1-to-v2` 的 approved 契約只吃 v1 pre-state、payload 恰為 `{ }`、exact allowed changes 只有版本與 DP `reopenCauseRef`，**不得**被挪用），要再次接受該資料必須**另立並核准** versioned migration／retirement／rebuild policy，本版 **不**定義它 —— direct cutover 給的是 fail-closed compatibility boundary，**不是**自動修復能力。**已自行核對的前提**：同 ID 的 Clause payload 變動違反 **INV-3**（Source、Clause、Transition 皆 append-only 且 immutable），因此它是 integrity failure，**不是**合法的 lifecycle seed；`current mutable` v1 store 依既有三分表**只能** migration，而 `historical immutable base-tree` store 為 1 或 2 皆可 read-only —— 本版**不放寬**這兩條，只是把它們接到 `B`／`C` 上。**本版不新增任何 persisted 欄位**：`ChangedTestInventoryV2` 仍是七欄 envelope、`inventoryDigest` 公式不變、canonical empty store literal 與既有三分表**一字未動**（新文字只**引用**它們），`T0` **不** persisted。**本版只閉合 spec authority**：**不代表**任何 implementation 已完成或被接受；**不得**接受 populated inventory；**不得**解除 `unsupported-populated-inventory`；**Phase 2 不得宣稱 READY**。 **以下為 approved v1.14 及更早的既有狀態敘述，原文保留：** **approved v1.14**（2026-08-13 由使用者明確核准；前置 draft 內容已由獨立 Codex 審查並 ACCEPT；**本次未執行 agent-duel panel，因此不稱為 panel 放行**。前一 approved baseline 為 **approved v1.13**）。**current approved coupled set ＝ shared approved v1.14 ＋ intent-scan approved v1.10（內容不變）＋ test-provenance approved v1.10**；三者是同一生效集合，不得分開採用。 **本次核准只涵蓋 canonical-reader 的 spec authority**，不得據此宣稱任何 implementation 自動完成或被接受：**不代表 canonical v2 inventory parser 已實作**，**不得接受 populated inventory**，**不得解除 `unsupported-populated-inventory`**，亦**不代表** producer、base／head matcher、governance reverse closure、S3 consumer freshness 重算、artifact wiring 已完成或 **Phase 2 已 READY**。 **v1.14 delta**：只有兩處，皆為 `ChangedTestInventoryV2` **canonical reader** 的 authority 缺口 —— 兩個都說得通的 reader 會對同一份文件得出**不同的 accept／reject 結果**，而既有 approved 文字無法唯一決定。(1) **carrier lexical grammar**：`baseTreeOid` 與四個 digest carrier 先前只寫「Git tree oid」「digest 字串」，整套 approved spec 沒有任何一行定義其長度、字母表或大小寫；本版把兩者的 canonical spelling 定案，並把「四個 digest 欄位是不透明字串」收斂為「**preimage** 對本文不透明，**serialization** 的不透明性撤回」。(2) **raw JSON duplicate-member contract**：先前三份 spec 對 duplicate member name 完全沉默，於是「`JSON.parse` last-write-wins 之後再驗」與「在 source 層拒絕」兩種 reader 都成立；本版明定 duplicate 一律 fail-closed、比較對象為 escape 解碼後的 StringValue、且檢查必須發生在**仍保有全部 member occurrence** 的階段。本版**不**定義 downstream 的 entry 欄位 —— `entries[]` 的 exact schema 與 entry 內的 source-key ordering 由 **test-provenance approved v1.10** 擁有。 **本版只閉合 reader authority（規格），不是 reader 實作**：不代表 canonical v2 inventory parser 已實作，不接受 populated inventory，不解除 `unsupported-populated-inventory`，不代表 producer、matcher、governance reverse closure、S3 或 artifact wiring 已完成；**AC118／AC136／AC137／AC138 一律不得宣稱已滿足**，**Phase 2 不得宣稱 READY**。 **以下為 approved v1.13 及更早的既有狀態敘述，原文保留：** **approved v1.13**（2026-08-09 panel 放行；前一放行版本 approved v1.12，2026-08-08 panel 放行）。實作以本文為準；變更需重新過 panel。本版與 **intent-scan v1.9**、**test-provenance v1.6** 為 **coupled set**，2026-08-09 panel 同輪一併放行；三者不得分開採用。 **本次放行只核准規格本身**，不代表 implementation、populated inventory、migration、push 或 Phase 2 已就緒；AC138 的限制持續有效 —— AC128 的 legacy boundary 尚未實作並通過前，不得宣稱 Phase 1／2A 完全不受影響。 v1.13 一處，來自下游 test-provenance draft v1.6 的 direct inspect：`provenance-batch` 只持久化 opaque 的 `inventoryDigest`，**證明不了該 digest 的 preimage 用的是哪一個 store pre-state** —— caller 可以讓 payload 的 expected 值追上實際 pre-state（D1），卻仍送出以 D0 為 preimage 的舊 digest，writer 兩邊都驗得過，事後也查不出來。因此 `batchSnapshot` 新增完整 typed **`inventorySnapshot: ChangedTestInventoryV2`**（保存 exact v2 envelope，而非只有 digest），`record.inventoryDigest` 改為由它**派生**、不得由 caller 獨立提供，並要求 writer 在同一筆交易內重算並比對；**明確拒絕**把 pre-state digest 複製到 record top-level 的替代做法（那會製造第三個 authority 且仍無法證明 preimage）。上游本身不新增任何交易命令，`inventorySnapshot` 的**最小 authoritative envelope（exact key set ＋ `inventoryDigest` 唯一公式）由本文自持**，下游只補各 digest 的計算語義 —— 前一稿把型別整個委派給下游，顛倒了權威方向，已修正。同輪另新增 **`batchRecordVersion` discriminator** 與 legacy boundary（legacy 記錄的可讀範圍、不得冒充 Phase 2 proof、v2 缺 snapshot／未知版本／malformed 一律 fail-closed、chain 版本單調不減、reader-before-writer 的 rollout 順序與不支援回退）。v1.13 新增契約在 draft 期間不得實作；該限制已隨 v1.13 核准解除。前一放行版本說明：approved v1.12（2026-08-08 panel 放行；前一放行版本 approved v1.11）。實作以本文為準；變更需重新過 panel。v1.12 一處：§2 DP 新增 **`reopenCauseRef`**（TransitionRef | null）作為 reopen 成因的 **persisted causal witness**，並在 §9 新增 `Reopen cause coherence` 一列；同時於 typed refs 區正式定義可重用的 **TransitionRef** exact shape，並寫明 **legacy absence 的 upgrade boundary**（採 normalize-absent-to-null，附「不存在 durable pre-v1.12 source-2 state」的證據與適用範圍）。下游 IS v1.7 曾以 `status=open ∧ prior 有 effective Transition ∧ successor != null` 從 snapshot **反推**來源 2 的成因；該推斷不成立，且擋掉兩條合法收斂（明示 `reopen-dp` 後 prior 日後才被 supersede；兩個 DP 對同一 prior deferred reopen）。成因是歷史事實，只能讀持久化 witness，不得由 current graph 形狀反推。v1.11 內容不變：實作以本文為準；變更需重新過 panel。v1.11 關閉兩個**型別缺口** —— 下游已被要求驗證的東西，上游 schema 卻無法表示（下游不得自行補欄位，故一律回上游）：(1) `Transition.compatibility` 原限定 `僅 subject=REQ ∧ action=supersede`，但 matrix 早已允許 `ASSUM|DEC supersede → REQ` 走 kind=user，該路徑的 impact／disposition **無處存放**；適用條件改綁 **successor**（`action=supersede ∧ successor 為 REQ`），相容性義務來自「一條 REQ 開始生效」而非「被取代的是不是 REQ」。(2) plan-gate payload 無 `successor`，故一筆核准「取代 ASSUM-x」的 record 可授權換成**任何** REQ；新增 typed `successor: ClauseRef | null` 並定義必填條件，§7 proposal 的 target 放寬為 clause ref、新增具名 successor，witness binding 與 §9 機械比對由三欄擴為**四欄**。v1.10 一處：§9 檢查分層新增 **`Carrier coherence`** 一列 —— v1.9 把 carrier 宣告為 loader／final-snapshot invariant，但 §9 的 `DP 完整性` 只驗 terminal／status／successor，該 invariant 從未進入正式 gate contract，繞過交易入口構造的不一致狀態不會被擋。v1.9 修 v1.8 草案自身的三個缺口：carrier 與 `status` 的關係改寫為精確蘊含（「同生同滅」是錯的 —— row 1 direct citation 允許 `resolvedBy` 非空而 carrier 為 null）；`unrelated re-adopt` 收窄為 **binding-policy 驅動**，direct citation 改為清除並保持 null；`packetBasisRef` 補上完整 **total-order tuple**（原本無 `digest` tie-break，同 `sourceId` 不同 `digest` 的兩筆無法定序）。v1.8 變更四處，皆為下游實作暴露的 carrier／契約缺口：§2 `ASSUM` 新增三值 `routingOrigin`（authored、immutable，附 loader-level 全生命週期 invariant）；§2 `DP` 新增 `resolutionRulingRef` **current application carrier**（取代對歷史 binding-policy ruling 的全稱量化 —— 那條規則會永久凍結 `resolvedBy` 並牴觸「歷史 ruling 只驗 snapshot 自洽」）；§2 補上 `ObservationalRef` 與 Governance Packet `basisRefs` 的 **exact discriminated union**；§4 `materialReasons` 補 closed member set 並宣告本文為定序的**唯一** authoritative 定義。草案審閱期間，本版新增契約不得由下游實作；該限制已隨 v1.11 核准解除。
+- 前一版狀態：**approved v1.7**（2026-07-26 panel 放行；前一放行版本 approved v1.6）。v1.7 變更：§9 gate scope 改為具名 closed set（含 body／oracle 變更）＋ `lifecycleAffectedClauses` 反向閉包；綁定拆 **pre-change／post-change 兩相**；§9 新增 **base provenance witness**（inline、storePath 固定、immutable）；§2 新增 **TaskState**（tracked canonical task membership 與 committed head）與 `provenance-batch` RecordRef kind（canonical `batchDigest` total order、derived `relatedRefs`、chain 連結約束、committed head 三分）；review-ruling／plan-gate 新增 `resolutionGroupDigest` 作為 witness coverage 的 carrier。本文件為 intent-scan 與 test-provenance 兩份 implementation spec 的共同上游；下游 spec 不得重新定義本文概念，可附加實作欄位但不得改變本文欄位語義。
+- 日期：2026-07-25
+- 範圍：只定義模型 —— 物件、權威、分流、狀態、不變量。scan 觸發與流程、檢查器實作、reviewer prompt 調整、hook 接線屬於下游 spec。
+- 背景：源自 demo1 webhook-dispatcher A/B 實驗的失敗分析 —— 23 個未申報假設以測試形式被釘死（oracle 不相容 23:1）、規格沉默區被單方面填補後用綠色測試鎖死。本模型同時治理「猜錯」（intent 層）與「猜了沒說」（provenance 層）。
+
+## 1. 權威層級
+
+四種 test tag，對應「誰擁有這個決定」：
+
+| tag | 擁有者 | 語義 | 紅燈合法處置 |
+|---|---|---|---|
+| `REQ-n` | 產品／契約 | binding 裁決結果 | 修實作，或授權契約變更（§7 supersede） |
+| `DEC-n` | 工程治理 | discipline reviewer／arbiter 審查後的刻意技術裁決 | 恢復行為，或由同／更高治理權威建立 supersede Transition |
+| `ASSUM-n` | 無權威背書 | 暫定讀法：revision-allowed、acknowledgement-required | 恢復行為，或建立 revise／retire Transition（附 ackRef） |
+| `EXPL` | — | 探索性，無 clause | 更新或刪除自由 |
+
+`@src REQ-n | DEC-n | ASSUM-n | EXPL` —— tag 表規範權威，不表 CI 行為；必要 suite 內一律綠（exit code 與權威性分離）。EXPL 要 non-gating 就置於必要 suite 之外。
+
+### Discipline 與治理順序
+
+```
+discipline ∈ { security | architecture | code | test | operability | ui-ux | intent }
+
+ReviewerPrincipal ＝ { kind: discipline, discipline: 上列 enum }
+                  | { kind: arbiter }
+```
+
+`DEC.approvedBy`、`ASSUM.governedBy`、Transition 權威、row 7 與 rerun routing **全部共用 `ReviewerPrincipal`** —— arbiter-owned outcome 因此可直接寫進 schema。shared model 只使用 discipline／principal，不綁 agent 名稱；下游 spec 負責映射到具體 reviewer。`intent` discipline 擁有 requirement-fidelity 與產品語義判斷：layer 分類 fallback、ASSUM(intent) 治理、row 2／4／6 的 Ask 擬題。
+
+治理順序（供 Transition 權威判定）：同 discipline 互為同級；**arbiter** 為跨 discipline 的最終裁決者，視為較高。
+
+### 來源權威（衝突裁決規則 —— 無自動優先序）
+
+三種 binding authority 是分類，不構成自動覆蓋鏈：
+
+- **hard-constraint**（法規、組織安全政策、外部契約）：不可被 requirement supersede；普通 user 亦**不可 retire**（見 §2 Transition 有效性表 —— 僅 constraint owner 的撤回憑據可使其失效）。與 requirement 衝突且無涵蓋本 DP 的有效例外 → Ask「改需求或取得有效例外」，不給選邊。
+  **有效例外**：固化為 `exception-grant` Source（§2，必含 targetConstraintRef、grantAuthorityRef、scope、expiry；grantAuthorityRef **必須匹配該 constraint 的 `ownerRef`**，§9 機械驗證 —— user／discipline／arbiter 不可冒充 constraint owner），再建立 REQ 引用之。**存在 applicable（§2：mechanicallyApplicable ∧ scopeCovers）的 exception-backed REQ 時 → 本 DP 於例外 scope 內走 row 1 resolved，不重複 Ask；scope 外仍由原 hard-constraint 裁決。**例外只建立 scoped exception，永不退役原 constraint。
+- **approved-requirement vs compatibility**：無自動優先。無 plan-gate 核准的 supersede proposal → Ask（row 4）；持完整 proposal（§7）→ row 3。
+- **同層衝突** → Ask。
+- **observational**（code、tests、callers、資料現況）：只是證據，單向升高風險，永不裁決 intent。升格 binding 的唯一路徑：plan gate 核准的 compatibility clause，一次一條。
+- 字面規則（規格中每個修飾詞都承重）僅適用於單一 binding source 內部、無內部矛盾時；字面裁不動＝未裁決。
+
+## 2. 物件
+
+Provenance 物件（Source、Clause、Transition）**完全 immutable**；DecisionPoint 是流程工作紀錄，可變。
+
+### Source（固化來源快照，immutable）
+
+```
+sourceId:     S-n
+contentKind:  requirement | policy | external-contract | exception-grant
+driftMode:    repo-file | snapshot-only
+locator:      repo 路徑#anchor（driftMode=repo-file）或 snapshot 位置（查找輔助，允許 stale，不回寫）
+excerpt:      被引用的 anchored 內文（存於模型內，即 immutable snapshot payload）
+digest:       sha256(canonical(excerpt))，§9
+--- contentKind=exception-grant 必含 ---
+targetConstraintRef:  REQ-n（authority=hard-constraint，被例外的對象）
+grantAuthorityRef:    {kind: source-authority, ref} —— 必須與 targetConstraintRef 所指 REQ 的
+                      ownerRef 相等（§9 機械比對；user／discipline／arbiter 不可冒充）
+scope:                適用範圍
+expiry:               期限
+```
+
+語義與 drift 檢查解耦：repo 內的 policy 檔 → `contentKind=policy, driftMode=repo-file`（執行 Check B）；對話需求 → `contentKind=requirement, driftMode=snapshot-only`。需求一律先固化；新 clause 不存在「來源不可取得」。
+
+**`Source.expiry` 的 exact authority（v1.15；approved）** —— 上表只寫「`expiry: 期限`」，沒有格式、時區與比較語義。同一份 `exception-grant` 因此可以被判成已過期，也可以被判成未過期，而下游的 `expiredClauses` 完全以它為準。本版收斂為唯一規則：
+
+```
+grammar      : exact ASCII "YYYY-MM-DD" —— 四位年、兩位月、兩位日，皆為 ASCII 數字
+年份範圍      : YYYY 的 exact range 為 0001–9999；**0000 非法**
+曆法          : **proleptic Gregorian calendar** —— 對 1582 年之前的日期
+               **同樣**套用 Gregorian 規則，**不**切換成 Julian
+閏年唯一公式  : year % 400 == 0 || (year % 4 == 0 && year % 100 != 0)
+               —— 各月天數依此公式判定；**不得**另立第二套判準
+有效性        : 必須是依上述曆法與公式**實際存在**的日期
+               非法例：2026-02-30、2026-13-01、2026-2-01、0000-01-01、1900-02-29
+               合法例：2000-02-29、2024-02-29
+唯一 instant  : 該日的 00:00:00.000Z（UTC）
+               —— **不是**當日結束，**不是**本地時區，**不做**任何 offset 推測
+過期判定      : expiryInstant <= T0  ⇒  **已過期**
+               —— 恰好相等**即已過期**，不是尚未過期
+fail-closed  : 帶時分秒、帶 timezone offset、帶前後空白、其他格式、
+               年份為 0000，或日期依上述曆法不存在者，一律 fail-closed
+               —— **不得**寬鬆解析、**不得**補零、**不得**推測時區
+```
+
+**`Source.expiry` 收緊的 direct cutover boundary（v1.15；approved）** —— 上一段把 **persisted 且 immutable** 的 `Source.expiry` 從「任何 `Date.parse` 解得出來的東西」收緊為 exact ASCII `YYYY-MM-DD`。這是 persisted shape 的收緊，因此**必須**寫出 compatibility boundary，不得默認。本版採 **direct cutover**：**不升 `provenanceVersion`**（current 仍為 2）、**不新增 discriminator**、**不新增任何 persisted 欄位**。依據與適用範圍如下。
+
+```
+已確認   (1) 能寫入 Source.expiry 的唯一程式路徑（provenance store 的 canonical writer）
+             **不在 main**，也**不在任何 release tag**（現有 tag：v0.1.0–v0.6.0）;
+         (2) **但它存在於 remote feature branch** —— 該 writer 已推上
+             origin 的 feature branch，任何取得該 branch 的人都能執行它。
+             因此**不得**宣稱「沒有任何 remote 取得管道」。
+             本條與 §9 source-2 rollout evidence 的措辭**不同**
+             （那一條的 commit 不在任何 remote branch／tag 上），
+             **兩者不得互相套用或互相引用為同一結論**;
+         (3) repo canonical path 上**不存在** tracked .ctide/provenance.json，
+             亦無任何 tracked snapshot。.ctide/ 全目錄在 .gitignore 內，
+             因此**任何 local durable store 依定義都不在可觀察範圍內**;
+         (4) 現況下**已觀察到**的 expiry 值全部合乎新 grammar。
+結論     **沒有已觀察到的 non-canonical expiry subject。**
+         這是「**未觀察到**」，**不是**「不存在」——
+         未推送的 local store、以及任何 feature-branch clone 上的 local store,
+         都在觀察範圍之外；本版**不**宣稱它們不存在,
+         **不**宣稱全球沒有遠端或持久資料。
+處置     若日後出現任何 persisted Source.expiry 不合本節 grammar:
+         **一律 no-write fail-closed**，錯誤必須指名該 sourceId 與該欄位,
+         原始 bytes **位元不變**（與 IS §2 對 non-canonical ULID 的處置同一姿態）。
+         producer／reader **不得**寬鬆解析、**不得**補零、**不得**推測時區、
+         **不得** silently normalize、**不得**先當作可用再事後修正。
+         Source 為 immutable（INV-3），**不得**原地改寫。
+恢復能力  **目前沒有任何已授權的 transaction 能改寫或修復這個欄位。**
+         既有的 `migrate-store-v1-to-v2` **不得**被挪用，理由是它自己的
+         approved 契約（IS）就排除了這件事：其前置條件是 pre-state
+         provenanceVersion == 1（**current v2 store 根本叫不動它**,
+         v2 再呼叫是 fail-closed）、payload 恰為 { }、exact allowed changes
+         **只有** provenanceVersion 與每個 DP 的 explicit reopenCauseRef: null,
+         且明文**不得**藉它 re-key、case-fold 或修復 id。
+         它因此**不能**碰 Source.expiry。
+         若一份 **v1** store 帶有這種 expiry，migration 的 final v2 snapshot
+         validation **應失敗**，該交易依其既有原子協定 no-write 中止,
+         原始 bytes **位元不變** —— 這是正確結果，**不是**待修的缺陷。
+         要讓這種資料再次被接受，**必須另立並核准**一份 versioned
+         migration／retirement／rebuild policy；**本版不順手定義它**,
+         也**不**授權任何實作先行。
+性質     direct cutover 提供的是**明確的 fail-closed compatibility boundary**,
+         **不是**自動修復能力。
+實作義務  本節已隨 v1.15 promotion **正式生效**，既有 writer 的
+         exact expiry grammar remediation **義務因此現已成立**。
+         但該 remediation **尚未實作、尚未被接受** ——
+         本節**不**宣稱既有 writer 已符合此 grammar。
+         promotion 使契約生效，**不使** implementation 自動完成。
+```
+
+`T0` 的取樣位置與次數見 §9 的 v1.15 lifecycle seed derivation。本段**只**定義 `expiry` 這一欄的讀法；`exception-grant` 鏈的其餘檢查（`targetConstraintRef` 可解析、`grantAuthorityRef` 必須等於 target REQ 的 `ownerRef`）維持 §9 既有規則，**一字不變**。
+
+### Clause：REQ（immutable，無生命週期欄位）
+
+```
+id:         REQ-n
+authority:  hard-constraint | approved-requirement | compatibility
+kind:       acceptance | specification
+text:       條款內文
+sourceRef:  S-n（＋locator）
+ownerRef:   {kind: source-authority, ref}（authority=hard-constraint 必填 ——
+            constraint 的現實擁有者：監管機關、外部契約方、組織政策擁有者，固化為 stable record）
+```
+
+### Clause：DEC（immutable）
+
+```
+id:          DEC-n
+layer:       implementation（固定 —— intent 層的裁決屬產品，走 REQ）
+derivedFrom: DP-n
+decision:    選定方案
+alternatives: [...]
+basisRefs:   [S-n | RecordRef(review-ruling) | ObservationalRef]
+approvedBy:  ReviewerPrincipal（§1）
+```
+
+### Clause：ASSUM（immutable）
+
+```
+id:          ASSUM-n
+layer:       intent | implementation（承自 DP）
+derivedFrom: DP-n
+text:        選定讀法
+alternative: 被否決讀法（必填）
+basis:       選擇依據
+basisRefs:   [S-n | RecordRef(user-answer | review-ruling) | ObservationalRef]
+             （row 6 明示延後時含 user-answer RecordRef）
+scenario:    distinguishingScenario（intent 層必填）
+governedBy:  ReviewerPrincipal —— 治理此假設的權威：
+             row 7 產生 → 繼承審查它的 principal（可為 arbiter）
+             row 5 產生 → 固定映射：layer=intent → {discipline: intent}；
+                          layer=implementation → {discipline: code}
+routingOrigin: safe-default | user-deferred | reviewed-provisional
+             ← **authored at creation、immutable 的控制狀態**（v1.8 新增）
+```
+
+**為何需要 `routingOrigin`（v1.8）** —— row 5／6／7 產出的 ASSUM 在持久狀態上完全同形，機械層因此無法區分「合法地沒有 ruling」與「該有 ruling 卻沒有」。DEC 沒有這個歧義（只由 row 7 產生），故可強制其 witness；ASSUM 不能，缺口因而無法關閉。**不得**從 `basisRefs` 或 `governedBy` 反推 —— 前者是證據欄、後者是權威欄，兩者都不是 routing 的控制狀態。
+
+**這些是 loader／final-snapshot invariant，不是 constructor 說明** —— 每次載入都必須成立，否則一個繞過交易入口寫進去的 ASSUM 就永遠不會被複驗：
+
+| routingOrigin | 只允許來自 | `layer` | `governedBy` | `basisRefs` |
+|---|---|---|---|---|
+| `safe-default` | §5 row 5（safeToAssume） | `intent` 或 `implementation` 皆可 | 依固定映射：intent→`{discipline:intent}`；implementation→`{discipline:code}` | **不要求** review ruling |
+| `user-deferred` | §5 row 6 使用者明示延後 | **必須 `intent`**（row 6 前提即 layer=intent） | **必須** `{kind: discipline, discipline: intent}` | **必含**綁定同一 DP（`subjectRef == ASSUM.derivedFrom`）的 `user-answer` RecordRef |
+| `reviewed-provisional` | §5 row 7「證據不足、僅核准暫定預設」 | **必須 `implementation`**（row 7 前提即 layer=implementation） | **必須等於**該 ruling 的 `by` | **必含** `rulingKind=approved-provisional` 且綁定同一 DP 的 review-ruling |
+
+任一條不成立 → fail-closed。三值互斥且窮盡：ASSUM 只由 row 5／6／7 產生。
+
+### Transition（append-only event log —— 生命週期的唯一真相）
+
+```
+id:        T-n
+subject:   REQ-n | DEC-n | ASSUM-n
+action:    revise | supersede | retire
+successor: clause ref（retire 無後繼 → ∅）
+authorityRef:（宣告的權威 principal —— 本身不是獨立 witness，效力由 ackRef 建立）
+  kind:       user | discipline | arbiter | source-authority
+  discipline: §1 enum（kind=discipline 必填；kind∈{discipline, arbiter} 的組合即 ReviewerPrincipal，
+              與 DEC.approvedBy／ASSUM.governedBy 同型別）
+  ref:        僅 kind=source-authority 必填 —— constraint owner record（R-n），
+              必須等於 target REQ 的 ownerRef
+ackRef:     RecordRef（kind: user-answer | review-ruling | plan-gate | exception-grant |
+            constraint-revocation；依 External-record contract 解析）——
+            授權本 Transition 的 witness
+compatibility:（**`action=supersede ∧ successor 為 REQ`** 時必填；其餘一律不得出現）
+            impact 陳述 ＋ disposition（§7）
+            ← 適用條件綁 **successor**，不綁 subject（v1.11）：downstream 相容性義務
+              來自「一條 REQ 開始生效」，而不是「被取代的是不是 REQ」。原本寫
+              `僅 subject=REQ` 使 matrix 已允許的 `ASSUM|DEC supersede → REQ`
+              無處存放 impact／disposition，該路徑因此在型別層不可表示
+```
+
+有效性規則：
+
+| subject | action | authorityRef 要求 | 備註 |
+|---|---|---|---|
+| REQ（approved-requirement／compatibility） | supersede | kind=user（經 plan gate） | §7 proposal 必備；ackRef.kind=plan-gate |
+| REQ（approved-requirement／compatibility） | retire | kind=user 授權撤除 | |
+| REQ（**hard-constraint**） | supersede | **禁止** | 只能走 scoped exception（§1） |
+| REQ（**hard-constraint**） | retire | kind=source-authority ∧ **匹配該 REQ 的 ownerRef** | ackRef.kind=constraint-revocation，撤回文件固化為 Source；user／discipline／arbiter 不可冒充 |
+| REQ | revise | **不存在** —— REQ 語義變更一律走 supersede | |
+| DEC | supersede / retire | 同 discipline 或 arbiter | successor=REQ 時為 kind=user（產品裁決） |
+| ASSUM | revise / retire | **governedBy 的同一 principal，或 arbiter**；ackRef 必附具名理由 | 防止他 discipline 撤銷 security／operability 治理的暫定假設 |
+| ASSUM | supersede | successor=REQ → kind=user；successor=DEC → 原 governedBy principal ∨ arbiter ∨ **經正式 rerouting 的 current review principal**（需 review-ruling witness：`by == DEC.approvedBy == authorityRef principal`，subjectRef 綁定本 DP） | 升級收斂；防任意跨 discipline 覆寫，同時容許 reopen 後的 domain transfer |
+
+- Transition 僅在 subject 當時為 active 時有效；**每個 clause 至多一個生效 Transition**（單終態）。
+- `authorityRef` 與 `ackRef` 為每筆 Transition 必填。**Witness binding** —— authority 的效力由 ackRef 指向的 witness payload 建立，任意合法 record 不可借用：
+
+```
+kind=discipline|arbiter → ackRef.kind=review-ruling
+                          ∧ review-ruling.by == authorityRef principal
+                          ∧ review-ruling.subjectRef 綁定本 Transition 的 subject 或其 DP
+kind=user             → 依 action：supersede／retire → plan-gate record，
+                          target == subject；
+                          supersede 另含 §7 **四欄**一致（v1.11 由三欄擴充）：
+                            plan-gate.target      == Transition.subject
+                            plan-gate.successor   == Transition.successor
+                            plan-gate.impact      == Transition.compatibility.impact
+                            plan-gate.disposition == Transition.compatibility.disposition
+                          —— 少了 successor 對位時，一筆核准「取代 ASSUM-x」的 record
+                          可授權把 ASSUM-x 換成**任何** REQ；
+                          ask 回答產生的轉移 → user-answer record，subjectRef == 該 DP
+kind=source-authority → ackRef.kind=constraint-revocation
+                          ∧ ack.authorityRef == target REQ.ownerRef == authorityRef.ref
+```
+
+**Derived fields（read model 推導，不再是 authored 欄位）**：
+
+```
+status(c)       ＝ active（無生效 Transition）| revised | superseded | retired（依生效 Transition.action）
+revisedBy(c)    ＝ T.successor where T.subject=c ∧ action=revise
+supersededBy(c) ＝ T.successor where T.subject=c ∧ action=supersede
+mechanicallyApplicable(c) —— per kind（下游不得自行猜測「來源檢查」對 DEC／ASSUM 的意思）：
+  REQ:   status=active ∧ 來源檢查通過（§9 Check A/B）
+         ∧（exception-backed 時：未過期 ∧ targetConstraintRef 可解析）
+  DEC:   status=active ∧ approvedBy principal 合法（§1 型別）∧ derivedFrom DP 可解析
+         ∧ basisRefs 中的 S-n／RecordRef 可解析（ObservationalRef 不解析）
+  ASSUM: status=active ∧ governedBy principal 合法 ∧ derivedFrom DP 可解析
+         ∧ basisRefs 中的 S-n／RecordRef 可解析（ObservationalRef 不解析）
+scopeCovers(c, DP)        ＝ intent discipline 的語義判斷 —— 僅 exception-backed REQ 非恆真，
+                            ruling 以 DP.scopeRulingRef 留存 stable ref
+applicable(c, DP)         ＝ mechanicallyApplicable(c) ∧ scopeCovers(c, DP)
+```
+
+### External-record contract（RecordRef —— 跨物件共用的可解析引用）
+
+```
+RecordRef:
+  kind: source-authority | user-answer | review-ruling | plan-gate |
+        constraint-revocation | exception-grant | provenance-batch
+  ref:  stable record id（R-n；kind=exception-grant 例外 —— 解析到 Source namespace 的 S-n）
+```
+
+- **Namespace 與 lookup 邊界**：R-n 與 S-n／REQ-n／DEC-n／ASSUM-n／DP-n／T-n 同屬本 repo 的 provenance store；解析只在 store 內進行。repo 外的 URL／文件不是可解析 ref —— 需先固化為 Source。實體儲存與 id 鑄造由下游 spec 定，**payload 要求不得更動**。
+- **Immutability**：record 一經建立即 immutable；更正＝新 record，既有 ref 不改指。
+- **「可解析」成功條件**：record 存在於 store ∧ kind 與期待相符 ∧ minimum payload 齊備。
+- **Minimum payloads**（全部隱含 immutable）：
+
+```
+source-authority:      recordId, authorityIdentity（constraint 擁有者身分，固化描述）
+user-answer:           recordId, subjectRef（DP-n）, answer
+review-ruling:         recordId, by: ReviewerPrincipal, subjectRef（DP-n | clause ref）, ruling,
+                       resolutionGroupDigest?（見下 —— 作為 resolution group 的治理 witness 時必填）
+plan-gate:             recordId, target, impact, disposition, approvedBy（user）,
+                       **successor**: ClauseRef | null（v1.11 —— 見下必填條件）,
+                       resolutionGroupDigest?（同上）
+
+  `plan-gate.successor` 的必填條件（typed，非自由欄）:
+    授權的是 clause transition ∧ action=supersede
+      → **必填**，且必須是 clause ref；為 null 即該 record 不構成 supersede proposal
+    授權的是 retire（successor 依定義不存在）
+      → **必須**為 null
+    非 clause transition 的 plan gate（例如純 routing 揭露）
+      → **必須**為 null
+  舊 record 只有 target／impact／disposition 三欄，無法區分「核准 target 被取代」
+  與「核准 target 被某一條**具名** clause 取代」—— 下游因此無從機械驗證
+  successor 對位，只能自行發明欄位。本欄關閉該缺口
+constraint-revocation: recordId, targetConstraintRef, authorityRef（source-authority，
+                       匹配 ownerRef）, effectiveAt
+exception-grant:       ＝ Source（contentKind=exception-grant；payload 見 Source schema）
+provenance-batch:      recordId, taskId,
+                       batchRecordVersion: 2（**v1.13 新增，新記錄必填**；
+                         legacy 記錄無此欄位，辨識規則見下「legacy boundary」）,
+                       inventoryDigest（**derived**：必須等於
+                         batchSnapshot.inventorySnapshot.inventoryDigest，
+                         **不得**由 caller 獨立提供第二份 authority —— 見下）,
+                       batchSnapshot（完整內容，非僅 digest —— scratch 遺失時須可由 tracked 重建；
+                         **v1.13 起必含 inventorySnapshot**）,
+                       batchDigest（定義見下）,
+                       relatedRefs[]（typed；見下）,
+                       previousBatchRef: RecordRef(provenance-batch) | null（chain）
+```
+
+**`batchDigest` canonicalization**（不得留給實作猜測）：
+
+```
+batchDigest ＝ sha256(canonicalJson(batchSnapshot))
+
+canonicalJson 沿用本文既有規則（UTF-8 無 BOM、LF、object key 依 code point 排序、
+無多餘空白、字串不 trim），另加下列 array 定序（**必須是 total order**）：
+  batchSnapshot.results   依 canonical testRef ＝ (path, adapterId, structuralId) 三元組，
+                          逐欄 Unicode code point 序
+  每筆 result 的 findings 依 (closed kind order, binding, 完整 canonical finding bytes)：
+                          binding **缺席者排在所有具 binding 者之前**（null-first）；
+                          同 kind 同 binding 時以完整 canonical finding bytes 作最後 tie-break
+  relatedRefs             typed ref（{kind, ref}），依 (kind, ref) 排序並**去重**
+```
+
+**`inventorySnapshot`：inventory digest 的 preimage 必須被持久化（v1.13 新增）**
+
+`inventoryDigest` 是一個 opaque 值。只持久化它，**證明不了它的 preimage 用的是哪一個 pre-state**。具體反例（下游 test-provenance 的 direct inspect 所得）：
+
+```
+1. inventory I0 記錄 inputProvenanceStoreDigest = D0，inventoryDigest = H0 = hash(… D0 …)
+2. 交易提交前 store 變為 D1
+3. caller 只把 payload 的 expected 值改成 D1，batch／record 仍送 H0
+4. writer 可驗「expected == 實際 pre-state == D1」，但它拿到的 H0 是 opaque，
+   無從得知 H0 的 preimage 裡是 D0
+5. committed record 沒有保存實際使用的 D1
+6. 事後檢查只看到 batch.H0 == inventory.H0，**永遠發現不了 D1 != D0**
+```
+
+因此 `batchSnapshot` 必須承載完整 typed preimage，而不是只承載 digest：
+
+**最小 authoritative envelope（本文自持，v1.13）** —— 前一稿把型別與公式整個委派給下游，那顛倒了權威方向：本文是兩份 downstream 的共同上游，凡進入 persisted record 的形狀必須由本文定義。因此 **exact key set 與 `inventoryDigest` 的唯一公式在此定案**，下游只補「每個 digest 各自怎麼算」的語義：
+
+```
+batchSnapshot.inventorySnapshot : ChangedTestInventoryV2
+  exact key set（恰七欄，缺一或多一皆 fail-closed）:
+    inventoryVersion            : 整數，恰為 2
+    baseTreeOid                 : Git tree oid（canonical lexical grammar 見下，v1.14）
+    registryDigest              : digest 字串（canonical serialization grammar 見下，v1.14）
+    headViewDigest              : digest 字串（canonical serialization grammar 見下，v1.14）
+    inputProvenanceStoreDigest  : digest 字串（canonical serialization grammar 見下，v1.14）
+    entries                     : 陣列（可為空）
+    inventoryDigest             : digest 字串（canonical serialization grammar 見下，v1.14）
+
+  inventoryDigest 唯一公式（本文定案）:
+    sha256(canonicalJson({ inventoryVersion, baseTreeOid, registryDigest,
+                           headViewDigest, inputProvenanceStoreDigest, entries }))
+
+  carrier lexical grammar（v1.14 定案；唯一規則，reader 一律照此 accept／reject）:
+    baseTreeOid : ^(?:[0-9a-f]{40}|[0-9a-f]{64})$
+                  完整且 lowercase hex 的 Git object ID —— 40 個文字 byte 對應
+                  SHA-1 object format，64 個文字 byte 對應 Git SHA-256 object format。
+                  abbreviated OID、uppercase、非 hex 字元、其他長度 → 各自 fail-closed。
+    四個 digest : ^[0-9a-f]{64}$
+                  適用 registryDigest、headViewDigest、
+                  inputProvenanceStoreDigest、inventoryDigest。
+                  這是 SHA-256 digest 在本 envelope 內的**唯一** carrier spelling：
+                  64 個 lowercase hex。uppercase、縮寫、prefix（如 "sha256:"）、
+                  任何 whitespace、其他長度 → 各自 fail-closed。
+                  inventoryDigest 仍必須依上列唯一公式重算並相等 ——
+                  **通過 lexical grammar 不能取代重算。**
+
+  「opaque」的唯一所指（v1.14 收斂）:
+    registryDigest／headViewDigest／inputProvenanceStoreDigest 的 **preimage**
+    對本文不透明：它們各自的計算語義（head universe 範圍、registry preimage、
+    store digest 記法、entry 形狀與定序）由 test-provenance §2／§11b.9c 定義。
+    **先前「四個 digest 欄位是不透明字串」的敘述，就 serialization 而言撤回** ——
+    carrier 的字面拼法由上式定案，不是實作可自由選擇的細節。
+    isolated reader 同樣**不得**只憑這三個字串證明其 preimage 或 freshness。
+    本文定義的是 envelope、carrier 拼法與綁定，仍不定義計算方式。
+
+writer 於**同一筆交易內**必須驗（任一不符 → 整筆 no-write）:
+  exact key set 完整
+  重算 inventorySnapshot 的 inventoryDigest == inventorySnapshot.inventoryDigest
+  record.inventoryDigest == inventorySnapshot.inventoryDigest（derived，非獨立輸入）
+  entries 已依下游 canonicalization 定序
+  inputProvenanceStoreDigest 的 digest 記法符合下游規定
+```
+
+**`baseTreeOid` 的 lexical validation 不等於 repository-semantic validation（v1.14 新增）** —— 上列 grammar 只保證**字面形狀**。它**不**證明該 object 存在，也**不**證明它的 type 是 tree：
+
+```
+有 captured repository context 的 consumer 必須另驗（缺一 → fail-closed）:
+  該長度符合該 repository 實際採用的 object format
+  該 object 確實存在
+  該 object 自身的 type **恰為** tree
+    —— **不得**只驗它可以 peel 成 tree（commit／tag 都 peel 得到 tree）
+isolated canonical reader（無 repository context）:
+  只驗 lexical grammar；**不得**因通過 grammar 而宣稱已完成上列任一項
+```
+
+**Raw JSON duplicate-member contract（v1.14 新增；適用於完整 `ChangedTestInventoryV2` 文件）** —— 先前本文與兩份下游對 duplicate member name 完全沉默，於是「`JSON.parse` 之後再驗」與「在 source 層拒絕」兩種 reader 對同一份 bytes 得出不同結果。本版定案：
+
+```
+適用範圍   : 該文件內的**每一個** JSON object —— root、每一筆 entry、
+             以及所有 nested object。
+規則       : 同一個 object 內**不得**出現 duplicate member name。
+比較對象   : member name 經 JSON escape 解碼後的 StringValue。
+比較方式   : exact Unicode code points；不做 normalization、不 case-fold。
+             ⇒ "a" 與 "\u0061" 是 duplicate。
+任一 duplicate → fail-closed。
+
+reader 義務: 必須在**仍保有全部 member occurrence** 的階段完成本檢查。
+             單獨使用會 last-write-wins 的 JSON.parse、再對其結果檢查，
+             **不能**滿足本義務 —— 被覆蓋的 occurrence 在那個階段已不可觀察。
+本規則只處理 duplicate:
+             root member 的 source order 與一般 JSON whitespace
+             本身**不**構成拒絕理由；
+             root 的 canonical digest order 仍由 canonicalJson 決定。
+```
+
+本文**不**自行定義 downstream 的 entry 欄位：`entries[]` 的 exact schema、body-digest 的 conditional presence，以及 entry 內的 source-key ordering，其 authority 仍在 **test-provenance approved v1.10**。
+
+**Legacy boundary（`batchRecordVersion`；沿用本文對「新增 persisted field 必須有 discriminator」的既有要求）**
+
+```
+v2 記錄   : 必帶 batchRecordVersion: 2，且 batchSnapshot 必含合法 inventorySnapshot。
+            帶版本卻缺 snapshot、snapshot 未通過上列檢查、
+            batchRecordVersion 為未知值或非整數、record malformed
+            → **各自 fail-closed**（不得降級成 legacy 讀法）。
+legacy 記錄: 無 batchRecordVersion，且 root key set 恰為 v1.12 的
+            { recordId, taskId, inventoryDigest, batchSnapshot, batchDigest,
+              relatedRefs, previousBatchRef } —— 即 **exact absence shape**。
+            形狀不吻合而又缺版本欄位 → fail-closed。
+
+legacy 的可讀範圍（唯讀歷史陳述，不可作為判定依據以外的用途）:
+            recordId、taskId、batchDigest、relatedRefs、previousBatchRef、
+            chain 位置，以及 batchSnapshot 內 v1.12 已定義的欄位。
+legacy 的禁止用途:
+            **不得冒充 Phase 2 proof** —— 任何需要 inventory preimage 的判定
+            （pre-state 綁定、derived equality、post-commit inventory 對位）
+            一律視為「無證據」，fail-closed，**不得**以「舊格式故從寬」放行。
+            這同時使 byte 層的殘餘歧義無害：一個漏寫欄位的 v2 writer
+            即使產出 legacy 形狀的 bytes，也拿不到任何 Phase 2 效力。
+
+chain 行為:
+            v2 **允許**接在 legacy head 之後（就地升級，歷史不遷移、不回寫）。
+            legacy **不得**接在 v2 之後 —— 同一 task 的 chain 上版本必須單調不減；
+            違反者 fail-closed，這正是「新 writer 漏寫欄位」的可偵測訊號。
+            chain 連續性（previousBatchRef、committed head）不因跨版本而改變。
+
+rollout 順序（reader before writer）:
+            **先部署能讀 v2 的 consumer，再啟用會寫 v2 的 writer。**
+            反序會讓不理解 v2 的舊 consumer 遇到帶 batchRecordVersion 的記錄 ——
+            它既非自己認得的 legacy exact shape，又無從驗 inventorySnapshot。
+            同一 task 一旦產出第一筆 v2 batch，**不支援回退**至不理解 v2 的舊 consumer：
+            chain 版本單調不減，回退後的 consumer 會把合法 v2 記錄讀成不明形狀。
+            需要回退時，唯一合法路徑是連同該 task 的後續 batch 一併停用，
+            **不得**以刪除或改寫既有 record 的方式製造可回退的假象（append-only）。
+```
+
+**不得**改採「把 pre-state digest 再複製一份到 record top-level」的做法 —— 那仍然證明不了它參與過 `inventoryDigest` 的 preimage，而且會製造**第三個** authority。**唯一** authority 是 `batchSnapshot.inventorySnapshot`；`record.inventoryDigest` 由它派生，供索引與快速比對之用。
+
+**Batch chain 與 committed head**（scratch 全失後的單一可信依據）：
+
+```
+task 尚無 provenance-batch：
+  committedHead ＝ null ∧ TaskState.committedProvenanceBatchRef ＝ null   → **合法**
+
+task 已有 provenance-batch：
+  必須**恰有一個**未被任何 previousBatchRef 引用的 tip
+  ∧ TaskState.committedProvenanceBatchRef == 該 tip
+  零個 tip（chain 斷裂）或多個 tip（reconciliation required）→ fail-closed
+
+scratch 只快取 head 的 ref；遺失後可由 tracked chain 完整重建
+消費者一律使用**明確的 `provenanceBatchRef`**，不得以 (taskId, inventoryDigest, batchDigest)
+模糊搜尋「對應 record」
+```
+
+「零個 head 一律 fail-closed」是舊條文，與下方 TaskState 的三態互相否定 —— 未提交過的 task 本來就沒有 tip。以本節為準。
+
+**Chain 連結約束**（否則 `previousBatchRef` 可指向他 task 的 batch，或自己 task 的歷史非 head batch，使 stale 的 explicit ref 仍能通過自身 digest 驗證）：
+
+```
+首筆 batch： previousBatchRef == null
+後續 batch： previousBatchRef == **pre-state 的 TaskState.committedProvenanceBatchRef**
+           ∧ referencedBatch.taskId == current taskId
+checker：   provenanceBatchRef == TaskState.committedProvenanceBatchRef
+           ∧ provenanceBatchRef == 推導出的唯一 tip
+```
+
+**`relatedRefs[]` 是精確的 derived set**（非自由欄位）：
+
+```
+relatedRefs ＝ 本交易 recordsToCreate 的全部 ref
+             ∪ resolutions 中出現的全部 ref（semanticEvidenceRefs、governanceWitnessRef）
+             ∪ 本交易建立的 Transition refs
+依 (kind, ref) 排序並去重；與上述集合不符 → fail-closed
+```
+
+- **TransitionRef（exact shape，v1.12）**：指向本 store 內一筆 **immutable Transition** 的 typed ref。`reopenCauseRef` 與**所有後續 consumer** 一律引用本定義，**不得各自重述**：
+
+```
+TransitionRef ＝ { kind: "transition", ref: <Transition id> }
+
+規則（全部 fail-closed）：
+  kind 必須**精確**為 "transition"（其他 kind 即使 id 存在也不解析）
+  ref 必須是**非空**字串，且是 store-local 的合法 Transition id
+  **不允許 undeclared keys**（key set 必須恰為 {kind, ref}）
+  必須解析到一筆**存在且 immutable** 的 Transition
+  malformed／wrong kind／dangling → 各自 fail-closed
+```
+
+- **ObservationalRef（exact shape，v1.8）**：對觀察性證據（code path、caller、資料現況）的描述性指標 —— **明文不解析**，disclosure-only；不屬 RecordRef，不參與機械 resolution。先前只有這句散文而無 schema，下游因此無從驗證其形狀：
+
+```
+ObservationalRef ＝ { kind: "observational", description: string }
+                    description 非空；**不允許 undeclared keys**
+```
+
+- **Governance Packet 的 `basisRefs` normalization（exact discriminated union，v1.8）** —— 這是 **packet** 的正規化表示，與 `clause.basisRefs` 的既有寬鬆表示**不是同一個東西**，不得混用：
+
+```
+packetBasisRef ＝
+  | { sourceId: string, digest: string }                    ← Source snapshot ref
+  | { kind: <RecordRef kind>, ref: string }                 ← RecordRef，沿用其 exact shape
+  | { kind: "observational", description: string }          ← ObservationalRef
+
+規則（全部 fail-closed）：
+  **不允許 undeclared keys**（三個變體各自的 key set 必須完全相等）
+  必填字串**不得為空**
+  canonical bytes 相同的 ref **不得重複** —— 先做這一步，再排序
+```
+
+**排序：完整 tuple，必須是 total order。**先前只寫「variant 判別鍵 ＋ id／description」，對 `{sourceId:"S-1", digest:"aaa"}` 與 `{sourceId:"S-1", digest:"bbb"}` 這兩筆合法且相異的 ref 不能定序，兩個 writer 仍會輸出不同順序：
+
+```
+source        → [0, sourceId, digest]
+record        → [1, kind, ref]
+observational → [2, description]
+
+先比 tuple[0]（數值）；其後每個字串欄位依 Unicode code point 序逐一比較。
+變體判別鍵在前，因此三類永不交錯。**下游 spec 只引用本定義，不得另寫第二套排序。**
+```
+- **`resolutionGroupDigest`（witness coverage 的 carrier）** —— 「一個 witness 必須涵蓋某組 evidence 的全部」若沒有欄位承載，就無法機械驗證：
+
+```
+resolutionGroupDigest ＝ sha256(canonicalJson({
+  subjectRef, action, successor, sortedSemanticEvidenceRefs
+}))
+
+sortedSemanticEvidenceRefs ＝ 依 **RecordRef.kind，再依 ref**，以 Unicode code point 序
+                             排序並**去重** —— 未定義排序則同一組 refs 的不同輸入順序
+                             會算出不同 digest，coverage 檢查形同虛設
+```
+
+  作為 resolution group 治理 witness 的 review-ruling／plan-gate record **必須攜帶相同 digest**；checker 驗**完全相等** —— 少一筆 sibling evidence 即 digest 不同即 fail。本模型採此方案；**不得**同時再宣稱「由 batch 的 resolution envelope 承擔對位」，兩種擇一，不可混寫。
+- **Non-adversarial boundary**：checker 證明 record 存在、型別正確、ref 相等，不證明現實身分。
+
+### TaskState（**tracked canonical state**，非 scratch）
+
+task membership 與 committed head 是**權威狀態**，不能只存在於 per-run scratch：`resume-task` 需要它、exception-backed DP 驗證需要它、沿用的 DP 不改原 `taskRef` 因此無法從 tracked 物件反推 —— scratch 遺失後 batch 可重建，**task membership 卻不能**。
+
+```
+TaskState:
+  taskId
+  baseProvenance                                   ← immutable（見 §9 witness）
+  currentTaskDpIds[]
+  committedProvenanceBatchRef: RecordRef(provenance-batch) | null
+```
+
+操作規則：
+
+```
+init-task    建立 TaskState（含 baseProvenance）
+resume-task  **只能新增** membership；**不得改動 baseProvenance**（改換 base 一律拒絕）
+commit-test-provenance-batch
+             原子更新 committedProvenanceBatchRef
+post-commit consumer（checker／arbiter）
+             只讀 TaskState 指向的 committed batch；scratch 僅為 proposal／cache，
+             **不得成為第二個 truth source**
+```
+
+**Store carrier** —— TaskState 必須有可序列化的位置，否則 fresh clone 無處讀取：
+
+```
+canonical store ＝ { provenanceVersion, sources, clauses, transitions,
+                    records, decisionPoints, **taskStates** }
+
+taskStates      ＝ 陣列，依 taskId 之 Unicode code point 序排序；taskId **唯一**
+                  （重複 taskId → fail-closed）
+loader／CAS／init-task／resume-task／commit-test-provenance-batch
+                  一律讀寫**同一位置**，不另設副本
+```
+
+**Head 狀態封閉**（三分，無其他合法組合）：
+
+```
+零 batch ∧ committedRef == null                    → 尚未提交，合法重跑
+已有 batch ∧ 唯一 tip == committedRef              → valid
+已有 batch ∧（零 tip ∨ 多 tip ∨ ref != tip）        → fail-closed
+```
+
+### DecisionPoint（流程工作紀錄，可變）
+
+```
+id:                  DP-n
+dimension:           actor | lifecycle | data | money | external | failure | time | OTHER
+                     （closed set；OTHER 需已有具體 scenario，事後進 taxonomy review）
+scenario:            distinguishingScenario（建檔門檻：寫不出即不建 DP）
+alternatives:        [...]
+layer:               intent | implementation
+classificationBasis: 為何此決定屬產品／工程權限（必填）
+materialReasons[]:   safeToAssume 失敗 conjunct 的衍生清單
+discoveredAt:        plan-scan | test-time | review（純遙測，不參與路由）
+reopenedBy:          reopen trigger（§8 closed list；重入時必填）
+reopenCauseRef:      **TransitionRef**（exact shape 見上 typed refs 區）| null
+                     ← **persisted causal witness**（v1.12 新增）。只在「本次 dependent
+                       closure 因 successor 對本 DP 不 applicable 而 reopen」時由 writer
+                       設定，指向造成該 reopen 的 Transition；其餘一切 reopen 成因為 null。
+status:              open | asked | resolved | decided | assumed
+resolvedBy:          REQ-n（status=resolved 必填，INV-2）
+decidedBy:           DEC-n（status=decided 必填，INV-2）
+assumedAs:           ASSUM-n（status=assumed 必填，INV-1）
+scopeRulingRef:      RecordRef(kind=review-ruling)
+                     ∧ record.by == {kind: discipline, discipline: intent}
+                     ∧ record.subjectRef == 本 DP（他 DP 的合法 intent ruling 不可借用）
+                     （resolvedBy 為 exception-backed REQ 時必填 —— scopeCovers 的可追溯憑據）
+resolutionRulingRef: RecordRef(kind=review-ruling) | null   ← **current application carrier**（v1.8）
+                     指向「授權本 DP **當前** resolution 的那一筆 ruling」，唯一且 typed
+```
+
+**為何需要 `resolutionRulingRef`（v1.8）** —— 沒有 current carrier 時，唯一能表達「這筆 binding-policy ruling 說了算」的方式是對**所有** `subjectRef` 指向該 DP 的 binding-policy ruling 做全稱量化，要求 `DP.resolvedBy == ruling.bindingClauseRef` 恆成立。那條規則會把 `resolvedBy` **永久凍結**：一旦 REQ-a 經合法 binding-policy 被採用，之後任何合法的 `REQ-a → REQ-b` supersede 都會與那筆**歷史** ruling 衝突而被拒。它同時牴觸 §9／IS §4 的既定契約 —— 不再被 current ref 引用的歷史 ruling **只驗 immutable snapshot／digest 自洽，不得與 mutable current DP 比較**。全稱量化因此撤回；current carrier 取而代之。
+
+**生命週期（closed）**：
+
+```
+initial adopt（由 binding-policy ruling 驅動）
+  → 同一交易原子設定 resolutionRulingRef
+
+loader postcondition —— **只**對 current carrier 套用：
+  carrier.rulingKind == binding-policy
+  ∧ carrier.subjectRef == 本 DP
+  ∧ carrier.bindingClauseRef 經**有效 Transition successor chain** 解析後 == DP.resolvedBy
+    （直接相等是 chain 長度為 0 的特例，因此合法 supersede 後 carrier 可沿用）
+
+合法 supersede／repoint —— 二擇一，交易必須明示走哪一支：
+  (a) 沿用 carrier：上式的 successor-chain 條件必須成立
+  (b) 同交易原子替換 carrier 為新的 binding-policy ruling
+
+retire／reopen 且無 current resolution
+  → 同交易清除 resolutionRulingRef（null）
+
+unrelated re-adopt
+  → **binding-policy 驅動**時：必須提供新的 current carrier，不得沿用舊 ruling
+  → **direct row-1 citation**（無 policy ruling）時：清除舊 carrier 並保持 null
+
+歷史 ruling（存在於 store 但不被任何 DP 的 resolutionRulingRef 引用）
+  → **只**驗 immutable snapshot／digest 自洽；不與任何 current DP 比較
+```
+
+**Carrier 與 status 的精確關係**（「同生同滅」是錯的措辭 —— row 1 的 direct citation 允許 `resolvedBy` 非空而 carrier 為 null）：
+
+```
+resolutionRulingRef != null  ⇒  status == resolved ∧ resolvedBy 存在
+status != resolved           ⇒  resolutionRulingRef == null
+status == resolved ∧ direct citation（無 binding-policy ruling 驅動）
+                             ⇒  resolutionRulingRef **可以**為 null，本節不課條件
+```
+
+### `reopenCauseRef` —— reopen 成因的持久化 witness（v1.12）
+
+**為何需要它** —— 「這次 reopen 是由某筆 Transition 的 dependent closure 造成的」是**歷史因果**，不是 final snapshot 的結構屬性。下游曾嘗試從 snapshot 反推：`status=open ∧ priorTerminalRef 有 effective Transition ∧ successor != null`。該推斷不成立，且會**擋掉合法收斂**：
+
+```
+反例 1  DP 先以 reopen-dp(trigger=new-dependent) 明示重入；
+        prior clause 日後才被合法 supersede → 該 DP 被誤判為 source-2 reopen。
+反例 2  兩個 DP 對同一 prior 各自 deferred reopen；其一以 reopened-prior 建立
+        Transition 後，另一個尚待 adopt-existing-outcome 收斂的 DP 被誤判。
+```
+
+兩者的共同點：舊 reopen 發生時 prior 還沒有 successor，snapshot 事後無法分辨兩種歷史。因此**因果必須被持久化**，不得由圖形反推。
+
+**Closed lifecycle**：
+
+```
+設定  只由 writer 在 dependent closure 因 successor 對本 DP 不 applicable 而 reopen 時寫入，
+      且必須指向**本次交易**的該筆 Transition。caller 不得提供。
+禁止  明示 reopen-dp、retire 造成的 reopen，以及任何其他 reopen 成因 → 必須為 null。
+清除  DP 被 repoint、resolve（任一 terminal 落定），或因**其他**成因再次 reopen → 清為 null。
+替換  再次發生 source-2 reopen → 換成新的 TransitionRef。
+```
+
+**Loader／gate invariant —— 只對 `reopenCauseRef != null` 的 DP 執行**：
+
+```
+ref 可解析為 Transition T
+∧ T.subject == DP.priorTerminalRef
+∧ T.successor != null
+∧ applicable(T.successor, DP) == false      ← 現時重新求值
+∧ DP.reopenedBy == 「terminal clause 失效且無後繼（INV-4）」的下游序列化
+∧ DP.status == open ∧ 三個 terminal ref 皆 null ∧ resolutionRulingRef == null
+```
+
+**`reopenCauseRef == null` 的 DP 一律不被歸類為該情形**，且**不因 prior clause 日後取得 Transition 而被重新分類** —— 這正是上述兩個反例得以合法的原因。
+
+**Assurance boundary（明文，non-adversarial）** —— `reopenCauseRef` 是該因果的**唯一** authoritative 來源，模型沒有第二份歷史紀錄可以拿來對質：
+
+```
+loader／gate 驗的是 **witness coherence**：ref 結構合法、subject／successor／applicability
+／trigger／status／terminal／carrier 六者互相一致。
+
+loader **不**證明 writer 所宣稱的歷史事件真的發生過。一筆「結構完全自洽但歷史上偽造」
+的 witness 無法被 loader 分類回 explicit reopen 或 retire —— 要做到那件事，模型必須另外
+新增獨立、不可偽裝的 DP event log，本版**不擴充**。
+
+非 source-2 路徑（explicit reopen-dp、retire、其他成因）輸出 null 這件事，因此由
+**command-time lifecycle** 保證並由驗收實測，不是由 loader 事後推斷。
+```
+
+**Ownership** —— `reopenCauseRef` 是 **writer-owned** 的 persisted causal witness，與 `resolutionRulingRef` 的 caller-declared 模型**不同**，兩者不共用命令面：
+
+```
+caller **不得**提供、覆寫，或以任何未宣告欄位影響 reopenCauseRef。
+它沒有對應的 caller-facing action 詞彙（沒有 preserve／replace／clear 宣告），
+writer 依 §2 lifecycle 自行設定、清除或替換；
+loader／gate 由 §9 的 **Reopen cause coherence** 一列驗證 —— **不是** Carrier coherence，
+後者只管 resolutionRulingRef。
+```
+
+**Legacy absence 與 upgrade boundary（v1.12）** —— 新增 persisted 欄位必須定義舊 snapshot 缺欄位時的行為，否則三種狀態會被壓成同一種：合法的非 source-2 reopen、舊實作產生但無 witness 的 source-2 reopen、以及新 writer 漏寫欄位的實作錯誤。
+
+**rollout evidence 只能支撐 migration assumption，不能取代 discriminator。** 「缺欄位」在 legacy 與 writer defect 兩種情形下是**同一串 bytes**；沒有持久化的版本標記，loader 無論如何都分辨不出。因此 **`provenanceVersion` 升為 2**：
+
+```
+provenanceVersion: 1   （legacy）
+  DP 缺 reopenCauseRef → 由 **migration** 補為 explicit null，不得由 current graph 回填成因
+  **current mutable** version 1 store：除 migration 外不得 operational read／write
+  （**不含** historical immutable base-tree v1 —— 那由 checker read-only 讀取，見下三分表與 §9）
+
+provenanceVersion: 2   （current）
+  **每個 DP 必須顯式含有 reopenCauseRef: null | TransitionRef**
+  缺席 → **fail-closed**（writer defect，不是 legacy）
+
+writer final-snapshot 驗證    產出必為 version 2 且每個 DP 顯式帶該欄位
+```
+
+**Canonical empty store（本文件唯一 authoritative 定義，v1.12）** —— 任何其他章節一律**引用**本定義，**不得重寫 literal**：
+
+```
+{ provenanceVersion: 2, sources: [], clauses: [], transitions: [],
+  records: [], decisionPoints: [], taskStates: [] }
+```
+
+其 digest 依 §2 canonical 規則計算。舊版曾在 §9 base-witness 段另寫一份 `provenanceVersion: 1` 的 literal，兩份互斥並使 base digest 沒有唯一 canonical bytes；該 literal 已刪除並改為引用。
+
+**三種 store 必須分開，不得混為一談**（v1.12）：
+
+| 物件 | 版本 | 可做什麼 |
+|---|---|---|
+| **current mutable canonical store** | 1 | **只有** migration transaction 能讀取／轉換；其他 operational command 一律 **fail-closed** |
+| **current mutable canonical store** | 2 | 正常讀寫；每個 DP 顯式含 `reopenCauseRef` |
+| **historical immutable base-tree store**（`baseProvenance.treeOid` 內） | 1 或 2 | checker **可**以 read-only legacy decoder 讀取，驗其**原始** canonical bytes 與 `storeDigest`；**不遷移、不回寫、不得拿 normalized bytes 去比對 raw digest** |
+
+Git base tree 是 immutable 的，`TaskState.baseProvenance.storeDigest` 綁的是**該 tree 內**的 store bytes，**不是** current working store 的 digest。因此把 current store 從 v1 遷成 v2 **不會**改寫 base tree，也**不會**使該 witness stale —— 初稿的「migration 後必然 stale」推導是錯的，已撤回。
+
+**含 TaskState 的 current v1 store：本版明文 unsupported。** migration 對它 **fail-closed**。理由是誠實的能力邊界而非 digest 推導：`resume-task` 明文禁止改動 `baseProvenance`，而本版**沒有** re-baseline command，因此該情形沒有可達的合法處置路徑。re-baseline 留給另立 spec。依上述 rollout evidence，不存在 observed durable v1 TaskState，故此邊界不阻擋本版發布。
+
+支持「migration 實際上沒有 subject」的 rollout evidence（**這是 migration assumption 的依據，不是 discriminator**）：
+
+```
+已確認   (1) 能產生 source-2 state 的唯一程式路徑首次實作於 cressetide commit 6c743e7；
+        (2) 該 commit 不在任何 remote branch／tag 上，因此**沒有 released／remote consumer**
+            能取得該 writer —— 但**本地 tests／probes 可能執行過未推送的程式**，
+            這不等於「任何 consumer 都不可能執行」；
+        (3) repo 的 canonical path 上不存在 durable `.ctide/provenance.json`，
+            亦無任何 tracked snapshot；
+        (4) 規格在 v1.7 核准前明文禁止實作來源 2。
+結論     沒有 **observed durable** pre-v1.12 source-2 state。
+適用範圍 若日後發現任何已釋出 writer 曾產生 source-2 state，migration 仍走上列 version 路徑；
+        ambiguous open DP **一律不得**由 current graph 回填成因（那正是本版在修的錯誤），
+        必須 fail-closed 並重新 routing／固化。
+```
+
+`resolutionRulingRef`（**與本節無關的另一個 carrier**）的語義定義於上一節；承載它的**命令面**在 IS §8「carrier 更新契約」（逐 DP 的 `resolutionCarrierUpdates[]`），**執行它的檢查**在 §9 的 `Carrier coherence` 一列。三者缺一即失效：缺命令面則 preserve／replace／clear 無交易可執行；缺 §9 一列則該式只是散文，繞過交易入口直接構造的不一致狀態不會被擋。
+
+## 3. layer 判準（decision authority）
+
+```
+intent:          選邊會決定 stakeholder 的權利、義務、產品政策或核心承諾，
+                 且現有契約未把這類決定授權給工程端。
+implementation:  所有選項都維持既有產品承諾；
+                 工程端可依技術標準、相容性、效能、慣例選邊。
+```
+
+- 七維度是 discovery taxonomy，**不具分類權威**（await-null 可塞 time、error class 可塞 failure —— 維度歸屬不能定 layer）。
+- 無法判別 → intent discipline 分類，永不預設 implementation。
+- 開發者 API 也是產品：error class 等 API 表面是否 intent，看是否已形成 caller recovery contract；若已形成，通常已被 source 裁決，到不了 layer 判斷。
+- test-time／review 發現的 intent fork 必須重開 plan gate（＝AskUserQuestion，回答固化為 REQ）。discoveredAt 不參與 layer 或處置。
+
+## 4. safeToAssume
+
+```
+safeToAssume ＝ 低成本可回復
+             ∧ 不涉 protected domains（金錢、權限、資料遺失、隱私、法規、安全、外部契約）
+             ∧ 不形成難遷移的相容承諾
+             ∧ 不改變核心產品承諾
+```
+
+materiality 是衍生值：`materialReasons[]` ＝ 失敗的 conjunct 清單；不另設獨立布林。**closed member set（v1.8 新增）** —— 先前只有散文描述四個 conjunct，沒有 machine-readable 值，下游因此無法在不自行發明內容的前提下驗證成員資格：
+
+```
+materialReasons[] ∈ {
+  not-low-cost-reversible      （低成本可回復 失敗）
+  protected-domain             （涉及金錢／權限／資料遺失／隱私／法規／安全／外部契約）
+  hard-to-migrate-commitment   （形成難遷移的相容承諾）
+  changes-core-product-promise （改變核心產品承諾）
+}
+去重，依 Unicode code point 序排序（否則同一組理由會算出不同 packet digest）
+```
+
+**本文是 `materialReasons` 定序的唯一 authoritative 定義。**下游 spec 不得另立版本 —— 兩處若各寫一套（例如一邊 code-point 序、一邊 enum 宣告序），兩個 writer 就會對同一組理由算出不同 digest，而 digest 正是用來證明兩者看到同一份 packet 的東西。「選擇與 alternative 明文記錄」「不偽裝成 REQ」是 Record 動作本身的義務，非路由條件。
+
+## 5. 分流表（互斥、可到達、完備；逐 persisted DP 依序判定）
+
+| # | 前提 | 路由 | 產物 |
+|---|---|---|---|
+| 1 | 有適用 active 且 **applicable** binding clause 且無衝突（含字面規則；exception-backed REQ 需 scopeCovers ruling，記入 DP.scopeRulingRef） | resolved | cite REQ-n |
+| 2 | 衝突涉 hard-constraint，**且無涵蓋本 DP 的有效例外** | Ask「改需求／取得例外」（不給選邊） | 回答 → 新 REQ，或 exception-grant Source＋引用它的 REQ（此後同類 DP 於 scope 內走 row 1） |
+| 3 | requirement vs compatibility，**已有 plan-gate 核准的 supersede proposal**（§7：具名 target＋具名 successor＋impact＋disposition 完整） | 執行 supersede＋揭露 | 建立新 REQ＋supersede Transition（完成後即 effective supersede）；舊 clause 轉 superseded（derived） |
+| 4 | 其他 clause 衝突（同層；或 proposal 不完整） | Ask | 回答 → proposal 核准／需求修訂 → 新 REQ |
+| 5 | 未裁決 ∧ safeToAssume | assume | ASSUM（INV-1；governedBy 依 §2 固定映射；**`routingOrigin=safe-default`**；ephemeral candidate 見 §6） |
+| 6 | 未裁決 ∧ ¬safeToAssume ∧ layer=intent | Ask | 回答 → 新 REQ；明示延後 → ASSUM（basisRefs 含該 DP 的 user-answer；**`routingOrigin=user-deferred`**） |
+| 7 | 未裁決 ∧ ¬safeToAssume ∧ layer=implementation | 技術審查（依 domain 之 discipline 或 arbiter） | 四分，見下 |
+
+row 7 審查結果四分：
+
+```
+找到既有 binding technical policy → resolved(REQ)   ← 政策固化為 Source，新 REQ cite 之
+正式工程裁決                      → decided(DEC)
+證據不足、僅核准暫定預設           → assumed(ASSUM，governedBy=審查 principal，
+                                          **routingOrigin=reviewed-provisional**)
+浮現產品取捨                      → 轉 row 6（asked）
+```
+
+material implementation fork 不自動丟使用者；只有浮現產品取捨或需額外授權才 Ask。
+
+## 6. 持久化規則與不變量
+
+- plan-scan 產出的 DP 一律持久（受 closed 維度清單約束，不會爆量）。
+- test-time implementation fork：無斷言 ∧ 無 reviewer 要求 ∧ 無追蹤需求 → **整筆不入模型**（ephemeral candidate）。「無 artifact」是入不入模型的決定，不是 assumed 狀態的一種結果。ephemeral 不逐筆持久化；漏抓率由 downstream audit／capture-recapture 處理。
+- **INV-1**：persisted DP 之 `status=assumed` ⇒ `assumedAs: ASSUM-n` 必填（杜絕 silent assumption 復活）。
+- **INV-2**：`status=decided` ⇒ `decidedBy` 必填；`status=resolved` ⇒ `resolvedBy` 必填（INV-1 的對稱閉合）。
+- **INV-3**：Source、Clause、Transition 皆 append-only 且 immutable；clause 不含生命週期 authored 欄位，`status`／`revisedBy`／`supersededBy` 一律為 Transition 推導的 derived fields。
+- **INV-4**：每個 persisted DP 至多一個 **current applicable outcome** —— `resolvedBy`／`decidedBy`／`assumedAs` 三者互斥，且必須指向 active 且 applicable（§2 derived 定義）的 clause。terminal clause 失效（retire、supersede、source drift、exception expiry）→ DP 必須 repoint 至後繼；無後繼則 reopen（§8 trigger）。
+
+## 7. supersede（proposal 為前置授權，Transition 為完成態）
+
+```
+supersede proposal（pre-state；以 plan-gate 核准紀錄存在，ackRef.kind=plan-gate 指向之）＝
+    具名 target: **clause ref**（REQ | DEC | ASSUM —— v1.11 放寬；
+      matrix 早已允許 `DEC supersede → REQ` 與 `ASSUM supersede → REQ` 走 kind=user，
+      原本寫死 `REQ-n` 使該兩列無合法 proposal 可用）
+  ∧ 具名 successor: **REQ ref**（v1.11 新增，必填）
+  ∧ 明示 compatibility impact
+  ∧ 核准的 disposition ∈ {
+      migration | version-boundary | deprecation-window |
+      coordinated-cutover | no-affected-dependents |
+      backward-compatible | accepted-breaking }
+缺任一 → 不構成 proposal，回落 Ask（row 4）
+
+effective supersede（post-state）＝ 依 proposal 執行的 Transition(action=supersede)，
+    compatibility block 抄錄 proposal 內容
+```
+
+- **Proposal record 是 typed external interface**（不新增模型物件）：`ackRef(kind=plan-gate)` 指向的紀錄必須可解析出 **target／successor／impact／disposition 四欄**，且與 Transition 的 `subject`／`successor`／`compatibility` block **完全一致**（§9 機械比對）。只驗「存在」不足 —— 否則任何不相關的 plan-gate 核准都能被拿來當授權；只驗三欄亦不足 —— 核准「取代 ASSUM-x」的 record 會授權把它換成任何 REQ。
+
+- 不存在「較新所以自動覆蓋」。
+- disposition 全覆蓋且必填 —— 沉默永不代表無影響：零 dependents → `no-affected-dependents`；有 dependents 但不破壞 → `backward-compatible`；major 版本 → `version-boundary`；破壞且明示接受 → `accepted-breaking`。
+- hard-constraint 不可被 supersede；只能取得 scoped exception（§1）或由 constraint owner 撤回（§2 有效性表）。
+
+## 8. 生命週期
+
+**DecisionPoint**
+
+```
+建立（plan-scan | test-time | review；定 layer＋classificationBasis；ephemeral 不入模型）
+open ─ row1/3 ──→ resolved(resolvedBy: REQ-n)
+open ─ row2/4/6 → asked ─┬─ 回答 ────→ resolved(新 REQ)
+│                        └─ 明示延後 → assumed(assumedAs: ASSUM-n)
+open ─ row5 ───→ assumed(assumedAs: ASSUM-n)
+open ─ row7 ───→ 技術審查 ─┬─ resolved(REQ)
+│                          ├─ decided(decidedBy: DEC-n)
+│                          ├─ assumed(assumedAs: ASSUM-n)
+│                          └─ asked（產品取捨）
+resolved | assumed | decided ─ terminal outcome 失效（INV-4）─→
+    successor applicable ? repoint（維持對應 status） : open（reopen）
+assumed | decided ─ 其他 reopen trigger ─→ open 重入分流
+    （intent fork 重入必須重經 plan-gate routing 揭露；
+      僅在仍未被 binding source 裁決時才進 row 2/4/6 asked ——
+      新 applicable binding authority 已裁決時直接 row 1 resolved）
+assumed ─ 使用者裁決 → resolved；原 ASSUM 經 Transition(supersede, successor=REQ-m)
+decided ─ 產品裁決 → resolved；原 DEC 經 Transition(supersede, successor=REQ-m)
+```
+
+**DP 沿用與 reopen（防重複裁決）**
+
+同一 DP 已有 active 且 applicable 的 DEC／ASSUM 且無 reopen trigger → **必須沿用**（cite 既有 clause），不重入分流；rerun／review 回到該 clause 的 `governedBy`／`approvedBy` principal（arbiter-owned outcome 回 arbiter）。reopen triggers（closed list，重入時記入 `reopenedBy`）：
+
+```
+新 dependent／caller 出現            review 證據推翻 basis
+稽核（capture-recapture）判 material  使用者指示
+引用來源 drift（§9 Check B）          safeToAssume conjunct 因情境改變而翻轉
+terminal clause 失效且無後繼（INV-4）  新 applicable binding authority 出現
+```
+
+**Terminal clause 替換（含 row 3 的 REQ supersede、reopen 產生新結果、ASSUM 修訂）一律原子執行：**
+
+```
+1. 建立 successor clause（先建 —— Transition 永不指向尚不存在的 successor）
+2. successor 為 exception-backed REQ 時：對每個可能 repoint 的 DP 建立／取得
+   scope ruling（須滿足 §2 綁定：by == intent ∧ subjectRef == 該 DP ——
+   憑據在 repoint 前備妥，否則 repoint 當下即違反 INV-4；
+   ruling 存在但指向他 DP 者不算備妥）
+3. 對舊 terminal clause（REQ | DEC | ASSUM）建立 supersede／revise／retire Transition
+4. 原子處理所有引用 subject 的 DP：
+   - successor applicable 且（如適用）scopeRulingRef 完整（含 subjectRef == 該 DP）→ repoint 並設定對應 status
+     （successor 為 REQ → resolved；DEC → decided；ASSUM → assumed）
+   - 否則（無後繼、不 applicable、或 scope ruling 缺）→ reopen（§8 trigger）
+```
+
+**Clause 生命週期**（全部經 Transition，§2 有效性表；status 為 derived）：
+
+```
+REQ:   active → superseded(REQ-m) | retired
+DEC:   active → superseded(DEC-m | REQ-m) | retired
+ASSUM: active → revised(ASSUM-m) | superseded(REQ-m | DEC-m) | retired
+```
+
+升級碰測試：`@src ASSUM-n`／`DEC-n` 的測試 retag 至後繼 clause（裁決與原選擇一致時），或依 verification-gate 對新 REQ 重做紅→綠（裁決選了 alternative 時）。
+
+## 9. 來源檢查契約與檢查分層
+
+**Canonical excerpt bytes**：UTF-8（無 BOM）、換行正規化為 LF、其餘不轉換（不 trim、不折疊大小寫 —— 修飾詞承重）。`digest ＝ sha256(canonical(excerpt))`。
+
+**Check A — snapshot integrity**（一律執行）：對模型內儲存的 excerpt（immutable snapshot payload）重算 digest 比對。保證：模型自身的快照未被竄改。gate scope 內 fail-closed。
+
+**Check B — live-source drift**（僅 `driftMode=repo-file`）：在目前 repo 檔案的 canonical bytes 中搜尋 excerpt：
+
+| 情況 | 處置 |
+|---|---|
+| 唯一匹配，位置 ≠ locator | 通過；locator 僅查找輔助，stale 不失效、不回寫 |
+| 零匹配 | **drift**：gate scope 內 fail-closed（重新固化：新 Source＋supersede Transition，或 retire）；scope 外 observe |
+| 多重匹配 | 內文仍在，裁決有效；記 anchor-ambiguity 觀測。**新建** Source 時要求唯一（擴大 excerpt 至唯一匹配，否則 fail-closed） |
+
+- `driftMode=snapshot-only`（對話、repo 外 policy、external-contract 等）：僅 Check A。**明文非聲稱**：對 snapshot-only 來源不偵測 live drift。
+- `contentKind=exception-grant` 加查 expiry 與 targetConstraintRef 可解析：逾期 → 引用它的 REQ 對任何 DP 不再 applicable，gate scope 內 fail-closed。
+
+### Base provenance witness（前態的 typed 依據）
+
+判斷「某物在本輪之前就已存在」不能靠敘述，必須有可解析的前態輸入：
+
+```
+baseProvenance:
+  treeOid      ← **與 gate scope 測試變更集合所用的同一個 Git base tree**
+                 （「Git base snapshot」與「task-start snapshot」不得混用為同義詞；
+                  本文選定前者為 canonical basis）
+  storePath    ← **固定為 runtime contract 的 canonical store path**（`.ctide/provenance.json`），
+                 不由 caller 自填 —— 可任填等於讓 witness 指向任意檔案
+  storeDigest  ← 該檔**在該 `treeOid` 中的原始 bytes**的 sha256
+                 —— **與 current store 的 canonicalText CAS digest 記法不同**，
+                    兩者**不得**互換（本節下方 historical-read 條與下游
+                    test-provenance §11b.9c 早已要求 raw bytes；
+                    **2026-09-05 一致性 erratum**：本行原寫「canonical bytes」，
+                    與該兩處牴觸，於此更正。**這是 erratum，不是新的 shared 版本契約** ——
+                    shared 仍為 approved v1.15，判準與義務一字未改）
+```
+
+- checker **必須**自 `treeOid` 讀出 canonical provenance store、驗 `storeDigest` 相符後，才據以判斷任何「前態存在性」。
+- 該路徑在 `treeOid` 中不存在時，採 §2 的**唯一** canonical empty store 定義（本節**不重寫 literal**），其 digest 亦依 canonical 規則計算。
+- `treeOid` 內的 store 是 **historical immutable** 物件：其 `provenanceVersion` 可能是 1 也可能是 2，checker 以 read-only legacy decoder 讀取並驗**原始** bytes 的 `storeDigest`；**不遷移、不回寫**，也不得把 normalized 後的 bytes 拿去和 raw digest 比對。current store 的版本與它無關。
+- **witness 是 inline 值，不是 ref** —— 統一以 inline `baseProvenance` 傳遞；不引入 `baseProvenanceRef`（那需要另一個 record kind 承載，本版不新增）。
+- **resume 同一 task 時不得改換 base** —— `treeOid` 隨 `TaskState.baseProvenance` 於 task 起始固定且 immutable；`resume-task` 嘗試改動即**拒絕**。
+- 任何 batch 內攜帶的 witness **必須等於** tracked `TaskState.baseProvenance`；不等即 fail-closed。
+- 下游的變更盤點必須攜帶 `baseTreeOid` 並納入其 digest envelope，checker 據以機械驗證 `baseProvenance.treeOid == 盤點所用的 Git base tree`。
+- 缺 witness、witness 指向錯誤 tree／store、或 digest 不符 → **fail-closed**（不得退化為「當作不存在」或「當作存在」）。
+
+**Gate scope（brownfield，單值化）**：
+
+```
+gate scope ＝ **provenanceRelevantTestChanges**（closed set）
+             ＝ existence change            （新增／移除）
+             ∪ binding change              （改綁，含改成／改自 EXPL）
+             ∪ identity／location change   （改名／搬移）
+             ∪ **declaration body change**  （tag 不變、斷言改了）
+             ∪ **effective-oracle dependency change**
+                                           （tag 與宣告本體皆不變，但 helper／fixture／
+                                            snapshot／golden／外部 expected-data 改了）
+             後兩者為 v1.7 補列 —— 若只寫「binding 有變動」，**最常見的改斷言**
+             反而落到 scope 外 observe-only。此集合的機械導出方式由下游
+             implementation spec 定義，本文不依賴其欄位名
+           ∪ 這些測試的 **preChangeBinding 與 postChangeBinding** 所引用的 clause
+             及其 sourceRef／basisRefs Source（含 Transition 推導的 status 與 applicable）
+             —— 前態必須在 scope 內，否則「改綁即脫逃」
+           ∪ 本次新增／修改的 clause／Source／Transition
+           ∪ 所有 current terminal ref 指向本次 changed／transitioned／drifted／expired
+             clause 的 DP（INV-4 影響閉包）
+           ∪ **reverseClosure**（clause → test 反向閉包，seed 具名如下）
+
+lifecycleAffectedClauses ＝ semanticallyChangedClauses   （本次內容語義變更者）
+                         ∪ transitionedClauses          （本次有生效 Transition 者）
+                         ∪ driftedClauses               （Check B drift）
+                         ∪ expiredClauses               （exception 逾期）
+reverseClosure ＝ 目前綁定指向 **lifecycleAffectedClauses** 的所有測試
+
+**seed 必須具名，不得用「上述 clause」代稱** —— 後者會把「僅因某個變更測試的 pre／post
+binding 而進 scope、但生命週期毫無變動」的 clause 也算進去，於是一次普通的改斷言就會
+擴散成該 clause 全體 sibling 的 review。反向閉包只由生命週期事件觸發。
+```
+
+### v1.15 lifecycle seed derivation（approved）—— `lifecycleAffectedClauses` 的唯一推導
+
+上一段只寫出四個集合名與各一句括號註解，**沒有**任何機械推導；而下游 test-provenance 的 `governance-affected` 反向閉包**完全**以此集合為 seed。兩個都說得通的實作會對同一份 store 算出不同 membership。本節把它收斂成唯一演算法。**本節不改動上一段的 gate scope、不新增任何 persisted 欄位，也不重寫 §2 的 canonical empty store literal 或既有三分表 —— 一律引用。**
+
+**`B`、`C`、`H`、`T0` 的唯一意思**
+
+```
+B  ＝ request.baseTreeOid 指向的 **exact Git tree** 內、canonical store path
+      （.ctide/provenance.json）的 **historical immutable** provenance store
+C  ＝ **同一次** GovernanceSeedPreimage invocation 以 fresh-load 取得的
+      **G1** current store
+H  ＝ **同一次** invocation 中通過 S1／S2 stability 的 captured head view
+T0 ＝ G1 完成 parse／schema validation **之後**、第一個 time-dependent 判定
+      （exception applicability、expiry）**之前**，自 host **UTC wall clock**
+      **恰取樣一次**所得的 instant
+```
+
+**`T0` 的取樣與範圍（closed）**
+
+```
+次數          : 每次 buildGovernanceSeedPreimage() invocation **恰一次**
+位置          : G1 parse／schema validation 完成後、第一個 time-dependent 判定之前
+適用範圍      : 本次 invocation 的**所有** exception applicability、expiredClauses
+                與相關 validation，一律使用**同一個** T0
+G2            : **不**重新取樣時鐘
+時鐘跳動      : 取樣之後 system clock 前跳或後跳，**不改變**本次結果
+跨 invocation : 下一次完整 invocation 重新取樣；若因此跨過 expiry boundary
+                而輸出改變，那是**預期的 lifecycle event**，不是不穩定
+public request: 仍**不得**接受 clock、now、timestamp、Date provider
+                或任何 alias／test seam
+persisted     : **不** persisted —— 見下「`T0` 不進任何 carrier」
+```
+
+**`B`／`C` 的 version matrix**
+
+```
+B（historical immutable base-tree store）:
+  store 缺席   → 採 §2 的**唯一** canonical empty store 定義（本節**不重寫 literal**）
+  store 存在   → provenanceVersion **1 或 2 皆可 read-only 分析**
+                 —— 沿用既有三分表：**不遷移、不回寫**，
+                    **不得**拿 normalized bytes 冒充 raw base witness
+  其他版本值   → **fail-closed**
+  —— historical base v1 **不得**被誤套 current-v1 的 migration-only 限制。
+
+C（current mutable store，即 G1）:
+  store 缺席   → 採**同一份** canonical empty store 定義
+  store 存在   → **必須**是 current provenanceVersion 2
+  current v1   → **fail-closed** —— 必須先另走**既有** migration transaction；
+                 producer **不得** migration、**不得**回寫
+  其他版本值   → **fail-closed**
+```
+
+**Cross-snapshot immutability（先於任何 seed 導出）**
+
+```
+1. 先以 **typed ID** 為 B 與 C 各建一份 index
+   （sources／clauses／transitions／records 四類 immutable object）。
+2. B 中**每一個** immutable Source、Clause、Transition、Record
+   **必須**在 C 中以同一 typed ID 存在。
+3. 同一 typed ID 的 **canonical typed value 必須 exact equal**。
+4. 缺失，或 payload 不同 → **fail-closed**（integrity failure）。
+5. C **可以**新增 immutable object —— 那正是 semanticallyChangedClauses 的來源。
+6. DecisionPoint 與 TaskState **不**套 byte equality（兩者本就可變），
+   但仍須通過各自的版本 invariant。
+7. 任一側出現 duplicate typed ID → **fail-closed**。
+
+—— 本版選定「**typed-ID set difference ＋ shared-ID exact-equality assertion**」
+   為**唯一**演算法。同 ID 而 payload 不同違反 **INV-3**（Source、Clause、
+   Transition 皆 append-only 且 immutable），因此它是 **integrity failure**，
+   **不是**合法的 lifecycle seed —— 合法的語義更新一律以**新 Clause** 表示。
+```
+
+**四個集合的 exact derivation**
+
+```
+semanticallyChangedClauses ＝ ids(C.clauses) \ ids(B.clauses)
+  —— 即 C 新增的 canonical Clause ID。
+  —— 同 ID payload 改變已於上一步 fail-closed，**不得**收進本集合。
+  —— 若同時存在 Transition：subject 由 transitionedClauses 處理；
+     新 successor 若是新 Clause，由本集合處理。
+
+transitionedClauses ＝ { T.subject |
+                         T ∈ C.transitions
+                         ∧ T.id ∉ ids(B.transitions)
+                         ∧ T 通過 C 的**既有** Transition validity 與
+                           「每個 clause 至多一個生效 Transition」規則 }
+  —— invalid、dangling、重複生效 Transition → **fail-closed**
+  —— **不**自動加入 successor；successor 若是新 Clause，
+     已由 semanticallyChangedClauses 納入
+  —— **不**做 transitive guessing
+
+driftedClauses ＝ { c ∈ C.clauses |
+                    c 的 **direct Source set** 中至少一個 driftMode=repo-file 的
+                    Source 對 H 執行 Check B 得到 **zero occurrence** }
+
+  direct Source set（exact，**不遞迴**）:
+    REQ        : sourceRef
+    DEC／ASSUM : basisRefs 中 discriminated union 為 **Source ref** 的成員
+    **不**沿 RecordRef、ObservationalRef、DP、Transition 或自由文字展開
+
+  Check B 的觀測面（判定語義沿用上文，本節**不改判定表**）:
+    只讀 **H 已捕捉的 regular blob bytes**
+    使用既有 canonical excerpt bytes
+    計算全部 (path, byteStart) 的 exact occurrence；**overlap 也各自計數**
+    locator 只是 stale-tolerant hint，**不**限制搜尋 path
+    0 occurrence  → **drift**
+    1 occurrence  → **not drift**，即使位置與 locator 不同
+    2+ occurrence → anchor-ambiguity **observation**，**not drift**
+    driftMode=snapshot-only → **永不**算 drift
+    **不**跟隨 symlink／junction／submodule
+    無法安全分析  → **fail-closed**，**不得**默認 not drift
+
+expiredClauses ＝ { c ∈ C.clauses |
+                    c 是 REQ
+                    ∧ c.sourceRef 指向 contentKind=exception-grant 的 Source S
+                    ∧ S.expiry 依 §2 exact grammar 解析所得的
+                      expiryInstant <= T0 }
+  —— DEC／ASSUM **不**因 basisRefs 含 exception-grant 而進本集合
+  —— malformed chain、dangling targetConstraintRef、owner mismatch
+     是 **validation failure**，**不是** membership
+```
+
+**Union 與輸出**
+
+```
+lifecycleAffectedClauses ＝ semanticallyChangedClauses
+                         ∪ transitionedClauses
+                         ∪ driftedClauses
+                         ∪ expiredClauses
+
+輸出 ＝ canonical ClauseRef array:
+  依 Unicode code point **嚴格遞增**
+  overlap **去重** —— 每個 ClauseRef 至多出現一次
+  **不含** dpRef、path、reason 或任何 metadata
+```
+
+**`T0` 不進任何 carrier（明確決定）**
+
+```
+GovernanceSeedPreimage : 仍**恰四欄**
+ChangedTestInventoryV2 : 仍**恰七欄**；inventoryVersion 仍為 2；
+                         inventoryDigest 公式**不變**
+**不**新增 evaluationTime／producedAt／clockDigest 或任何等價欄位。
+reader **不能**由單一 persisted entry 重建 T0
+  —— 這是既有 producer-side governance derivation 的 **assurance boundary**；
+     本節把它寫明，**不**假裝可驗。
+日後若確有需要持久化 clock witness，**必須另立 inventory schema／version**，
+  **不得**偷塞自由欄位。
+```
+
+**Reverse closure ownership（與下游的分界）**
+
+```
+shared（本文件）  : 擁有 **Clause membership** —— 即 lifecycleAffectedClauses
+test-provenance  : 擁有 **head-declaration 的 reverse lookup** 與
+                   classification precedence
+reverseClosure   ＝ 目前綁定指向 lifecycleAffectedClauses 的所有測試（語義不變）
+  —— 它是 producer 的 **mandatory internal stage**；
+     **不是** public operation、**不是** persisted object、
+     **也不是**第七項 rollout prerequisite
+  —— caller **不得**傳入 hit set 或 closure result
+```
+
+**v1.15 acceptance matrix（approved；executable）** —— 本節已隨 v1.15 promotion 正式生效；契約生效**不代表**下列任何一格已有測試、已實作或已通過。
+
+```
+ 1. B 與 C 相同、無 drift、無 expiry        → 四集合**全空**
+ 2. C 新增一個 Clause                       → **只**進 semanticallyChangedClauses
+ 3. same-ID Clause payload 改變，或 B 的 immutable object 在 C 中消失
+                                            → **fail-closed**（integrity failure）
+ 4. C 新增一個合法且生效的 Transition       → subject 進 transitionedClauses；
+                                              新 successor **另**由 semantic set 納入
+ 5. invalid／dangling／重複生效 Transition   → **fail-closed**
+ 6. Check B 三案：zero → **drift**；one（位置已移動）→ **not drift**；
+    multiple → anchor-ambiguity observation、**not drift**
+ 7. 同一 drifted Source 被兩個 current Clause **直接**引用
+                                            → **兩個** Clause 都納入 driftedClauses
+ 8. driftMode=snapshot-only 的 Source        → **不**造成 drift
+ 9. expiry 在 T0 **之前**／**恰等於** T0／**之後**
+                                            → expired／**expired**／not expired
+10. 四集合互相 overlap                      → union **去重**並依 code point 排序
+11. C 三案：缺席 → canonical empty v2；v2 → 正常；v1 → **fail-closed**
+12. B 三案：缺席 → canonical empty v2；v1 → **可** read-only 分析；
+             v2 → **可** read-only 分析
+13. T0 **只取樣一次** —— 同一次 invocation 即使實作在中途跨過 wall-clock
+    boundary 重讀時鐘，仍**必須**沿用原 T0
+    （evidence shape 見 test-provenance AC171）
+14. 一個 **stable** clause 底下的普通 test body／oracle 變更
+                                            → **不**擴散成該 clause 全體 sibling 的 review
+```
+
+**本節只閉合 spec authority**：**不代表** `GovernanceSeedPreimage`、populated inventory producer 或任何 governance derivation 已實作；**不得**接受 populated inventory；**不得**解除下游的 `unsupported-populated-inventory`；**Phase 2 不得宣稱 READY**。
+
+### 綁定兩相（v1.7）—— 前態不受現時效力課責
+
+**existence 必須進型別** —— 只用 `null` 會把「測試已移除」與「測試還在、但把綁定拿掉了」混為一談，後者正是最該擋的逃逸路徑（拆掉 tag 即跳過 post 驗證）：
+
+```
+binding   ＝ { clauseRef, dpRef? } | EXPL
+preState  ＝ { exists: false, binding: null }                 ← 本次新增的測試
+            | { exists: true,  binding: binding | null }      ← 既有測試；null ＝ 未標記 legacy
+postState ＝ { exists: false, binding: null }                 ← 測試已移除
+            | { exists: true,  binding: binding }             ← **不允許 null**
+
+preChangeBinding  ＝ preState.binding
+postChangeBinding ＝ postState.binding
+
+INV-B1：postChangeBinding == null  ⇔  post-state 測試不存在
+INV-B2：post-state 測試存在 ⇒ binding 必為 clause binding 或 EXPL
+```
+
+**非對稱是刻意的**：`preState` 允許「存在且未標記」（brownfield legacy 合法）；`postState` 不允許 —— 一個落入 gate scope 的測試在變更後必須有綁定。連帶後果：**修改一個未標記的 legacy 測試會強制為它補上綁定**（既有 ratchet，非本版新增）。
+
+| 相 | 課予的條件 | 用途 |
+|---|---|---|
+| **preChangeBinding ＝ clause binding** | clause 與 Source **可解析** ∧ immutable snapshot integrity（Check A）成立。**不要求** active／mechanicallyApplicable／Source live-current／exception 未過期 | scope closure、語義審查輸入 |
+| **preChangeBinding ＝ null** | **不做** clause／Source resolution。僅在 `preState` 定義的兩種情形合法：測試本次新增（`exists:false`）、或既有未標記 legacy（`exists:true`） | 同上 |
+| **preChangeBinding ＝ EXPL** | **不做** clause／Source resolution | 同上 |
+| **postChangeBinding**（非 null 且非 EXPL） | clause `active ∧ mechanicallyApplicable`（per-kind §2）∧ Source 檢查（Check A/B）∧ exception chain 有效（owner 相符、未過期） | 現時效力 |
+| **postState.exists == false**（測試已移除） | **無 post 驗證**；「tag 必須存在」不適用。判定依 `exists`，**不得**由 `binding == null` 反推（INV-B1／B2） | — |
+| **postChangeBinding == EXPL** | 不做 clause／Source resolution | — |
+
+**理由**：前態是歷史事實，合法修復正是「從失效的綁定移走」。若對前態課現時效力，模型會反過來擋掉它應該鼓勵的修復。
+
+**State matrix（合法性判定）**：
+
+| preChangeBinding | postChangeBinding | 判定 |
+|---|---|---|
+| inactive／superseded clause | active successor clause | **通過** —— 前態只驗可解析＋snapshot；後態驗全套 |
+| inactive clause | `EXPL` | **通過** —— 後態不做 clause resolution |
+| 失效 clause（stale tagged test 移除） | `null` | **通過** —— 無 post 驗證 |
+| `null`（未標記 legacy 移除） | `null` | **通過** —— pre 為 null 是合法狀態 |
+| clause A | clause B（同時移動位置） | 前態驗 A、後態驗 B，兩相獨立 |
+| 已過期 exception-backed REQ | 替換的 clause 或 `null` | **通過** —— 過期只擋後態，不擋前態 |
+| 任意 | active 但 **Source drift** 的 clause | **fail-closed**（後態課責） |
+| clause A | **測試仍存在但綁定被移除** | **fail-closed** —— `postState.exists == true` 時 binding 不得為 null（INV-B2）；不得被誤讀成「已移除」 |
+| clause A | clause A（**僅位置移動**） | **通過** —— identity 維持，前後同綁定 |
+| `null`（`exists:false`，**本次新增**） | clause 或 `EXPL` | **通過** —— 前態不做 resolution |
+| `null`（`exists:true`，**未標記 legacy 被修改**） | clause 或 `EXPL` | **通過** —— 前態不做 resolution；後態必須有綁定（INV-B2 的 ratchet） |
+| `EXPL` | clause 或 `EXPL` | **通過** —— 前態不做 resolution |
+
+### 檢查分層
+
+| 層 | 內容 | 失敗行為 | 範圍 |
+|---|---|---|---|
+| 結構（**postChangeBinding**） | binding 非 null 且非 EXPL 時：tag 存在、ID 可解析、clause **active ∧ mechanicallyApplicable**（per-kind，§2）；exception-backed 另驗 `scopeRulingRef` 可解析 ∧ `record.by == {discipline: intent}` ∧ **`record.subjectRef == current DP`**（否則 retag 至後繼或重新裁決）。binding 為 `null`（測試已移除）→ 本列不適用；`EXPL` → 不做 clause resolution | fail-closed | gate scope |
+| 結構（**preChangeBinding**） | binding 為 **clause** 時：僅驗 clause／Source **可解析** ＋ snapshot integrity（Check A）；**不課** active／applicable／live-current／未過期 —— 前態是歷史事實，合法修復正是從失效綁定移走。binding 為 **null**（本次新增／未標記 legacy）或 **EXPL** 時：**不做 clause／Source resolution**，本列僅驗該前態符合 `preState` 型別 | fail-closed（僅可解析性／型別合法性） | gate scope |
+| 結構（Transition） | 對每筆本次新增 Transition 驗 §2 合法性表的 `subject × action × successor × authority` **全矩陣**，含 **witness binding**（§2：ackRef payload 與 authorityRef principal／subject 的綁定 —— review-ruling.by 與 subjectRef、user-answer.subjectRef == 該 DP、plan-gate 與 §7 **四欄**一致（target／successor／impact／disposition）、constraint-revocation 與 ownerRef 相等）、ASSUM 的 governedBy／domain-transfer 治理；ackRef 依 External-record contract 解析 | fail-closed | gate scope |
+| 來源 | Source 存在、Check A（一律）；**Check B 與 exception 現時效力只課於 postChangeBinding 所引用者**：`contentKind=exception-grant` 完整鏈 —— resolve targetConstraintRef → target 必須是 `authority=hard-constraint` 的 REQ → `grantAuthorityRef == target.ownerRef` → 未過期，任一失敗 fail-closed。preChangeBinding 所引用的 Source 只課 Check A | fail-closed | gate scope |
+| DP 完整性 | 對 gate scope 內每個 DP（含 INV-4 影響閉包）：terminal refs 三者互斥、status 與 terminal ref 型別一致（resolved↔REQ、decided↔DEC、assumed↔ASSUM）、terminal ref 指向 active ∧ applicable clause、有 applicable successor 時已全部 repoint、無 applicable successor 時已全部 reopen | fail-closed | gate scope |
+| **Carrier coherence**（§2 `resolutionRulingRef`） | 對同一組 DP：① `resolutionRulingRef != null` ⇒ `status == resolved` ∧ `resolvedBy` 存在；② `status != resolved` ⇒ `resolutionRulingRef == null`；③ carrier 非 null 時，該 record 必須 `rulingKind == binding-policy` ∧ `subjectRef == 本 DP` ∧ `activeSuccessorChainEnd(bindingClauseRef) == DP.resolvedBy`。**只對 current carrier 套用**；不再被任何 carrier 引用的歷史 ruling 依 §2 僅驗 snapshot／digest 自洽 | fail-closed | gate scope |
+| **Reopen cause coherence**（§2 `reopenCauseRef`） | **只對 `reopenCauseRef != null` 的 DP 執行**：ref 可解析為 Transition T ∧ `T.subject == DP.priorTerminalRef` ∧ `T.successor != null` ∧ `applicable(T.successor, DP) == false`（現時重新求值）∧ `reopenedBy` 為「terminal clause 失效且無後繼」的下游序列化 ∧ `status == open` ∧ 三個 terminal ref 皆 null ∧ `resolutionRulingRef == null`。**`reopenCauseRef == null` 者不在本列範圍內**，且不得因 prior clause 日後取得 Transition 而被重新分類 —— 成因是歷史事實，只能讀持久化的 witness，不得由 current graph 形狀反推 | fail-closed | gate scope |
+| 語義 | assertion 是否被 clause 蘊含、是否超出 tag 範圍 | test discipline 判斷 | 全部 |
+| Legacy | gate scope 以外的既有測試／條款 | 允許全量語義觀測；findings **observe-only**，不阻擋本次 run | scope 外 |
+
+**v1.7 驗收案例**（gate 契約層）：① inactive clause → active successor：通過；② inactive clause → `EXPL`：通過；③ 移除引用失效 clause 的 stale tagged test：通過；④ 移除未標記 legacy test（`preState = {exists:true, binding:null}`）：通過；⑤ move ＋ 改綁：前後兩相各自驗證；⑥ 過期 exception-backed REQ → 替換或移除：通過；⑦ 後態 clause 有 Source drift：fail-closed；⑧ **move-only**（綁定 A→A、僅位置變動）：identity 維持，通過；⑨ **過期 exception 的 DP 收斂**：有 applicable successor → 所有受影響 DP repoint；無 → reopen（INV-4 影響閉包）；⑩ **malformed／dangling 原始 tag**（語法不合法、或 ID 解析不到任何 clause）：**在映射為 binding 之前** fail-closed —— 不得先當成 `binding == null` 再走 existence 分支，那會把語法錯誤誤讀成「測試不存在」；⑪ **added test**（`exists:false, null` → `exists:true, clause|EXPL`）：通過，前態不做 resolution；⑫ **修改未標記 legacy**（`exists:true, null` → `exists:true, clause|EXPL`）：通過，且後態必須有綁定；⑬ **sibling 反向閉包**：兩測試同綁 `ASSUM-x`，只改其中一個並使 `ASSUM-x` 發生 Transition → 未被改動的 sibling 仍進 gate scope；⑭ **body-only 變更**：tag 不變、只改斷言 → 入 scope（不得因 binding 未變而落到 observe-only）；⑮ **oracle-only 變更**：tag 與宣告本體皆不變、只改 golden 或 helper → 入 scope；⑯ **clause 穩定時不擴散**：普通改斷言且其 clause 無生命週期事件 → **不**觸發 reverseClosure，sibling 不被拉入；⑰ **`EXPL` → deleted**：前態為 `EXPL` 的測試被移除 → 通過（前態不做 resolution，後態 `exists:false`）；⑱ **base witness 缺席／錯指／digest 不符** → 三者各自 fail-closed，不得退化為預設判斷；⑲ **canonical empty store**：`treeOid` 中無 store 檔 → 採空 store 且 digest 可驗，前態存在性一律為否；⑳ **head 規則**：**尚無 batch 時 head=null 且 TaskState ref=null 為合法**；已有 batch 時零個 tip 或兩個以上 tip → fail-closed；㉑ **base 不得暗換**：`resume-task` 嘗試改動 `TaskState.baseProvenance` → 拒絕；②② **TaskState 為權威**：刪除全部 scratch 後，`taskId`／`currentTaskDpIds`／committed head 仍可由 tracked TaskState 取得；②③ **chain 連結**：`previousBatchRef` 指向他 task 的 batch、或指向自己 task 的歷史非 head batch → 兩者各自 fail-closed；②④ **首筆 batch**：`previousBatchRef == null` 且 `committedRef` 由 null 原子更新為該 batch；②⑤ **witness coverage**：治理 witness 的 `resolutionGroupDigest` 與該 group 重算值不等（例如少一筆 sibling evidence）→ fail-closed；②⑥ **evidence ref permutation**：同一組 `semanticEvidenceRefs` 以不同輸入順序（或含重複）提交 → 排序去重後 `resolutionGroupDigest` **相同**；②⑦ **TaskState carrier**：fresh clone 自 `taskStates` 讀回 TaskState；重複 taskId → fail-closed。
+
+**Assurance boundary（明文）**：機械檢查止於 presence／resolution／digest／status／mechanicallyApplicable／ref 一致性比對。**scopeCovers 是 intent discipline 的語義判斷**（機械層驗 ruling 存在、intent principal、及 `record.subjectRef == current DP`；不判斷 scopeCovers 的語義真實性）；語義蘊含由 test discipline 審；ownerRef 匹配驗的是模型內 ref 相等，**不驗現實身分**（non-adversarial 邊界，同 demo1 receipt 的定位）。presence 級檢查不得宣稱為完整 provenance 保證（failure memory：presence-only check 曾被當 coverage 讀）。
+
+## 10. 觀測（非 gate）
+
+- DP 計數（layer × status × discoveredAt × reopenedBy）進 run ledger：觀測值，永不當 gate —— 數字上升可能代表偵測變好。append 為流程副作用，不綁報告格式 sentinel（failure memory：run-ledger append 曾被 format-gated 餓死）。
+- `intent-scan: no-applicable-dimension` 是合法結束狀態，**不得推出 task trivial**；implementation risk 由 Risk Matrix 獨立判定。
+- discoveredAt 分布餵 capture-recapture 稽核（獨立 blind reader、Chao1 估計母體）的校準。
+
+## 11. 邊界
+
+- 不削弱 `verification-gate.md`：REQ（kind=acceptance）照規定紅→綠。
+- brownfield：gate scope 如 §9 單值定義；scope 外 observe-only。
+- reviewer 路由以 principal 表述：ASSUM → 其 `governedBy`；DEC → 其 `approvedBy`（arbiter-owned outcome 路由到 arbiter）；與既有 repair-loop rerun 規則一致。§9 的語義蘊含檢查恆屬 test discipline —— 「治理假設內容」與「審測試蘊含」是兩個不同職責。下游 spec 映射 principal → 具體 agent。
+- 下游分工：**intent-scan spec**（觸發條件、七維度流程、Ask 批次、plan gate 接線）；**test-provenance spec**（tag 語法、contract-check 三層檢查、test discipline prompt、ledger 接線）。

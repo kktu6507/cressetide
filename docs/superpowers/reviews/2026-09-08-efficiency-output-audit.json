@@ -1,0 +1,201 @@
+{
+  "scope": "Offline structural observation; no new model calls, prompt changes or grading changes",
+  "recordedAt": "2026-09-08T13:54:07.763Z",
+  "source": "2026-09-08-efficiency-l1b-evidence.json",
+  "method": "Split at the literal Findings index heading; count JS string characters, not tokens. Match exact case-sensitive 12-whitespace-word runs across the two parts, merge overlapping after-part ranges.",
+  "limits": [
+    "Index and role-required tail can interleave, so no invented separate tail size is reported.",
+    "Repeated exact text may be required evidence; paraphrased repetition is not counted. Neither count establishes a contract violation or removable cost.",
+    "Model output usage can include content beyond retained final text; character counts are not output-token counts or billing.",
+    "Free-form Analysis and required role fields remain protected; any contract change requires separate discussion and validation."
+  ],
+  "totals": {
+    "reviewers": 7,
+    "totalCharacters": 44551,
+    "beforeIndexCharacters": 31625,
+    "indexAndTailCharacters": 12926,
+    "exactRepeatedAfterCharacters": 60
+  },
+  "rows": [
+    {
+      "fixtureId": "01-js-missing-return",
+      "totalCharacters": 6136,
+      "beforeIndexCharacters": 4852,
+      "indexAndTailCharacters": 1284,
+      "requiredFieldOccurrences": [
+        {
+          "label": "Non-issues.",
+          "offset": 4097,
+          "section": "before-index"
+        }
+      ],
+      "codeFencesBefore": 1,
+      "codeFencesAfter": 0,
+      "exactRepeatedAfterCharacters": 0,
+      "repeatedSpans": []
+    },
+    {
+      "fixtureId": "02-py-off-by-one",
+      "totalCharacters": 4993,
+      "beforeIndexCharacters": 3513,
+      "indexAndTailCharacters": 1480,
+      "requiredFieldOccurrences": [
+        {
+          "label": "Efficiency.",
+          "offset": 3389,
+          "section": "before-index"
+        }
+      ],
+      "codeFencesBefore": 0,
+      "codeFencesAfter": 0,
+      "exactRepeatedAfterCharacters": 60,
+      "repeatedSpans": [
+        {
+          "start": 1344,
+          "end": 1404,
+          "characters": 60,
+          "text": "to `return max(a[i] + a[i + 1] for i in range(len(a) - 1))`,"
+        }
+      ]
+    },
+    {
+      "fixtureId": "03-go-nil-before-check",
+      "totalCharacters": 6556,
+      "beforeIndexCharacters": 3979,
+      "indexAndTailCharacters": 2577,
+      "requiredFieldOccurrences": [
+        {
+          "label": "Applicability:",
+          "offset": 5889,
+          "section": "index-and-tail"
+        },
+        {
+          "label": "Best-practice alignment:",
+          "offset": 5920,
+          "section": "index-and-tail"
+        },
+        {
+          "label": "Efficiency / simplification opportunities:",
+          "offset": 6098,
+          "section": "index-and-tail"
+        },
+        {
+          "label": "Non-issues / out of scope:",
+          "offset": 6334,
+          "section": "index-and-tail"
+        }
+      ],
+      "codeFencesBefore": 0,
+      "codeFencesAfter": 1,
+      "exactRepeatedAfterCharacters": 0,
+      "repeatedSpans": []
+    },
+    {
+      "fixtureId": "04-py-mutable-default",
+      "totalCharacters": 7922,
+      "beforeIndexCharacters": 6132,
+      "indexAndTailCharacters": 1790,
+      "requiredFieldOccurrences": [],
+      "codeFencesBefore": 1,
+      "codeFencesAfter": 0,
+      "exactRepeatedAfterCharacters": 0,
+      "repeatedSpans": []
+    },
+    {
+      "fixtureId": "05-js-foreach-await",
+      "totalCharacters": 7115,
+      "beforeIndexCharacters": 4322,
+      "indexAndTailCharacters": 2793,
+      "requiredFieldOccurrences": [
+        {
+          "label": "Applicability:",
+          "offset": 6292,
+          "section": "index-and-tail"
+        },
+        {
+          "label": "Best-practice alignment:",
+          "offset": 6323,
+          "section": "index-and-tail"
+        },
+        {
+          "label": "Efficiency / simplification opportunities:",
+          "offset": 6658,
+          "section": "index-and-tail"
+        },
+        {
+          "label": "Non-issues / out of scope:",
+          "offset": 6872,
+          "section": "index-and-tail"
+        }
+      ],
+      "codeFencesBefore": 0,
+      "codeFencesAfter": 1,
+      "exactRepeatedAfterCharacters": 0,
+      "repeatedSpans": []
+    },
+    {
+      "fixtureId": "06-clean-js-guard",
+      "totalCharacters": 5164,
+      "beforeIndexCharacters": 4248,
+      "indexAndTailCharacters": 916,
+      "requiredFieldOccurrences": [
+        {
+          "label": "Efficiency / simplification:",
+          "offset": 3372,
+          "section": "before-index"
+        },
+        {
+          "label": "Best-practice alignment:",
+          "offset": 3629,
+          "section": "before-index"
+        },
+        {
+          "label": "Non-issues / out of scope:",
+          "offset": 3917,
+          "section": "before-index"
+        },
+        {
+          "label": "Applicability:",
+          "offset": 4267,
+          "section": "index-and-tail"
+        }
+      ],
+      "codeFencesBefore": 0,
+      "codeFencesAfter": 0,
+      "exactRepeatedAfterCharacters": 0,
+      "repeatedSpans": []
+    },
+    {
+      "fixtureId": "07-clean-py-bounds",
+      "totalCharacters": 6665,
+      "beforeIndexCharacters": 4579,
+      "indexAndTailCharacters": 2086,
+      "requiredFieldOccurrences": [
+        {
+          "label": "Applicability:",
+          "offset": 4896,
+          "section": "index-and-tail"
+        },
+        {
+          "label": "Best-practice alignment:",
+          "offset": 4954,
+          "section": "index-and-tail"
+        },
+        {
+          "label": "Efficiency / simplification opportunities:",
+          "offset": 5410,
+          "section": "index-and-tail"
+        },
+        {
+          "label": "Non-issues / out of scope:",
+          "offset": 6014,
+          "section": "index-and-tail"
+        }
+      ],
+      "codeFencesBefore": 0,
+      "codeFencesAfter": 0,
+      "exactRepeatedAfterCharacters": 0,
+      "repeatedSpans": []
+    }
+  ]
+}

@@ -1,7 +1,9 @@
 # Test Layer Boundaries (unit / integration / E2E)
 
 `references/verification-gate.md` requires a demonstrated red→green test per behavior-changing
-acceptance criterion; it does not say which layer that test lives at. Load this reference when
+acceptance criterion — with the disclosed-alternative branch it grants there for criteria that have
+no such red-green (much UI, copy, and config) — but it does not say which layer that test lives at.
+Load this reference when
 choosing, or reviewing, the layer (unit / integration / E2E) for a given criterion — most single-
 criterion changes need exactly one obvious layer, so this is a judgment aid for the non-obvious
 cases, not a mandatory three-layer checklist for every change.
@@ -75,9 +77,16 @@ defect is not "more thorough," it is slower and flakier for no added signal:
 
 This reference governs **where** the per-criterion red→green test lives, never **whether** it
 exists. Choosing integration over unit does not relax `references/verification-gate.md`'s
-requirement — it only changes which layer's runner produces the red→green transition. A criterion
-with no red→green at any layer is still `unmet` (`agents/arbiter.agent.md`, *Acceptance-criteria
-check*), however reasonable the chosen layer was.
+requirement — it only changes which layer's runner produces the red→green transition. **Layer choice
+is never a waiver:** reaching for a coarser layer, or for none, does not excuse a behavior-changing
+criterion from producing evidence, and a criterion left with *no* evidence is `unmet`
+(`agents/arbiter.agent.md`, *Acceptance-criteria check*), however reasonable the chosen layer was.
+
+The one exception is the gate's own, not this reference's: where a clean fail-first→pass is
+impractical, `references/verification-gate.md` accepts the disclosed criterion plus the captured
+command / observed-behavior evidence used instead. That route is granted by the owner, is disclosure
+rather than silence, and never turns on which layer was chosen — so it is not a way to trade a
+missing test for a coarser layer.
 
 ## Interaction with review
 
@@ -86,7 +95,9 @@ check*), however reasonable the chosen layer was.
 edge inputs (e.g. only E2E for a numeric-boundary rule) is the same gap class as no test at all —
 file it as a missing-test finding, not a layer-mismatch nitpick. The `arbiter`'s bidirectional
 traceability (criterion ↔ verifying test, `agents/arbiter.agent.md`) does not care which layer the
-test lives at, only that the mapping is real and the test was confirmed red before the change.
+test lives at, only that the mapping is real — and, where a red→green was produced, that the test was
+confirmed red before the change. On a criterion taking the gate's disclosed-alternative route, the
+mapping points at that disclosed evidence instead; what it may never point at is nothing.
 
 ## Invariants
 

@@ -1,0 +1,194 @@
+{
+  "at": "2026-09-08T16:35:59.556Z",
+  "caseId": "s2",
+  "phase": "plan",
+  "root": "<TMP>\\ctide-eff-pos-uGCgPp",
+  "status": "strict-profile-rejected; no implementation authorized",
+  "originalFaults": [
+    "unexpected-tool:Write",
+    "write-audit-missing:toolu_01Ken5EPqMNqC4GfYeyqsL1Q",
+    "guard-refusal:unfrozen-command:toolu_01CQRaHns9jzxsFnaXeMJb7i",
+    "guard-refusal:unfrozen-command:toolu_011H86aScSNvK78kttjMvb3N"
+  ],
+  "rawSha256": "611c045c0fef5cfb445ad4c113fdb37cfb76f46ba4c095dd9ba727302108cea7",
+  "sessionId": "908ec7aa-0347-4888-98d4-bb42e04a56f0",
+  "finalPlanSha256": "6ecda5cf9d90638d80f5a6d349fea93feb441ab5bee46a52060c1d4a23ca3753",
+  "elapsedMs": 123804,
+  "actualNativeSkill": true,
+  "permissionMode": "plan",
+  "models": [
+    "claude-opus-5"
+  ],
+  "usage": {
+    "input_tokens": 20,
+    "cache_creation_input_tokens": 40985,
+    "cache_read_input_tokens": 261111,
+    "output_tokens": 9353,
+    "output_tokens_details": {
+      "thinking_tokens": 3952
+    },
+    "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+      "ephemeral_1h_input_tokens": 40985,
+      "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "not_available",
+    "iterations": [
+      {
+        "input_tokens": 2,
+        "output_tokens": 2159,
+        "cache_read_input_tokens": 38810,
+        "cache_creation_input_tokens": 2175,
+        "cache_creation": {
+          "ephemeral_5m_input_tokens": 0,
+          "ephemeral_1h_input_tokens": 2175
+        },
+        "type": "message"
+      }
+    ],
+    "speed": "standard"
+  },
+  "modelUsage": {
+    "claude-opus-5": {
+      "inputTokens": 20,
+      "outputTokens": 9353,
+      "cacheReadInputTokens": 261111,
+      "cacheCreationInputTokens": 40985,
+      "webSearchRequests": 0,
+      "costUSD": 0.7743305,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 64000,
+      "thinkingTokens": 3952,
+      "canonicalModel": "claude-opus-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+    }
+  },
+  "subagentStats": {
+    "spawned": 0,
+    "requested": {
+      "background": 0,
+      "foreground": 0,
+      "unset": 0
+    },
+    "started_in_background": 0,
+    "max_depth": 0,
+    "spawned_by_subagents": 0,
+    "completed": 0,
+    "failed": 0,
+    "killed": {
+      "parent": 0,
+      "user": 0,
+      "system": 0
+    },
+    "refused": {
+      "depth_limit": 0,
+      "concurrency_limit": 0,
+      "budget": 0
+    },
+    "by_type": {}
+  },
+  "estimatedUsd": 0.7743305,
+  "priorExperimentEstimateUsd": 1.9259175,
+  "cumulativeExperimentEstimateUsd": 2.700248,
+  "costBasis": "CLI price-table estimate, not billing; implementation/discussion sessions excluded",
+  "sourceUnchanged": true,
+  "pluginFilesUnchanged": 110,
+  "visibleBaseline": {
+    "tests": 3,
+    "pass": 1,
+    "fail": 2,
+    "expectedFailNames": [
+      "AC1 default selection excludes archived cards",
+      "AC2 includeArchived returns every card in input order"
+    ]
+  },
+  "bashAudits": [
+    {
+      "kind": "ctide-bash-guard-decision",
+      "schemaVersion": 1,
+      "guardDigest": "c59f2a507d0d0dff1a7fa42253124cf6f4e3332b7ad08e55ab2a633e95647037",
+      "sessionId": "908ec7aa-0347-4888-98d4-bb42e04a56f0",
+      "toolUseId": "toolu_01CQRaHns9jzxsFnaXeMJb7i",
+      "command": "cd \"<TMP>/ctide-eff-pos-uGCgPp/consumer\" && ls -a && echo \"--- .ctide ---\" && ls -R .ctide 2>/dev/null | head -50 && echo \"--- pkg ---\" && cat package.json && echo \"--- gitignore ---\" && cat .gitignore 2>/dev/null && echo \"--- files ---\" && git ls-files",
+      "cwd": "<TMP>\\ctide-eff-pos-uGCgPp\\consumer",
+      "resolvedCwd": "<TMP>\\ctide-eff-pos-uGCgPp\\consumer",
+      "expectedRoot": "<TMP>\\ctide-eff-pos-uGCgPp\\consumer",
+      "decision": "deny",
+      "reason": "the command is not one of this handoff's exact allowed commands",
+      "at": "2026-09-08T16:25:35.063Z",
+      "pid": 44796,
+      "configDigest": "6374f6127528eff2f57b9382bbad775496fa7a5a879c33dd0acf8d0c4d17afe9"
+    },
+    {
+      "kind": "ctide-bash-guard-decision",
+      "schemaVersion": 1,
+      "guardDigest": "c59f2a507d0d0dff1a7fa42253124cf6f4e3332b7ad08e55ab2a633e95647037",
+      "sessionId": "908ec7aa-0347-4888-98d4-bb42e04a56f0",
+      "toolUseId": "toolu_011H86aScSNvK78kttjMvb3N",
+      "command": "cd \"<TMP>/ctide-eff-pos-uGCgPp/consumer\" && cat .ctide/memory/FAILURE_MEMORY.md 2>/dev/null; echo \"--- map ---\"; cat .ctide/map/SYSTEM_MAP.md 2>/dev/null | head -40; echo \"--- exp ---\"; ls .ctide/memory .ctide/decisions 2>/dev/null",
+      "cwd": "<TMP>\\ctide-eff-pos-uGCgPp\\consumer",
+      "resolvedCwd": "<TMP>\\ctide-eff-pos-uGCgPp\\consumer",
+      "expectedRoot": "<TMP>\\ctide-eff-pos-uGCgPp\\consumer",
+      "decision": "deny",
+      "reason": "the command is not one of this handoff's exact allowed commands",
+      "at": "2026-09-08T16:25:36.555Z",
+      "pid": 62260,
+      "configDigest": "6374f6127528eff2f57b9382bbad775496fa7a5a879c33dd0acf8d0c4d17afe9"
+    },
+    {
+      "kind": "ctide-bash-guard-decision",
+      "schemaVersion": 1,
+      "guardDigest": "c59f2a507d0d0dff1a7fa42253124cf6f4e3332b7ad08e55ab2a633e95647037",
+      "sessionId": "908ec7aa-0347-4888-98d4-bb42e04a56f0",
+      "toolUseId": "toolu_012ricTivzr7mvph7qeRG3NE",
+      "command": "node --test test/selection.test.mjs",
+      "cwd": "<TMP>\\ctide-eff-pos-uGCgPp\\consumer",
+      "resolvedCwd": "<TMP>\\ctide-eff-pos-uGCgPp\\consumer",
+      "expectedRoot": "<TMP>\\ctide-eff-pos-uGCgPp\\consumer",
+      "decision": "pass",
+      "reason": "an exact allowed command in the expected repository",
+      "at": "2026-09-08T16:25:42.756Z",
+      "pid": 3164,
+      "configDigest": "6374f6127528eff2f57b9382bbad775496fa7a5a879c33dd0acf8d0c4d17afe9"
+    },
+    {
+      "kind": "ctide-bash-guard-decision",
+      "schemaVersion": 1,
+      "guardDigest": "c59f2a507d0d0dff1a7fa42253124cf6f4e3332b7ad08e55ab2a633e95647037",
+      "sessionId": "908ec7aa-0347-4888-98d4-bb42e04a56f0",
+      "toolUseId": "toolu_01TkTjkU3vs1eFY5duJcwS42",
+      "command": "git status --porcelain",
+      "cwd": "<TMP>\\ctide-eff-pos-uGCgPp\\consumer",
+      "resolvedCwd": "<TMP>\\ctide-eff-pos-uGCgPp\\consumer",
+      "expectedRoot": "<TMP>\\ctide-eff-pos-uGCgPp\\consumer",
+      "decision": "pass",
+      "reason": "an exact allowed command in the expected repository",
+      "at": "2026-09-08T16:25:46.120Z",
+      "pid": 53504,
+      "configDigest": "6374f6127528eff2f57b9382bbad775496fa7a5a879c33dd0acf8d0c4d17afe9"
+    }
+  ],
+  "unavailableWrite": {
+    "callId": "toolu_01Ken5EPqMNqC4GfYeyqsL1Q",
+    "resultError": true,
+    "explicitlyUnavailable": true,
+    "missingAuditDoesNotProveHookFailure": true
+  },
+  "limits": [
+    "Two unfrozen shell commands were rejected; model then used permitted tools. Their overhead cannot be attributed to the plugin.",
+    "Native plan-file Write was unavailable and rejected before hook execution; final text disclosed the inability and provided an inline plan.",
+    "This is a rejected planning-only observation, not full-workflow success, product overhead, a saving, or a GPT-6 Astra result.",
+    "Hidden grading remains pending."
+  ],
+  "process": {
+    "exitCode": 0,
+    "exitConfirmed": true,
+    "timedOut": false
+  },
+  "independentReviewer": "Codex"
+}

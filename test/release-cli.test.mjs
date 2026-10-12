@@ -150,6 +150,40 @@ test("release CLI: `publish-release.mjs --archive` spawned as a real subprocess 
   }
 });
 
+test("release CLI: `--archive` ships every vendored member declared by the shipped manifest, byte for byte", () => {
+  // The shipped manifest is the sole authority for which third-party bytes exist, so the expected
+  // set is READ FROM the scratch tree's own copy rather than restated here. Restating the four
+  // paths (or their digests) would create a second authority that could drift from the manifest
+  // without either side failing. Both MIT notices are declared members, so this also proves the
+  // licenses are distributed with the plugin.
+  const scratchRoot = releaseCliScratchRoot();
+  try {
+    const result = cp.spawnSync(process.execPath, [scratchScriptPath(scratchRoot), "--archive"], { cwd: scratchRoot, encoding: "utf8" });
+    assert.strictEqual(result.status, 0, `spawned --archive must exit 0: ${result.stderr}`);
+
+    const manifestRel = "cressetide/skills/vigil/vendor/vendor-manifest.json";
+    const manifest = JSON.parse(fs.readFileSync(path.join(scratchRoot, manifestRel), "utf8"));
+    const targets = manifest.packages.flatMap((p) => p.members).map((m) => m.target);
+    assert.ok(targets.length > 0, "the manifest must declare at least one vendored member for this test to mean anything");
+
+    const entries = parseTar(zlib.gunzipSync(fs.readFileSync(path.join(scratchRoot, "_release", ASSET_NAME))));
+    // listFiles()/createArchive() prefix each path with the literal plugin directory name, and every
+    // manifest target is already repository-relative beginning with that same directory, so the
+    // archive entry name is the target itself.
+    assert.ok(entries.has(manifestRel), "the archive must ship the manifest itself");
+
+    for (const target of targets) {
+      const entry = entries.get(target);
+      assert.ok(entry, `the archive must ship the vendored member ${target}`);
+      assert.strictEqual(entry.type, "0", `${target} must be archived as a regular file`);
+      assert.deepStrictEqual(entry.body, fs.readFileSync(path.join(scratchRoot, target)),
+        `archived bytes for ${target} must equal the vendored source bytes`);
+    }
+  } finally {
+    fs.rmSync(scratchRoot, { recursive: true, force: true });
+  }
+});
+
 test("release CLI: `publish-release.mjs --archive` invoked via a real symlinked/junctioned ancestor directory is still recognized as directly-invoked, running its full CLI body (isInvokedDirectly()'s fs.realpathSync check)", (t) => {
   const parentDir = temporary("ctide-release-cli-symlink-entrypoint-");
   try {
