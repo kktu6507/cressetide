@@ -1,0 +1,58 @@
+name: Dependabot auto-merge
+
+# Only inspect metadata. Never check out or execute pull-request code with this token.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  auto-merge:
+    if: >-
+      github.repository == 'kktu6507/cressetide' &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'main' &&
+      !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Verify Dependabot metadata and commit signatures
+        id: metadata
+        uses: dependabot/fetch-metadata@d7267f607e9d3fb96fc2fbe83e0af444713e90b7
+        with:
+          github-token: ${{ github.token }}
+      - name: Enable auto-merge for supported patch and minor updates
+        if: >-
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          DEPENDENCY_NAMES: ${{ steps.metadata.outputs.dependency-names }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra dependencies <<< "$DEPENDENCY_NAMES"
+          test "${#dependencies[@]}" -gt 0
+          for dependency in "${dependencies[@]}"; do
+            case "$dependency" in
+              actions/checkout|actions/setup-node|dependabot/fetch-metadata|actions/attest-build-provenance|crate-ci/typos|lycheeverse/lychee-action) ;;
+              *) echo "Dependency requires manual review: $dependency"; exit 0 ;;
+            esac
+          done
+          files="$(gh pr view "$PR_URL" --json files --jq '.files[].path')"
+          test -n "$files"
+          while IFS= read -r file; do
+            case "$file" in
+              .github/workflows/*.yml|.github/workflows/*.yaml) ;;
+              *) echo "File requires manual review: $file"; exit 0 ;;
+            esac
+          done <<< "$files"
+          # GitHub branch protection enforces all required CI checks on the current head.
+          gh pr merge "$PR_URL" --auto --squash --match-head-commit "$PR_HEAD_SHA"
