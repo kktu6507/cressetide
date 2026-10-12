@@ -6,7 +6,7 @@ Cressetide targets Claude Code first. Hook schemas, plan mode, subagent isolatio
 
 | Cressetide version | Runtime | Automated coverage | Live conformance status |
 |---|---|---|---|
-| current release | Claude Code | Plugin structure, hooks, agents, skills, Doctor, release tooling, validators, tests, and deterministic evals | A clean-profile smoke must be recorded for the newly created repository before claiming live compatibility. |
+| current release (`v0.7.2`) | Claude Code | Plugin structure, hooks, agents, skills, Doctor, release tooling, validators, tests, and deterministic evals | **Partial, by observed scenario — no checklist item is claimed complete.** For `v0.7.2`, one Windows run on Claude Code 2.1.263 recorded: install from the published marketplace, enablement, and an explicit reload (1 plugin, 5 skills, 6 hooks); the installed helper run directly (all 14 default checks pass, plus its `--project` rows on a fixture); one real `SessionStart` failure-memory injection; one real `PreToolUse` destructive-guard `ask`; and a default `/ctide:doctor` run that correctly reported **degraded/incomplete**. Its synthetic plan-gate probe returned `deny`, but its isolated destructive-guard probe never ran: the agent nested that probe in a double-quoted command substitution, the host guard asked, and the headless session had no way to approve. Each is a single observation, not a whole checklist item; for example, item 2 additionally requires the fallback and the no-memory silence, and item 4 the harmless-command allow. Direct helper probes are not host events, and a synthetic plan-gate probe is not host plan-mode gating. Nothing is recorded for host plan-mode gating, the Stop advisory, real compaction, a full Vigil run, or Map and incident handoff. Earlier versions: see `EVIDENCE.md`. |
 | current release | GitHub Copilot CLI | No Cressetide-specific runtime claim is encoded by the local suite. | Unverified until a fresh Cressetide run is recorded. |
 | current branch | CI / local Node.js | `npm run validate`, `npm test`, and `npm run eval` | Automated regression coverage only; it does not replace a real plugin install. |
 
@@ -23,7 +23,7 @@ Cressetide should fail open where its contract requires that behavior and must d
 
 ## Clean-profile conformance checklist
 
-Run this checklist for the new repository before publishing a live-compatibility claim:
+Run this checklist before publishing a live-compatibility claim. A claim is scoped to the **scenarios actually observed**, not to whole items: record what ran and what it showed, and never infer an item's remaining subcases from one observation or summarize partial coverage as "smoke passed".
 
 1. Install, enable, and reload Cressetide from the intended marketplace or repository reference.
 2. Confirm `load-failure-memory.js` injects a nonce-fenced digest when `.ctide/memory/FAILURE_MEMORY.md` exists, honors the documented compatibility fallback, and stays silent when no memory file exists.
@@ -44,6 +44,6 @@ The authoritative local checks are:
 - `node .github/scripts/validate-structure.mjs`
 - `npm test`
 - `npm run eval`
-- strict plugin validation for both the repository root and `./cressetide`
+- strict plugin validation of the nested plugin, `./cressetide`, only — the marketplace entry is validated separately in `kktu6507/plugins`
 
 Optional manual smoke scenarios may be stored under `test/conformance/`; they are checklists, not proof that a live run occurred.

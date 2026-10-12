@@ -239,6 +239,19 @@ test("release inventory helper never echoes malformed stdout and classifies raw 
     stderr: "Invalid gh release view response",
   });
 
+  // Gap-closing addition (test-reviewer finding): the malformed case above only fails at JSON.parse
+  // itself, never isolating the separate `if (!Array.isArray(parsed.assets)) throw` check
+  // (publish-release.mjs:351). Syntactically-valid JSON with a non-array `assets` field reaches that
+  // check on its own and must classify identically.
+  const nonArrayAssets = inspectPublishedRelease("v0.1.0", {
+    execute: () => ({ status: 0, stdout: JSON.stringify({ assets: "oops" }), stderr: "" }),
+  });
+  assert.deepEqual(nonArrayAssets, {
+    outcome: "transport-error",
+    category: "response",
+    stderr: "Invalid gh release view response",
+  });
+
   const notFound = inspectPublishedRelease("v0.1.0", {
     execute: () => ({
       status: 1,
@@ -550,21 +563,21 @@ test("published asset policy verifies, refuses drift, repairs explicitly, and re
   }), /still differ after repair/);
 });
 
-test("Doctor runs the complete local fail-open boundary probe", () => {
-  const report = diagnose(path.join(root, "cressetide"));
+test("Doctor runs the complete local fail-open boundary probe", async () => {
+  const report = await diagnose(path.join(root, "cressetide"));
   assert.equal(report.status, "pass", JSON.stringify(report, null, 2));
   assert.equal(report.checks.filter(check => check.name.startsWith("hook:")).length, 6);
   assert.equal(report.checks.find(check => check.name === "telemetry").detail, "No network or telemetry probe performed");
 });
 
-test("Doctor rejects extra hook registrations instead of substring-matching the expected six", () => {
+test("Doctor rejects extra hook registrations instead of substring-matching the expected six", async () => {
   const copy = path.join(temporary("ctide-doctor-extra-"), "cressetide");
   fs.cpSync(path.join(root, "cressetide"), copy, { recursive: true });
   const manifestPath = path.join(copy, "hooks", "hooks.json");
   const hooks = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   hooks.hooks.Stop[0].hooks.push({ type: "command", command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/hooks/plan-gate.js"] });
   fs.writeFileSync(manifestPath, JSON.stringify(hooks), "utf8");
-  const report = diagnose(copy);
+  const report = await diagnose(copy);
   assert.equal(report.status, "fail");
   assert.equal(report.checks.find(check => check.name === "hook-wiring").status, "fail");
 });

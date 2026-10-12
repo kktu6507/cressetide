@@ -78,30 +78,59 @@ function walk(dir, fn) {
 walk(`${PLUGIN}/agents`, (rel) => { if (rel.endsWith(".md")) checkFrontmatter(rel); });
 walk(`${PLUGIN}/skills`, (rel) => { if (path.basename(rel) === "SKILL.md") checkFrontmatter(rel); });
 
-// 5b. every reference / agent / hook that SKILL.md or hooks.json points to must exist
-// (catches a renamed/deleted reference or agent that prose alone would not surface).
-const skillRel = `${PLUGIN}/skills/vigil/SKILL.md`;
-if (fs.existsSync(path.join(root, skillRel))) {
-  const skill = fs.readFileSync(path.join(root, skillRel), "utf8");
-  for (const m of new Set([...skill.matchAll(/references\/([a-z0-9-]+\.md)/gi)].map((x) => x[1]))) {
-    if (!fs.existsSync(path.join(root, `${PLUGIN}/skills/${m === "vigil-map-overlay.md" ? "map" : "vigil"}/references/${m}`)))
-      fail(`SKILL.md links a missing reference: references/${m}`);
-  }
-  const roster = (skill.match(/subagents \(([^)]+)\)/) || [])[1] || "";
-  // The manifest-coverage check below only bites when `plugin.agents` is an array. Guard the
-  // prerequisite explicitly: if SKILL.md declares a roster but the manifest has no agents[] array,
-  // Claude Code would fall back to the default scan (losing the explicit `.agent.md` wiring Copilot
-  // needs) and the coverage check would silently no-op — so fail loudly instead.
-  if (roster && !(plugin && Array.isArray(plugin.agents)))
-    fail(`SKILL.md declares a subagents roster but plugin.json has no agents[] array (explicit wiring missing)`);
-  for (const m of roster.matchAll(/`([a-z0-9-]+)`/gi)) {
-    const name = m[1];
-    if (!fs.existsSync(path.join(root, `${PLUGIN}/agents/${name}.agent.md`)))
-      fail(`SKILL.md names agent "${name}" but ${PLUGIN}/agents/${name}.agent.md is missing`);
-    // Manifest coverage: Claude Code now loads agents via the plugin.json `agents` array, so an
-    // agent that exists on disk but is not wired in the manifest would silently fail to load.
-    if (plugin && Array.isArray(plugin.agents) && !plugin.agents.some((p) => p.endsWith(`/${name}.agent.md`)))
-      fail(`SKILL.md names agent "${name}" but plugin.json agents[] does not wire agents/${name}.agent.md`);
+// 5b. every reference that a skill's own SKILL.md points to must exist somewhere in the plugin
+// (catches a renamed/deleted reference that prose alone would not surface), and vigil/SKILL.md's own
+// agent roster must exist on disk and be wired into plugin.json.
+//
+// Check (1) — reference existence — is GENERALIZED to all five skills, the reverse direction of garden
+// 9a's "true reachability over directory ownership" model: resolve a `references/X.md` mention to the
+// mentioning skill's own `references/` directory FIRST; only if not found there, search every OTHER
+// skill's `references/` directory. Fail only when X.md exists in NO skill's `references/` directory.
+// This replaces the single hardcoded exception this check used to carry (vigil -> map's
+// vigil-map-overlay.md): a repo-wide grep during planning proved that exception-list approach incomplete
+// — salvage/SKILL.md also legitimately mentions map/references/operational-readiness.md and
+// vigil/references/external-capabilities.md. Verified directly (not merely reasoned): an own-directory-
+// only generalization false-flags all three of these real, working references the moment this check
+// starts running per-skill; search-based resolution needs no growing exception list for a future
+// cross-skill reference.
+//
+// Check (2) — the agent roster — is UNCHANGED in logic and stays scoped to vigil/SKILL.md specifically
+// (grepping the whole plugin confirms `subagents (` appears only there). It now runs inside the per-skill
+// loop, gated to `skillName === "vigil"`, reusing that iteration's already-read file content (not a
+// second file read).
+{
+  const skillsDirAbs = path.join(root, `${PLUGIN}/skills`);
+  if (fs.existsSync(skillsDirAbs)) {
+    const skillNames = fs.readdirSync(skillsDirAbs, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+    const refExistsIn = (skillName, file) => fs.existsSync(path.join(root, `${PLUGIN}/skills/${skillName}/references/${file}`));
+    for (const skillName of skillNames) {
+      const skillRel = `${PLUGIN}/skills/${skillName}/SKILL.md`;
+      if (!fs.existsSync(path.join(root, skillRel))) continue;
+      const skill = fs.readFileSync(path.join(root, skillRel), "utf8");
+      for (const m of new Set([...skill.matchAll(/references\/([a-z0-9-]+\.md)/gi)].map((x) => x[1]))) {
+        if (!refExistsIn(skillName, m) && !skillNames.some((other) => other !== skillName && refExistsIn(other, m)))
+          fail(`${skillRel} links a missing reference: references/${m}`);
+      }
+
+      if (skillName === "vigil") {
+        const roster = (skill.match(/subagents \(([^)]+)\)/) || [])[1] || "";
+        // The manifest-coverage check below only bites when `plugin.agents` is an array. Guard the
+        // prerequisite explicitly: if SKILL.md declares a roster but the manifest has no agents[] array,
+        // Claude Code would fall back to the default scan (losing the explicit `.agent.md` wiring Copilot
+        // needs) and the coverage check would silently no-op — so fail loudly instead.
+        if (roster && !(plugin && Array.isArray(plugin.agents)))
+          fail(`SKILL.md declares a subagents roster but plugin.json has no agents[] array (explicit wiring missing)`);
+        for (const m of roster.matchAll(/`([a-z0-9-]+)`/gi)) {
+          const name = m[1];
+          if (!fs.existsSync(path.join(root, `${PLUGIN}/agents/${name}.agent.md`)))
+            fail(`SKILL.md names agent "${name}" but ${PLUGIN}/agents/${name}.agent.md is missing`);
+          // Manifest coverage: Claude Code now loads agents via the plugin.json `agents` array, so an
+          // agent that exists on disk but is not wired in the manifest would silently fail to load.
+          if (plugin && Array.isArray(plugin.agents) && !plugin.agents.some((p) => p.endsWith(`/${name}.agent.md`)))
+            fail(`SKILL.md names agent "${name}" but plugin.json agents[] does not wire agents/${name}.agent.md`);
+        }
+      }
+    }
   }
 }
 // 5d. the compact (default) final-report rendering must keep the machine contract — the sentinel
@@ -407,6 +436,7 @@ if (fs.existsSync(path.join(root, packetRel))) {
 const RIGOR_ANCHORS = [
   "Admission to the findings index", "Evidence grading", "refute your strongest finding", "as the fixed reference", /[Tt]wo channels/,
   "Non-mutating: inspect, don't change",
+  "scratch/temp copy",
   "materially underspecified",
   "clearly incorrect, materially unsafe", // the `blocker` definition
   "should be fixed before the work is considered ready", // the `major` definition
@@ -571,18 +601,41 @@ if (fs.existsSync(enReadme)) {
 // 9d is that promised guard. The packet-block half of the copy-sync mandate (d3) lives in §5k's
 // RIGOR_ANCHORS above (same two files, same mechanism — extended rather than duplicated).
 
-// 9a. Reference reachability: every shipped references/*.md must be named in SKILL.md (the Reference
-// Loading list) — an orphan reference is dead weight the workflow can never load.
+// 9a. Reference reachability: every shipped skills/*/references/*.md must be reachable from the
+// plugin's load surface — an orphan reference is dead weight the workflow can never load. GLOBAL
+// reachability, not per-skill-directory ownership: a skill's own SKILL.md is not the only legitimate
+// loader. Verified directly against this repo (not merely reasoned about) — two real, working files
+// break a naive per-skill-ownership model: `map/references/vigil-map-overlay.md` is loaded only by
+// `vigil/SKILL.md`, and `map/references/navigator-map-overlay.md` is loaded only by
+// `agents/navigator.agent.md` — neither is named in `map/SKILL.md` itself. So a reference file is
+// flagged only when its filename is mentioned in NEITHER any `skills/*/SKILL.md` NOR any
+// `agents/*.agent.md` across the plugin.
 {
-  const refDirRel = `${PLUGIN}/skills/vigil/references`;
-  const refDirAbs = path.join(root, refDirRel);
-  const skillAbs = path.join(root, skillRel);
-  if (fs.existsSync(refDirAbs) && fs.existsSync(skillAbs)) {
-    const skillText = fs.readFileSync(skillAbs, "utf8");
-    for (const name of fs.readdirSync(refDirAbs)) {
-      if (!name.endsWith(".md")) continue;
-      if (!skillText.includes(name))
-        fail(`garden 9a: ${refDirRel}/${name} is not mentioned by filename in SKILL.md — an orphan reference the workflow can never load; add it to SKILL.md's Reference Loading list or delete the file`);
+  const skillsDirAbs = path.join(root, `${PLUGIN}/skills`);
+  const agentsDirAbs = path.join(root, `${PLUGIN}/agents`);
+  if (fs.existsSync(skillsDirAbs)) {
+    const skillDirs = fs.readdirSync(skillsDirAbs, { withFileTypes: true }).filter((e) => e.isDirectory());
+    // Union of every plausible loader: all SKILL.md files across the plugin, plus every agent doc —
+    // not just the reference's own skill directory.
+    let reachableText = skillDirs
+      .map((e) => path.join(skillsDirAbs, e.name, "SKILL.md"))
+      .filter((p) => fs.existsSync(p))
+      .map((p) => fs.readFileSync(p, "utf8"))
+      .join("\n");
+    if (fs.existsSync(agentsDirAbs)) {
+      reachableText += "\n" + fs.readdirSync(agentsDirAbs)
+        .filter((name) => name.endsWith(".agent.md"))
+        .map((name) => fs.readFileSync(path.join(agentsDirAbs, name), "utf8"))
+        .join("\n");
+    }
+    for (const e of skillDirs) {
+      const refDirAbs = path.join(skillsDirAbs, e.name, "references");
+      if (!fs.existsSync(refDirAbs)) continue;
+      for (const name of fs.readdirSync(refDirAbs)) {
+        if (!name.endsWith(".md")) continue;
+        if (!reachableText.includes(name))
+          fail(`garden 9a: ${PLUGIN}/skills/${e.name}/references/${name} is not mentioned by filename in any skills/*/SKILL.md or agents/*.agent.md — an orphan reference the workflow can never load; add it to a SKILL.md's Reference Loading list (or an agent doc that loads it) or delete the file`);
+      }
     }
   }
 }
@@ -611,9 +664,16 @@ if (plugin && Array.isArray(plugin.agents)) {
 // the caps leave headroom so ordinary edits do not trip. Raising a cap is allowed —
 // but must be a CONSCIOUS decision made here with a justifying comment, not accretion.
 {
+  // arbiter.agent.md was consciously raised 27000 -> 30000 for the TP v1.21 §D11 integration: §D11
+  // requires the arbiter to make the one fresh `evaluateGate` call itself, so the complete gate
+  // contract -- the exact command, the forbidden authorities, the stream/exit handling and the
+  // separated loop/provenance reporting -- has to be present in the agent's own prompt. Indirecting
+  // it to a reference would leave a mandatory gate depending on a file the spawned agent is not
+  // guaranteed to load. The file was 26991 bytes before that section, so no honest consolidation
+  // could have funded it. 30000 matches SKILL.md's cap and restores ordinary-edit headroom.
   const SIZE_CAPS = [
     [`${PLUGIN}/skills/vigil/SKILL.md`, 30000],
-    [`${PLUGIN}/agents/arbiter.agent.md`, 27000],
+    [`${PLUGIN}/agents/arbiter.agent.md`, 30000],
   ];
   for (const [rel, cap] of SIZE_CAPS) {
     const abs = path.join(root, rel);
@@ -624,12 +684,25 @@ if (plugin && Array.isArray(plugin.agents)) {
   }
 }
 
-// 9d. Copy-sync guards for the documented per-hook infra copies (deterministic string/regex
-// extraction only). Each check fails CLOSED when it cannot locate what it guards, so a refactor
-// cannot silently disarm it — the message then says to re-point the guard.
+// 9d. Copy-sync guards for documented byte-identical infra copies (deterministic string/regex
+// extraction only): the per-hook copies in cressetide/hooks/, the map.mjs/ship.mjs skill-script
+// pair (d4, below), and the 15-site isInvokedDirectly() CLI entry-point cluster (d5, below). Each
+// check fails CLOSED when it cannot locate what it guards, so a refactor cannot silently disarm it
+// — the message then says to re-point the guard.
 {
   const hookRel = (name) => `${PLUGIN}/hooks/${name}`;
   const readHook = (rel) => fs.readFileSync(path.join(root, rel), "utf8").replace(/\r\n/g, "\n");
+  // Shared with d4 and d5 below: given already-read file text and a function name, extract the
+  // `function <name>(` line through its closing `}` at column 0, or null if not found in that shape.
+  const extractSkillFn = (text, name) => {
+    const lines = text.split("\n");
+    const start = lines.findIndex((l) => l.startsWith(`function ${name}(`));
+    if (start === -1) return null;
+    for (let i = start + 1; i < lines.length; i++) {
+      if (lines[i] === "}") return lines.slice(start, i + 1).join("\n");
+    }
+    return null;
+  };
 
   // d1. dd-of= regex identity: plan-gate.js and destructive-guard.js each carry
   // the dd write-detection pattern with a "kept character-identical / reused verbatim" comment — make
@@ -719,6 +792,92 @@ if (plugin && Array.isArray(plugin.agents)) {
     if (!readHook(rel).includes(STDIN_MARKER))
       fail(`garden 9d: ${rel} lost the stdin-reader sync marker ("${STDIN_MARKER} …") — keep the stamp naming the sibling copies and the MAX_STDIN cap (or update this guard if the cluster was consciously dissolved)`);
   }
+
+  // d4. Byte-identical construct copies shared between map.mjs and ship.mjs: git(), OPS_TRUST_TAG_ATTEMPT,
+  // OPS_TRUST_TAG_WELLFORMED, opsTrustTagIsWellFormed(), and isValidIsoDate() are deliberately mirrored
+  // (copied, not imported) across the two skill scripts, each stamped "kept in sync … (documented copy —
+  // see garden hash guard)" like the hooks above. This is a SEPARATE mechanism from FN_CLUSTERS: these
+  // two files do not live under hooks/, and 2 of the 5 constructs are single-line `const NAME = /regex/;`
+  // declarations rather than `function` blocks. Missing-file tolerance is COARSER than FN_CLUSTERS'
+  // per-file filter: FN_CLUSTERS still fail()s a present file whose function can't be extracted even
+  // when a sibling is missing, but this is a fixed 2-file pair (not an N-file cluster), so the whole
+  // check is a single pair-level AND-gate — if EITHER file is absent, the entire block silently no-ops,
+  // including skipping shape-verification of the file that IS still present. A fully-deleted map.mjs or
+  // ship.mjs is still caught elsewhere in the same CI job by test/map.test.mjs's / test/ship.test.mjs's
+  // static ES-module imports (a crash, non-zero exit), so this tolerance is narrower in blast radius
+  // than "silent" alone would suggest.
+  const mapRel = `${PLUGIN}/skills/map/scripts/map.mjs`;
+  const shipRel = `${PLUGIN}/skills/ship/scripts/ship.mjs`;
+  if (fs.existsSync(path.join(root, mapRel)) && fs.existsSync(path.join(root, shipRel))) {
+    const mapText = readHook(mapRel);
+    const shipText = readHook(shipRel);
+    // extractSkillFn is defined once, above (shared with d5 below).
+    const extractSkillConst = (text, name) => {
+      const line = text.split("\n").find((l) => l.startsWith(`const ${name} = `));
+      return line === undefined ? null : line;
+    };
+    const SKILL_CONSTRUCTS = [
+      ["fn", "git"],
+      ["const", "OPS_TRUST_TAG_ATTEMPT"],
+      ["const", "OPS_TRUST_TAG_WELLFORMED"],
+      ["fn", "opsTrustTagIsWellFormed"],
+      ["fn", "isValidIsoDate"],
+    ];
+    for (const [kind, name] of SKILL_CONSTRUCTS) {
+      const extract = kind === "fn" ? extractSkillFn : extractSkillConst;
+      const mapBody = extract(mapText, name);
+      const shipBody = extract(shipText, name);
+      if (mapBody === null) fail(`garden 9d: cannot extract ${name} from ${mapRel} — the construct moved or lost its expected shape; re-point the 9d copy guard`);
+      if (shipBody === null) fail(`garden 9d: cannot extract ${name} from ${shipRel} — the construct moved or lost its expected shape; re-point the 9d copy guard`);
+      if (mapBody !== null && shipBody !== null && mapBody !== shipBody) {
+        fail(`garden 9d: ${name} drifted between ${mapRel} and ${shipRel} — documented byte-identical copy; change both together`);
+      }
+    }
+  }
+
+  // d5. isInvokedDirectly() entry-point self-check, byte-identical across 14 CLI scripts (the
+  // fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url) forward-direction form)
+  // plus a 15th sibling, publish-release-core.mjs, which imports pathToFileURL rather than
+  // fileURLToPath and so necessarily carries the reverse-direction pathToFileURL(fs.realpathSync(...))
+  // .href === import.meta.url form — semantically identical, not a body match, so it is checked only
+  // for marker presence below, never body-compared against the 14. Reuses extractSkillFn (defined
+  // above, shared with d4) unmodified: isInvokedDirectly() needs no per-file substitution since the
+  // 14 forward bodies are already 100% textually identical.
+  const ENTRY_POINT_FORWARD = [
+    `${PLUGIN}/skills/doctor/scripts/doctor.mjs`,
+    `${PLUGIN}/skills/map/scripts/map.mjs`,
+    `${PLUGIN}/skills/ship/scripts/ship.mjs`,
+    `${PLUGIN}/skills/vigil/scripts/contract-check.mjs`,
+    `${PLUGIN}/skills/vigil/scripts/failure-retrieve.mjs`,
+    `${PLUGIN}/skills/vigil/scripts/failure-consolidate.mjs`,
+    `${PLUGIN}/skills/vigil/scripts/run-reconcile.mjs`,
+    `${PLUGIN}/skills/vigil/scripts/regression-delta.mjs`,
+    `${PLUGIN}/skills/vigil/scripts/run-ledger.mjs`,
+    `${PLUGIN}/skills/vigil/scripts/pack-review-diff.mjs`,
+    `${PLUGIN}/skills/vigil/scripts/run-consolidate.mjs`,
+    `${PLUGIN}/skills/vigil/scripts/provenance-store.mjs`,
+    "eval/check-model-provenance.mjs",
+    ".github/scripts/publish-release.mjs",
+  ];
+  const ENTRY_POINT_REVERSE = ".github/scripts/publish-release-core.mjs";
+  const ENTRY_POINT_MARKER = "isInvokedDirectly() kept in sync with";
+
+  const entryPointPresent = ENTRY_POINT_FORWARD.filter((rel) => fs.existsSync(path.join(root, rel)));
+  const entryPointBodies = entryPointPresent.map((rel) => [rel, extractSkillFn(readHook(rel), "isInvokedDirectly")]);
+  for (const [rel, body] of entryPointBodies) {
+    if (body === null) fail(`garden 9d: cannot extract isInvokedDirectly() from ${rel} — the function moved or lost its column-0 shape; re-point the 9d copy guard`);
+  }
+  const entryPointFound = entryPointBodies.filter(([, b]) => b !== null);
+  for (let i = 1; i < entryPointFound.length; i++) {
+    if (entryPointFound[i][1] !== entryPointFound[0][1])
+      fail(`garden 9d: isInvokedDirectly() drifted between ${entryPointFound[0][0]} and ${entryPointFound[i][0]} — these are documented byte-identical copies (14 of 15 — publish-release-core.mjs is the documented reverse-direction exception, checked separately below); change ALL 14 together`);
+  }
+
+  for (const rel of [...ENTRY_POINT_FORWARD, ENTRY_POINT_REVERSE]) {
+    if (!fs.existsSync(path.join(root, rel))) continue; // missing files are reported elsewhere (each site is statically imported by its own test — a module-import crash; publish-release.mjs also has a dedicated §5h existence check)
+    if (!readHook(rel).includes(ENTRY_POINT_MARKER))
+      fail(`garden 9d: ${rel} lost the isInvokedDirectly() sync marker ("${ENTRY_POINT_MARKER} …") — keep the stamp naming the sibling copies (or update this guard if the cluster was consciously dissolved)`);
+  }
 }
 
 // 9e. ${CLAUDE_PLUGIN_ROOT} lint: an installed plugin's scripts do NOT live under the consuming
@@ -727,7 +886,7 @@ if (plugin && Array.isArray(plugin.agents)) {
 // design: only the `node <path>` invocation form is flagged, so prose
 // mentions of script paths never false-trip.
 {
-  const badInvocation = /node\s+(?:\.\/)?skills\/vigil\/scripts\//;
+  const badInvocation = /node\s+(?:\.\/)?skills\/(?:doctor|map|salvage|ship|vigil)\/scripts\//;
   walk(PLUGIN, (rel) => {
     if (!rel.endsWith(".md")) return;
     const lines = fs.readFileSync(path.join(root, rel), "utf8").split(/\r?\n/);

@@ -50,7 +50,7 @@ const manifestAgents = (plugin?.agents || []).map((item) => item.replace("./agen
 if (JSON.stringify(manifestAgents) !== JSON.stringify([...expectedAgents].sort())) fail("Cressetide plugin agents[] mismatch");
 
 const skillRoot = path.join(pluginRoot, "skills");
-const expectedSkills = ["doctor", "map", "salvage", "vigil"];
+const expectedSkills = ["doctor", "map", "salvage", "ship", "vigil"];
 const skillDirs = fs.existsSync(skillRoot)
   ? fs.readdirSync(skillRoot, { withFileTypes: true }).filter((item) => item.isDirectory()).map((item) => item.name).sort()
   : [];
@@ -60,7 +60,7 @@ for (const name of expectedSkills) {
   if (!fs.existsSync(file)) { fail(`missing skill ${name}`); continue; }
   const text = fs.readFileSync(file, "utf8");
   if (!text.startsWith("---") || !new RegExp(`^name:\\s*${name}\\s*$`, "m").test(text)) fail(`${name} frontmatter mismatch`);
-  if (["doctor", "map"].includes(name)) {
+  if (["doctor", "map", "ship"].includes(name)) {
     if (!/^disable-model-invocation:\s*true\s*$/m.test(text)) fail(`${name} must remain manual-only`);
     if (!/^user-invocable:\s*true\s*$/m.test(text)) fail(`${name} must remain user-invocable`);
   }
@@ -134,7 +134,7 @@ if (JSON.stringify([...publicCommands].sort()) !== JSON.stringify(expectedSkills
 
 for (const name of ["README.md", "README.zh-TW.md", "README.ja.md"]) {
   const text = fs.readFileSync(path.join(root, name), "utf8");
-  for (const token of ["/ctide:vigil", "/ctide:salvage", "/ctide:map", "/ctide:doctor", ".ctide/"]) {
+  for (const token of ["/ctide:vigil", "/ctide:salvage", "/ctide:map", "/ctide:doctor", "/ctide:ship", ".ctide/"]) {
     if (!text.includes(token)) fail(`${name}: missing Cressetide public token ${token}`);
   }
 }

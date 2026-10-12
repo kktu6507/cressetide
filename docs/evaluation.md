@@ -1,6 +1,6 @@
 # Evaluation framework
 
-Cressetide includes a neutral, deterministic evaluation dataset for the four
+Cressetide includes a neutral, deterministic evaluation dataset for the five
 public capabilities. It validates fixture and rubric integrity without calling
 an external model, using credentials, or saving run output.
 
@@ -13,7 +13,7 @@ appears (cressetide's live-run artifacts — the final report, the run ledger, `
 Cases live in `eval/cases/*.json`. Each case contains:
 
 - a stable unique `id`;
-- one `capability`: `vigil`, `salvage`, `map`, or `doctor`;
+- one `capability`: `vigil`, `salvage`, `map`, `doctor`, or `ship`;
 - a neutral `prompt`;
 - bounded fictional `evidence`;
 - `requiredTerms` that an evaluated response must include literally;

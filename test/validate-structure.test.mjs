@@ -181,6 +181,39 @@ test("validate-structure: a missing SKILL-linked reference FAILS", () => {
   } finally { fs.rmSync(tree, { recursive: true, force: true }); }
 });
 
+test("validate-structure: §5b FAILS on a dangling reference planted in a non-vigil skill's SKILL.md (widened coverage)", () => {
+  const tree = copyRepoTree();
+  try {
+    // §5b's reference-existence check was vigil-only before this generalization; a dangling
+    // `references/X.md` mention planted in doctor/SKILL.md — a name that exists nowhere in the plugin —
+    // must now be caught too, proving the widened per-skill-with-fallback-search model actually reaches
+    // doctor/, not just vigil/.
+    const doctorSkill = path.join(tree, "cressetide", "skills", "doctor", "SKILL.md");
+    fs.appendFileSync(doctorSkill, "\nSee also `references/zz-doctor-dangling.md` (does not exist anywhere in the plugin).\n", "utf8");
+    const { code, out } = runValidator(tree);
+    assert.notStrictEqual(code, 0, "a dangling reference in a non-vigil skill's SKILL.md must fail the build");
+    assert.match(out, /doctor\/SKILL\.md links a missing reference: references\/zz-doctor-dangling\.md/, "the failure must name the offending SKILL.md and the missing reference");
+  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+});
+
+test("validate-structure: §5b does NOT flag the three known cross-skill references as missing (real repo tree)", () => {
+  // The false-positive risk verified directly during planning: vigil/SKILL.md mentions
+  // map/references/vigil-map-overlay.md (the prior hardcoded exception), and salvage/SKILL.md mentions
+  // map/references/operational-readiness.md and vigil/references/external-capabilities.md — none of the
+  // three live in the mentioning skill's own references/ directory. A naive "resolve to the mentioning
+  // skill's own directory only" generalization would newly false-fail CI on all three the moment §5b
+  // starts running per-skill; this is the test that would have caught that false-positive risk (mirrors
+  // why the analogous garden 9a cross-skill test mattered).
+  const tree = copyRepoTree();
+  try {
+    const { code, out } = runValidator(tree);
+    assert.strictEqual(code, 0, `the generalized §5b must not false-flag real cross-skill references: ${out}`);
+    assert.doesNotMatch(out, /links a missing reference: references\/vigil-map-overlay\.md/, "vigil -> map/vigil-map-overlay.md must not be flagged");
+    assert.doesNotMatch(out, /links a missing reference: references\/operational-readiness\.md/, "salvage -> map/operational-readiness.md must not be flagged");
+    assert.doesNotMatch(out, /links a missing reference: references\/external-capabilities\.md/, "salvage -> vigil/external-capabilities.md must not be flagged");
+  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+});
+
 test("validate-structure: dropping a sentinel from the compact final-report template FAILS (5d guard)", () => {
   const tree = copyRepoTree();
   try {
@@ -554,15 +587,43 @@ test("validate-structure: a second event entry can no longer cover another hook'
 
 // --- Section 9 "garden" guards: one injected-defect negative test per check (a–e) ---
 
-test("validate-structure: garden 9a FAILS on an orphan reference file not mentioned in SKILL.md", () => {
+test("validate-structure: garden 9a FAILS on an orphan reference file not mentioned in any SKILL.md or agent doc", () => {
   const tree = copyRepoTree();
   try {
-    // A reference file nothing links: SKILL.md's Reference Loading list never names it.
+    // A reference file nothing links: no SKILL.md's Reference Loading list and no agent doc names it.
     fs.writeFileSync(path.join(tree, "cressetide", "skills", "vigil", "references", "zz-orphan.md"),
       "# Orphan reference\n\nDead weight the workflow can never load.\n", "utf8");
     const { code, out } = runValidator(tree);
     assert.notStrictEqual(code, 0, "an orphan reference must fail the build");
-    assert.match(out, /garden 9a: .*zz-orphan\.md is not mentioned by filename in SKILL\.md/, "the failure must name the orphan reference");
+    assert.match(out, /garden 9a: .*zz-orphan\.md is not mentioned by filename in any skills\/\*\/SKILL\.md or agents\/\*\.agent\.md/, "the failure must name the orphan reference");
+  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+});
+
+test("validate-structure: garden 9a does NOT flag vigil-map-overlay.md or navigator-map-overlay.md as orphans (global reachability, real repo tree)", () => {
+  // The false-positive risk verified directly during planning: both files are legitimate, reachable
+  // references, but neither is mentioned in map/SKILL.md itself — vigil-map-overlay.md is loaded only
+  // by vigil/SKILL.md, navigator-map-overlay.md only by agents/navigator.agent.md. A naive
+  // per-skill-directory 9a would false-fail CI on this real, unmodified tree; this test is the guard
+  // against that regression (the test that would have caught the risk this planning pass found).
+  const tree = copyRepoTree();
+  try {
+    const { code, out } = runValidator(tree);
+    assert.strictEqual(code, 0, `the widened garden 9a must not false-flag legitimate cross-skill/agent-referenced files: ${out}`);
+    assert.doesNotMatch(out, /garden 9a: .*vigil-map-overlay\.md/, "vigil-map-overlay.md is reachable via vigil/SKILL.md, not map/SKILL.md — must not be flagged");
+    assert.doesNotMatch(out, /garden 9a: .*navigator-map-overlay\.md/, "navigator-map-overlay.md is reachable via agents/navigator.agent.md, not map/SKILL.md — must not be flagged");
+  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+});
+
+test("validate-structure: garden 9a FAILS on a genuine orphan in a non-vigil skill (proves coverage now extends beyond vigil/)", () => {
+  const tree = copyRepoTree();
+  try {
+    // doctor/ was never scanned by the old vigil-only 9a; a nothing-links orphan planted here must now
+    // fail too, proving the widened scan actually reaches doctor/map/salvage/ship, not just vigil/.
+    fs.writeFileSync(path.join(tree, "cressetide", "skills", "doctor", "references", "zz-doctor-orphan.md"),
+      "# Orphan reference\n\nDead weight the workflow can never load.\n", "utf8");
+    const { code, out } = runValidator(tree);
+    assert.notStrictEqual(code, 0, "an orphan reference in a non-vigil skill must fail the build");
+    assert.match(out, /garden 9a: .*zz-doctor-orphan\.md is not mentioned by filename in any skills\/\*\/SKILL\.md or agents\/\*\.agent\.md/, "the failure must name the orphan reference and prove doctor/ is now covered");
   } finally { fs.rmSync(tree, { recursive: true, force: true }); }
 });
 
@@ -623,6 +684,12 @@ test("validate-structure: garden 9d FAILS on drift in each guarded copy cluster 
       const p = path.join(tree, "cressetide", "skills", "vigil", "references", "review-packet.md");
       fs.writeFileSync(p, fs.readFileSync(p, "utf8").split("materially underspecified").join("XXX"), "utf8");
     }, /rigor-contract guard: .*review-packet\.md no longer contains the anchor "materially underspecified"/],
+    // d4 (§5k extension): the scratch/temp-copy anchor drops out of review-packet.md while
+    // reviewer-common.md still has it — a one-sided drift.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "vigil", "references", "review-packet.md");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").split("scratch/temp copy").join("XXX"), "utf8");
+    }, /rigor-contract guard: .*review-packet\.md no longer contains the anchor "scratch\/temp copy"/],
     // d2 (stdin cluster): a hook loses its stdin-reader sync stamp
     // (stamps must not point at a guard that would let them silently rot).
     [(tree) => {
@@ -640,6 +707,91 @@ test("validate-structure: garden 9d FAILS on drift in each guarded copy cluster 
   }
 });
 
+test("validate-structure: garden 9d FAILS on drift in the map.mjs/ship.mjs mirrored skill constructs", () => {
+  for (const [mutate, expected] of [
+    // git(): a single-token change inside the function body (well within the extracted
+    // `function git(` .. column-0 `}` range) breaks the documented byte-identical copy.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "ship", "scripts", "ship.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("timeout: 10000,", "timeout: 10001,"), "utf8");
+    }, /garden 9d: git drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
+    // OPS_TRUST_TAG_ATTEMPT: a single-character change inside the const's own regex-literal line.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "map", "scripts", "map.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("[^>]*-->/g", "[^>]+-->/g"), "utf8");
+    }, /garden 9d: OPS_TRUST_TAG_ATTEMPT drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
+    // OPS_TRUST_TAG_WELLFORMED: a single-character change inside the const's own regex-literal line.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "ship", "scripts", "ship.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("(\\S+)", "(\\S*)"), "utf8");
+    }, /garden 9d: OPS_TRUST_TAG_WELLFORMED drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
+    // opsTrustTagIsWellFormed(): a single-token change inside the function body.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "map", "scripts", "map.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace('tier === "unverified"', 'tier === "UNVERIFIED"'), "utf8");
+    }, /garden 9d: opsTrustTagIsWellFormed drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
+    // isValidIsoDate(): a single-token change inside the function body.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "ship", "scripts", "ship.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace('hourText || "00"', 'hourText || "01"'), "utf8");
+    }, /garden 9d: isValidIsoDate drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
+    // Extraction-failure path: renaming git()'s signature in ONE file makes it unlocatable there,
+    // exercising the "cannot extract" branch rather than the drift branch.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "map", "scripts", "map.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("function git(", "function gitHelper("), "utf8");
+    }, /garden 9d: cannot extract git from cressetide\/skills\/map\/scripts\/map\.mjs — the construct moved or lost its expected shape/],
+  ]) {
+    const tree = copyRepoTree();
+    try {
+      mutate(tree);
+      const { code, out } = runValidator(tree);
+      assert.notStrictEqual(code, 0, `a drifted/unextractable map.mjs↔ship.mjs mirrored construct must fail the build (${expected})`);
+      assert.match(out, expected, "the failure must name the drifted or unextractable construct");
+    } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  }
+});
+
+test("validate-structure: garden 9d FAILS on drift/extraction/marker-loss in the isInvokedDirectly() entry-point cluster (15 CLI scripts)", () => {
+  for (const [mutate, expected] of [
+    // Single-site body drift: one forward-direction file's isInvokedDirectly() body diverges from
+    // the rest of the 14-file cluster. doctor.mjs is first in the file list and stays unmutated, so
+    // it is the reference body every other site is compared against.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "vigil", "scripts", "run-ledger.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("!process.argv[1]", "!process.argv[2]"), "utf8");
+    }, /garden 9d: isInvokedDirectly\(\) drifted between cressetide\/skills\/doctor\/scripts\/doctor\.mjs and cressetide\/skills\/vigil\/scripts\/run-ledger\.mjs/],
+    // Unextractable: renaming the function's declaration in ONE file makes it unlocatable there,
+    // exercising the "cannot extract" branch rather than the drift branch.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "vigil", "scripts", "pack-review-diff.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("function isInvokedDirectly(", "function isInvokedDirectlyRenamed("), "utf8");
+    }, /garden 9d: cannot extract isInvokedDirectly\(\) from cressetide\/skills\/vigil\/scripts\/pack-review-diff\.mjs — the function moved or lost its column-0 shape/],
+    // Missing stamp: the sync-comment line is deleted but the function body is left byte-identical,
+    // so only the marker-presence check (not the byte-identity check) must fire.
+    [(tree) => {
+      const p = path.join(tree, "eval", "check-model-provenance.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace(
+        "// isInvokedDirectly() kept in sync with the other 14 CLI entry points (documented copy — see garden hash guard)\n", ""
+      ), "utf8");
+    }, /garden 9d: eval\/check-model-provenance\.mjs lost the isInvokedDirectly\(\) sync marker/],
+    // provenance-store.mjs is the newest member of the cluster (its CLI shipped before the site
+    // was registered): drifting its body must now be caught exactly like any older forward site.
+    [(tree) => {
+      const p = path.join(tree, "cressetide", "skills", "vigil", "scripts", "provenance-store.mjs");
+      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("!process.argv[1]", "!process.argv[2]"), "utf8");
+    }, /garden 9d: isInvokedDirectly\(\) drifted between cressetide\/skills\/doctor\/scripts\/doctor\.mjs and cressetide\/skills\/vigil\/scripts\/provenance-store\.mjs/],
+  ]) {
+    const tree = copyRepoTree();
+    try {
+      mutate(tree);
+      const { code, out } = runValidator(tree);
+      assert.notStrictEqual(code, 0, `a drifted/unextractable/unmarked isInvokedDirectly() copy must fail the build (${expected})`);
+      assert.match(out, expected, "the failure must name the drifted, unextractable, or unmarked entry-point site");
+    } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  }
+});
+
 test("validate-structure: garden 9e FAILS on a bare plugin-script invocation missing ${CLAUDE_PLUGIN_ROOT}", () => {
   const tree = copyRepoTree();
   try {
@@ -651,6 +803,18 @@ test("validate-structure: garden 9e FAILS on a bare plugin-script invocation mis
     const { code, out } = runValidator(tree);
     assert.notStrictEqual(code, 0, "a bare plugin-script invocation in a shipped .md must fail the build");
     assert.match(out, /garden 9e: .*verification-gate\.md:\d+ invokes a plugin script without the plugin root/, "the failure must name the file:line and the fix");
+  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+});
+
+test("validate-structure: garden 9e FAILS on a bare plugin-script invocation in a non-vigil skill's reference doc", () => {
+  const tree = copyRepoTree();
+  try {
+    // Prove the widened §9e coverage: the defect lands in doctor's own reference doc, not vigil's.
+    const dc = path.join(tree, "cressetide", "skills", "doctor", "references", "diagnostic-contract.md");
+    fs.appendFileSync(dc, "\nSee also: node skills/doctor/scripts/doctor.mjs --json\n", "utf8");
+    const { code, out } = runValidator(tree);
+    assert.notStrictEqual(code, 0, "a bare plugin-script invocation in a non-vigil reference doc must fail the build");
+    assert.match(out, /garden 9e: .*diagnostic-contract\.md:\d+ invokes a plugin script without the plugin root/, "the failure must name the file:line and the fix, proving doctor/ is now covered");
   } finally { fs.rmSync(tree, { recursive: true, force: true }); }
 });
 

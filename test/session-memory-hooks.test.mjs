@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   COMPACTFIDELITY, HOOKS, MEM, TWO_ENTRIES_PLUS_PLACEHOLDER,
-  compactFidelity, digestOf, globalMemExists, isolatedHome, mkProject, mkProjectWithSettings,
+  compactFidelity, digestOf, hasGlobalMemory, isolatedHome, mkProject, mkProjectWithSettings,
 } from "./support.mjs";
 
 // --- load-failure-memory: digest correctness ---
@@ -86,7 +86,7 @@ test("empty file injects nothing", () => {
 });
 
 test("missing memory file injects nothing (when no global file present)", (t) => {
-  if (globalMemExists) return t.skip("global ~/.claude/FAILURE_MEMORY.md exists on this machine");
+  if (hasGlobalMemory()) return t.skip("global ~/.claude/FAILURE_MEMORY.md exists on this machine");
   assert.strictEqual(digestOf({ cwd: mkProject(null) }), "");
 });
 

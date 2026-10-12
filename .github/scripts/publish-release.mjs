@@ -446,23 +446,32 @@ export function verifyOrRepairPublished(tag, built, options = {}) {
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 }
 
-function publish(tag) {
+export function publish(tag, options = {}) {
   if (!tag) throw new Error("Publishing requires --tag vX.Y.Z");
   const identity = releaseIdentityFromTag(root, tag);
   validateTaggedReleaseState(root, identity);
   const built = createArchive(path.join(root, "_release"), { tag, identity });
-  const inspection = inspectPublishedRelease(tag);
-  if (inspection.outcome === "found") return verifyOrRepairPublished(tag, built);
+  const inspection = inspectPublishedRelease(tag, options);
+  if (inspection.outcome === "found") return verifyOrRepairPublished(tag, built, options);
   if (inspection.outcome !== "not-found") {
     throw new Error(`Unable to inspect release ${tag}: ${inspection.category}; ${inspection.stderr || "no stderr captured"}`);
   }
   runReleaseCommand("create", tag,
-    ["release", "create", tag, built.assetPath, built.checksumPath, "--verify-tag", "--title", tag, "--generate-notes"]);
-  return verifyOrRepairPublished(tag, built);
+    ["release", "create", tag, built.assetPath, built.checksumPath, "--verify-tag", "--title", tag, "--generate-notes"], options);
+  return verifyOrRepairPublished(tag, built, options);
 }
 
-const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (invokedDirectly) {
+// isInvokedDirectly() kept in sync with the other 14 CLI entry points (documented copy — see garden hash guard)
+function isInvokedDirectly() {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (isInvokedDirectly()) {
   try {
     const mode = process.argv[2] || "--archive";
     const tagIndex = process.argv.indexOf("--tag");

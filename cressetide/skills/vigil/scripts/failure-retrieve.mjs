@@ -170,6 +170,9 @@ function readCapped(file) {
 // the same 3-tier order hooks/load-failure-memory.js reads. Returns null when none is a readable
 // regular file. failure-consolidate.mjs imports this, so both helpers share one discovery order, and
 // defaultLedgerPath() below keeps the usage ledger a sibling of whichever file was selected.
+// doctor.mjs's --project check also imports this (dynamically; see that file's own header comment),
+// scoped to this function's project-local tiers only — it never accepts a resolution landing on the
+// third, global tier above.
 export function resolveMemoryFile(cwd) {
   const candidates = [
     path.join(cwd, ".ctide", "memory", "FAILURE_MEMORY.md"),
@@ -268,4 +271,14 @@ function main(argv) {
   process.exit(0);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main(process.argv);
+// isInvokedDirectly() kept in sync with the other 14 CLI entry points (documented copy — see garden hash guard)
+function isInvokedDirectly() {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (isInvokedDirectly()) main(process.argv);

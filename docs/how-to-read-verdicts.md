@@ -65,7 +65,9 @@ ctide:delivery=held
 
 These mean required verification did not run, or delivery is intentionally held. The Stop hook reads these exact literals; keep them unchanged.
 
-The panel line may instead read `ctide:panel=substituted:test-reviewer` — the run replaced `test-reviewer` with its own execution evidence (every behavior-changing criterion red→green + full suite green; only valid alongside `ctide:verify=pass`, and never for `intent-reviewer` or `arbiter`).
+The panel line may instead read `ctide:panel=substituted:test-reviewer` — the run replaced `test-reviewer` with its own execution evidence (every behavior-changing criterion red→green + full suite green; only valid alongside `ctide:verify=pass`, and never for `intent-reviewer` or `arbiter`). This fast lane never applies to high-risk work, to deep-mode runs of either tier, or to a **TP-active** run; on a TP-active run the real `test-reviewer` always runs, **including when the changed-test inventory is empty**, so seeing that line at all tells you the run was not TP-active.
+
+**On a TP-active run the `arbiter` reports two gate halves.** It states `loop` and `provenance` separately, plus their `combined` result, and **either half being false blocks `READY`** — so a run can verify green and still be held because the provenance half did not pass. It also re-checks freshness rather than trusting an earlier claim: evidence bound to a superseded source is refused, not reused.
 
 ## Evidence weight
 

@@ -13,7 +13,14 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const HOOKS = path.join(root, "cressetide", "hooks");
 const MEM = path.join(HOOKS, "load-failure-memory.js");
 const GATE = path.join(HOOKS, "plan-gate.js");
-const globalMemExists = fs.existsSync(path.join(os.homedir(), ".claude", "FAILURE_MEMORY.md"));
+// Lazy on purpose (a function, not a computed-at-import-time constant): a module-top-level statement runs
+// at import time, before any importing test file's own before() hook can possibly run (ES module
+// evaluation order), so an eager `existsSync` here would touch the real ~/.claude/ path once per run for
+// every one of the 7 test files that import anything from this module -- including files that isolate HOME
+// for their own tests via a before() hook, since that hook runs later than this module's own top level.
+// Deferring the check into a function means it only runs when its sole caller (session-memory-hooks.test.mjs)
+// actually invokes it, inside a test body, after any such isolation is already in effect.
+function hasGlobalMemory() { return fs.existsSync(path.join(os.homedir(), ".claude", "FAILURE_MEMORY.md")); }
 
 function runHook(hookPath, input, env) {
   return cp.execFileSync("node", [hookPath], { input: JSON.stringify(input), env: env || process.env }).toString();
@@ -302,7 +309,7 @@ function contractMd(jsonOverrides) {
 
 // Single export block so every moved helper body above stays byte-identical to the monolith.
 export {
-  root, HOOKS, MEM, GATE, globalMemExists,
+  root, HOOKS, MEM, GATE, hasGlobalMemory,
   runHook, digestOf, mkProject, gate, isolatedHome, TWO_ENTRIES_PLUS_PLACEHOLDER,
   mkProjectWithSettings, gateInProject,
   ORCH, mkTranscript, orch, orchEnv,

@@ -17,9 +17,12 @@ real, ongoing work, so it stores none.
 | `run-reconcile.mjs` | `close` / `expire` | ledger | one `close` event |
 | `run-consolidate.mjs` | (default) | ledger (tail-capped) | nothing |
 
-All three are dependency-free (Node built-ins only), invoked the same way `failure-retrieve.mjs` /
-`failure-consolidate.mjs` already are — from skill prose, fail-open, exit 0. None is a Claude Code
-hook and none runs in CI; they are session-time helpers the orchestrating thread calls directly.
+All three are dependency-free at module scope (Node built-ins only), invoked the same way
+`failure-retrieve.mjs` / `failure-consolidate.mjs` already are — from skill prose, fail-open, exit 0.
+None is a Claude Code hook and none runs in CI; they are session-time helpers the orchestrating
+thread calls directly. `run-ledger.mjs append` additionally reaches the test-provenance collector
+through a **dynamic** import inside that one path, so importing its pure builders — which
+`run-reconcile.mjs` and `run-consolidate.mjs` do — never loads the provenance stack.
 
 ## Storage
 
@@ -29,13 +32,21 @@ hook and none runs in CI; they are session-time helpers the orchestrating thread
 state is never accidentally committed even in a consuming project that has not gitignored `.ctide/`
 at the root.
 
-Unlike `.ctide/output/`, this tree is **never overwritten or truncated**. `docs/runtime-contract.md`
-names it the third state class: committed semantic state (`map/`, `memory/`, `design/`, `incidents/`
-— tracked by Git), untracked-but-persistent **episodic** state (`ledger/` — self-gitignored, survives
-across runs), and untracked per-run scratch (`output/` — self-gitignored, overwritten each run).
+Unlike `.ctide/output/`, this tree is **never overwritten or truncated**. `docs/runtime-contract.md` names
+it the third state class: committed semantic state (`map/`, `memory/`, `design/`, `incidents/`, `decisions/`
+— tracked by Git), untracked-but-persistent **episodic** state (`ledger/` — self-gitignored, survives across
+runs), and untracked per-run scratch (`output/` — self-gitignored, overwritten each run).
 `run-consolidate.mjs` reads only the newest ~4MB of an oversized ledger (mirrors
 `failure-consolidate.mjs`'s own read-cap pattern) — that is a read-time optimization only; it never
 truncates or rewrites the file on disk.
+
+**This tree is outside the head-view universe** (test-provenance v1.18, §11b.10 closed exclusions).
+The nested guard above protects against an accidental `git add`; it does **not** keep `runs.jsonl` out
+of the head view, because the only ignore authority there is *tracked* `.gitignore` bytes and this
+guard is untracked. Without the exclusion an append moved `headViewDigest`, and every committed
+provenance batch stopped re-verifying as soon as any later run appended. The exclusion is evaluated
+before trackedness, so content deliberately committed under `.ctide/ledger/` is invisible to the head
+view too — accepted for a path the runtime contract defines as tool-owned.
 
 ## Record schemas (event facts only — never a computed rate/score)
 
@@ -57,7 +68,8 @@ truncates or rewrites the file on disk.
   "findings": ["…"],
   "planned": { "paths": ["…"], "risk": "high" },
   "drift": { "outOfScope": 0, "mapCorrections": "" },
-  "window": { "days": 14, "status": "open" }
+  "window": { "days": 14, "status": "open" },
+  "testProvenance": { "…": "eighteen keys — see below" }
 }
 ```
 
@@ -69,9 +81,12 @@ truncates or rewrites the file on disk.
   neither is ever accepted as a CLI flag (there is no `--head` or `--files` flag), precisely so an
   agent cannot type a plausible-looking value in their place. `base` is optional and defaults to
   `null` when absent.
-- `verdict` / `verify` / `panel` — copied verbatim from the run's own machine sentinel lines
-  (`ctide:delivery=`, `ctide:verify=`, `ctide:panel=`, `references/final-report.md`), never
-  paraphrased or re-derived.
+- `verdict` / `verify` / `panel` — copied verbatim from the run's own final report
+  (`references/final-report.md`), never paraphrased or re-derived. `verdict` is the arbiter's **Final
+  Verdict** token (`READY` / `FIX REQUIRED` / `NOT READY`); `verify` and `panel` are the values of the
+  matching `ctide:verify=` and `ctide:panel=` footer sentinels. `ctide:delivery=` is **not** a verdict —
+  its `held` / `shipped` values describe delivery of the reviewed change — so it is never copied into
+  `verdict`.
 - `repairs` — the observed auto-fix-loop iteration count; floored at 0.
 - `findings` — up to 20 entries, each capped to 150 characters, drawn from the run's actual Findings
   table.
@@ -86,8 +101,116 @@ truncates or rewrites the file on disk.
   update, so a run's disposition lives in a *separate* `close` event, correlated by `head`, not by
   mutating this record.
 
+- `testProvenance` — the eighteen-key test-provenance observation block (test-provenance §11 as
+  amended by D10; types and absence rules fixed there). It is carried on **every** `run` record,
+  unconditionally, and it is **disclosure only** — nothing in it is ever a gate input. The block is
+  derived by the collector itself; the arbiter's gate never reads it.
+
 Absent optional inputs become `null` (`base`, `planned.risk`) or an empty array/string (everything
 else) — the script never guesses a value it was not given.
+
+### `testProvenance` — derived, never supplied
+
+Two literals, and reading one as the other is non-conforming:
+
+- **`null` — established absence**, which arises two ways. *Request-established*: no provenance
+  identity was requested, so no store was read at all and there is nothing to be absent from.
+  *Authority-established*: validated authority was reached and says the thing is not there — a
+  validated store with no such task, or a task whose `committedProvenanceBatchRef` is `null`.
+- **`"unknown"` — unavailable observation.** The deciding authority was not reached, or its proof was
+  not available. It must never be coerced to `0`, to `null` or to `false`. `droppedForNoSource` keeps
+  its own unchanged §11 literal, `"unreported"`.
+
+An identity that **was** requested but could not be collected — the store is unreadable or invalid,
+or the collector itself is unavailable — leaves `taskId` **`"unknown"`**, never `null` and never the
+caller's argument echoed back as a known task.
+
+The one exception is `converged`: a **required** boolean that combines two independent gates — the
+loop gate and a current committed-batch consumer pass. A gate without positive proof is not
+established, so the combined result is `false`. That is a fail-closed gate answering, not an unknown
+being promoted, and a `false` means *not established*, never *refuted*.
+
+`buildRunRecord` is pure and synchronous, reads no store and takes no telemetry parameter, so the
+only honest block it can produce is the **all-unavailable** one (`defaultTestProvenance()`). "All
+unavailable" is not "all `"unknown"`": three members are exceptions, and each is exact —
+`taskId: null` (request-established absence: nothing was asked for), `converged: false` (a required
+combined fail-closed gate returning its closed default) and `droppedForNoSource: "unreported"`
+(§11's own unchanged literal). Every other member is `"unknown"`.
+
+The **`append` CLI** replaces that block with one the collector derived **itself**: the CLI accepts no
+block, metric, digest or JSON parameter. `--provenance-task <id>` names the provenance TaskState to
+describe; it is **independent of `--task`**, which remains capped human prose. The store treats a task
+id as an opaque map key and defines no length or character grammar, so none is invented for it —
+membership is decided by lookup.
+
+Flag handling, and the three cases are not the same:
+
+- **absent** — the ordinary no-identity path. It is **silent**: no diagnostic, and the record carries
+  the no-identity block with `taskId: null`.
+- **malformed when supplied** — repeated, value-less, or empty. Each produces a stderr **diagnostic**
+  and the same no-identity block with `taskId: null`, because nothing usable was supplied.
+- **supplied and well-formed, but not collectible** — the block keeps `taskId: "unknown"`.
+
+In every case exactly one record is appended and the exit stays 0: the ledger never becomes a gate.
+
+### The five loop-derived counters — exact scopes
+
+Their names and types are §11's, unchanged; their **ownership and scope** are §11 as amended by D10:
+
+- **`reviewLoopIterations`** — `observedIterations`, scoped to the **retained controller window**.
+- **`convergenceEpochs`** — `observedEpochs`, **cumulative** across all epochs of that window.
+- **`adapterMisses`** — actual observed pipeline invocations, each contributing its own **first**
+  `(class, code)` under the approved E1 allowlist. The **emit** call and the **observe** call are two
+  separate invocations. Only an approved pair counts; every other failure contributes 0, and store,
+  producer, registry, artifact and Git errors stay excluded, as do `E_API_ARGUMENTS` and
+  `E_VIEW_INPUT`.
+- **`staleBatchRejections`** — **only** main-thread `recordVerification` consumer refusals with
+  `E_STEP6_SOURCE_STALE`. A §D8.4 misbinding is never counted here and fabricates no counter.
+- **`lastStaleSubject`** — the **named head-ref string**, or `null`. Never a typed object.
+
+Each counter is `{observed, uncertain}` in the control state, and **the ledger collector is the only
+place that projects `"unknown"`** — it reports `observed` when `uncertain === false`, else
+`"unknown"`. A known count of `0` is a measurement and is written as `0`; an unknown outcome is never
+zero. `priorHistory` stays `"unknown"`. Both loop counters are documented as "since this loop control
+was established".
+
+These metrics are **available for a validated task with a null head, a legacy head, or a failed
+emission** — they do not depend on a v2 head — with `converged: false` there simply because there is
+no consumer pass.
+
+`evaluate` and `inspect` **write no counter** and claim no attempt a past main thread did not make.
+Ledger movement is taken from the **loop half only**: a `provenance` result the collector proved
+itself, and the `combined` rollup, never move these counters.
+
+### The observation sidecar, and who runs it
+
+`oracleDepTriggered` is the one field the ledger cannot recover on its own: the two-sided
+effective-oracle comparison needs base and head rich analyses that no longer exist once the batch has
+been committed. It is measured beforehand by a standalone operation and left as a small bound sidecar
+at the fixed path **`.ctide/output/test-provenance-observation.json`** (inside the run-scratch tree,
+which the head universe already excludes):
+
+```
+node ${CLAUDE_PLUGIN_ROOT}/skills/vigil/scripts/inventory-telemetry-observer.mjs \
+  --cwd <dir> --base-tree <oid> --task <provenance-task-id>
+```
+
+Strict arguments; machine JSON on stdout with exit 0, machine JSON on stderr with exit 1. **Ordering
+is normative: it runs after a successful inventory emission and before the committing write.** The
+**precommit boundary** is checked rather than conventional: the observer compares the loaded
+current-store text digest against the artifact's `inputProvenanceStoreDigest`, and the committing
+write necessarily moves it, so a post-commit invocation refuses rather than recording a post-state
+measurement. It does **not** prove that an emission preceded it — the observer never sees the
+emitter's return value, and establishing the actual invocation/proposal sequence belongs to the loop
+controller.
+
+**Who runs it.** The released loop controller sequences it: `runProposalIteration`
+(`skills/vigil/scripts/test-provenance-loop.mjs`) performs the emission and this observation in one
+operation and records each attempt's outcome. An observer failure there is **non-gating** — it is
+caught and reported, never raised into the loop. A **non-TP run makes no such call at all**, so no
+sidecar is produced and none is expected. Either way, without a sidecar the collector simply reports
+`oracleDepTriggered: "unknown"` and every other field is unaffected; the sidecar is disclosure and is
+never a gate input.
 
 ### `close` event — appended by `run-reconcile.mjs close` / `expire`
 
@@ -223,7 +346,7 @@ the decision that matters (the verdict) is already final.
 ## CLI invocations
 
 ```
-node ${CLAUDE_PLUGIN_ROOT}/skills/vigil/scripts/run-ledger.mjs append --task <text> [--base <sha>] --verdict <text> --verify <text> --panel <text> [--repairs <n>] [--findings "a|||b"] [--planned-paths "g1,g2"] [--planned-risk <high|medium|low>] [--drift-outofscope <n>] [--drift-map <text>] [--window-days <n, default 14>] [--cwd <dir>] [--now <epoch-ms>]
+node ${CLAUDE_PLUGIN_ROOT}/skills/vigil/scripts/run-ledger.mjs append --task <text> [--base <sha>] --verdict <text> --verify <text> --panel <text> [--repairs <n>] [--findings "a|||b"] [--planned-paths "g1,g2"] [--planned-risk <high|medium|low>] [--drift-outofscope <n>] [--drift-map <text>] [--window-days <n, default 14>] [--provenance-task <id>] [--cwd <dir>] [--now <epoch-ms>]
 
 node ${CLAUDE_PLUGIN_ROOT}/skills/vigil/scripts/run-reconcile.mjs scan [--cwd <dir>] [--now <epoch-ms>]
 node ${CLAUDE_PLUGIN_ROOT}/skills/vigil/scripts/run-reconcile.mjs close --ref <head-sha> --as <escaped|survived|superseded|building-upon> --reason <text> [--cwd <dir>] [--now <epoch-ms>]
@@ -256,5 +379,5 @@ invocations, which should omit it.
   can grow past it on an unusually large change; `test/run-ledger.test.mjs`'s concurrent-append test
   exercises the common (short-line) case, not an arbitrarily large one.
 - **Language.** Per `SKILL.md` *Language And Text Integrity* — user-facing text follows the user's
-  language; the schema field names, the 4 `--as` literals, and the machine sentinel values copied
-  into `verdict`/`verify`/`panel` stay verbatim.
+  language; the schema field names, the 4 `--as` literals, and the verdict token and sentinel values
+  copied into `verdict`/`verify`/`panel` stay verbatim.

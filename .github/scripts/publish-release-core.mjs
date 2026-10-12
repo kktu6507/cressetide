@@ -413,8 +413,19 @@ export function runRelease({
   return { tag, action: "created-release" };
 }
 
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
-if (isMain) {
+// isInvokedDirectly() kept in sync with the other 14 CLI entry points (documented copy — see garden
+// hash guard); this copy is the reverse-direction pathToFileURL() form since this file imports
+// pathToFileURL, not fileURLToPath — semantically identical, not a body match
+function isInvokedDirectly() {
+  if (!process.argv[1]) return false;
+  try {
+    return pathToFileURL(fs.realpathSync(process.argv[1])).href === import.meta.url;
+  } catch {
+    return false;
+  }
+}
+
+if (isInvokedDirectly()) {
   try {
     runRelease();
   } catch (error) {

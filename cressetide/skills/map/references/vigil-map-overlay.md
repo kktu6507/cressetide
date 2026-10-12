@@ -12,7 +12,7 @@ Use Vigil for non-trivial feature work, bug fixes, API or business-rule changes,
 
 Manual: `/ctide:vigil <task>`.
 
-Model invocation is appropriate when a request needs implementation plus verification. `--lite` selects the smallest safe panel, `--deep` adds adversarial verification, `--no-deep` declines that tier, and `--report full` requests the detailed final report.
+Model invocation is appropriate when a request needs implementation plus verification. `--lite` selects the smallest safe panel; `--deep` opts into deep-mode **Tier 2** (adversarial verification, maximum effort); `--no-deep` / `--shallow` opts out of **Tier 1**, the deterministic-enforcement tier that auto-engages on high-risk / correctness-critical work when the Workflow capability is present; `--report full` requests the detailed final report. Tier semantics are owned by `../../vigil/references/deep-mode.md` — this overlay restates them, it does not define them.
 
 ## Loop
 
@@ -22,14 +22,14 @@ Model invocation is appropriate when a request needs implementation plus verific
 4. **Human approval.** Pause before implementation. Material product, security, destructive, data, contract, or UX ambiguity requires a user decision.
 5. **Implement.** Hand the approved plan to `implementer`. The main thread executes step 3's gathered reconciliation dispositions (`run-reconcile.mjs close`/`expire`, post-approval). Make the smallest safe diff. Do not alter a safety guard to bypass its denial.
 6. **Verify.** Run applicable build, test, lint, typecheck, integration, browser, text-integrity, and deterministic checks. Exercise implied boundary inputs. Prefer one meaningful fail-first then pass test per behavior-changing criterion; disclose criteria where that evidence class is impractical.
-7. **Review.** Prepare a bounded Review Packet containing intent, criteria, scope, assumptions, diff, verification, risks, exclusions, and reviewer-specific focus. Always select `intent-reviewer` and `test-reviewer`; add only applicable discipline reviewers.
+7. **Review.** Prepare a bounded Review Packet containing intent, criteria, scope, assumptions, diff, verification, risks, exclusions, and reviewer-specific focus. Always select `intent-reviewer` — it is never substituted. `test-reviewer` runs by default and is the only reviewer the evidence-substitution fast lane may replace, on low/medium-risk work whose evidence conditions hold; it is never substituted on a TP-active run, including one whose changed-test inventory is established empty. Add only applicable discipline reviewers. The selection rules, conditions and exclusions are owned by `../../vigil/references/reviewer-selection.md`.
 8. **Arbitrate.** After reviewers report, `arbiter` checks every criterion, command evidence, panel sufficiency, findings, and residual risk, then issues `READY`, `FIX REQUIRED`, or `NOT READY`.
 9. **Repair.** For a non-ready verdict, fix confirmed findings, rerun affected checks and reviewers, then rerun `arbiter`. Run the full required suite once more before `READY`. Stop with a clear stuck summary if the same blocker category survives two repair iterations; when it does, the summary also discloses whether the repeated fix is converging on or drifting from the approved criteria (`references/verification-gate.md`).
 10. **Carry learning.** Propose concise failure-memory updates for execution abnormalities with reusable prevention value. A single coordinating writer updates `.ctide/memory/FAILURE_MEMORY.md`.
 
 ## Operating references
 
-Read only the references needed for the current phase:
+Read only the references needed for the current phase. The `references/…` paths below are relative to `skills/vigil/`, the skill that loads this overlay — not to this file's own directory:
 
 - `references/task-contract.md` before approval and implementation.
 - `references/verification-gate.md` before declaring checks complete, and always for `--deep`.

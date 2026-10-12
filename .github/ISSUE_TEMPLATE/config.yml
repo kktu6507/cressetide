@@ -7,5 +7,5 @@ contact_links:
     url: https://github.com/kktu6507/cressetide/security/policy
     about: Do NOT open a public issue for a security vulnerability. Follow the private process in SECURITY.md.
   - name: "\"Nothing happens\" / setup help"
-    url: https://github.com/kktu6507/cressetide#troubleshooting
-    about: Run /ctide:doctor and read the README Troubleshooting section first — most setup issues (Node missing, plugin not enabled) are covered there.
+    url: https://github.com/kktu6507/cressetide#health-check-doctor
+    about: Run /ctide:doctor first — it checks the plugin identity, Node, and whether the hooks are wired. Installing does not enable the plugin; enable it via /plugin then /reload-plugins.

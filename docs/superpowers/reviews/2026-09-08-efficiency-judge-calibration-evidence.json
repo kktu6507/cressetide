@@ -1,0 +1,411 @@
+{
+  "ok": true,
+  "faults": [],
+  "root": "<TMP>\\ctide-eff-cal-nS051n",
+  "model": "claude-opus-5",
+  "effort": "xhigh",
+  "cli": {
+    "observedVersion": "2.1.263",
+    "commandSha256": "0b35df94c1307004f07b738390bfef8dfca5e9af29aaf6517f305bf086b95b03"
+  },
+  "permissionMode": {
+    "requested": "manual",
+    "observed": "default"
+  },
+  "childEnvOverrides": {
+    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1"
+  },
+  "casesSha256": "f973d46f83f37f8d4526bd3ba17c9e27ab2ca9a699f2c89f628d6e8d814a1cad",
+  "judgeSystemPromptSha256": "8b1947cfaa96005691083f1b1d0df3abf6085bb91cbdac24368ce7879f38b38c",
+  "judgeSchemaSha256": "9e86f3541b69b85ec69547574459532942d8030f0320d3f6712dd7545a1e1d12",
+  "sources": {
+    "eval/efficiency/stream-usage.mjs": "1764c624c0702440ae75aa09fb3fec9aa008d237fb3c9a96bc7f2f1674fc8670",
+    "eval/efficiency/protocol.mjs": "082addcc0be248848390f52dfbc4a2039f90fe539eb782c2cc91e230d505db47",
+    "eval/efficiency/l1b-driver.mjs": "733d2599e3669940751f31f6ed71f3f03582911f036a3fc34700a5ba12a31e9f",
+    "eval/efficiency/judge-calibration.mjs": "8bb34b327a5032cd8f82412f42297b596d491f35ca78bee006eb25c505754490",
+    "eval/efficiency/judge-calibration-cases.json": "f973d46f83f37f8d4526bd3ba17c9e27ab2ca9a699f2c89f628d6e8d814a1cad",
+    "eval/fixtures/01-js-missing-return.md": "8b3925c899a2787c3f026ab898b03e00756923d257bfa9cf1f16a140ffd885e6",
+    "eval/fixtures/06-clean-js-guard.md": "825d00d0b4a415e56bcdd69ba17d8dbb9d09a394e1909281f7e1642a0c5287d7"
+  },
+  "matched": "4/4",
+  "rows": [
+    {
+      "caseId": "case-01",
+      "fixtureId": "01-js-missing-return",
+      "origin": "actual captured reviewer final output",
+      "fixtureExpected": "hit",
+      "expectedGrade": {
+        "result": "hit",
+        "pass": true
+      },
+      "actualGrade": {
+        "pass": true,
+        "rationale": "Reviewer clearly and confidently flagged the exact ground-truth defect: the missing `return` after `res.status(204).end()` causes fall-through so an empty `items` list produces a double terminal write (204 then 200 with empty body), violating \"exactly one response per call\". It traced the empty-array path line by line, explained the Express `ERR_HTTP_HEADERS_SENT` consequence, and gave the correct minimal fix (`return res.status(204).end();`). Filed as a blocker in the findings index. The only additional observation (map callback arity) was explicitly hedged, marked unverified, and deliberately not admitted as a finding, so it is not a false positive.",
+        "result": "hit"
+      },
+      "rationale": "Reviewer clearly and confidently flagged the exact ground-truth defect: the missing `return` after `res.status(204).end()` causes fall-through so an empty `items` list produces a double terminal write (204 then 200 with empty body), violating \"exactly one response per call\". It traced the empty-array path line by line, explained the Express `ERR_HTTP_HEADERS_SENT` consequence, and gave the correct minimal fix (`return res.status(204).end();`). Filed as a blocker in the findings index. The only additional observation (map callback arity) was explicitly hedged, marked unverified, and deliberately not admitted as a finding, so it is not a false positive.",
+      "match": true,
+      "sessionId": "295b05de-553c-43f0-9182-41e138de09d7",
+      "estimatedCostUsd": 0.044622,
+      "stdoutSha256": "9795b720805e6278573a6178572ba9e4cfac949bb5858b58877c178b07929de6"
+    },
+    {
+      "caseId": "case-02",
+      "fixtureId": "01-js-missing-return",
+      "origin": "Codex-authored near-miss derived from the observed arity lead; not an actual model review",
+      "fixtureExpected": "hit",
+      "expectedGrade": {
+        "result": "miss",
+        "pass": false
+      },
+      "actualGrade": {
+        "rationale": "Ground truth is the missing `return` after the 204 early response, causing a double send on empty input. The reviewer flagged only an unrelated `map(renderRow)` extra-arguments concern and affirmatively concluded there were no other correctness issues, so the actual defect was never identified — not even vaguely.",
+        "result": "miss",
+        "pass": false
+      },
+      "rationale": "Ground truth is the missing `return` after the 204 early response, causing a double send on empty input. The reviewer flagged only an unrelated `map(renderRow)` extra-arguments concern and affirmatively concluded there were no other correctness issues, so the actual defect was never identified — not even vaguely.",
+      "match": true,
+      "sessionId": "66669745-4bde-4c11-8ca5-1d0027ec96c0",
+      "estimatedCostUsd": 0.020491999999999996,
+      "stdoutSha256": "8d0024811b9a6fb24263da4a5a1ba783fae76d7abba47d12336ce56613f5f560"
+    },
+    {
+      "caseId": "case-03",
+      "fixtureId": "06-clean-js-guard",
+      "origin": "actual captured reviewer final output",
+      "fixtureExpected": "clean",
+      "expectedGrade": {
+        "result": "clean-ok",
+        "pass": true
+      },
+      "actualGrade": {
+        "rationale": "Expected clean. The reviewer filed zero findings (no blocker/major/minor) and correctly explained why the code is correct: the early `return` at line 4 makes the 204 and 200 paths mutually exclusive, so exactly one response is sent. It even explicitly ruled out the \"missing return after early response\" template defect. The single speculative lead (extra args passed by `Array.prototype.map` to `renderRow`) was marked `[unverified]`, confined to the analysis channel, and explicitly not admitted as a finding — a hedged, non-confident note that does not count as a false positive. No precision regression.",
+        "result": "clean-ok",
+        "pass": true
+      },
+      "rationale": "Expected clean. The reviewer filed zero findings (no blocker/major/minor) and correctly explained why the code is correct: the early `return` at line 4 makes the 204 and 200 paths mutually exclusive, so exactly one response is sent. It even explicitly ruled out the \"missing return after early response\" template defect. The single speculative lead (extra args passed by `Array.prototype.map` to `renderRow`) was marked `[unverified]`, confined to the analysis channel, and explicitly not admitted as a finding — a hedged, non-confident note that does not count as a false positive. No precision regression.",
+      "match": true,
+      "sessionId": "fcb5f4b1-5417-42ee-a455-0ff81665da8a",
+      "estimatedCostUsd": 0.038847,
+      "stdoutSha256": "b0838c5ee89619aa269474df209897f5c22ac21e156fd7f2090add2466fccdfe"
+    },
+    {
+      "caseId": "case-04",
+      "fixtureId": "06-clean-js-guard",
+      "origin": "Codex-authored false-positive promotion of the observed unverified arity lead; not an actual model review",
+      "fixtureExpected": "clean",
+      "expectedGrade": {
+        "result": "false-positive",
+        "pass": false
+      },
+      "actualGrade": {
+        "result": "false-positive",
+        "pass": false,
+        "rationale": "Fixture is a correct control (early-return guard present; exactly one response per call), and the reviewer did acknowledge the branches are exclusive. However, it then raised a confident BLOCKER on line 6 claiming items.map(renderRow) is a \"confirmed correctness defect\" because the index/array are forwarded as extra args, asserting renderRow \"will interpret the index as formatting options and produce wrong rows.\" renderRow is not defined in the snippet, so its arity is unknown and this behavioral claim is fabricated; the extra-args pattern is at most a defensive style nit here. The reviewer explicitly escalated it (\"Do not accept this change\", \"a required blocker, not an optional style suggestion\"), removing any hedging that would qualify it as a minor/consider note. Confident blocker on a non-defect in a clean fixture = false positive."
+      },
+      "rationale": "Fixture is a correct control (early-return guard present; exactly one response per call), and the reviewer did acknowledge the branches are exclusive. However, it then raised a confident BLOCKER on line 6 claiming items.map(renderRow) is a \"confirmed correctness defect\" because the index/array are forwarded as extra args, asserting renderRow \"will interpret the index as formatting options and produce wrong rows.\" renderRow is not defined in the snippet, so its arity is unknown and this behavioral claim is fabricated; the extra-args pattern is at most a defensive style nit here. The reviewer explicitly escalated it (\"Do not accept this change\", \"a required blocker, not an optional style suggestion\"), removing any hedging that would qualify it as a minor/consider note. Confident blocker on a non-defect in a clean fixture = false positive.",
+      "match": true,
+      "sessionId": "dcedfa07-edc0-4708-b912-1a1e974e89d4",
+      "estimatedCostUsd": 0.033832,
+      "stdoutSha256": "5e5d3955ea99d3a9f2e5befbcdbfbf606f1b9d7b7d259b3dce09df3cbbd2dd1d"
+    }
+  ],
+  "aggregate": {
+    "estimatedTotalUsd": 0.137793,
+    "unknownCostSteps": 0,
+    "perCallUsd": 0.25,
+    "totalUsd": 1,
+    "costBasis": "cli-bundled-price-table-estimate; not provider billing"
+  },
+  "sourcePaths": {
+    "cases": "eval/efficiency/judge-calibration-cases.json",
+    "rawRoot": "<TMP>\\ctide-eff-cal-nS051n"
+  },
+  "claim": [
+    "Negative-response evidence on four constructed cases only.",
+    "Two positive controls are actual captured reviewer outputs; two negatives are handcrafted constructions derived from an observed [unverified] lead and are not model output.",
+    "Measures grade assignment given fixture ground truth, not blind defect detection.",
+    "Excludes a constant-pass and a constant-fail grader on these inputs; establishes no statistical calibration, no general judge accuracy, and does not by itself unlock drift detection."
+  ],
+  "independentAudit": {
+    "at": "2026-09-08T14:33:37.167Z",
+    "reviewer": "Codex",
+    "checks": "Fresh session identities, actual terminal structured grades, raw hashes, costs, zero children, exact observed model and frozen source bytes independently checked.",
+    "semanticReview": "Codex read all four final grade rationales and the frozen cases: missing-return hit, unrelated arity near-miss, correct clean control, and confident unsupported arity blocker match the prespecified targets.",
+    "focusedTests": {
+      "tests": 114,
+      "pass": 114,
+      "fail": 0
+    },
+    "preDispatchReproductions": {
+      "kind": "offline accounting probes only; no models",
+      "changedSystemBeforeFirst": {
+        "spawned": 0,
+        "ok": false,
+        "faults": [
+          "system-prompt-drift:0"
+        ]
+      },
+      "changedUserFileBeforeFirst": {
+        "spawned": 0,
+        "ok": false,
+        "faults": [
+          "user-prompt-not-canonical:0"
+        ]
+      },
+      "resealedFalsePromptMetadata": {
+        "contextOK": false,
+        "contextFaults": [
+          "manifest-judgeSystemPromptSha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "manifest-judgeSchemaSha256:1111111111111111111111111111111111111111111111111111111111111111"
+        ],
+        "spawned": 0,
+        "summaryOK": false,
+        "summaryFaults": [
+          "manifest-judgeSystemPromptSha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "manifest-judgeSchemaSha256:1111111111111111111111111111111111111111111111111111111111111111"
+        ]
+      }
+    },
+    "calls": [
+      {
+        "caseId": "case-01",
+        "sessionId": "295b05de-553c-43f0-9182-41e138de09d7",
+        "result": "hit",
+        "pass": true,
+        "estimatedCostUsd": 0.044622,
+        "mainUsage": {
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 3200,
+          "cache_read_input_tokens": 624,
+          "output_tokens": 492,
+          "output_tokens_details": {
+            "thinking_tokens": 22
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 3200,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 492,
+              "cache_read_input_tokens": 624,
+              "cache_creation_input_tokens": 3200,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 3200
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "modelUsage": {
+          "claude-opus-5": {
+            "inputTokens": 2,
+            "outputTokens": 492,
+            "cacheReadInputTokens": 624,
+            "cacheCreationInputTokens": 3200,
+            "webSearchRequests": 0,
+            "costUSD": 0.044622,
+            "contextWindow": 1000000,
+            "maxOutputTokens": 64000,
+            "thinkingTokens": 22,
+            "canonicalModel": "claude-opus-5",
+            "provider": "firstParty",
+            "costBasis": "list"
+          }
+        },
+        "stdoutSha256": "9795b720805e6278573a6178572ba9e4cfac949bb5858b58877c178b07929de6",
+        "processResult": "success"
+      },
+      {
+        "caseId": "case-02",
+        "sessionId": "66669745-4bde-4c11-8ca5-1d0027ec96c0",
+        "result": "miss",
+        "pass": false,
+        "estimatedCostUsd": 0.020491999999999996,
+        "mainUsage": {
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 1122,
+          "cache_read_input_tokens": 624,
+          "output_tokens": 358,
+          "output_tokens_details": {
+            "thinking_tokens": 53
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 1122,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 358,
+              "cache_read_input_tokens": 624,
+              "cache_creation_input_tokens": 1122,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 1122
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "modelUsage": {
+          "claude-opus-5": {
+            "inputTokens": 2,
+            "outputTokens": 358,
+            "cacheReadInputTokens": 624,
+            "cacheCreationInputTokens": 1122,
+            "webSearchRequests": 0,
+            "costUSD": 0.020491999999999996,
+            "contextWindow": 1000000,
+            "maxOutputTokens": 64000,
+            "thinkingTokens": 53,
+            "canonicalModel": "claude-opus-5",
+            "provider": "firstParty",
+            "costBasis": "list"
+          }
+        },
+        "stdoutSha256": "8d0024811b9a6fb24263da4a5a1ba783fae76d7abba47d12336ce56613f5f560",
+        "processResult": "success"
+      },
+      {
+        "caseId": "case-03",
+        "sessionId": "fcb5f4b1-5417-42ee-a455-0ff81665da8a",
+        "result": "clean-ok",
+        "pass": true,
+        "estimatedCostUsd": 0.038847,
+        "mainUsage": {
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 2825,
+          "cache_read_input_tokens": 624,
+          "output_tokens": 411,
+          "output_tokens_details": {
+            "thinking_tokens": 0
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 2825,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 411,
+              "cache_read_input_tokens": 624,
+              "cache_creation_input_tokens": 2825,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 2825
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "modelUsage": {
+          "claude-opus-5": {
+            "inputTokens": 2,
+            "outputTokens": 411,
+            "cacheReadInputTokens": 624,
+            "cacheCreationInputTokens": 2825,
+            "webSearchRequests": 0,
+            "costUSD": 0.038847,
+            "contextWindow": 1000000,
+            "maxOutputTokens": 64000,
+            "thinkingTokens": 0,
+            "canonicalModel": "claude-opus-5",
+            "provider": "firstParty",
+            "costBasis": "list"
+          }
+        },
+        "stdoutSha256": "b0838c5ee89619aa269474df209897f5c22ac21e156fd7f2090add2466fccdfe",
+        "processResult": "success"
+      },
+      {
+        "caseId": "case-04",
+        "sessionId": "dcedfa07-edc0-4708-b912-1a1e974e89d4",
+        "result": "false-positive",
+        "pass": false,
+        "estimatedCostUsd": 0.033832,
+        "mainUsage": {
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 1181,
+          "cache_read_input_tokens": 624,
+          "output_tokens": 868,
+          "output_tokens_details": {
+            "thinking_tokens": 128
+          },
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 1181,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "not_available",
+          "iterations": [
+            {
+              "input_tokens": 2,
+              "output_tokens": 868,
+              "cache_read_input_tokens": 624,
+              "cache_creation_input_tokens": 1181,
+              "cache_creation": {
+                "ephemeral_5m_input_tokens": 0,
+                "ephemeral_1h_input_tokens": 1181
+              },
+              "type": "message"
+            }
+          ],
+          "speed": "standard"
+        },
+        "modelUsage": {
+          "claude-opus-5": {
+            "inputTokens": 2,
+            "outputTokens": 868,
+            "cacheReadInputTokens": 624,
+            "cacheCreationInputTokens": 1181,
+            "webSearchRequests": 0,
+            "costUSD": 0.033832,
+            "contextWindow": 1000000,
+            "maxOutputTokens": 64000,
+            "thinkingTokens": 128,
+            "canonicalModel": "claude-opus-5",
+            "provider": "firstParty",
+            "costBasis": "list"
+          }
+        },
+        "stdoutSha256": "5e5d3955ea99d3a9f2e5befbcdbfbf606f1b9d7b7d259b3dce09df3cbbd2dd1d",
+        "processResult": "success"
+      }
+    ]
+  },
+  "experimentCosts": {
+    "priorL1bIncludingStoppedPilotUsd": 1.572788,
+    "calibrationUsd": 0.137793,
+    "cumulativeEstimateUsd": 1.7105810000000001,
+    "excludes": "implementation and design/review collaboration sessions; not actual subscription charges"
+  }
+}

@@ -19,7 +19,7 @@ test("plugin and package versions agree", () => {
 test("public skill and agent inventories are exact", () => {
   const skills = fs.readdirSync(path.join(root, "cressetide", "skills"), { withFileTypes: true })
     .filter(entry => entry.isDirectory()).map(entry => entry.name).sort();
-  assert.deepEqual(skills, ["doctor", "map", "salvage", "vigil"]);
+  assert.deepEqual(skills, ["doctor", "map", "salvage", "ship", "vigil"]);
   const agents = fs.readdirSync(path.join(root, "cressetide", "agents")).sort();
   assert.equal(agents.length, 11);
   assert.ok(agents.every(name => name.endsWith(".agent.md")));
@@ -28,7 +28,7 @@ test("public skill and agent inventories are exact", () => {
 test("multilingual READMEs preserve command and state tokens", () => {
   const names = ["README.md", "README.zh-TW.md", "README.ja.md"];
   const documents = names.map(name => fs.readFileSync(path.join(root, name), "utf8"));
-  for (const token of ["/ctide:vigil", "/ctide:salvage", "/ctide:map", "/ctide:doctor", ".ctide/", "ctide@kktu"]) {
+  for (const token of ["/ctide:vigil", "/ctide:salvage", "/ctide:map", "/ctide:doctor", "/ctide:ship", ".ctide/", "ctide@kktu"]) {
     assert.ok(documents.every(document => document.includes(token)), token);
   }
   assert.equal(new Set(documents.map(document => (document.match(/^##\s+/gm) || []).length)).size, 1);
