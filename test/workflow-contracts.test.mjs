@@ -403,25 +403,31 @@ test("release attest contract rejects flow-mapping checkout steps", () => {
   );
 });
 
-test("release attest contract rejects cross-job anchored checkout aliases", () => {
-  const workflow = fs.readFileSync(path.join(root, ".github", "workflows", "release.yml"), "utf8");
-  const checkoutStep = "      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0";
-  const anchoredCheckoutStep = [
-    "      - &checkout_step",
-    "        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0",
-  ].join("\n");
-  const downloadMarker = "    steps:\n      - name: Download exact published archive for provenance";
-  const mutant = workflow
-    .replace(checkoutStep, anchoredCheckoutStep)
-    .replace(downloadMarker, "    steps:\n      - *checkout_step\n      - name: Download exact published archive for provenance");
+for (const checkoutReference of ["current", "future-commented", "future-uncommented"]) {
+  test(`release attest contract rejects cross-job anchored checkout aliases (${checkoutReference})`, () => {
+    const releasedWorkflow = fs.readFileSync(path.join(root, ".github", "workflows", "release.yml"), "utf8");
+    // Exercise the same security contract after dependency updates, without changing repo files.
+    const workflow = checkoutReference === "current" ? releasedWorkflow : releasedWorkflow.replace(
+      /(actions\/checkout@)[0-9a-f]{40}(?:[ \t]*#.*)?/g,
+      (_, action) => `${action}${"f".repeat(40)}${checkoutReference === "future-commented" ? " # v99.1.2" : ""}`,
+    );
+    const checkoutStep = workflow.match(/^([ \t]*)-[ \t]+uses:[ \t]*(actions\/checkout@[0-9a-f]{40})([ \t]*(?:#.*)?)$/m);
+    assert.ok(checkoutStep, "a pinned checkout step must exist before inserting the alias mutation");
+    const [, indent, action, comment] = checkoutStep;
+    const anchoredCheckoutStep = `${indent}- &checkout_step\n${indent}  uses: ${action}${comment}`;
+    const downloadMarker = "    steps:\n      - name: Download exact published archive for provenance";
+    const mutant = workflow
+      .replace(checkoutStep[0], anchoredCheckoutStep)
+      .replace(downloadMarker, "    steps:\n      - *checkout_step\n      - name: Download exact published archive for provenance");
 
-  assert.notEqual(mutant, workflow, "cross-job-checkout-alias mutant must be applied");
-  assert.match(mutant, /&checkout_step/);
-  assert.throws(
-    () => assertReleaseAttestContract(mutant),
-    /attest job must not use YAML aliases/,
-  );
-});
+    assert.notEqual(mutant, workflow, "cross-job-checkout-alias mutant must be applied");
+    assert.match(mutant, /&checkout_step/);
+    assert.throws(
+      () => assertReleaseAttestContract(mutant),
+      /attest job must not use YAML aliases/,
+    );
+  });
+}
 
 // --- D11 Release 1: the mandatory test-reviewer boundary and the exact-batch transport -------------
 //
