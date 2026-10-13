@@ -24,7 +24,9 @@
 | 第 1 輪 review（intent / test / code / architecture + arbiter） | **FIX REQUIRED** | — |
 | 第 1 輪修復 R1–R7 | 完成 | `72b01a0` |
 | 第 1 輪複審（intent / test / code + arbiter，新機器） | **FIX REQUIRED**（無 blocker；4 個 major 都很小） | — |
-| 第 1 輪修復 R2-1～R2-5（含使用者核准的兩項順手修正） | 完成，**待窄範圍複審 2** | `ec91bf6` |
+| 第 1 輪修復 R2-1～R2-5（含使用者核准的兩項順手修正） | 完成 | `ec91bf6` |
+| 第 1 輪複審 2（intent / test / code + arbiter） | **FIX REQUIRED**（無 blocker；2 個 major，都在 ship 的淺層偵測） | — |
+| 第 1 輪修復 R3-1～R3-5 | 完成；四個結案條件逐條核對成立 → **第 1 輪 READY** | `64c2564` |
 | P3 → P13 | 未開始 | — |
 
 逐步紀錄在 [progress.md](progress.md)，第 1 輪 review 的完整內容在 [review-round1.md](review-round1.md)，實機探測結果在 [probes.md](probes.md)。
@@ -64,10 +66,12 @@
 
 ## 下一步（依序）
 
-1. **窄範圍複審 2**：第 1 輪複審（2026-10-14，新機器）判定 FIX REQUIRED，修復清單 R2-1～R2-5 見 [review-round1.md](review-round1.md) 的「Round-1 re-check」。R2 已在 `ec91bf6` 完成，red→green 記在 [r2-redgreen.md](r2-redgreen.md)。接下來只重跑 intent、test、code 三個 reviewer 和 arbiter，範圍限 `2306078..ec91bf6`。回 READY 才開始 P3。
+1. **第 1 輪已結案（READY，2026-10-14）**：複審 2 的 R3 修復在 `64c2564` 完成，arbiter 列的四個「只憑證據結案」條件都逐條核對成立，見 [review-round1.md](review-round1.md) 的「Round-1 closure」和 [r2-redgreen.md](r2-redgreen.md) 的 R3 一節。下一步是 P3。
 2. **P3**：validator 合併成 `validate({root, read})`，負向測試改用 overlay reader，不再複製整個 repo；`helpers.mjs` 和 `support.mjs` 合併，只留一個 `makeRepo`，temp 目錄要清掉。另外兩項要求：
    - **temp helper 要涵蓋所有沒清理的測試檔**：`ship.test.mjs`、`contract-check.test.mjs`、`support.mjs`、`helpers.mjs` 等所有 `mkdtempSync` 都改走同一個會自動清理的 helper（`t.after`），並用全套 `npm test` 前後的 `ctide-*` 目錄數量比對來證明（AC-20）。
    - **validator 只掃追蹤中、未被忽略的檔案**（使用者 2026-10-14 核准）：scratch 檔與文字完整性檢查改用 `git ls-files -co --exclude-standard`，本機 gitignored 的 `.ctide/collaboration/` dogfood 資料才不會讓 `npm run validate` 失敗。最終報告列為核准的順手修正。
+   - **測試用的 git 要密封**（複審 2）：fixture 裡的 git 不受開發者全域設定影響，例如 `merge.verifySignatures=true` 會讓 `ship.test.mjs` 的 merge fixture 假紅（新舊測試都有）。用一個集中的 fixture-git helper 處理，不要逐個測試補旗標。
+   - **SSH 簽章測試的 skip 要看能力**（複審 2）：除了 `ssh-keygen` 能不能啟動，git < 2.34 或 OpenSSH < 8.1 也要說明原因後 skip，不能直接紅燈。
 3. **P4**：建立共用模組 `cressetide/lib/`，刪掉 publish-release-core。期限在這一階段的待辦：
    - `git()` 的 1 MiB maxBuffer
    - contract-check 移除 flag 的 CLI 測試
@@ -78,6 +82,9 @@
 5. **P6**：SubagentStop 紀錄器加上新的 Stop；要包含一個 ship session 的回歸案例。這個案例的 commit subject 要含 `READY`、`major`、`minor`，報告裡也要有否定句「never means 'safe to ship'」，新的 Stop 都必須保持安靜（第 1 輪複審 F-k）。
 6. **P7 → P13**：照計畫做。注意 **P8 第一次改 prose 之前**，要先把被刪掉的 fast-lane 和 test-reviewer QA 輸出的 prose 守衛補回來（拿掉 TP 的部分）。同一個期限內，還要替低／中風險 run 定義實作階段可引用的 edge 來源（第 1 輪複審 F-l）。
    - **P4** 另外要處理：`counted.status` 的 fault-injection 測試，並把 `rev-list --count` 改成嚴格解析 `/^\d+$/`（F-j）；ship 搬到 `lib/git` 時，逐一檢查 code-reviewer 留下的四條線索（resolveMarker 讀 tag 清單失敗、tagReady 的 rev-parse 失敗、子目錄 `--cwd` 的 changelogTouched、HEAD 損壞被標成 `no-release-tag`）。
+   - **P4 的 lib/git 要集中中和使用者 git 設定**（複審 2）：用明確的 `-c key=value` 覆寫，包括 `i18n.logOutputEncoding`，並補一個非 ASCII commit 標題的測試。**不要**用 `GIT_CONFIG_GLOBAL`／`NOSYSTEM` 整個隔離，否則會丟掉 `safe.directory`，遇到「dubious ownership」的 repo 每次讀取都會失敗。
+   - **P4 計畫核准時請使用者決定**：要不要用 `--ignore-submodules=none` 覆寫 `diff.ignoreSubmodules`。不覆寫的話，submodule 被移動時 tagReady 可能誤判 `pass`，pending 也會漏列 gitlink；覆寫的話，連專案自己在 `.gitmodules` 設的 `ignore` 也會被蓋掉。
+   - **P11** 改 README 時：`ship.test.mjs` 的 README 測試只讀每個標題下的第一行，段落重新換行時要一起檢查。
 
 每個階段的共同要求：`npm run validate`、`npm test`、`npx --yes @anthropic-ai/claude-code@2.1.272 plugin validate --strict ./cressetide` 三項都要綠，用 `git grep` 確認該清的東西零命中，然後 commit。只有 D-2 那三個、D-4 那四個計時測試例外。在這台機器上，因為本機有 `.ctide/collaboration/` dogfood 資料，P3 修好 validator 之前，三項驗證都要在乾淨的 detached worktree 裡跑。每個階段結束時，順手清掉多餘的檔案（scratch 副本、用完的 worktree、測試漏掉的 `ctide-*` 暫存目錄）。
 
@@ -145,8 +152,11 @@
    - 預防：要求模型逐字轉述的文字裡，不放機器解析的 token；測試用文件上的字面值，掃描整份輸出不切任何區段；另寫一個端到端測試，把真實的最後訊息餵給真的 hook，並加一個對照組證明 hook 確實會觸發。改寫機器解析 token 的措辭時，要 grep 所有文件、所有語言裡的轉述（例如 README×3），不只逐字引用的那幾處。
    - tags: machine-token, verbatim-disclaimer, hook-false-positive, tautological-oracle
 3. **解析 porcelain 指令的輸出時，使用者的 git 設定會改變輸出形狀。** `column.ui=always` 讓 `git tag` 把所有 tag 印成一行，`log.showSignature=true` 在 `git log --format` 前面多印簽章結果，`tag.sort` 改變同版號 tag 的先後。修 M2 時改用 `git tag --merged HEAD`，在預設設定下全綠，卻在這些設定下把原本 `ok` 的結果變成 `no-release-tag`。
-   - 預防：程式要解析的 git 輸出，一律明確關掉會改形狀的設定（`--no-column`、`--sort=<key>`、`--no-show-signature`），或改用 plumbing（`for-each-ref`）；測試裡要有一個在敵意設定（`column.ui=always`、`tag.sort=-refname`、`log.showSignature=true`）下跑的案例。
+   - 預防：程式要解析的 git 輸出，一律明確關掉會改形狀的設定（`--no-column`、`--sort=<key>`、`--no-show-signature`），或改用 plumbing（`for-each-ref`）；測試裡要有一個在敵意設定（`column.ui=always`、`tag.sort=-refname`、`log.showSignature=true`）下跑的案例。會改變輸出「內容」的設定也一樣（`i18n.logOutputEncoding`、`status.showUntrackedFiles`、`diff.ignoreSubmodules`）；在 git 包裝層用明確的 `-c key=value` 集中中和，不要整個隔離使用者設定（會丟掉 `safe.directory`）。
    - tags: git-porcelain, user-config, output-parsing, regression-from-fix
+4. **「其他一律算未知」的規則，每一種「其他」都要各自有測試；情境檢查不能擋在權威探測前面。** R2-3 的三態 shallow 探測只測了四種非答案中的兩種（回顯旗標、逾時）；把「非零結束」或「空輸出」改回「不是 shallow」的 mutant 93/93 全綠，卻產生 R2-3 要消除的假 `tagReady: pass`。同一次修正為了不在非 git 目錄印出「可能被截斷」，先問 `--is-inside-work-tree` 再問探測，結果 bare shallow clone 和 `<clone>/.git` 裡探測明明答 `true`，「history truncated」也被吃掉（從 2306078 退步）。
+   - 預防：規格列舉的每一種輸入（含每一種非答案）各一個測試，斷言使用者看得到的結果，每個分支各跑一個 mutant、分開記錄；先問權威探測，只有它沒答案時才用情境檢查來分類。
+   - tags: tri-state, unknown-branch, mutation-survivor, guard-ordering, regression-from-fix
 
 ## 這個資料夾的檔案
 

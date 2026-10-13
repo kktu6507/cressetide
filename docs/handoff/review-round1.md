@@ -50,6 +50,49 @@
 - **Revisit trigger**: P5 lands the in-process tests, or any of the four fails when run alone.
 - **Tags**: tests / plan-gate / timing-exception
 
+## Round-1 re-check 2 (2026-10-14) — arbiter verdict on 2306078..ec91bf6: FIX REQUIRED
+
+- Panel: intent, test, code (all real) + arbiter. Packet and consolidated reports: gitignored `.ctide/output/review/packet-recheck2.md` and `recheck2-findings.md`.
+- Verification (clean worktree with exactly the ec91bf6 content; re-run independently by the arbiter): `npm run validate` 0; `plugin validate --strict` on 2.1.272 0; `npm test` 0 — 932 tests, 926 pass, 0 fail, 6 skip, 90 s (no D-2/D-4 exception needed); `contract-check --base 2306078` 0; `test/ship.test.mjs` 93/93; 0 residue hits.
+- AC check: AC-13 met (incl. every hostile config in the edge list); AC-1 met; **AC-22 slice unmet (partial)** — ship-contract.md:32-36 false for bare / `.git`, add-on A undocumented, command-reference.md:131-133 over-broad; AC-2 slice met.
+- R2 closure: R2-1, R2-2, R2-5, add-on B, add-on C closed; R2-4 closed in code and contract (command-reference residual); **R2-3 and add-on A partial**.
+- Majors (both reproduced by the arbiter):
+  - **MJ-1** (test #1/#2, code N6): the tri-state probe's non-answers are mostly unpinned — mutants "non-zero exit → not shallow" (M8), "empty output → not shallow" (M9) and "any spawn error on the work-tree check → no-work-tree" (M11) each pass `test/ship.test.mjs` 93/93 while producing a false `tagReady: pass`; the preload loop only has `echo` and `timeout`.
+  - **MJ-2** (intent #1, code N1 + N2): add-on A's work-tree check runs before the probe, so a bare shallow clone and `<clone>/.git` (probe `true`, work-tree `false`) lose the "history truncated — weak-signal only" marker note that 2306078 printed; pendingChanges also spawns the work-tree check twice.
+- Repair list (owner approved W1/W2 wording 2026-10-14):
+  - **R3-1** [Extended-Safe, disclosed] probe first: literal `true`/`false` is final; probe ENOENT → no-work-tree; any other answer → ask `--is-inside-work-tree` (ENOENT → no-work-tree; other spawn error → unknown; `true` → unknown; else no-work-tree). No `--git-dir`. Within owner add-on A (its stated target was the pre-R2 wording and no *false* clause where there is no history).
+  - **R3-2** [Safe, test] preload modes `nonzero`, `empty`, probe+work-tree both timing out; a non-shallow bare repo with `echo` (no clause); a real bare `--depth 2` clone and `<depth-1 clone>/.git` (clause regained, red on ec91bf6); each mutant recorded separately.
+  - **R3-3** [Safe, doc] W1 (ship-contract.md:36-40, "unknown" only inside a git work tree; outside / bare / `.git` / git missing → no clause unless the probe says `true`; a work-tree check that times out → unknown) and W2 (command-reference.md:131-133, "…names it whenever the state is `ok` or `no-release-tag`"), byte-exact.
+  - **R3-4** [Safe, comment] ship.mjs:105-109 no longer overclaims ("other keys, e.g. `i18n.logOutputEncoding`, are not neutralized yet").
+  - **R3-5** [Safe, test fixture] `--no-column` on the fixture's `git tag --merged`; repo-local `gpg.ssh.program ssh-keygen` in the SSH fixture.
+- Routed: `i18n.logOutputEncoding` + central `-c key=value` neutralization in lib/git (not `GIT_CONFIG_GLOBAL` isolation — it drops `safe.directory`) → P4 exit; `diff.ignoreSubmodules` → **owner decision at P4 plan approval**; hermetic fixture git (`merge.verifySignatures`, shared with older tests) → P3 exit; SSH test capability-probe skip (git < 2.34, OpenSSH < 8.1) → P3 exit; README tests read only the first line under each heading → re-check at P11.
+- **Evidence-only closure** (arbiter): R3 closes round 1 as READY without another reviewer run if all hold — (1) the diff touches only ship.mjs (:50-72, :105-109), test/ship.test.mjs, ship-contract.md (W1) and command-reference.md (W2), W1/W2 byte-exact; (2) ec91bf6's code + the new tests turns R3-2(d) red, and M8, M9, M11 and a `--git-dir` mutant are each red on their own against the fix, all green with it; (3) the arbiter's 15-cell behavior matrix is unchanged except bare / `.git` regaining the clause; (4) clean-worktree validate, plugin validate, npm test, contract-check all exit 0, and the hostile `GIT_CONFIG_GLOBAL` runs of R3-5 are green. Otherwise: narrow re-check with test-reviewer + arbiter.
+- Failure memory: proposed only (item 4 and an extension to item 3 in `docs/handoff/README.md`).
+- `ctide:delivery=held` · `ctide:verify=pass` · `ctide:panel=full` (re-check-2 run).
+
+### DECISION-20261014-shallow-probe-answer-first
+
+- **Status**: active (arbiter ruling under owner add-on A; W1 wording owner-approved 2026-10-14)
+- **Context**: Add-on A was implemented as a work-tree check before the shallow probe. That check also overrides the probe's literal `true` in a bare shallow repo or `<clone>/.git`, dropping the disclosure 2306078 printed and ship-contract.md:32-36 promises.
+- **Decision**: Ask the probe first; its literal `true`/`false` is final everywhere. Consult the work-tree check only on a non-answer: inside a work tree → unknown; outside, or git missing → no clause; the check's own non-ENOENT failure → unknown.
+- **Alternatives considered**: narrow the contract to "inside a work tree" (declined — removes a true disclosure, contradicts add-on A's "pre-R2 wording"); a `--git-dir` fallback (declined — puts "unknown" in bare repos, outside add-on A, would need a new owner ruling); keep the duplicate work-tree check (declined — +2–3 spawns per report for no behavior).
+- **Consequences**: spawn counts inside repositories return to 2306078 levels; a non-git directory costs +2; "unknown" stays confined to work trees, and every non-answer is pinned by a test.
+- **Revisit trigger**: P4's lib/git changes how git context is detected, or the owner wants "unknown" in bare repos.
+- **Tags**: ship / shallow-probe / add-on-A / guard-ordering
+
+## Round-1 closure (2026-10-14) — READY by evidence, per the re-check-2 arbiter's conditions
+
+R3-1…R3-5 landed in `64c2564` (signed). The orchestrator checked each of the arbiter's four conditions itself rather than relying on the implementer's record alone:
+
+1. **Diff scope**: `ship.mjs` hunks only at :55-75 (`shallowState` + comment) and :109-114 (comment); `test/ship.test.mjs`; one hunk each in ship-contract.md (W1) and command-reference.md (W2). W1 and W2 verified verbatim (whitespace-normalized, count 1 each) and the replaced sentences gone.
+2. **Red → green**: reproduced independently in scratch copies — ec91bf6's code with the new tests fails exactly the bare/`.git` test (96/95/1); the fixed code with mutant M8 fails exactly the non-answer loop (96/95/1). The implementer's record shows M9, M11 and the `--git-dir` fallback each red on their own, green with the fix (`r2-redgreen.md` § R3).
+3. **Behavior matrix**: the 15 cells are identical to ec91bf6 except the bare shallow clone and `<shallow clone>/.git`, which regain "history truncated — weak-signal only".
+4. **Clean worktree**: `npm run validate` 0; `plugin validate --strict` on 2.1.272 0; `npm test` 0 — 935 tests, 929 pass, 0 fail, 6 skip, 89 s; `contract-check --base ec91bf6` 0; `test/ship.test.mjs` 96/96 under `GIT_CONFIG_GLOBAL` with `column.ui = always` and with a missing `gpg.ssh.program`.
+
+All four hold, so round 1 (P1 + P2 and its repairs R1–R7, R2-1…R2-5, R3-1…R3-5) is **READY**. Items routed to P3 / P4 / P5 / P6 / P8 / P11 keep their deadlines (see `README.md` 下一步).
+
+`ctide:delivery=held` · `ctide:verify=pass` · `ctide:panel=full`
+
 ---
 
 ## Review Packet — v0.8 slim refactor, review round 1 (phases P1 + P2)

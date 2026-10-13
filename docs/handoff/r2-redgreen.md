@@ -1,3 +1,5 @@
+> R2、R3 的 red→green 紀錄（原檔是 gitignored 的 `.ctide/output/review/r2-redgreen.md`）。依第 1 輪複審 arbiter 的要求放進受版控的交接資料。
+
 > R2 的 red→green 紀錄（原檔是 gitignored 的 `.ctide/output/review/r2-redgreen.md`）。依第 1 輪複審 arbiter 的要求放進受版控的交接資料。
 
 # R2 red→green evidence (round-1 repair-2, R2-1 … R2-5)
@@ -118,3 +120,69 @@ Shape chosen for (A): `shallowState` runs `git rev-parse --is-inside-work-tree` 
 The tagReady half of each (A) test sits behind the marker.note assertion; on the pre-follow-up code the tagReady evidence in a non-git directory read "history may be truncated — weak-signal only: could not determine whether this is a shallow clone …" (observed directly with the CLI before this follow-up).
 
 Whole file after the follow-up, main checkout: `node --test test/ship.test.mjs` → exit 0, 93/93/0 (90 + 3 new).
+
+## R3 (round-1 repair-3 on ec91bf6; W1/W2 owner-approved 2026-10-14)
+
+Base: HEAD 3dd9689 (= ec91bf6 for every path R3 touches; 3dd9689 is docs/handoff only). Trees (scratch, outside the checkout, deleted after the runs): **ec91bf6** = `git archive ec91bf6` as-is; **ec91bf6+new tests** = the same + the final `test/ship.test.mjs`; **fixed** = the same archive + the four R3 files overlaid (byte-identical to the main checkout, checked with `cmp`). Every test run set `TEMP`/`TMP`/`TMPDIR` to a scratch dir that was deleted with it. Mutants were applied to the fixed tree one at a time (exact-once string replacement, restored after each run), each run as a whole-file run so the full set of failing tests is visible.
+
+### Evidence 1 — diff scope and W1/W2
+
+`git diff --stat` (R3 files; the `docs/handoff/**` changes in the same working tree are the orchestrator's, written 06:30, before the first R3 edit at 06:31):
+- `cressetide/skills/ship/scripts/ship.mjs` 43 lines: hunks `@@ -55,7 +55,10 @@`, `@@ -62,0 +66,7 @@`, `@@ -65,7 +75 @@` (R3-1: comment + `shallowState`), `@@ -105,5 +109,6 @@` (R3-4 comment). Nothing else.
+- `cressetide/skills/ship/references/ship-contract.md` 13 lines: one hunk `@@ -36,5 +36,8 @@` (W1).
+- `docs/command-reference.md` 7 lines: one hunk `@@ -133,3 +133,4 @@` (W2).
+- `test/ship.test.mjs` 129 lines (R3-2, R3-5, comments).
+
+W1/W2 byte-exact, checked by script against `git show ec91bf6:<file>`: for each file, the old sentence occurs once in the paragraph; the whitespace-normalized paragraph equals the old paragraph with only that sentence swapped; the whitespace-normalized **whole file** equals the old whole file with only that sentence swapped; no line splits a code span. Result: all true for both files. Wrap widths: ship-contract.md ≤ 100 columns, command-reference.md ≤ 79 (the paragraph's existing range).
+
+### Evidence 2 — red → green, and each mutant on its own
+
+Command shape, cwd = the named tree: `node --test test/ship.test.mjs` (whole file). Counts are `# tests / # pass / # fail`.
+
+| Run | Tree / mutant (applied alone) | Exit | t/p/f | Failing tests (first assertion) |
+|---|---|---|---|---|
+| ec91bf6 code + new tests | ec91bf6+new tests | 1 | 96/95/1 | resolveMarker: a bare shallow clone and a shallow clone's .git directory, given as --cwd, disclose history truncation in the marker note ("bare shallow clone: marker.note") — R3-2(d) |
+| fixed | fixed | 0 | 96/96/0 | — |
+| M8: probe non-zero exit → "not-shallow" | fixed + M8 | 1 | 96/95/1 | an unanswered shallow probe (echoed flag, timeout, non-zero exit, empty output) inside a work tree is unknown, never 'not shallow': … ("nonzero: pending") — R3-2(a) |
+| M9: probe empty output → "not-shallow" | fixed + M9 | 1 | 96/95/1 | same test ("empty: pending") — R3-2(a) |
+| M11: any spawn error on the work-tree check → "no-work-tree" | fixed + M11 | 1 | 96/95/1 | when the shallow probe and the work-tree check both time out, it is unknown: the marker note says history may be truncated and tagReady is unverified ("marker.note") — R3-2(b) |
+| `--git-dir` fallback: non-answer → `rev-parse --git-dir` succeeds → "unknown" | fixed + gitDirFallback | 1 | 96/95/1 | in a non-shallow bare repository, a shallow probe echoed back by an older git adds no truncation clause to the marker note ("marker.note has no truncation clause") — R3-2(c) |
+| ec91bf6's own check order (work-tree check first) | fixed + ec91bf6's `shallowState` body | 1 | 96/95/1 | resolveMarker: a bare shallow clone and a shallow clone's .git directory, … ("bare shallow clone: marker.note") — R3-2(d) |
+
+The R3-2(a)/(b)/(c) tests are green on ec91bf6's code (it already returned unknown/no-work-tree correctly in those cases); they exist to kill M8, M9, M11 and the `--git-dir` fallback, which each survived 93/93 before. Each mutant above fails exactly one test, and a different one per mutant except M8/M9 (same loop, different mode).
+
+### Evidence 3 — behavior matrix, ec91bf6 vs fixed
+
+Fixtures: one untagged origin work tree (package.json at the root and in `src/`, three commits), a `--depth 1` clone of it (root, `src/`, a linked worktree, its `.git`), a `--bare --depth 2 --no-tags` clone, a full `--bare` clone, a non-git directory with a package.json, and git removed from PATH. Probe cells use the test file's own preload (extracted verbatim) on the origin work tree / the full bare clone. Fixture sanity: `--is-shallow-repository` = true for the clone, the bare shallow clone and `<clone>/.git`, false for the full bare clone; no tags anywhere (so marker.note is always the not-found note). Each cell: `pending.state` / `tagReady.status` / marker.note clause / tagReady evidence clause. CLI exit 0 in every cell, both trees.
+
+| # | Cell | ec91bf6 | fixed | Changed |
+|---|---|---|---|---|
+| 1 | normal repo | no-release-tag / pass / none / none | no-release-tag / pass / none / none | no |
+| 2 | real shallow clone, root | shallow-clone / unverified / truncated — weak-signal only / truncated — weak-signal only | same | no |
+| 3 | shallow clone, from `src/` | shallow-clone / unverified / truncated — weak-signal only / truncated — weak-signal only | same | no |
+| 4 | shallow clone, linked worktree | shallow-clone / unverified / truncated — weak-signal only / truncated — weak-signal only | same | no |
+| 5 | bare shallow clone | not-a-git-repo / not-applicable / **none** / none | not-a-git-repo / not-applicable / **truncated — weak-signal only** / none | **yes** |
+| 6 | `<shallow clone>/.git` | not-a-git-repo / not-applicable / **none** / none | not-a-git-repo / not-applicable / **truncated — weak-signal only** / none | **yes** |
+| 7 | non-shallow bare repo | not-a-git-repo / not-applicable / none / none | same | no |
+| 8 | non-git directory | not-a-git-repo / unverified / none / none | same | no |
+| 9 | git missing from PATH | git-unavailable / unverified / none / none | same | no |
+| 10 | probe `echo` (normal work tree) | unverified / unverified / may be truncated / may be truncated | same | no |
+| 11 | probe `timeout` (normal work tree) | unverified / unverified / may be truncated / may be truncated | same | no |
+| 12 | probe `nonzero` (normal work tree) | unverified / unverified / may be truncated / may be truncated | same | no |
+| 13 | probe `empty` (normal work tree) | unverified / unverified / may be truncated / may be truncated | same | no |
+| 14 | probe + work-tree check both time out (normal work tree) | unverified / unverified / may be truncated / may be truncated | same | no |
+| 15 | probe `echo` in a non-shallow bare repo | not-a-git-repo / not-applicable / none / none | same | no |
+
+Identical everywhere except cells 5 and 6, which regain "history truncated — weak-signal only" in marker.note. In cells 5–7 and 15 tagReady is `not-applicable` (no package.json inside a bare repository or a `.git` directory), so its clause is not observable there.
+
+### Evidence 4 — whole file in the main checkout, default and hostile global config (R3-5)
+
+| Run | Tree | Config | Exit | t/p/f | Failing test |
+|---|---|---|---|---|---|
+| main checkout | D:\github\cressetide | default | 0 | 96/96/0 | — |
+| main checkout | D:\github\cressetide | `GIT_CONFIG_GLOBAL` = scratch file with `column.ui = always` | 0 | 96/96/0 | — |
+| main checkout | D:\github\cressetide | `GIT_CONFIG_GLOBAL` = scratch file with `gpg.ssh.program = ctide-no-such-signer` | 0 | 96/96/0 | — |
+| before R3-5 (red) | ec91bf6 (its own test file) | `column.ui = always` | 1 | 93/92/1 | pending view: a maintenance tag merged back after a higher release (v1.9.5 dated after v2.0.0) is not the boundary ("fixture sanity: both tags are reachable from HEAD") |
+| before R3-5 (red) | ec91bf6 (its own test file) | `gpg.ssh.program = ctide-no-such-signer` | 1 | 93/92/1 | pending view and marker: log.showSignature=true with SSH-signed commits adds no row … (`git commit -q -S` failed) |
+
+96 = 93 + 3 new tests (R3-2(b), (c), (d)); R3-2(a) extends the existing unanswered-probe test's loop with `nonzero` and `empty`.
