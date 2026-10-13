@@ -3,8 +3,7 @@
 `EXPERIENCE.md` is `FAILURE_MEMORY.md`'s tracked sibling: where failure memory records what went
 wrong and how it was prevented, experience memory records a validated **positive** pattern — an
 approach, convention, or design choice that repeated real use has confirmed works. Both live under
-`.ctide/memory/`; both are **committed** in the consuming project (unlike the ledger, which is
-self-gitignored and untracked — `references/run-ledger.md`, *Storage*). This file defines the
+`.ctide/memory/`; both are **committed** in the consuming project. This file defines the
 `.ctide/memory/EXPERIENCE.md` contract only; it does not change failure memory's own contract or
 lifecycle (`references/verification-gate.md`, *Failure Memory*).
 
@@ -27,8 +26,7 @@ candidate → validated → standard → retired
   (`references/verification-gate.md`, *Keeping the file small*).
 
 Promotion at each step is a **human/agent judgment call recorded in prose**, not a computed score —
-this file stores no rate, count, or percentage, the same discipline the run ledger holds
-(`references/run-ledger.md`).
+this file stores no rate, count, or percentage.
 
 ## Why `standard` requires a linked executable asset, and why that gate stays prose-only
 
@@ -106,7 +104,7 @@ introducing a competing schema, the same rule `FAILURE_MEMORY.md` follows.
 
 - **Prose contract, not a machine lint** — see *Why `standard` requires a linked executable asset*
   above; this is a deliberate, disclosed non-goal for this version.
-- **Committed, unlike the ledger.** `EXPERIENCE.md` is tracked by Git in the consuming project, the
+- **Committed.** `EXPERIENCE.md` is tracked by Git in the consuming project, the
   same as `FAILURE_MEMORY.md`; it is not gitignored and not per-run scratch.
 - **No migration duty.** New path, no legacy predecessor.
 - **Never auto-injected.** No hook reads or digests it; see above.

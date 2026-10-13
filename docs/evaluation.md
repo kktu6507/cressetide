@@ -6,7 +6,7 @@ an external model, using credentials, or saving run output.
 
 See [`docs/benchmark-contract.md`](benchmark-contract.md) for where a score is safe (this dataset's
 closed-world validation and the on-demand behavioral fixtures under `eval/`) and where it never
-appears (cressetide's live-run artifacts — the final report, the run ledger, `run-consolidate.mjs`).
+appears (cressetide's live-run artifacts, such as the final report).
 
 ## Dataset
 

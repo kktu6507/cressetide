@@ -5,7 +5,8 @@
 // markers and no implicit retry. It produces a constrained-excerpt prompt-drift baseline for
 // the shipped code-reviewer prompt, plus the call accounting for those same invocations. It
 // never writes to the repository, never writes to a product ledger, never updates
-// `eval/baseline.md`, and performs no git operations. See docs/efficiency-measurement.md.
+// `eval/baseline.md`, and performs no git operations. See docs/efficiency-measurement.md in the
+// archive/v0.7.2-full tag (docs/history.md).
 //
 // The method is frozen (Opus 5 / xhigh / CLI 2.1.263). There is no operator configuration:
 // no extra argv, no flag remapping, no model override. A different method is a source edit.

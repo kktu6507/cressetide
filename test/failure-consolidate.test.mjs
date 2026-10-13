@@ -396,7 +396,7 @@ test("CLI e2e: a spawned failure-consolidate process actually prints the tag-rec
 });
 
 // --- e2e: failure-consolidate whole-class flag-swallow guard (get() itself now guards EVERY flag in this
-// file's own KNOWN_FLAGS -- the same shared-mechanism fix run-reconcile.mjs / run-ledger.mjs apply over
+// file's own KNOWN_FLAGS -- the same shared-mechanism fix the sibling CLI scripts apply over
 // their own flag sets) ---
 
 test("failure-consolidate: for EVERY flag in KNOWN_FLAGS, a value slot occupied by any OTHER known flag's own name is treated as omitted, never as a literal value -- --file falls back to resolveMemoryFile(--cwd) (finds the seeded memory file's retired entry, not a bogus nonexistent '<flag-name>'-shaped file), and --cwd/--ledger/--stale's swallow never breaks the retired-entry report either", () => {
@@ -413,7 +413,7 @@ test("failure-consolidate: for EVERY flag in KNOWN_FLAGS, a value slot occupied 
         values["--file"] = memFile;
 
         // Order: G's own legitimate occurrence FIRST, then every other flag, then F LAST with its value
-        // slot occupied by the literal token G (mirrors run-reconcile.test.mjs's / run-ledger.test.mjs's
+        // slot occupied by the literal token G (mirrors the sibling CLI tests'
         // identical loop-test ordering discipline -- keeps every flag's `indexOf` lookup unambiguous).
         const order = [G, ...KNOWN_FLAGS.filter((x) => x !== F && x !== G), F];
         const argv = [];

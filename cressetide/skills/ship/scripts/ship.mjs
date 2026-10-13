@@ -1,15 +1,16 @@
 #!/usr/bin/env node
-// ctide ship: a manually-triggered, read-only release-readiness report. Reads the run ledger, the
+// ctide ship: a manually-triggered, read-only release-readiness report. Reads the git history since
+// the last release tag (commits and changed files — a pending view, never a readiness claim), the
 // project's package.json manifest(s), CHANGELOG.md's git history, git tags/tree state, and
 // SYSTEM_MAP.md's Rollback section, and reports a decision-card-shaped result. It never executes a
 // build/test/deploy pipeline, and it never writes anything, anywhere: no working-tree mutation, no
 // `.ctide/` write, no state-changing git command. Every fs/git/parse failure swallows to a disclosed
 // gap (`unverified`, never silently treated as clean); the CLI always exits 0 — this repo's universal
-// fail-open contract (matches map.mjs / doctor.mjs / the run-ledger.mjs family).
+// fail-open contract (matches map.mjs / doctor.mjs / contract-check.mjs).
 //
 // Self-contained by design (no imports across skill directories — the same boundary map.mjs and
-// doctor.mjs each keep for their own scripts): the flag parser mirrors run-consolidate.mjs's
-// KNOWN_FLAGS/get()/asJson shape, the git() helper mirrors map.mjs's spawnSync-with-piped-stdio
+// doctor.mjs each keep for their own scripts): the flag parser mirrors failure-consolidate.mjs's
+// KNOWN_FLAGS/get() shape, the git() helper mirrors map.mjs's spawnSync-with-piped-stdio
 // shape, and the migration-compatibility reader mirrors map.mjs's OPS_TRUST_TAG_ATTEMPT /
 // opsTrustTagIsWellFormed sentinel-only parsing — each reused as a PATTERN, not an import, per the
 // reject-cross-skill-import placement decision.
@@ -48,9 +49,9 @@ function git(root, args) {
 
 // A shallow clone (`git clone --depth N`) can be missing tags that exist upstream but were never
 // fetched locally — `git tag --list` and `git rev-parse --verify refs/tags/<x>` both simply do not see
-// such a tag, indistinguishable locally from the tag genuinely not existing anywhere. Mirrors vigil's
-// run-reconcile.mjs isShallowClone() exactly; its own weak-signal disclosure wording, "history truncated
-// — weak-signal only", is reused verbatim below.
+// such a tag, indistinguishable locally from the tag genuinely not existing anywhere. Every shallow-clone
+// disclosure below (marker note, tagReady evidence, pending view) uses the same weak-signal wording,
+// "history truncated — weak-signal only".
 function isShallowClone(root) {
   try { return fs.existsSync(path.join(root, ".git", "shallow")); } catch { return false; }
 }
@@ -78,8 +79,8 @@ export function pickLatestVersionTag(tagNames) {
   return candidates[candidates.length - 1].tag;
 }
 
-// No tag found -> fail-open: { found: false }, and callers treat the full ledger history as pending,
-// disclosed via `note`. Swallows any git failure (non-git cwd, git missing) the same way.
+// No tag found -> fail-open: { found: false }, with the gap disclosed via `note` (changelogTouched then
+// reports `unverified` — no diff boundary). Swallows any git failure (non-git cwd, git missing) the same way.
 export function resolveMarker(root) {
   const listed = git(root, ["tag", "--list"]);
   const tagNames = listed.status === 0
@@ -91,74 +92,96 @@ export function resolveMarker(root) {
       ? " (history truncated — weak-signal only: this is a shallow clone, so a matching tag may exist upstream without having been fetched locally)"
       : "";
     return {
-      found: false, tag: null, commit: null, commitTimeMs: null,
-      note: "no vX.Y.Z release tag found — treating the full ledger history as pending" + shallowNote,
+      found: false, tag: null, commit: null,
+      note: "no vX.Y.Z release tag found" + shallowNote,
     };
   }
   // `git log` transparently dereferences an annotated tag to its underlying commit, so this resolves
   // correctly whether `winner` is a lightweight or an annotated/signed tag.
-  const info = git(root, ["log", "-1", "--format=%H%x01%ct", winner]);
-  const [commitRaw, ctRaw] = info.status === 0 ? String(info.stdout || "").trim().split("\x01") : [];
+  const info = git(root, ["log", "-1", "--format=%H", winner]);
+  const commitRaw = info.status === 0 ? String(info.stdout || "").trim() : "";
   if (!commitRaw) {
     return {
-      found: false, tag: winner, commit: null, commitTimeMs: null,
-      note: `tag ${winner} was found but its commit could not be resolved — treating the full ledger history as pending`,
+      found: false, tag: winner, commit: null,
+      note: `tag ${winner} was found but its commit could not be resolved`,
     };
   }
-  const ctSeconds = Number(ctRaw);
+  return { found: true, tag: winner, commit: commitRaw, note: null };
+}
+
+// --- pending-changes view (git-derived: commits and changed files since the last release tag) -----------
+
+// Stated verbatim in both output modes. The pending view is a plain git fact — what changed since the
+// last release tag — and carries no review outcome: a commit appearing here was never checked by
+// anything, and an empty list is never "safe to ship".
+export const PENDING_DISCLAIMER = "changes since the last release tag — not a readiness claim; no READY verdict is implied";
+export const PENDING_COMMIT_CAP = 200;
+export const PENDING_FILE_CAP = 500;
+// `vX.Y.Z` glob for `git describe --match` (a glob, not a regex — passed as one argv element, no shell).
+const RELEASE_TAG_GLOB = "v[0-9]*.[0-9]*.[0-9]*";
+
+function pendingView(state, note, extra = {}) {
   return {
-    found: true, tag: winner, commit: commitRaw,
-    commitTimeMs: Number.isFinite(ctSeconds) ? ctSeconds * 1000 : null,
-    note: null,
+    state, disclaimer: PENDING_DISCLAIMER, note,
+    tag: null, tagCommit: null,
+    commitCount: null, commits: [], commitsTruncated: false,
+    fileCount: null, files: [], filesTruncated: false,
+    ...extra,
   };
 }
 
-// --- pending-changes reader (READY-only, malformed-line tolerant) --------------------------------------
-
-function ledgerPath(root) { return path.join(root, ".ctide", "ledger", "runs.jsonl"); }
-
-// Tolerant JSONL parse mirroring run-ledger.mjs's readRunsLedger: a JSON.parse throw OR a parsed value
-// with no `type` key is silently skipped — one corrupt line must never sink the whole ledger scan.
-export function readLedgerTolerant(text) {
-  const out = [];
-  for (const line of String(text ?? "").split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      const record = JSON.parse(trimmed);
-      if (record && typeof record === "object" && record.type !== undefined) out.push(record);
-    } catch { /* malformed line — skip, keep scanning */ }
+// Every non-`ok` state is its own disclosed reason why no list could be produced — never an empty list
+// standing in for "nothing to ship". States: `git-unavailable` (git could not be spawned),
+// `not-a-git-repo`, `shallow-clone` (history cannot be bounded), `no-release-tag` (no vX.Y.Z tag
+// reachable from HEAD, including a repository with no commits yet), `unverified` (git started but a
+// read failed or timed out), `ok` (0..N commits and files, each list capped with an explicit
+// truncation flag and the uncapped total).
+export function pendingChanges(root) {
+  const inside = git(root, ["rev-parse", "--is-inside-work-tree"]);
+  if (inside.error) {
+    return inside.error.code === "ENOENT"
+      ? pendingView("git-unavailable", "git could not be run — commits since the last release tag are unknown")
+      : pendingView("unverified", `git could not be run (${safeErrorCode(inside.error)}) — commits since the last release tag are unknown`);
   }
-  return out;
-}
-
-// Only `type: "run"` records with `verdict: "READY"`, filtered to strictly after `thresholdMs` when one
-// is supplied (marker resolved). `thresholdMs == null` -> fail-open, every READY run counts as pending
-// (the no-tag-found case).
-export function filterPendingReady(records, thresholdMs) {
-  const runs = (records || []).filter((r) => r && r.type === "run" && r.verdict === "READY");
-  if (thresholdMs == null) return runs;
-  return runs.filter((r) => Number.isFinite(r.ts) && r.ts > thresholdMs);
-}
-
-// Bounded summary of one pending run record for the report — mirrors buildRunRecord's own capping
-// numbers (task <= 300 chars, <= 50 files each <= 200 chars) so a pathological/adversarial ledger line
-// can never bloat the report, even though this script does not itself write ledger records.
-function summarizePendingRun(record) {
-  const files = Array.isArray(record.files) ? record.files : [];
-  return {
-    task: cap(record.task, 300),
-    head: typeof record.head === "string" ? record.head.slice(0, 100) : "",
-    ts: Number.isFinite(record.ts) ? record.ts : null,
-    files: files.slice(0, 50).map((f) => cap(f, 200)),
-  };
-}
-
-function pendingReadyRuns(root, marker) {
-  let text = "";
-  try { text = fs.readFileSync(ledgerPath(root), "utf8"); } catch { return []; }
-  const records = readLedgerTolerant(text);
-  return filterPendingReady(records, marker.found ? marker.commitTimeMs : null);
+  if (inside.status !== 0 || String(inside.stdout || "").trim() !== "true") {
+    return pendingView("not-a-git-repo", "not inside a git working tree — commits since the last release tag are unknown");
+  }
+  if (isShallowClone(root)) {
+    return pendingView("shallow-clone",
+      "history truncated — weak-signal only: this is a shallow clone, so commits since the last release tag cannot be bounded (fetch full history and tags to see them)");
+  }
+  const described = git(root, ["describe", "--tags", "--match", RELEASE_TAG_GLOB, "--abbrev=0"]);
+  const tag = described.status === 0 ? String(described.stdout || "").trim() : "";
+  if (!tag) {
+    return pendingView("no-release-tag",
+      "no vX.Y.Z release tag is reachable from HEAD — there is no boundary to list changes from; this is not \"nothing to ship\"");
+  }
+  const range = `${tag}..HEAD`;
+  const tagInfo = git(root, ["rev-parse", "--short", `${tag}^{commit}`]);
+  const counted = git(root, ["rev-list", "--count", range]);
+  const logged = git(root, ["log", `--max-count=${PENDING_COMMIT_CAP}`, "--format=%h%x09%s", range]);
+  const diffed = git(root, ["diff", "--name-only", "-z", range]);
+  const commitCount = Number(String(counted.stdout || "").trim());
+  if (tagInfo.status !== 0 || counted.status !== 0 || logged.status !== 0 || diffed.status !== 0
+      || !Number.isInteger(commitCount)) {
+    return pendingView("unverified", `found ${tag}, but reading the commits or changed files since it failed`, { tag });
+  }
+  const commits = String(logged.stdout || "").split(/\r?\n/).filter(Boolean).map((line) => {
+    const tab = line.indexOf("\t");
+    return tab < 0
+      ? { sha: line.slice(0, 40), subject: "" }
+      : { sha: line.slice(0, tab).slice(0, 40), subject: cap(line.slice(tab + 1), 200) };
+  });
+  const allFiles = String(diffed.stdout || "").split("\0").filter(Boolean);
+  const tagCommit = String(tagInfo.stdout || "").trim();
+  return pendingView("ok",
+    commitCount === 0 ? `no commits since ${tag}` : `${commitCount} commit(s) and ${allFiles.length} changed file(s) since ${tag}`,
+    {
+      tag, tagCommit,
+      commitCount, commits, commitsTruncated: commitCount > commits.length,
+      fileCount: allFiles.length, files: allFiles.slice(0, PENDING_FILE_CAP).map((f) => cap(f, 300)),
+      filesTruncated: allFiles.length > PENDING_FILE_CAP,
+    });
 }
 
 // --- version-consistency reader (own, small, package.json-only per the resolved scope decision) -------
@@ -470,15 +493,16 @@ export async function checksumVerifyCheck(root, artifactFlag, checksumFlag) {
 
 // --- orchestration ---------------------------------------------------------------------------------------
 
-// A single read-only pass: resolve the marker, filter the pending list, run every check, return one
-// structured result. Never throws — every check above already swallows its own fs/git/parse failures to
-// a disclosed `unverified`/`not-applicable`, so this function has nothing left to catch. Async only
-// because checksumVerifyCheck streams the artifact hash (see hashFileStreaming above); every other check
-// stays synchronous.
+// A single read-only pass: resolve the marker, read the pending view, run every check, return one
+// structured result. The five checks always run, whatever the pending view's state or size. Never
+// throws — every check above already swallows its own fs/git/parse failures to a disclosed
+// `unverified`/`not-applicable`, so this function has nothing left to catch. Async only because
+// checksumVerifyCheck streams the artifact hash (see hashFileStreaming above); every other check stays
+// synchronous.
 export async function buildShipReport(cwdInput, options = {}) {
   const root = path.resolve(cwdInput || process.env.CLAUDE_PROJECT_DIR || process.cwd());
   const marker = resolveMarker(root);
-  const pending = pendingReadyRuns(root, marker).map(summarizePendingRun);
+  const pending = pendingChanges(root);
   const versionConsistency = versionConsistencyCheck(root);
   const changelogTouched = changelogTouchedCheck(root, marker);
   const tagReady = tagReadinessCheck(root, versionConsistency);
@@ -496,13 +520,25 @@ function formatText(report) {
   lines.push(report.marker.found
     ? `marker: ${report.marker.tag} @ ${report.marker.commit.slice(0, 7)}`
     : `marker: none found — ${report.marker.note}`);
-  if (report.pending.length === 0) {
-    lines.push("nothing pending to ship");
+  const pending = report.pending;
+  lines.push(`pending (${pending.disclaimer}):`);
+  if (pending.state !== "ok") {
+    lines.push(`  ${pending.state.toUpperCase()}: ${pending.note}`);
   } else {
-    lines.push(`pending: ${report.pending.length} READY run(s) since the marker`);
-    for (const run of report.pending) {
-      const when = run.ts ? new Date(run.ts).toISOString().slice(0, 10) : "unknown date";
-      lines.push(`  - ${(run.head || "(no head)").slice(0, 12)} "${run.task}" (${when})`);
+    lines.push(`  ${pending.note} (tag commit ${pending.tagCommit})`);
+    if (pending.commits.length) {
+      lines.push("  commits:");
+      for (const commit of pending.commits) lines.push(`    - ${commit.sha} ${commit.subject}`);
+      if (pending.commitsTruncated) {
+        lines.push(`    … truncated: showing ${pending.commits.length} of ${pending.commitCount} commits`);
+      }
+    }
+    if (pending.files.length) {
+      lines.push("  changed files:");
+      for (const file of pending.files) lines.push(`    - ${file}`);
+      if (pending.filesTruncated) {
+        lines.push(`    … truncated: showing ${pending.files.length} of ${pending.fileCount} files`);
+      }
     }
   }
   lines.push("checks:");
@@ -513,7 +549,7 @@ function formatText(report) {
 }
 
 // Every flag token this file's `get()` closure is ever queried with, plus the boolean `--json` flag —
-// this file's own complete recognized-flag set. Mirrors run-consolidate.mjs's KNOWN_FLAGS guard: `get()`
+// this file's own complete recognized-flag set. Mirrors failure-consolidate.mjs's KNOWN_FLAGS guard: `get()`
 // treats the value slot as omitted when the next token is itself one of these names, so a swallowed
 // neighboring flag (e.g. `--artifact --checksum x`) never silently becomes another flag's value.
 export const KNOWN_FLAGS = ["--cwd", "--artifact", "--checksum", "--json"];
@@ -525,12 +561,10 @@ export const KNOWN_FLAGS = ["--cwd", "--artifact", "--checksum", "--json"];
 // Exported so this last-resort path stays independently testable without needing to force a real crash
 // through the CLI.
 export function buildErrorFallbackReport(error) {
+  const note = `ship encountered an unexpected internal error (${safeErrorCode(error)})`;
   return {
-    marker: {
-      found: false, tag: null, commit: null, commitTimeMs: null,
-      note: `ship encountered an unexpected internal error (${safeErrorCode(error)})`,
-    },
-    pending: [],
+    marker: { found: false, tag: null, commit: null, note },
+    pending: pendingView("unverified", `${note} — commits since the last release tag are unknown`),
     checks: {},
   };
 }
@@ -557,7 +591,7 @@ async function main(argv) {
   process.exit(0);
 }
 
-// isInvokedDirectly() kept in sync with the other 14 CLI entry points (documented copy — see garden hash guard)
+// isInvokedDirectly() kept in sync with the other 10 CLI entry points (documented copy — see garden hash guard)
 function isInvokedDirectly() {
   if (!process.argv[1]) return false;
   try {

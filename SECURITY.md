@@ -44,21 +44,13 @@ hooks, manifests, release scripts, workflows, and security policy.
 
 `.ctide/` may hold repository evidence, incident observations, review packets,
 or command output. **Most of it is meant to be committed**, so treat it as part
-of the repository rather than as scratch. Three classes:
+of the repository rather than as scratch. Two classes:
 
 - **Committed semantic state**, versioned with the project: `memory/`,
-  `design/`, `map/`, `incidents/`, `decisions/`, `provenance.json`. Incident
+  `design/`, `map/`, `incidents/`, `decisions/`. Incident
   journals and failure memory live here, so the sanitizing below applies to them
   before they are written, not only before they are shared.
-- **Persistent episodic state**, self-gitignored: `ledger/`, which survives
-  across runs and is never overwritten.
 - **Per-run scratch**, self-gitignored: `output/`, overwritten each run.
-
-Separately, `test-provenance-loop/` is a durable, untracked, tool-owned prefix
-for the review-loop controller. It writes no nested `.gitignore`, so ignore that
-prefix explicitly and **only** that prefix — never `.ctide/` wholesale, which
-would drop the committed semantic state above. Its exclusion from the head view
-is an independent rule and applies regardless (`docs/runtime-contract.md`).
 
 This repository additionally ignores `/.ctide/` wholesale, because ctide's own
 run output here is dogfood residue; that is a property of this repository, not

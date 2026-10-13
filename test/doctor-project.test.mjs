@@ -1,13 +1,9 @@
-// Tests for doctor.mjs's opt-in `--project`/`--cwd` flags: three
-// additive checks (failure-memory-health, incident-journals, ledger-health) layered on top of the existing
+// Tests for doctor.mjs's opt-in `--project`/`--cwd` flags: two
+// additive checks (failure-memory-health, incident-journals) layered on top of the existing
 // 14 plugin-health checks, plus a KNOWN_FLAGS-guarded argument() fix covering the pre-existing
 // --plugin-root flag too. Sibling to, not an extension of, test/doctor-security.test.mjs (that file is
 // scoped to plugin-health tamper-resistance -- a different concern). Mirrors test/failure-consolidate.test.mjs's
-// synthetic-fixture style: temp directories, synthetic FAILURE_MEMORY.md / incident-journal / run-ledger
-// content, cleanup. The ledger-health fixtures further mirror test/run-reconcile.test.mjs's own
-// bareRepository()/git()/commitAt() pattern: a REAL, isolated git repo per test (never this actual
-// repository's own git state), built via test/helpers.mjs's hardenGitSigning() -- the same established
-// scratch-git-repo convention test/map.test.mjs and test/release-cli.test.mjs also use.
+// synthetic-fixture style: temp directories, synthetic FAILURE_MEMORY.md / incident-journal content, cleanup.
 import assert from "node:assert/strict";
 import cp from "node:child_process";
 import fs from "node:fs";
@@ -17,8 +13,7 @@ import test, { before, after } from "node:test";
 import { diagnose, summarizeMemoryHealth, KNOWN_FLAGS } from "../cressetide/skills/doctor/scripts/doctor.mjs";
 import { consolidationReport, tagRecurrenceCandidates } from "../cressetide/skills/vigil/scripts/failure-consolidate.mjs";
 import { parseEntries, defaultLedgerPath } from "../cressetide/skills/vigil/scripts/failure-retrieve.mjs";
-import { ensureLedgerDir, runsLedgerPath, buildRunRecord } from "../cressetide/skills/vigil/scripts/run-ledger.mjs";
-import { root, temporary, write, hardenGitSigning } from "./helpers.mjs";
+import { root, temporary, write } from "./helpers.mjs";
 import { isolatedHome } from "./support.mjs";
 
 const pluginRoot = path.join(root, "cressetide");
@@ -191,6 +186,11 @@ test("--project with nothing under cwd (no .ctide/ at all, and no global FAILURE
     report.checks.filter((c) => BASELINE_CHECK_NAMES.includes(c.name)).map((c) => c.name),
     BASELINE_CHECK_NAMES,
     "the 14 plugin-health checks still all run, unchanged",
+  );
+  assert.deepStrictEqual(
+    report.checks.filter((c) => !BASELINE_CHECK_NAMES.includes(c.name)).map((c) => c.name),
+    ["failure-memory-health", "incident-journals"],
+    "--project adds exactly these two checks, in this order, and nothing else",
   );
   const memory = report.checks.find((c) => c.name === "failure-memory-health");
   const incidents = report.checks.find((c) => c.name === "incident-journals");
@@ -595,8 +595,7 @@ test("doctor: for EVERY value-bearing flag in KNOWN_FLAGS, a value slot occupied
 
       // Order: G's own legitimate occurrence FIRST, then every other flag, then F LAST with its value
       // slot occupied by the literal token G -- keeps every flag's indexOf lookup unambiguous (mirrors
-      // test/run-consolidate.test.mjs's / test/failure-consolidate.test.mjs's identical loop-test
-      // ordering discipline).
+      // test/failure-consolidate.test.mjs's identical loop-test ordering discipline).
       const order = [G, ...KNOWN_FLAGS.filter((x) => x !== F && x !== G), F];
       const argv = [];
       for (const flagName of order) {
@@ -782,41 +781,25 @@ test("--project: an unexpected exception inside the project-health block is caug
       'function checkIncidentJournals(cwd, checks, now) {\n  throw new Error("FIX8_INJECTED_THROW_PROOF");\n  const dir = path.join(cwd, ".ctide", "incidents");');
     assert.notStrictEqual(withThrow, baseSource, "fixture sanity: the throw injection must actually change the source");
 
-    // The exact shipped try/catch-wrapped block (byte-identical to the real doctor.mjs at the time this
-    // test was written) vs. its pre-Fix-8 unwrapped equivalent.
-    const wrappedBlock = `  if (project) {
-    try {
-      const memoryFinding = await checkFailureMemoryHealth(cwd, checks, now);
-      const incidentFinding = checkIncidentJournals(cwd, checks, now);
-      const ledgerFinding = await checkLedgerHealth(cwd, checks, now);
-      if (memoryFinding.actionable) {
-        guidance.push("FAILURE_MEMORY.md has findings (expire candidates, retired entries, or tag-recurrence pairs) — hand this to a vigil run to consolidate (or edit directly for a trivial single-entry cleanup)");
-      }
-      if (incidentFinding.actionable) {
-        guidance.push("An incident journal is not confirmed closed — re-enter salvage's closure flow to close it properly");
-      }
-      if (ledgerFinding.actionable) {
-        guidance.push("The run ledger has an open window or an escaped-closure alarm — run reconciliation disposal via the next vigil planning round, or run-reconcile.mjs close/scan directly");
-      }
-    } catch (error) {
-      checks.push(result("project-health", "fail", \`--project checks failed unexpectedly (\${safeErrorCode(error)})\`));
-    }
-  }`;
-    assert.ok(withThrow.includes(wrappedBlock), "fixture sanity: the shipped try/catch-wrapped project-health block must be present verbatim");
-    const unwrappedBlock = `  if (project) {
-    const memoryFinding = await checkFailureMemoryHealth(cwd, checks, now);
-    const incidentFinding = checkIncidentJournals(cwd, checks, now);
-    const ledgerFinding = await checkLedgerHealth(cwd, checks, now);
-    if (memoryFinding.actionable) {
-      guidance.push("FAILURE_MEMORY.md has findings (expire candidates, retired entries, or tag-recurrence pairs) — hand this to a vigil run to consolidate (or edit directly for a trivial single-entry cleanup)");
-    }
-    if (incidentFinding.actionable) {
-      guidance.push("An incident journal is not confirmed closed — re-enter salvage's closure flow to close it properly");
-    }
-    if (ledgerFinding.actionable) {
-      guidance.push("The run ledger has an open window or an escaped-closure alarm — run reconciliation disposal via the next vigil planning round, or run-reconcile.mjs close/scan directly");
-    }
-  }`;
+    // The shipped try/catch-wrapped project-health block, extracted from the REAL doctor.mjs source (not a
+    // hand-kept copy that can drift), and its pre-Fix-8 unwrapped equivalent derived from it mechanically:
+    // the same try body, dedented one level, with the catch arm removed.
+    const BLOCK_OPEN = "  if (project) {\n    try {\n";
+    const CATCH_OPEN = "\n    } catch (error) {\n      checks.push(result(\"project-health\", \"fail\",";
+    const BLOCK_CLOSE = "\n    }\n  }";
+    const blockStart = withThrow.indexOf(BLOCK_OPEN);
+    assert.ok(blockStart >= 0, "fixture sanity: the shipped project-health block must open with if (project) { try {");
+    assert.strictEqual(withThrow.indexOf(BLOCK_OPEN, blockStart + 1), -1, "fixture sanity: exactly one if (project) { try { block");
+    const catchStart = withThrow.indexOf(CATCH_OPEN, blockStart);
+    assert.ok(catchStart > blockStart, "fixture sanity: the shipped block must catch into a project-health: fail check");
+    const blockEnd = withThrow.indexOf(BLOCK_CLOSE, catchStart);
+    assert.ok(blockEnd > catchStart, "fixture sanity: the shipped block must close after its catch arm");
+    const wrappedBlock = withThrow.slice(blockStart, blockEnd + BLOCK_CLOSE.length);
+    const tryBody = withThrow.slice(blockStart + BLOCK_OPEN.length, catchStart);
+    assert.match(tryBody, /checkFailureMemoryHealth\(cwd, checks, now\)/, "fixture sanity: the try body must run the project checks");
+    const unwrappedBlock = "  if (project) {\n"
+      + tryBody.split("\n").map((line) => (line.startsWith("  ") ? line.slice(2) : line)).join("\n")
+      + "\n  }";
 
     // RED: the pre-Fix-8 unwrapped shape, with the throw injected -- must crash (uncaught exception /
     // unhandled rejection at the top-level `await diagnose(...)` call), not produce a clean report.
@@ -848,266 +831,4 @@ test("--project: an unexpected exception inside the project-health block is caug
   } finally {
     fs.rmSync(scratchDir, { recursive: true, force: true });
   }
-});
-
-// --- ledger-health (--project's third check): resolves .ctide/ledger/runs.jsonl and folds reconciliation debt (consolidateState,
-// --- run-consolidate.mjs) and a commits-since-last-entry git fact into one check row. Six cases from the
-// --- design spec's own Testing/Error-handling sections: no ledger; clean (0 open); actionable via open>0
-// --- alone; actionable via alarm alone (proving the OR, never AND); commits-since count and short SHA;
-// --- unreadable ledger; head not in git history; cwd not a git repo; zero run records; and the default
-// --- (no --project) output stays unaffected even with a real, alarm-triggering ledger present. -----------
-
-function git(cwd, ...args) {
-  return cp.execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-}
-
-// A commit with a fully deterministic author/committer date, mirroring test/run-reconcile.test.mjs's own
-// commitAt() -- not load-bearing for this file's own assertions (unlike that file's --since filtering;
-// commitsSinceLastEntry's git log <head>..HEAD range query never consults commit dates at all), kept for
-// consistency with the sibling vigil test suite's established fixture-building convention.
-function commitAt(cwd, isoDate, message) {
-  cp.execFileSync("git", ["commit", "-q", "-m", message], {
-    cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, GIT_AUTHOR_DATE: isoDate, GIT_COMMITTER_DATE: isoDate },
-  });
-}
-
-// A plain, isolated repo with exactly one commit and no ledger content yet -- the base fixture every
-// ledger-health test below builds on. Never touches this actual repository's own git state (mirrors
-// test/run-reconcile.test.mjs's bareRepository()).
-function ledgerRepository() {
-  const dir = temporary("ctide-doctor-ledger-");
-  git(dir, "init", "-q", "--initial-branch=main");
-  git(dir, "config", "user.email", "doctor-ledger@example.invalid");
-  git(dir, "config", "user.name", "Doctor Ledger Test");
-  hardenGitSigning(dir);
-  fs.writeFileSync(path.join(dir, "a.txt"), "a\n", "utf8");
-  git(dir, "add", ".");
-  commitAt(dir, "2026-01-01T00:00:00Z", "initial");
-  return dir;
-}
-
-function writeLedger(dir, records) {
-  ensureLedgerDir(dir);
-  fs.writeFileSync(runsLedgerPath(dir), records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
-}
-
-test("--project ledger-health: no .ctide/ledger/ directory at all reports unverified, no crash", async () => {
-  const dir = temporary("ctide-doctor-ledger-none-"); // plain temp dir: no ledger, no git repo either
-  const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: NOW });
-  const check = report.checks.find((c) => c.name === "ledger-health");
-  assert.strictEqual(check?.status, "unverified");
-  assert.strictEqual(check.detail, "no .ctide/ledger/runs.jsonl found");
-});
-
-test("--project ledger-health: a clean ledger (0 open -- the recorded run has a matching close event -- HEAD equals the last record's head, no escapes) reports pass with the exact unremarkable detail text, actionable=false, and adds no guidance line", async () => {
-  const dir = ledgerRepository();
-  const head = git(dir, "rev-parse", "HEAD");
-  writeLedger(dir, [
-    buildRunRecord({ ts: NOW - 5 * DAY, head, files: ["a.txt"] }),
-    { v: 1, type: "close", ts: NOW - 5 * DAY + 1000, ref: head, as: "survived", reason: "closed cleanly" },
-  ]);
-  const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: NOW });
-  const check = report.checks.find((c) => c.name === "ledger-health");
-  assert.strictEqual(check?.status, "pass");
-  assert.strictEqual(check.detail, `0 open, 0 escaped/14d; 0 commits since last entry (${head.slice(0, 7)})`);
-  assert.ok(!report.guidance.some((line) => /reconciliation disposal/.test(line)),
-    "a clean ledger must not add the ledger-health guidance line");
-});
-
-test("--project ledger-health: an open run record with no escaped closes at all (actionable via open>0 alone) sets actionable=true, adds the guidance line, and omits the '— retro suggested' suffix", async () => {
-  const dir = ledgerRepository();
-  const head = git(dir, "rev-parse", "HEAD");
-  writeLedger(dir, [buildRunRecord({ ts: NOW - 1 * DAY, head, files: ["a.txt"] })]); // no close event -> stays open
-  const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: NOW });
-  const check = report.checks.find((c) => c.name === "ledger-health");
-  assert.strictEqual(check?.status, "pass");
-  assert.strictEqual(check.detail, `1 open, 0 escaped/14d; 0 commits since last entry (${head.slice(0, 7)})`);
-  assert.doesNotMatch(check.detail, /retro suggested/);
-  assert.ok(report.guidance.some((line) => /reconciliation disposal/.test(line) && /run-reconcile\.mjs close\/scan/.test(line)),
-    "actionable via open>0 alone must still add the ledger-health guidance line, naming the existing remedy");
-});
-
-test("--project ledger-health: the recorded run itself is closed (0 open) but 3 escaped closes elsewhere cross the alarm threshold within the 14-day window -- actionable=true via alarm alone, proving actionable is open>0 OR alarm, never AND, and the '— retro suggested' phrase (lifted from references/final-report.md's own Ledger-bullet convention) is appended", async () => {
-  const dir = ledgerRepository();
-  const head = git(dir, "rev-parse", "HEAD");
-  const mkClose = (ref, daysAgo) => ({ v: 1, type: "close", ts: NOW - daysAgo * DAY, ref, as: "escaped", reason: "r" });
-  writeLedger(dir, [
-    buildRunRecord({ ts: NOW - 5 * DAY, head, files: ["a.txt"] }),
-    { v: 1, type: "close", ts: NOW - 5 * DAY + 1000, ref: head, as: "survived", reason: "closed cleanly" },
-    mkClose("deadbeef1", 1),
-    mkClose("deadbeef2", 2),
-    mkClose("deadbeef3", 3),
-  ]);
-  const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: NOW });
-  const check = report.checks.find((c) => c.name === "ledger-health");
-  assert.strictEqual(check?.status, "pass");
-  assert.strictEqual(check.detail, `0 open, 3 escaped/14d — retro suggested; 0 commits since last entry (${head.slice(0, 7)})`);
-  assert.ok(report.guidance.some((line) => /reconciliation disposal/.test(line)),
-    "actionable via alarm alone (0 open) must still add the ledger-health guidance line");
-});
-
-test("--project ledger-health: commits added after the last recorded run's head are counted correctly with the short (7-char) SHA shown, and the commits-since fact alone never sets actionable", async () => {
-  const dir = ledgerRepository();
-  const head = git(dir, "rev-parse", "HEAD");
-  writeLedger(dir, [
-    buildRunRecord({ ts: NOW - 5 * DAY, head, files: ["a.txt"] }),
-    { v: 1, type: "close", ts: NOW - 5 * DAY + 1000, ref: head, as: "survived", reason: "closed cleanly" },
-  ]);
-  fs.writeFileSync(path.join(dir, "b.txt"), "b\n", "utf8");
-  git(dir, "add", ".");
-  commitAt(dir, "2026-01-02T00:00:00Z", "second commit");
-  fs.writeFileSync(path.join(dir, "c.txt"), "c\n", "utf8");
-  git(dir, "add", ".");
-  commitAt(dir, "2026-01-03T00:00:00Z", "third commit");
-
-  const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: NOW });
-  const check = report.checks.find((c) => c.name === "ledger-health");
-  assert.strictEqual(check?.status, "pass");
-  assert.strictEqual(check.detail, `0 open, 0 escaped/14d; 2 commits since last entry (${head.slice(0, 7)})`);
-  assert.ok(!report.guidance.some((line) => /reconciliation disposal/.test(line)),
-    "the commits-since count alone (nothing else actionable) must never add the ledger-health guidance line");
-});
-
-// Tier-1 repair round finding: every commits-since test above uses count 0 (the "clean ledger" tests) or
-// count 2 (the "commits added after..." test just above) -- the count===1 branch of doctor.mjs's own
-// pluralize(count, "commit") has never been exercised. This codebase already treats this exact bug class
-// (a naive `${count} word` template producing "1 commits"/"1 entrys" instead of the correct singular) as
-// worth its own dedicated assertion elsewhere in this file (see the "1 entry"/"1 retired entry" Fix-4
-// pluralization test for failure-memory-health, ~line 533) -- applied here to commitsSinceLastEntry's own
-// singular branch, which that earlier test cannot cover (different check, different word).
-test("--project ledger-health: exactly ONE commit after the last recorded run's head is reported as the singular '1 commit since last entry', never the naive '1 commits since last entry'", async () => {
-  const dir = ledgerRepository();
-  const head = git(dir, "rev-parse", "HEAD");
-  writeLedger(dir, [
-    buildRunRecord({ ts: NOW - 5 * DAY, head, files: ["a.txt"] }),
-    { v: 1, type: "close", ts: NOW - 5 * DAY + 1000, ref: head, as: "survived", reason: "closed cleanly" },
-  ]);
-  fs.writeFileSync(path.join(dir, "b.txt"), "b\n", "utf8");
-  git(dir, "add", ".");
-  commitAt(dir, "2026-01-02T00:00:00Z", "second commit"); // exactly ONE commit lands after head, nothing more
-
-  const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: NOW });
-  const check = report.checks.find((c) => c.name === "ledger-health");
-  assert.strictEqual(check?.status, "pass");
-  assert.strictEqual(check.detail, `0 open, 0 escaped/14d; 1 commit since last entry (${head.slice(0, 7)})`);
-  assert.match(check.detail, /\b1 commit since last entry\b/, `expected the singular "1 commit since last entry" phrase in: ${check.detail}`);
-  assert.doesNotMatch(check.detail, /1 commits since last entry/);
-});
-
-// Tier-1 repair round finding: every writeLedger(dir, [...]) fixture above contains at most one type:"run"
-// record, so checkLedgerHealth's own selection logic (`runs[runs.length - 1].head` -- pick the LAST/
-// most-recent run record, not the first) has never been exercised in the one shape that actually
-// distinguishes "last" from "first": a ledger with 2+ run records. Builds a real second commit/SHA AFTER
-// the first run record's own head, then writes both records to the same ledger (first, then second, in
-// file order) -- writeLedger always REPLACES the whole file (there is no incremental-append mode), so
-// "append a second record to the same ledger" is expressed as one call carrying both records in order,
-// while the underlying git history itself still advances through real, separate commits exactly as
-// described. Proves selection is by ledger append/file ORDER (last element wins), not by `ts`, insertion
-// count, or any other ordering.
-test("--project ledger-health: with TWO run records in the ledger, the reported short-SHA and commits-since count derive from the SECOND (later, last-written) record's head, never the first", async () => {
-  const dir = ledgerRepository();
-  const firstHead = git(dir, "rev-parse", "HEAD");
-
-  fs.writeFileSync(path.join(dir, "b.txt"), "b\n", "utf8");
-  git(dir, "add", ".");
-  commitAt(dir, "2026-01-02T00:00:00Z", "second commit");
-  const secondHead = git(dir, "rev-parse", "HEAD");
-  assert.notStrictEqual(secondHead, firstHead, "fixture sanity: the second commit must produce a genuinely different SHA");
-
-  fs.writeFileSync(path.join(dir, "c.txt"), "c\n", "utf8");
-  git(dir, "add", ".");
-  commitAt(dir, "2026-01-03T00:00:00Z", "third commit"); // exactly one commit lands after secondHead
-
-  writeLedger(dir, [
-    buildRunRecord({ ts: NOW - 10 * DAY, head: firstHead, files: ["a.txt"] }),
-    buildRunRecord({ ts: NOW - 1 * DAY, head: secondHead, files: ["b.txt"] }),
-  ]);
-
-  const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: NOW });
-  const check = report.checks.find((c) => c.name === "ledger-health");
-  assert.strictEqual(check?.status, "pass");
-  // If selection incorrectly picked the FIRST record instead of the last, the short-SHA shown would be
-  // firstHead's and the commits-since count would be 2 (both later commits land after firstHead), not 1.
-  assert.strictEqual(check.detail, `2 open, 0 escaped/14d; 1 commit since last entry (${secondHead.slice(0, 7)})`);
-  assert.ok(!check.detail.includes(firstHead.slice(0, 7)),
-    `must never show the FIRST run record's short-SHA once a later record exists in the ledger: ${check.detail}`);
-});
-
-test("--project ledger-health: .ctide/ledger/runs.jsonl found but unreadable (permissions) reports fail with the read error named, distinct from the not-found case", async (t) => {
-  if (process.platform === "win32") return t.skip("POSIX permission bits do not apply on win32");
-  const dir = ledgerRepository();
-  const head = git(dir, "rev-parse", "HEAD");
-  writeLedger(dir, [buildRunRecord({ ts: NOW - 1 * DAY, head, files: ["a.txt"] })]);
-  const file = runsLedgerPath(dir);
-  fs.chmodSync(file, 0o000);
-  try {
-    let readableAnyway = false;
-    try { fs.readFileSync(file); readableAnyway = true; } catch (e) {}
-    if (readableAnyway) return t.skip("running with privileges that bypass file permission bits (e.g. root) -- cannot simulate a read failure here");
-    const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: NOW });
-    const check = report.checks.find((c) => c.name === "ledger-health");
-    assert.strictEqual(check?.status, "fail");
-    assert.match(check.detail, /\.ctide\/ledger\/runs\.jsonl found but read failed/);
-  } finally {
-    fs.chmodSync(file, 0o644);
-  }
-});
-
-test("--project ledger-health: the last recorded run's head does not resolve in the current git history (rebase/squash/foreign clone) degrades to pass with the disclosed-limitation text, never fail and never a crash", async () => {
-  const dir = ledgerRepository();
-  const foreignHead = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"; // well-formed 40-hex SHA, never a real commit here
-  writeLedger(dir, [buildRunRecord({ ts: NOW - 1 * DAY, head: foreignHead, files: ["a.txt"] })]);
-  const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: NOW });
-  const check = report.checks.find((c) => c.name === "ledger-health");
-  assert.strictEqual(check?.status, "pass");
-  assert.strictEqual(check.detail, "1 open, 0 escaped/14d; cannot compare — last entry's head not found in history");
-});
-
-test("--project ledger-health: cwd is not inside a git repository at all degrades to pass via the same disclosed-limitation path as a head not found in history, never fail and never a crash", async () => {
-  const dir = temporary("ctide-doctor-ledger-nongit-"); // plain temp dir, never git-initialized
-  writeLedger(dir, [buildRunRecord({ ts: NOW - 1 * DAY, head: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", files: ["a.txt"] })]);
-  const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: NOW });
-  const check = report.checks.find((c) => c.name === "ledger-health");
-  assert.strictEqual(check?.status, "pass");
-  assert.strictEqual(check.detail, "1 open, 0 escaped/14d; cannot compare — last entry's head not found in history");
-});
-
-test("--project ledger-health: a ledger with zero run-type records (defensive; only a close event present) reports the 'no run records to anchor from' phrase, and consolidateState still computes 0 open on the empty run set", async () => {
-  const dir = ledgerRepository();
-  writeLedger(dir, [{ v: 1, type: "close", ts: NOW - 1 * DAY, ref: "someref", as: "survived", reason: "r" }]);
-  const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: NOW });
-  const check = report.checks.find((c) => c.name === "ledger-health");
-  assert.strictEqual(check?.status, "pass");
-  assert.strictEqual(check.detail, "0 open, 0 escaped/14d; no run records to anchor from");
-});
-
-test("--project ledger-health: a flagless (no --project) diagnose() call against a cwd with a real, alarm-triggering ledger present is still completely unaffected -- proves checkLedgerHealth never executes outside --project, not just that it happens to find nothing", async () => {
-  const dir = ledgerRepository();
-  const head = git(dir, "rev-parse", "HEAD");
-  const mkClose = (ref, daysAgo) => ({ v: 1, type: "close", ts: NOW - daysAgo * DAY, ref, as: "escaped", reason: "r" });
-  writeLedger(dir, [
-    buildRunRecord({ ts: NOW - 1 * DAY, head, files: ["a.txt"] }),
-    mkClose("deadbeef1", 1),
-    mkClose("deadbeef2", 2),
-    mkClose("deadbeef3", 3),
-  ]);
-  // diagnose()'s own cwd is only ever consulted when project:true (`const cwd = project ? ... : undefined;`)
-  // -- passing cwd here alongside an OMITTED project option proves it is simply ignored, not merely that
-  // this particular fixture happens to have nothing ledger-health would react to.
-  const report = await diagnose(pluginRoot, { cwd: dir, now: NOW });
-  assert.deepStrictEqual(report.checks.map((c) => c.name), BASELINE_CHECK_NAMES);
-  assert.deepStrictEqual(report.guidance, BASELINE_GUIDANCE);
-  assert.strictEqual(report.checks.some((c) => c.name === "ledger-health"), false);
-});
-
-test("--project ledger-health: the real CLI, spawned with no --project flag against a cwd with a real ledger present, still prints the same 14-check/3-guidance-line baseline", () => {
-  const dir = ledgerRepository();
-  const head = git(dir, "rev-parse", "HEAD");
-  writeLedger(dir, [buildRunRecord({ ts: 1, head, files: ["a.txt"] })]);
-  const r = cp.spawnSync(process.execPath, [doctorScript, "--plugin-root", pluginRoot, "--cwd", dir, "--json"], { encoding: "utf8" });
-  assert.strictEqual(r.status, 0, r.stderr);
-  const report = JSON.parse(r.stdout);
-  assert.deepStrictEqual(report.checks.map((c) => c.name), BASELINE_CHECK_NAMES);
-  assert.deepStrictEqual(report.guidance, BASELINE_GUIDANCE);
 });

@@ -20,7 +20,6 @@ You are the executor of `references/plan-grounding.md` **Stage A** — the singl
 3. **Suggested review panel** — pre-run the `references/reviewer-selection.md` Risk Matrix and recommend the smallest sufficient panel for the change's actual risk. This is **advisory**: the orchestrator still owns the final selection.
 4. **design.md detection** — per `references/design-spec.md`: does a `design.md` design contract exist in the repo? Is the task UI / design-system scope? If a contract is needed but absent, **recommend** establishing one from the existing UI (a separate bootstrap pass) — recommend it, do not author it (*Invariants* below).
 5. **Intent-assumption register** — per `references/plan-grounding.md` Stage B: **enumerate** the requirement's underdetermined behavior points, then tag each as an **open product decision** to ask at the gate (product-impacting — reasonable interpretations differ in user-visible behavior) or an **explicit assumption entry** (non-product-impacting: the chosen default + the rejected alternative interpretation + the basis) destined for the contract's Assumptions. Never resolve an interpretive ambiguity silently; all ask-tagged (product-impacting) points are asked at the gate — across multiple question rounds when needed, never volume-demoted to the register; the register records the non-product-impacting interpretive defaults.
-6. **Reconciliation scan (read-only).** Run `run-reconcile.mjs scan` (`${CLAUDE_PLUGIN_ROOT}/skills/vigil/scripts/run-reconcile.mjs scan`) for still-open ledger windows and dispose each flagged candidate with a reason (escaped / survived / superseded / building-upon) in your draft; report ambiguous overlap as `needs human review` rather than resolving it silently. You never call `close`/`expire` yourself — the main thread performs the actual write at `SKILL.md`'s Implementation step 3 ("Execute reconciliation dispositions"), post-approval, from your disposition (single-writer discipline, matching failure memory).
 
 ## Anti-hallucination
 
@@ -52,7 +51,6 @@ You exist mainly for **context economy**: do the expensive exploration in your i
 - design.md detection: present / absent / not-applicable, and a bootstrap recommendation when a contract is needed but absent.
 - Un-measurable-criteria flag — any drafted or requirement-implied acceptance criterion with no observable pass/fail, anchored to the criterion text for the user to sharpen at the gate; advisory — never invents criteria, flags only genuinely un-checkable ones.
 - Intent-assumption register — the requirement's underdetermined points, each tagged ask (all asked at the plan gate, multi-round when needed) or record (non-product-impacting: default + rejected alternative + basis, destined for the contract's Assumptions).
-- Reconciliation dispositions (candidate → reason, or `needs human review`) for any still-open ledger run your scan flagged, for the main thread to record post-approval.
 
 ## Cressetide Map 擴充
 

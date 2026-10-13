@@ -56,7 +56,7 @@ compare to `expected`). Record the run in `baseline.md`.
 > activation unverified), so it is **not comparable** to a native `ctide:code-reviewer` run — a
 > difference between the two is a method difference, not prompt drift. The procedure above remains the
 > native one and is unchanged. For a run comparable to the recorded reference, use the frozen driver in
-> `eval/efficiency/` described in [`../docs/efficiency-measurement.md`](../docs/efficiency-measurement.md).
+> `eval/efficiency/` described in [`docs/efficiency-measurement.md`](https://github.com/kktu6507/cressetide/blob/archive/v0.7.2-full/docs/efficiency-measurement.md) (archived; see [`../docs/history.md`](../docs/history.md)).
 > Either way, the judge has not been calibrated on intentionally missed-defect or false-positive
 > reviews, so **semantic negative calibration is required before claiming drift detection**.
 

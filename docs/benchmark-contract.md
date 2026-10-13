@@ -2,8 +2,7 @@
 
 Cressetide's live work — a real plan, a real implementation, a real review, a real verdict — never
 stores or reports a **quality or outcome** score: no pass-rate, no recall or accuracy percentage, no
-computed success rate, anywhere. Not in the final report, not in the run ledger, not in
-`run-consolidate.mjs`'s digest. The scope of that prohibition is *what is being measured*, not the
+computed success rate, anywhere. Not in the final report. The scope of that prohibition is *what is being measured*, not the
 `%` character: the final report's Cost table carries a `Share` column
 (`cressetide/skills/vigil/references/final-report.md`) that decomposes the run's own observed token
 counts across its rows and sums to 100%. That is an accounting breakdown of a measured quantity, not
@@ -31,16 +30,12 @@ There is no fixed denominator — no stable population of "all tasks" to measure
 independent judge outside the loop. A score computed over open, ever-changing live work does not
 degrade safely; it invites the scope, risk tier, or acceptance criteria of the *next* task to bend
 toward whatever keeps the number looking good. That is precisely the job a **count** (an event fact
-that invites investigation, not optimization) does better and more safely — see
-`references/run-ledger.md` and `docs/advanced/retro-practice.md` for how counts, not scores, drive this
-repo's own cross-run learning loop.
+that invites investigation, not optimization) does better and more safely.
 
 **So: live-work artifacts never carry a quality or outcome score, rate, or percentage.** The final report
-(`references/final-report.md`), the run ledger and its `close` events (`references/run-ledger.md`), and
-`run-consolidate.mjs`'s digest all report only event facts — and, when a retro looks back over several
-of them, **paired counts** (e.g. a first-pass-clean count is never shown without its escaped-rework
-counterpart in the same breath, `docs/advanced/retro-practice.md`). None of the three ever reports a
-computed quality or outcome rate.
+(`references/final-report.md`) reports only event facts. A look back over several closed tasks uses
+**paired counts** (e.g. a first-pass-clean count is never shown without its escaped-rework counterpart
+in the same breath). Neither ever reports a computed quality or outcome rate.
 
 ## The one place a score is permitted: a closed-world benchmark
 
@@ -79,22 +74,23 @@ either one**:
 
 A real-world outcome benchmark, if one is ever built, would score something the existing suite
 deliberately does not: **real task outcomes**, not reviewer-prompt stability on synthetic fixtures. Its
-fixtures would be **distilled from real, already-closed ledger runs** (`references/run-ledger.md`) —
-runs whose `close` disposition is already known (`escaped` / `survived` / `superseded` /
-`building-upon`) — frozen into a fixed benchmark set, graded by hidden acceptance checks independent of
+fixtures would be **distilled from real, already-closed tasks** — their final reports and commits, for
+tasks whose later outcome is already known (the `READY` verdict held up, or a defect escaped) — frozen
+into a fixed benchmark set, graded by hidden acceptance checks independent of
 the implementation being scored, and compared version-A-vs-version-B (e.g. a prompt/workflow change
 before and after). That is a materially different instrument from `eval/manifest.yaml`'s fixtures,
 which are hand-authored synthetic code snippets built to probe reviewer-prompt stability, not real
 task histories. Building it is future work; this document does not build it, name a command for it, or
 add fixtures toward it — it only states the boundary a future benchmark must respect: frozen inputs,
-hidden checks, A-vs-B comparison, distilled from *closed* ledger history, never live/open work.
+hidden checks, A-vs-B comparison, distilled from *closed* tasks' final reports and commits, never
+live/open work.
 
 ## Summary
 
 | Context | Scores/rates permitted? | Mechanism |
 |---|---|---|
-| Live vigil run (final report, ledger, `run-consolidate.mjs`) | Never | event facts + counts only |
-| Retro over several closed runs (`docs/advanced/retro-practice.md`) | Never a lone rate — paired counts only | cases + paired counts |
+| Live vigil run (final report) | Never | event facts + counts only |
+| Looking back over several closed tasks | Never a lone rate — paired counts only | cases + paired counts |
 | `eval/cases/*.json` + `eval/run-eval.mjs` (CI) | N/A — deterministic term-presence check, not a score | `npm run eval` |
 | `eval/manifest.yaml` + fixtures + `baseline.md` (on demand) | Yes, scoped to prompt-drift stability, explicitly not a real-world benchmark | `eval/README.md` |
-| A future closed-world outcome benchmark (not yet built) | Yes, under frozen fixtures / hidden checks / A-vs-B | distilled from closed ledger runs |
+| A future closed-world outcome benchmark (not yet built) | Yes, under frozen fixtures / hidden checks / A-vs-B | distilled from closed tasks' final reports and commits |

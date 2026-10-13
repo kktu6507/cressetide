@@ -33,10 +33,8 @@ Every non-trivial formal review includes `intent-reviewer`, which is never
 substituted. `test-reviewer` is included unless the run takes the evidence
 -substitution fast lane, which is available only on low/medium-risk work whose
 execution evidence already answers the question, and is disclosed as
-`ctide:panel=substituted:test-reviewer`. On a **TP-active** run the real
-`test-reviewer` is mandatory and the fast lane never applies, **even when the
-changed-test inventory is empty**. Vigil adds only the applicable discipline
-reviewers and runs `arbiter` after their reports are available. A failed or
+`ctide:panel=substituted:test-reviewer`. Vigil adds only the applicable
+discipline reviewers and runs `arbiter` after their reports are available. A failed or
 unrun required check blocks `READY`.
 
 Options:
@@ -95,14 +93,12 @@ helper creates and removes one temporary directory for its own probes.
 | Command | Effect |
 | --- | --- |
 | `/ctide:doctor` | Plugin-health report. |
-| `/ctide:doctor --project` | Adds three project-health checks; without the flag the default report is unchanged. |
+| `/ctide:doctor --project` | Adds two project-health checks; without the flag the default report is unchanged. |
 | `--cwd <path>` | Points `--project` at a project other than the current directory. |
 
 - `failure-memory-health` summarizes the project's own `FAILURE_MEMORY.md`, never
   the machine-global one.
 - `incident-journals` flags any `.ctide/incidents/*.md` not confirmed `closed`.
-- `ledger-health` reports reconciliation debt plus how far `HEAD` has moved past
-  the ledger's last recorded commit.
 
 The exact steps, evidence rules and report format have one owner:
 [`diagnostic-contract.md`](../cressetide/skills/doctor/references/diagnostic-contract.md).
@@ -129,10 +125,14 @@ unverified for each of:
    supplied explicitly — Ship never scans a directory to guess a build
    artifact.
 
-Ship reads every `READY` run in the ledger since the last release tag,
-presents that pending batch for the human to review, and never executes a
-build/test/deploy step, picks or bumps a version, drafts changelog content, or
-writes anything.
+Ship lists the commits and changed files since the latest `vX.Y.Z` tag
+reachable from `HEAD` as a pending view — "changes since the last release tag —
+not a readiness claim; no READY verdict is implied". When that boundary cannot
+be established it names the reason (`no-release-tag`, `shallow-clone`,
+`not-a-git-repo`, `git-unavailable`, `unverified`) instead of an empty list.
+The list is capped at 200 commits and 500 files; neither its state nor its size
+changes which checks run. Ship never executes a build/test/deploy step, picks or
+bumps a version, drafts changelog content, or writes anything.
 
 ## Final vocabulary
 

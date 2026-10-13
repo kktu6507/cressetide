@@ -76,7 +76,7 @@ Commit `889481fd09ae4e4100dcca6419c8ea7a9e2dc3c0`；release：<https://github.co
 
 **Doctor 診斷契約的範圍限制。** 在 0.7.1 上，該次執行對 `references/diagnostic-contract.md` 步驟 1 的字面遵循是有限的：plugin root 是由 host 展開的 skill 呼叫以 canonical 形式提供，並經比對確認即為已安裝的副本；過程中沒有任何 filesystem 搜尋 fallback。步驟 1 的措辭已在 0.7.2 修正；上述所有觀察都來自已發布的 0.7.1，0.7.2 的觀察見上方〈v0.7.2（2026-09-11）〉與〈v0.7.2 發布前本機候選版（歷史紀錄）〉。
 
-**v0.7.0。** tag 存在、已簽章且 GitHub 驗證為 Verified，但 release workflow 的驗證 job 失敗，沒有任何已發佈的 release 資產。該 tag 保持不變；詳見 `docs/superpowers/reviews/2026-09-11-release-recovery-review.md`。
+**v0.7.0。** tag 存在、已簽章且 GitHub 驗證為 Verified，但 release workflow 的驗證 job 失敗，沒有任何已發佈的 release 資產。該 tag 保持不變；詳見 [`docs/superpowers/reviews/2026-09-11-release-recovery-review.md`](https://github.com/kktu6507/cressetide/blob/archive/v0.7.2-full/docs/superpowers/reviews/2026-09-11-release-recovery-review.md)。
 
 ## Real-world runs
 

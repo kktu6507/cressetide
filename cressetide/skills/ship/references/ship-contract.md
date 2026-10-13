@@ -28,19 +28,40 @@ treated as clean.
 The marker is the latest git tag matching `vX.Y.Z` (the `v` prefix is optional — the same shape
 `RELEASING.md` already defines for this repository's own tags), ordered by parsed **version** (major,
 then minor, then patch), never lexicographic string sort — `v9.0.0` must not outrank `v10.0.0`. No
-matching tag found → fail-open: the full ledger history is treated as pending, and the gap is
-disclosed in `marker.note`, never silently treated as "nothing pending." On a shallow clone
+matching tag found → fail-open: the gap is disclosed in `marker.note` and `changelogTouched` reports
+`unverified` (no diff boundary). On a shallow clone
 (`.git/shallow` present), a tag can exist upstream without being fetched locally, so a locally-absent
 tag is never treated as confidently absent: `marker.note` and `tagReady`'s `unverified` evidence both
 disclose "history truncated — weak-signal only" rather than risking a false `pass`.
 
-## Pending-changes reader
+## Pending view (git-derived)
 
-Every `type: "run"` record in `.ctide/ledger/runs.jsonl` with `verdict: "READY"` and a timestamp
-strictly after the marker's resolved commit time counts as pending. `FIX REQUIRED` and `NOT READY`
-runs are never counted (a formal repair, if any, lands as its own later `READY` run). A malformed
-ledger line is skipped, never aborts the scan. No ledger, or an empty one, reads as "nothing pending"
-— not an error.
+`pending` lists what changed since the last release tag: the latest `vX.Y.Z` tag reachable from
+`HEAD` (`git describe --tags --match "v[0-9]*.[0-9]*.[0-9]*" --abbrev=0`), then the commits
+(`git log --format=%h%x09%s <tag>..HEAD` — short SHA and subject) and the changed file paths
+(`git diff --name-only -z <tag>..HEAD`) in that range. It is a plain git fact, **not a readiness
+claim**: every report carries `pending.disclaimer` — "changes since the last release tag — not a
+readiness claim; no READY verdict is implied". A commit is listed whether or not anything ever
+reviewed it, and an empty list never means "safe to ship".
+
+This tag is found by reachability from `HEAD`, while the release marker above is the highest-version
+tag in the repository; on a normal linear history they are the same tag, and the pending view always
+names its own (`pending.tag`).
+
+Every state is disclosed by name, and only `ok` carries a list:
+
+| `pending.state` | Meaning |
+|---|---|
+| `ok` | A tag was found; 0..N commits and files are listed. Zero commits → `pending.note` reads "no commits since <tag>". |
+| `no-release-tag` | No `vX.Y.Z` tag is reachable from `HEAD` (including a repository with no commits yet) — no boundary, never "nothing to ship". |
+| `shallow-clone` | `.git/shallow` is present — history cannot be bounded, so no list or count is claimed. |
+| `not-a-git-repo` | The working directory is not inside a git working tree. |
+| `git-unavailable` | `git` could not be run. |
+| `unverified` | git started but a read failed or timed out (or an unexpected internal error). |
+
+Lists are capped — at most 200 commits (`pending.commitCount` keeps the uncapped total) and 500 files
+(`pending.fileCount`), with `commitsTruncated` / `filesTruncated` set and a "truncated: showing N of
+M" line in text mode. The five checks below always run, whatever the pending state or size.
 
 ## The five checks
 
@@ -95,19 +116,20 @@ pending changes — that is a language-understanding judgment, not a mechanical 
 (`docs/benchmark-contract.md`'s mechanical/judgment split; see `eval/cases/ship-*.json`). After running
 the script, the coordinating thread:
 
-1. **Reads `migrationCompat.rollbackText`** against `pending[].files` and states, specifically, whether
-   the Rollback content actually bears on what this batch touched — never just "the field is filled
-   in."
-2. **Assembles the decision card**: the pending-changes list first (default all-selected — the human
-   may exclude entries before the rest of the report is generated), then each check in order, stated
-   plainly with its evidence.
+1. **Reads `migrationCompat.rollbackText`** against `pending.files` (the files changed since the last
+   release tag) and states, specifically, whether the Rollback content actually bears on what this
+   batch touched — never just "the field is filled in." When `pending.state` is not `ok`, the changed
+   files are unknown: say so and why, rather than judging relevance against an empty list.
+2. **Assembles the decision card**: the pending view first, introduced with `pending.disclaimer`
+   verbatim, then each check in order, stated plainly with its evidence.
 3. **Attaches a remediation recommendation** to any `fail`, matched to *why* it failed, never a generic
    one-size fix: a `versionConsistency` or `changelogTouched` `fail` is a code/documentation gap →
    recommend `/ctide:vigil --lite`. A `checksumVerify` `fail` means the build artifact is stale or the
    build itself was wrong, not a code bug → recommend re-running the project's own build/release
    pipeline and re-verifying, never a `vigil` fix (there is no code fix for a stale artifact).
-4. **Zero pending changes** since the marker → states "nothing pending to ship" as one line, never an
-   empty decision card.
+4. **States the pending view's state plainly.** `ok` with zero commits → "no commits since <tag>" as
+   one line, never an empty decision card. Any other state → its `pending.note`, never "nothing
+   pending".
 
 ## Non-goals (binding)
 

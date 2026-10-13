@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 # Doctor
 
-Invoke manually as `/ctide:doctor`. Add `--project` for the three opt-in project-health checks.
+Invoke manually as `/ctide:doctor`. Add `--project` for the two opt-in project-health checks.
 
 **Before running anything, read `references/diagnostic-contract.md` in full and follow it.** It is
 the single owner of every diagnostic step, what counts as evidence, and the report format — including

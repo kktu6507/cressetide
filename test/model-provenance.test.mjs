@@ -113,7 +113,7 @@ test("CLI: no --model given reports UNKNOWN, not a false match/mismatch", () => 
 });
 
 // --- e2e: check-model-provenance whole-class flag-swallow guard (get() itself now guards EVERY flag in
-// this file's own KNOWN_FLAGS -- the same shared-mechanism fix run-reconcile.mjs / run-ledger.mjs apply
+// this file's own KNOWN_FLAGS -- the same shared-mechanism fix the sibling CLI scripts apply
 // over their own flag sets) ---
 
 test("check-model-provenance: for EVERY flag in KNOWN_FLAGS, a value slot occupied by any OTHER known flag's own name is treated as omitted, never as a literal value -- --file falls back to <cwd>/eval/baseline.md (finds the seeded MATCH-ing baseline, not a bogus nonexistent '<flag-name>'-shaped file) and --model falls back to '' (reports UNKNOWN -- 'no --model given' -- never treating a neighboring flag's own name as a real model id)", () => {
@@ -129,7 +129,7 @@ test("check-model-provenance: for EVERY flag in KNOWN_FLAGS, a value slot occupi
         values["--file"] = baselinePath;
 
         // Order: G's own legitimate occurrence FIRST, then every other flag, then F LAST with its value
-        // slot occupied by the literal token G (mirrors run-reconcile.test.mjs's / run-ledger.test.mjs's
+        // slot occupied by the literal token G (mirrors the sibling CLI tests'
         // identical loop-test ordering discipline -- keeps every flag's `indexOf` lookup unambiguous).
         const order = [G, ...KNOWN_FLAGS.filter((x) => x !== F && x !== G), F];
         const argv = [];

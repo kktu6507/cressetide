@@ -354,15 +354,15 @@ const MUST_FAIL = [
   ["list a value outside the universe", inBlock((b) => b.replace("1, true, yes, on", "1, true, yes, on, maybe")), /"maybe" is outside the test's input universe/],
   ["claim case-sensitive matching", inBlock((b) => b.replace("= insensitive", "= sensitive")), /contradicts case = sensitive/],
   ["claim debug is enabled only by 1", inBlock((b) => b.replace("= non-empty", "= 1")), /must be exactly "non-empty"/],
-  ["rename a Doctor check", inBlock((b) => b.replace("ledger-health", "ledger-status")), /the runtime adds "ledger-health" but the doc omits it/],
-  ["drop a Doctor check", inBlock((b) => b.replace("incident-journals, ", "")), /the runtime adds "incident-journals" but the doc omits it/],
-  ["list the project-health safety net as a check", inBlock((b) => b.replace("ledger-health", "ledger-health, project-health")), /the doc lists "project-health" but the runtime does not add it/],
+  ["rename a Doctor check", inBlock((b) => b.replace("incident-journals", "incident-status")), /the runtime adds "incident-journals" but the doc omits it/],
+  ["drop a Doctor check", inBlock((b) => b.replace("failure-memory-health, ", "")), /the runtime adds "failure-memory-health" but the doc omits it/],
+  ["list the project-health safety net as a check", inBlock((b) => b.replace("incident-journals", "incident-journals, project-health")), /the doc lists "project-health" but the runtime does not add it/],
   ["drop an excluded directory", inBlock((b) => b.replace(", vendor", "")), /the runtime excludes "vendor" but the doc omits it/],
   ["list a scanned directory as excluded", inBlock((b) => b.replace(", vendor", ", vendor, docs")), /the doc lists "docs" but the runtime does not exclude it/],
   // block structure
   ["no block", (d) => ({ ...d, runtime: d.runtime.replace("```ctide-facts", "```text") }), /exactly one ctide-facts block; found 0/],
-  ["two blocks", (d) => ({ ...d, runtime: `${d.runtime}\n\`\`\`ctide-facts\ndoctor.project.checks = ledger-health\n\`\`\`\n` }), /exactly one ctide-facts block; found 2/],
-  ["duplicate key", inBlock((b) => `${b}doctor.project.checks = ledger-health\n`), /doctor\.project\.checks: duplicate key/],
+  ["two blocks", (d) => ({ ...d, runtime: `${d.runtime}\n\`\`\`ctide-facts\ndoctor.project.checks = incident-journals\n\`\`\`\n` }), /exactly one ctide-facts block; found 2/],
+  ["duplicate key", inBlock((b) => `${b}doctor.project.checks = incident-journals\n`), /doctor\.project\.checks: duplicate key/],
   ["missing key", inBlock((b) => b.replace(/^ship\.manifest\.excludes.*\n/m, "")), /missing required key ship\.manifest\.excludes/],
   ["unknown key", inBlock((b) => `${b}ship.manifest.includes = src\n`), /unknown key ship\.manifest\.includes/],
   // Names every plain object inherits: two methods, and the __proto__ accessor (a different lookup path).
@@ -377,9 +377,9 @@ const MUST_FAIL = [
   ["ENFORCE row drops its case rule", inRow("CTIDE_ENFORCE_STOP", "matched case-insensitively", "matched as written"), /does not state case-insensitive matching/],
   ["DEBUG row drops non-empty", inRow("CTIDE_HOOK_DEBUG", "any non-empty value", "any value"), /CTIDE_HOOK_DEBUG row does not state "non-empty"/],
   ["Ship check 1 drops `vendor`", inDoc("commands", " and `vendor`", ""), /check 1 does not name `vendor`/],
-  ["command-reference drops the ledger-health bullet", inDoc("commands", /^- `ledger-health`.*\n.*\n/m, ""), /\/ctide:doctor section has no bullet for `ledger-health`/],
-  // The masking case: the name still appears inside the ledger-health bullet, but no bullet leads with it.
-  ["diagnostic-contract drops the failure-memory-health bullet", inDoc("doctor", "- **`failure-memory-health`.**", "- **Memory health.**"), /Project health section has no bullet for `failure-memory-health`/],
+  ["command-reference drops the incident-journals bullet", inDoc("commands", /^- `incident-journals`.*\n/m, ""), /\/ctide:doctor section has no bullet for `incident-journals`/],
+  // The masking case: the name still appears inside the bullet's own text, but no bullet leads with it.
+  ["diagnostic-contract drops the failure-memory-health bullet lead", inDoc("doctor", "- **`failure-memory-health`.**", "- **Memory health** (reported as `failure-memory-health`)."), /Project health section has no bullet for `failure-memory-health`/],
 ];
 
 test("each omission, addition, malformed block or prose regression fails with a message naming it", () => {
@@ -411,7 +411,7 @@ const RUNTIME_DRIFT = [
   ["the Stop hook starts accepting enabled", (o) => ({ ...o, stopAccepted: new Set([...o.stopAccepted, "enabled"]) }), /the runtime accepts "enabled" but the doc omits it/],
   ["the Stop hook becomes case-sensitive", (o) => ({ ...o, stopVariants: new Map([...o.stopVariants].map(([k, v]) => [k, { ...v, accepted: false }])) }), /contradicts case = insensitive/],
   ["debug starts requiring 1", (o) => ({ ...o, debugEnabled: o.debugEnabled.map(([value]) => [value, value === "1"]) }), /contradicts "non-empty"/],
-  ["Doctor stops adding ledger-health", (o) => ({ ...o, doctorAdded: o.doctorAdded.filter((name) => name !== "ledger-health") }), /the doc lists "ledger-health" but the runtime does not add it/],
+  ["Doctor stops adding incident-journals", (o) => ({ ...o, doctorAdded: o.doctorAdded.filter((name) => name !== "incident-journals") }), /the doc lists "incident-journals" but the runtime does not add it/],
   ["the Ship scan stops skipping vendor", (o) => ({ ...o, shipExcluded: new Set([...o.shipExcluded].filter((dir) => dir !== "vendor")) }), /the doc lists "vendor" but the runtime does not exclude it/],
   ["the Ship scan skips vendor at one depth only", (o) => ({ ...o, shipBoundary: [...o.shipBoundary, "vendor"] }), /"vendor" is excluded at one depth but not the other/],
 ];

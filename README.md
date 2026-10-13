@@ -29,21 +29,20 @@ Incident flow  Alert -> Triage -> preserve evidence -> MITIGATE FIRST (reversibl
                      -> diagnose -> red repro -> fix via the dev flow above (--lite)
                      -> production re-entry + observation window -> postmortem
 
-Learning loop  run verdict -> ledger record -> the next planning reconciles: escaped / survived?
-               incident postmortem -> FAILURE_MEMORY -> the next dev-flow planning reads it
+Learning loop  incident postmortem -> FAILURE_MEMORY -> the next dev-flow planning reads it
 ```
 
 ## What's inside
 
 <p align="center">
-  <img src=".github/assets/flow_overview.svg" alt="Cressetide component flow: intent leads to a plan the human approves, then vigil implements and verifies before the risk-selected subagent panel decides; salvage, map, committed memory files, and the local run ledger feed the loop; doctor and ship are manually-triggered, standalone read-only checks with no loop connection" width="100%">
+  <img src=".github/assets/flow_overview.svg" alt="Cressetide component flow: intent leads to a plan the human approves, then vigil implements and verifies before the risk-selected subagent panel decides; salvage, map, and committed memory files feed the loop; doctor and ship are manually-triggered, standalone read-only checks with no loop connection" width="100%">
 </p>
 
 - **Two flows**: dev ([`vigil`](#the-dev-flow-vigil)) and incident ([`salvage`](#the-incident-flow-salvage)). An incident's formal fix is handed back to the dev flow as a `--lite` run with the incident reproduction as its primary acceptance criterion.
 - **Five skills**: `vigil` and `salvage` engage on their own (anything beyond a small edit / incident-sounding language); [`map`](#the-ops-map-map), [`doctor`](#health-check-doctor), and [`ship`](#release-readiness-check-ship) start manually (`/ctide:map`, `/ctide:doctor`, `/ctide:ship`).
 - **[11 subagents](#the-dev-flow-vigil)**: a navigator, an implementer, seven risk-selected reviewers, a cartographer, and the arbiter that decides readiness.
 - **[6 hooks](#hooks-and-safety-model)**: local-only, dependency-free Node guardrails, covering the plan gate, destructive-command guard, contract guard, failure-memory injection, compaction reminder, and delivery-claim check.
-- **[A learning loop](#the-learning-loop)**: a completed run ends with a ledger record written by the workflow itself; the next run starts by checking whether past verdicts actually held.
+- **[A learning loop](#the-learning-loop)**: lessons from incident postmortems and escaped defects go into committed failure memory, which the next plan reads.
 
 ### Project layout
 
@@ -56,10 +55,7 @@ Everything ctide keeps in your project lives under one root folder:
   map/        # SYSTEM_MAP.md — repository and operational-readiness Map (committed)
   incidents/  # INCIDENT-<date>-<slug>.md journals — the audit trail (committed)
   decisions/  # DECISION-<date>-<slug>.md — why we chose X over Y, what would revisit it (committed)
-  provenance.json  # the test-provenance store — canonical state, committed
-  ledger/     # runs.jsonl — append-only run history (persistent episodic state, self-gitignored)
   output/     # per-run scratch: contract.md, evidence, review diffs (never committed, self-gitignored)
-  test-provenance-loop/  # the review-loop controller's durable prefix — tool-owned, untracked
 ```
 
 Legacy layouts (`ai/FAILURE_MEMORY.md`, a repo-root `design.md`, `.ctide/legacy-output/`) are migrated only once, by the workflow itself, and every move is spelled out in the run that performs it.
@@ -155,14 +151,6 @@ Verdicts are release-readiness decisions, not absolute truths. See [`docs/how-to
 - **Reviewers hold no editor tools**: `Read` / `Grep` / `Glob` / `Bash` for inspection only; review-only behavior is enforced by policy and context isolation, not a hard read-only capability boundary (see [`ARCHITECTURE.md`](ARCHITECTURE.md)). They propose the fix; the `implementer` applies it.
 - **Correctness-critical paths receive ≥2 independent lenses**: parsing, numeric / encoding / overflow, concurrency, security, and data integrity, so the panel does not share one blind spot on high-impact work.
 
-**Test-provenance runs are stricter.** A task carrying the provenance workflow — one with a current TaskState in the validated store — runs a **TP-active** variant of the review step. Its effects include:
-
-- The real `test-reviewer` always runs. It is never evidence-substituted, **even when the changed-test inventory is legitimately empty**, so the fast lane below never applies.
-- The `arbiter` reports two gate halves, `loop` and `provenance`, plus their `combined` result. **Either half false blocks `READY`.**
-- The run keeps canonical state: a committed `.ctide/provenance.json` store, plus the durable, tool-owned `.ctide/test-provenance-loop/` prefix. The controller writes no nested `.gitignore` there, so a consuming project should ignore **that prefix only** — never `.ctide/` wholesale, which would drop committed semantic state. The head view's exclusion of the prefix is independent of gitignore and applies either way.
-
-A task that does not use the provenance workflow is unaffected: the step is skipped entirely and the normal lifecycle applies. That is a property of tasks outside the workflow — a task inside it whose state is missing or fails validation is not thereby excused from its checks. Paths, prefixes and state classes are specified in [`docs/runtime-contract.md`](docs/runtime-contract.md); the component view is in [`ARCHITECTURE.md`](ARCHITECTURE.md).
-
 **Writing good tasks.** ctide reviews against the intent you state, so the best tasks include the requirement, acceptance criteria, must-not-change scope, expected verification, and risk areas. Templates and bad / better / best examples: [`docs/task-writing-guide.md`](docs/task-writing-guide.md).
 
 **Per-run flags.** `--lite` (smallest panel), `--deep` (adversarial verification), `--report full` (detailed report); details in [Configuration reference](#configuration-reference).
@@ -205,11 +193,11 @@ Map owns the operational-preparation contract: [`operational-readiness.md`](cres
 
 `/ctide:doctor` runs a local, read-only self-check of the hooks and environment (plugin identity, Node availability, whether the hooks are wired up). The helper and the hooks make no network call and send no telemetry; the enclosing Claude Code session still works the way it always does, so this is a statement about ctide's own code, not a privacy guarantee about your session. Run it when the gate never blocks, hooks seem silent, or Node may be missing.
 
-Add `--project` (optionally with `--cwd <path>`) to layer three more checks on top: `failure-memory-health` summarizes the project's own `FAILURE_MEMORY.md` (never the machine-global one), `incident-journals` flags any `.ctide/incidents/*.md` not confirmed `closed`, and `ledger-health` reports reconciliation debt plus how far `HEAD` has moved past the ledger's last recorded commit. All three are opt-in and additive — the default `/ctide:doctor` output never changes.
+Add `--project` (optionally with `--cwd <path>`) to layer two more checks on top: `failure-memory-health` summarizes the project's own `FAILURE_MEMORY.md` (never the machine-global one), and `incident-journals` flags any `.ctide/incidents/*.md` not confirmed `closed`. Both are opt-in and additive — the default `/ctide:doctor` output never changes.
 
 ## Release-readiness check (ship)
 
-`/ctide:ship` is manual-only and read-only: it never runs your build, test, or deploy pipeline, and it never writes anything (no git tag, no version bump, no changelog entry). It reads what already exists — every `READY` run in the ledger since your last release tag, `package.json`, `CHANGELOG.md`'s git history, git tags, and `SYSTEM_MAP.md`'s Rollback section — and reports a decision card: the pending batch, then four checks (version consistency, whether `CHANGELOG.md` changed, tag readiness, and migration compatibility from the Map), each `pass` / `fail` / `not-applicable` / `unverified` with cited evidence.
+`/ctide:ship` is manual-only and read-only: it never runs your build, test, or deploy pipeline, and it never writes anything (no git tag, no version bump, no changelog entry). It reads what already exists — the commits and changed files since your last release tag, `package.json`, `CHANGELOG.md`'s git history, git tags, and `SYSTEM_MAP.md`'s Rollback section — and reports a decision card: the pending changes (listed from git, not a readiness claim; no `READY` verdict is implied), then four checks (version consistency, whether `CHANGELOG.md` changed, tag readiness, and migration compatibility from the Map), each `pass` / `fail` / `not-applicable` / `unverified` with cited evidence.
 
 A fifth check, checksum verification, only runs when you pass `--artifact` and `--checksum` explicitly; ship never guesses which file in your repo is a build artifact. Version consistency compares the `package.json` files Ship discovers outside excluded dependency, build and runtime directories — that ecosystem only, not other manifest formats, and not ctide's own nested `plugin.json`. The exact excluded set is in [`docs/command-reference.md`](docs/command-reference.md).
 
@@ -219,11 +207,9 @@ Ship is a pre-flight checklist you read before using whatever you already use to
 
 From run to run, ctide carries forward what it learned — the losses and the wins:
 
-- **A completed run ends with a ledger record.** After the verdict locks, the workflow's main thread appends one event-fact line to `.ctide/ledger/runs.jsonl`: task, changed files (computed from `git diff`, never taken from an agent's claim), verdict, verification status, panel, repair count, findings, and planned scope vs observed drift. Facts only: the ledger never stores a score, rate, or percentage. The append is part of the workflow and fails open — no hook records runs automatically, so a run that ends without reaching that step leaves no ledger line. `/ctide:doctor --project`'s `ledger-health` can report an absent ledger, reconciliation debt, and how far `HEAD` has moved past the last recorded commit; it cannot reconstruct a run that was never recorded.
-- **The next run starts by checking whether past verdicts held.** Planning scans later commits for rework of each recorded run's files and disposes it as `escaped` / `survived` / `superseded` / `building-upon`. Overlap it cannot judge is marked "needs human review" and handed to a person, never silently passed. Three `escaped` closures within 14 days makes the end-of-run report suggest a retro ([`docs/advanced/retro-practice.md`](docs/advanced/retro-practice.md)). These counts exist to inform you, appear only after the verdict is locked, and never adjust the current run's scope, panel, or verdict.
 - **The lessons live in two committed memory files.** `.ctide/memory/FAILURE_MEMORY.md` holds prevention rules (from incident postmortems and escaped defects); a SessionStart hook injects an untrusted digest so the next plan reads it. `.ctide/memory/EXPERIENCE.md` holds validated positive patterns (`candidate → validated → standard`; `standard` requires a linked executable asset, and prose alone never gets promoted).
 
-Full contracts: [`run-ledger.md`](cressetide/skills/vigil/references/run-ledger.md) · [`experience-memory.md`](cressetide/skills/vigil/references/experience-memory.md).
+Full contract: [`experience-memory.md`](cressetide/skills/vigil/references/experience-memory.md).
 
 ## Hooks and safety model
 
@@ -332,7 +318,7 @@ Release checksums integrity-check the published archive; authenticity still depe
 
 ## Cost
 
-Planning, verification, the reviewer panel and repair all add work on top of producing the change itself. What a run actually costs depends on the levers below and on what your own project's commands cost. **No representative end-to-end cost or duration, and no cost-saving benefit, has been established.** The maintainer's efficiency investigation closed with its confirmation stage unexecuted (see the [final disposition](docs/superpowers/reviews/2026-09-10-efficiency-final-disposition.md)); the scoped CLI estimates it does record are bounded to those specific experiments and are not general figures. What is stated below is what drives cost, not what it will be.
+Planning, verification, the reviewer panel and repair all add work on top of producing the change itself. What a run actually costs depends on the levers below and on what your own project's commands cost. **No representative end-to-end cost or duration, and no cost-saving benefit, has been established.** The maintainer's efficiency investigation closed with its confirmation stage unexecuted (see the [final disposition](https://github.com/kktu6507/cressetide/blob/archive/v0.7.2-full/docs/superpowers/reviews/2026-09-10-efficiency-final-disposition.md)); the scoped CLI estimates it does record are bounded to those specific experiments and are not general figures. What is stated below is what drives cost, not what it will be.
 
 These are the levers:
 
@@ -343,7 +329,7 @@ These are the levers:
 
 The incident flow is shaped to keep wartime turns short — one decision card at a time, no essays — the formal fix goes back through the dev flow as a `--lite` run, and a Map refresh scans a bounded slice of the repo rather than the whole tree.
 
-An automatic **fast lane** goes one step further on small low/medium-risk changes: when execution evidence already answers the reviewer's question (every behavior-changing criterion has a red→green test and the full required suite is green), `test-reviewer` is evidence-substituted and disclosed via `ctide:panel=substituted:test-reviewer`. Same evidence, fewer agents. It never applies to high-risk work, to deep-mode runs of either tier, or to [TP-active runs](#the-dev-flow-vigil) — on a TP-active run the real `test-reviewer` always runs, **including when the changed-test inventory is empty**.
+An automatic **fast lane** goes one step further on small low/medium-risk changes: when execution evidence already answers the reviewer's question (every behavior-changing criterion has a red→green test and the full required suite is green), `test-reviewer` is evidence-substituted and disclosed via `ctide:panel=substituted:test-reviewer`. Same evidence, fewer agents. It never applies to high-risk work or to deep-mode runs of either tier.
 
 ## Examples and evidence
 

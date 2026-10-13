@@ -2,7 +2,7 @@
 
 Source: illustrative Cressetide report shape. This is an **abbreviated** illustration, not a complete report. It is not a historical run or evidence record.
 
-The complete contract is [`cressetide/skills/vigil/references/final-report.md`](../cressetide/skills/vigil/references/final-report.md); this example does not duplicate the source of truth. A real `--report full` report additionally carries the **acceptance-criteria** and **external-capabilities** lines, the **plan-drift** and **ledger** lines when applicable, the **per-agent Cost table** with its component columns, `Source` basis and Share bars, and on a real run the **`### Live run`** evidence block just above the footer.
+The complete contract is [`cressetide/skills/vigil/references/final-report.md`](../cressetide/skills/vigil/references/final-report.md); this example does not duplicate the source of truth. A real `--report full` report additionally carries the **acceptance-criteria** and **external-capabilities** lines, the **plan-drift** line when applicable, the **per-agent Cost table** with its component columns, `Source` basis and Share bars, and on a real run the **`### Live run`** evidence block just above the footer.
 
 ## Summary
 

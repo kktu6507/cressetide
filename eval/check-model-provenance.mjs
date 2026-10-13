@@ -74,7 +74,7 @@ export function formatReport(result, sourceFile) {
 // drive the SAME list `get()` guards against (no hardcoded duplicate list to drift out of sync). `get()`
 // itself (below) checks this list before ever returning `args[i + 1]` as a flag's value: when that next
 // token is itself one of these names, the value is treated as omitted -- `get()` returns the flag's own
-// default rather than swallowing the neighboring flag's name. Mirrors run-reconcile.mjs's / run-ledger.mjs's
+// default rather than swallowing the neighboring flag's name. Mirrors the sibling CLI scripts'
 // identical KNOWN_FLAGS guard, each over its own file's complete flag set.
 export const KNOWN_FLAGS = ["--cwd", "--file", "--model"];
 
@@ -100,7 +100,7 @@ function main(argv) {
   process.exit(0);
 }
 
-// isInvokedDirectly() kept in sync with the other 14 CLI entry points (documented copy — see garden hash guard)
+// isInvokedDirectly() kept in sync with the other 10 CLI entry points (documented copy — see garden hash guard)
 function isInvokedDirectly() {
   if (!process.argv[1]) return false;
   try {

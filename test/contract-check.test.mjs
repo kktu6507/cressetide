@@ -117,7 +117,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveContractPath, KNOWN_FLAGS, VALUE_FLAGS, VALUELESS_FLAGS } from "../cressetide/skills/vigil/scripts/contract-check.mjs";
+import { resolveContractPath, KNOWN_FLAGS } from "../cressetide/skills/vigil/scripts/contract-check.mjs";
 import { hardenGitSigning } from "./helpers.mjs";
 
 const SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..",
@@ -173,8 +173,8 @@ test("contract-check CLI: an explicit --contract arg keeps precedence over the .
 });
 
 // --- e2e: contract-check whole-class flag-swallow guard (get() itself now guards EVERY flag in this
-// file's own KNOWN_FLAGS -- the same shared-mechanism fix run-reconcile.mjs / run-ledger.mjs apply over
-// their own flag sets) ---
+// file's own KNOWN_FLAGS -- the same shared-mechanism fix failure-retrieve.mjs / failure-consolidate.mjs apply
+// over their own flag sets) ---
 
 function git(cwd, ...args) {
   return cp.execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -212,17 +212,15 @@ function repoForSwallowTest() {
 }
 
 test("contract-check: for EVERY flag in KNOWN_FLAGS, a value slot occupied by the OTHER known flag's own name is treated as omitted, never as a literal value -- --contract falls back to the .ctide default-discovery path (finds the seeded contract, not a bogus nonexistent '<flag-name>'-shaped file) and --base falls back to diffing against HEAD (reports the real uncommitted change as out-of-scope, rather than failing open on a bogus non-ref '<flag-name>'-shaped --base)", () => {
-  // Over VALUE_FLAGS, not KNOWN_FLAGS: a valueless mode selector (--provenance) never occupies a
-  // value slot, and feeding it into this matrix would drive the OTHER mode rather than the swallow
-  // guard. VALUE_FLAGS is derived from KNOWN_FLAGS, so the coverage cannot silently narrow.
-  for (const F of VALUE_FLAGS) {
-    for (const G of VALUE_FLAGS) {
+  // Only 2 flags in this file -> order is simply [G, F] (no "everyone else" middle section).
+  for (const F of KNOWN_FLAGS) {
+    for (const G of KNOWN_FLAGS) {
       if (G === F) continue;
       const dir = repoForSwallowTest();
       const contractPath = path.join(dir, ".ctide", "output", "contract.md");
       // G's own legitimate occurrence: --contract -> the real seeded contract path; --base -> "HEAD" (an
       // explicit ref equivalent to the default, so the expected report is identical either way).
-      const legitValueOf = (flagName) => (flagName === "--contract" ? contractPath : (flagName === "--cwd" ? dir : "HEAD"));
+      const legitValueOf = (flagName) => (flagName === "--contract" ? contractPath : "HEAD");
       const order = [G, F];
       const argv = [];
       for (const flagName of order) {

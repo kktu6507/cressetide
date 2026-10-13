@@ -3,7 +3,8 @@
 // construction, and grade coherence. Pure and import-safe: every export is a function or a
 // frozen constant, and nothing here touches the filesystem, the network or the process.
 //
-// SCOPE OF THE BASELINE THIS PROTOCOL PRODUCES (see docs/efficiency-measurement.md):
+// SCOPE OF THE BASELINE THIS PROTOCOL PRODUCES (see docs/efficiency-measurement.md in the
+// archive/v0.7.2-full tag, summarized in docs/history.md):
 //   * The reviewer is a REPLAY of the shipped `code-reviewer` prompt body delivered through
 //     `--system-prompt`, which replaces the CLI's ENTIRE default system prompt including
 //     tool guidance (https://code.claude.com/docs/en/cli-reference). Replacement is a

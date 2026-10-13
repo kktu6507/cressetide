@@ -1,14 +1,15 @@
-// Tests for ship.mjs — the read-only release-readiness report. Granularity mirrors
-// run-ledger.test.mjs/run-reconcile.test.mjs: pure unit tests for the fs/git-free logic (marker
-// ordering, the pending-ledger filter), e2e tests spawning the real CLI against constructed temp
-// git repos for everything that inherently needs file/git state (the five checks). The load-bearing
-// properties: marker resolution orders by VERSION not lexicographic string sort; the pending filter
-// counts only READY runs strictly after the marker and tolerates malformed ledger lines; every check
+// Tests for ship.mjs — the read-only release-readiness report. Pure unit tests for the fs/git-free
+// logic (marker ordering), e2e tests spawning the real CLI against constructed temp git repos for
+// everything that inherently needs file/git state (the pending view and the five checks). The
+// load-bearing properties: marker resolution orders by VERSION not lexicographic string sort; the
+// pending view lists the commits and changed files since the latest vX.Y.Z tag reachable from HEAD,
+// always says it is not a readiness claim, and discloses every state in which it cannot list (no tag,
+// shallow clone, not a git repo, git unavailable) instead of returning an empty list; every check
 // distinguishes `not-applicable` (the concept doesn't apply) from `unverified` (it applies but could
 // not be confirmed) and never silently treats an unreadable/malformed input as clean; tag-readiness
 // refuses to guess a target version when version-consistency itself is not trustworthy; ship.mjs
 // NEVER writes anything, proven by a byte-identical whole-tree snapshot, not just asserted in prose;
-// and the CLI always exits 0, even fed a missing git repo, a missing ledger, or corrupt JSON.
+// and the CLI always exits 0, even fed a missing git repo, git missing from PATH, or corrupt JSON.
 import { test } from "node:test";
 import assert from "node:assert";
 import cp from "node:child_process";
@@ -16,10 +17,10 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-  parseVersionTag, pickLatestVersionTag, readLedgerTolerant, filterPendingReady,
-  resolveMarker, versionConsistencyCheck, changelogTouchedCheck, tagReadinessCheck,
+  parseVersionTag, pickLatestVersionTag, PENDING_DISCLAIMER,
+  PENDING_COMMIT_CAP, PENDING_FILE_CAP, resolveMarker, versionConsistencyCheck, changelogTouchedCheck, tagReadinessCheck,
   migrationCompatibilityCheck, checksumVerifyCheck, buildShipReport, KNOWN_FLAGS,
   buildErrorFallbackReport,
 } from "../cressetide/skills/ship/scripts/ship.mjs";
@@ -35,8 +36,7 @@ function git(cwd, ...args) {
 }
 
 // A commit with a FULLY deterministic committer date, so marker resolution's commit-time comparisons
-// never depend on real elapsed wall-clock time (flake-proof, matches run-reconcile.test.mjs's own
-// commitAt convention).
+// never depend on real elapsed wall-clock time (flake-proof).
 function commitAt(cwd, isoDate, message) {
   cp.execFileSync("git", ["commit", "-q", "--allow-empty", "-m", message], {
     cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
@@ -54,15 +54,6 @@ function bareRepository() {
   git(dir, "add", ".");
   commitAt(dir, "2026-01-01T00:00:00Z", "initial");
   return dir;
-}
-
-function ledgerPath(dir) { return path.join(dir, ".ctide", "ledger", "runs.jsonl"); }
-function writeLedger(dir, records) {
-  fs.mkdirSync(path.dirname(ledgerPath(dir)), { recursive: true });
-  fs.writeFileSync(ledgerPath(dir), records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
-}
-function runRecord(overrides) {
-  return { v: 1, type: "run", ts: 1000, task: "t", head: "deadbeef", verdict: "READY", ...overrides };
 }
 
 function writePkg(dir, relPath, content) {
@@ -95,8 +86,8 @@ function runShip(cwd, args) {
 // Recursive snapshot of every FILE under `dir`, excluding `.git` (git's own read commands can
 // legitimately rewrite internal bookkeeping like the index stat-cache even on a pure read such as
 // `git status`, which would make a snapshot INCLUDING `.git/` internals flaky for reasons unrelated to
-// whether ship.mjs itself wrote anything). This still covers the ledger, the whole `.ctide/` tree, and
-// every other working-tree file — everything the zero-writes invariant needs to prove.
+// whether ship.mjs itself wrote anything). This still covers the whole `.ctide/` tree and every other
+// working-tree file — everything the zero-writes invariant needs to prove.
 function snapshotTree(dir) {
   const out = new Map();
   function walk(absolute, relative) {
@@ -142,57 +133,12 @@ test("pickLatestVersionTag ignores non-matching tag names and returns null when 
   assert.strictEqual(pickLatestVersionTag([]), null);
 });
 
-// --- unit: readLedgerTolerant / filterPendingReady (pure, no fs/git) ---
-
-test("readLedgerTolerant keeps typed records and silently skips blank / unparseable / keyless lines", () => {
-  const text = [
-    JSON.stringify({ type: "run", verdict: "READY" }),
-    "",
-    "not json {{{",
-    JSON.stringify({ verdict: "READY" }), // no `type` -> skip
-    "   ",
-  ].join("\n");
-  const records = readLedgerTolerant(text);
-  assert.strictEqual(records.length, 1);
-});
-
-test("readLedgerTolerant is null/empty tolerant", () => {
-  assert.deepStrictEqual(readLedgerTolerant(""), []);
-  assert.deepStrictEqual(readLedgerTolerant(null), []);
-  assert.deepStrictEqual(readLedgerTolerant(undefined), []);
-});
-
-test("filterPendingReady keeps only type:run records with verdict READY — FIX REQUIRED/NOT READY excluded", () => {
-  const records = [
-    { type: "run", verdict: "READY", ts: 1 },
-    { type: "run", verdict: "FIX REQUIRED", ts: 2 },
-    { type: "run", verdict: "NOT READY", ts: 3 },
-    { type: "close", ref: "x" },
-  ];
-  assert.deepStrictEqual(filterPendingReady(records, null).map((r) => r.ts), [1]);
-});
-
-test("filterPendingReady with a threshold keeps only records strictly AFTER it", () => {
-  const records = [
-    { type: "run", verdict: "READY", ts: 100 },
-    { type: "run", verdict: "READY", ts: 200 },
-    { type: "run", verdict: "READY", ts: 300 },
-  ];
-  assert.deepStrictEqual(filterPendingReady(records, 200).map((r) => r.ts), [300]);
-});
-
-test("filterPendingReady with thresholdMs null (no marker found) fail-opens to the full READY history", () => {
-  const records = [{ type: "run", verdict: "READY", ts: 1 }, { type: "run", verdict: "READY", ts: 999999 }];
-  assert.strictEqual(filterPendingReady(records, null).length, 2);
-});
-
 // --- e2e: resolveMarker ---
 
 test("resolveMarker: no vX.Y.Z tag at all falls open with a disclosed note", () => {
   const dir = bareRepository();
   const marker = resolveMarker(dir);
   assert.strictEqual(marker.found, false);
-  assert.strictEqual(marker.commitTimeMs, null);
   assert.match(marker.note, /no vX\.Y\.Z release tag found/);
 });
 
@@ -206,7 +152,6 @@ test("resolveMarker: picks the highest-VERSION tag among several created out of 
   assert.strictEqual(marker.found, true);
   assert.strictEqual(marker.tag, "v10.0.0");
   assert.ok(marker.commit);
-  assert.strictEqual(typeof marker.commitTimeMs, "number");
 });
 
 test("resolveMarker: a non-git cwd fails open (found:false), never throws", () => {
@@ -627,8 +572,7 @@ test("KNOWN_FLAGS covers every flag the CLI's get() closure is queried with", ()
 });
 
 // --- e2e: ship whole-class flag-swallow guard (get() itself guards EVERY flag in this file's own
-// KNOWN_FLAGS -- the same shared-mechanism fix run-consolidate.mjs / run-reconcile.mjs / run-ledger.mjs
-// apply over their own flag sets. `--json` is a boolean flag read via `args.includes`, not `get()` -- it
+// KNOWN_FLAGS -- the same shared-mechanism fix the sibling CLI scripts apply over their own flag sets. `--json` is a boolean flag read via `args.includes`, not `get()` -- it
 // has no value position of its own to attack, so it is excluded from the OUTER (attacked) loop below, but
 // it stays a full member of KNOWN_FLAGS and appears in the INNER (swallower) loop. A fixture repo tagged
 // v1.0.0 with a matching artifact/checksum pair makes marker.found/marker.tag (the --cwd discriminator)
@@ -648,7 +592,7 @@ test("ship: for EVERY value-bearing flag in KNOWN_FLAGS, a value slot occupied b
       fs.writeFileSync(path.join(dir, "artifact.tar.gz.sha256"), `${sha256Hex(content)}  artifact.tar.gz\n`, "utf8");
 
       // Order: G's own legitimate occurrence FIRST, then every other flag, then F LAST with its value slot
-      // occupied by the literal token G (mirrors run-consolidate.test.mjs's identical loop-test ordering).
+      // occupied by the literal token G (mirrors the sibling CLI tests' identical loop-test ordering).
       const order = [G, ...KNOWN_FLAGS.filter((x) => x !== F && x !== G), F];
       const argv = [];
       for (const flagName of order) {
@@ -679,33 +623,199 @@ test("ship: for EVERY value-bearing flag in KNOWN_FLAGS, a value slot occupied b
 
 test("CLI --json emits one parseable JSON object with marker/pending/checks", () => {
   const dir = bareRepository();
-  writeLedger(dir, [runRecord({ ts: 1 })]);
   const out = runShip(dir, ["--cwd", ".", "--json"]);
   const parsed = JSON.parse(out);
   assert.ok("marker" in parsed && "pending" in parsed && "checks" in parsed);
+  assert.strictEqual(parsed.pending.disclaimer, PENDING_DISCLAIMER);
   assert.ok(["versionConsistency", "changelogTouched", "tagReady", "migrationCompat", "checksumVerify"]
     .every((name) => name in parsed.checks));
 });
 
-test("CLI text mode (no --json) prints 'nothing pending to ship' when the ledger has no READY runs since the marker", () => {
+// --- e2e: pending view (git-derived: commits and changed files since the latest vX.Y.Z tag reachable
+// from HEAD; never a readiness claim; every no-list state disclosed) ---
+
+const FIVE_CHECKS = ["versionConsistency", "changelogTouched", "tagReady", "migrationCompat", "checksumVerify"];
+
+function assertFiveChecksRan(report) {
+  assert.deepStrictEqual(Object.keys(report.checks), FIVE_CHECKS, "all five readiness checks run, in order");
+  for (const check of Object.values(report.checks)) {
+    assert.ok(["pass", "fail", "not-applicable", "unverified"].includes(check.status), `defined status: ${check.status}`);
+  }
+}
+
+// The disclaimer itself names READY ("no READY verdict is implied"); anywhere ELSE in the output a READY
+// token would be a readiness claim the pending view must never make.
+function assertNoReadyClaim(text) {
+  assert.ok(text.includes(PENDING_DISCLAIMER), "the not-a-readiness-claim wording is stated");
+  assert.doesNotMatch(text.split(PENDING_DISCLAIMER).join(""), /READY/, "no READY wording outside the disclaimer");
+}
+
+test("pending view: a tagged release followed by one new, ordinary (non-vigil) commit lists that commit and its changed files since the LATEST reachable tag, and states it is not a readiness claim", async () => {
   const dir = bareRepository();
+  git(dir, "tag", "v1.0.0");
+  fs.writeFileSync(path.join(dir, "between.txt"), "released in 1.1.0\n", "utf8");
+  git(dir, "add", ".");
+  commitAt(dir, "2026-01-02T00:00:00Z", "change released in v1.1.0");
+  git(dir, "tag", "-a", "v1.1.0", "-m", "release 1.1.0"); // annotated: the base must dereference to its commit
+  const releasedCommit = git(dir, "rev-parse", "--short", "HEAD");
+  fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "src", "feature.js"), "export const feature = 1;\n", "utf8");
+  fs.appendFileSync(path.join(dir, "a.txt"), "edited\n");
+  git(dir, "add", ".");
+  commitAt(dir, "2026-01-03T00:00:00Z", "add feature by hand");
+  const newCommit = git(dir, "rev-parse", "--short", "HEAD");
+
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.pending.state, "ok");
+  assert.strictEqual(report.pending.disclaimer, PENDING_DISCLAIMER);
+  assert.strictEqual(report.pending.tag, "v1.1.0", "the base is the latest reachable vX.Y.Z tag, not the first one");
+  assert.strictEqual(report.pending.tagCommit, releasedCommit, "an annotated tag resolves to its commit");
+  assert.strictEqual(report.pending.commitCount, 1);
+  assert.deepStrictEqual(report.pending.commits, [{ sha: newCommit, subject: "add feature by hand" }]);
+  assert.strictEqual(report.pending.commitsTruncated, false);
+  assert.deepStrictEqual([...report.pending.files].sort(), ["a.txt", "src/feature.js"]);
+  assert.strictEqual(report.pending.fileCount, 2);
+  assert.strictEqual(report.pending.filesTruncated, false);
+  assert.ok(!report.pending.files.includes("between.txt"), "a change already inside v1.1.0 is not pending");
+  assertFiveChecksRan(report);
+
   const out = runShip(dir, ["--cwd", "."]);
-  assert.match(out, /nothing pending to ship/);
+  assert.match(out, new RegExp(`- ${newCommit} add feature by hand`));
+  assert.match(out, /- src\/feature\.js/);
+  assert.match(out, /1 commit\(s\) and 2 changed file\(s\) since v1\.1\.0/);
+  assertNoReadyClaim(out);
+  assertNoReadyClaim(runShip(dir, ["--cwd", ".", "--json"]));
 });
 
-test("buildShipReport: end-to-end pending count matches the READY runs strictly after the resolved marker", async () => {
+test("pending view: no vX.Y.Z tag reachable from HEAD is disclosed as no-release-tag, never an empty list read as 'nothing to ship'", async () => {
   const dir = bareRepository();
-  const headBeforeTag = git(dir, "rev-parse", "HEAD");
-  const beforeTagCommitCt = Number(git(dir, "log", "-1", "--format=%ct", headBeforeTag));
-  git(dir, "tag", "v1.0.0");
-  writeLedger(dir, [
-    runRecord({ ts: (beforeTagCommitCt - 100) * 1000, head: "old" }),  // before the marker -> excluded
-    runRecord({ ts: (beforeTagCommitCt + 100) * 1000, head: "new1" }), // after the marker -> included
-    runRecord({ ts: (beforeTagCommitCt + 200) * 1000, head: "new2", verdict: "FIX REQUIRED" }), // non-READY -> excluded
-  ]);
+  git(dir, "tag", "nightly"); // a non-release tag never counts as the boundary
+  fs.writeFileSync(path.join(dir, "b.txt"), "b\n", "utf8");
+  git(dir, "add", ".");
+  commitAt(dir, "2026-01-02T00:00:00Z", "unreleased work");
+
   const report = await buildShipReport(dir, {});
-  assert.strictEqual(report.marker.tag, "v1.0.0");
-  assert.deepStrictEqual(report.pending.map((p) => p.head), ["new1"]);
+  assert.strictEqual(report.pending.state, "no-release-tag");
+  assert.strictEqual(report.pending.commitCount, null, "no count is claimed without a boundary");
+  assert.deepStrictEqual(report.pending.commits, []);
+  assert.match(report.pending.note, /no vX\.Y\.Z release tag is reachable from HEAD/);
+  assert.match(report.pending.note, /not "nothing to ship"/);
+  assertFiveChecksRan(report);
+
+  const out = runShip(dir, ["--cwd", "."]);
+  assert.match(out, /NO-RELEASE-TAG: no vX\.Y\.Z release tag is reachable from HEAD/);
+  assert.doesNotMatch(out, /nothing pending to ship/);
+  assertNoReadyClaim(out);
+});
+
+test("pending view: a real shallow clone (git clone --depth 1) is disclosed as shallow-clone — history cannot be bounded, so no list and no count are claimed", async () => {
+  const origin = bareRepository();
+  git(origin, "tag", "v1.0.0");
+  for (const day of ["02", "03"]) {
+    fs.writeFileSync(path.join(origin, `f${day}.txt`), day + "\n", "utf8");
+    git(origin, "add", ".");
+    commitAt(origin, `2026-01-${day}T00:00:00Z`, `work ${day}`);
+  }
+  const clone = path.join(temporary("ctide-ship-shallow-"), "clone");
+  git(path.dirname(clone), "clone", "-q", "--depth", "1", pathToFileURL(origin).href, clone);
+  assert.strictEqual(git(clone, "rev-parse", "--is-shallow-repository"), "true", "fixture sanity: the clone is really shallow");
+
+  const report = await buildShipReport(clone, {});
+  assert.strictEqual(report.pending.state, "shallow-clone");
+  assert.strictEqual(report.pending.commitCount, null);
+  assert.deepStrictEqual(report.pending.commits, []);
+  assert.deepStrictEqual(report.pending.files, []);
+  assert.match(report.pending.note, /history truncated — weak-signal only/);
+  assertFiveChecksRan(report);
+
+  const out = runShip(clone, ["--cwd", "."]);
+  assert.match(out, /SHALLOW-CLONE: history truncated — weak-signal only/);
+  assertNoReadyClaim(out);
+});
+
+test("pending view: a non-git directory is disclosed as not-a-git-repo, the CLI exits 0 in both modes, and the five checks still run", () => {
+  const dir = temporary("ctide-ship-pending-nongit-");
+  const json = cp.spawnSync("node", [SCRIPT, "--cwd", dir, "--json"], { encoding: "utf8" });
+  assert.strictEqual(json.status, 0);
+  assert.strictEqual(json.stderr, "");
+  const parsed = JSON.parse(json.stdout);
+  assert.strictEqual(parsed.pending.state, "not-a-git-repo");
+  assert.deepStrictEqual(parsed.pending.commits, []);
+  assert.strictEqual(parsed.pending.commitCount, null);
+  assertFiveChecksRan(parsed);
+
+  const text = cp.spawnSync("node", [SCRIPT, "--cwd", dir], { encoding: "utf8" });
+  assert.strictEqual(text.status, 0);
+  assert.match(text.stdout, /NOT-A-GIT-REPO: not inside a git working tree/);
+  assertNoReadyClaim(text.stdout);
+});
+
+test("pending view: git missing from PATH is disclosed as git-unavailable and the CLI still exits 0", () => {
+  const dir = bareRepository();
+  const emptyBin = temporary("ctide-ship-nogit-path-");
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"));
+  env.PATH = emptyBin;
+  const result = cp.spawnSync(process.execPath, [SCRIPT, "--cwd", dir, "--json"], { encoding: "utf8", env });
+  assert.strictEqual(result.status, 0, result.stderr);
+  const parsed = JSON.parse(result.stdout);
+  assert.strictEqual(parsed.pending.state, "git-unavailable");
+  assert.deepStrictEqual(parsed.pending.commits, []);
+  assertFiveChecksRan(parsed);
+});
+
+test("pending view: zero commits since the tag is state ok with 'no commits since <tag>' — and all five readiness checks still run", async () => {
+  const dir = bareRepository();
+  writePkg(dir, "package.json", JSON.stringify({ version: "1.0.0" }));
+  git(dir, "add", ".");
+  commitAt(dir, "2026-01-02T00:00:00Z", "release 1.0.0");
+  git(dir, "tag", "v1.0.0"); // lightweight
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.pending.state, "ok");
+  assert.strictEqual(report.pending.commitCount, 0);
+  assert.deepStrictEqual(report.pending.commits, []);
+  assert.strictEqual(report.pending.fileCount, 0);
+  assert.strictEqual(report.pending.note, "no commits since v1.0.0");
+  assertFiveChecksRan(report);
+  assert.strictEqual(report.checks.tagReady.status, "fail", "a check still reaches its own verdict with nothing pending");
+
+  const out = runShip(dir, ["--cwd", "."]);
+  assert.match(out, /no commits since v1\.0\.0/);
+  assert.match(out, /checks:\n {2}\S+ versionConsistency:/);
+  assertNoReadyClaim(out);
+});
+
+test("pending view: commit and file lists are capped with an explicit truncation note and the uncapped totals", async () => {
+  const dir = bareRepository();
+  git(dir, "tag", "v1.0.0");
+  const many = path.join(dir, "many");
+  fs.mkdirSync(many);
+  for (let i = 0; i <= PENDING_FILE_CAP; i++) fs.writeFileSync(path.join(many, `f${i}.txt`), `${i}\n`, "utf8");
+  git(dir, "add", ".");
+  commitAt(dir, "2026-01-02T00:00:00Z", "add many files");
+  // PENDING_COMMIT_CAP more empty commits in ONE git process (fast-import), so the fixture stays fast.
+  const stream = [];
+  for (let i = 1; i <= PENDING_COMMIT_CAP; i++) {
+    stream.push("commit refs/heads/main", "committer Ship Test <ship@example.invalid> 1767312000 +0000", `data ${`c${i}`.length}`, `c${i}`);
+    if (i === 1) stream.push("from refs/heads/main^0");
+    stream.push("");
+  }
+  const imported = cp.spawnSync("git", ["fast-import", "--quiet", "--force"], { cwd: dir, input: stream.join("\n") + "\n", encoding: "utf8" });
+  assert.strictEqual(imported.status, 0, `fixture sanity: fast-import failed: ${imported.stderr}`);
+  const total = PENDING_COMMIT_CAP + 1;
+  assert.strictEqual(git(dir, "rev-list", "--count", "v1.0.0..HEAD"), String(total), "fixture sanity: commit count");
+
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.pending.state, "ok");
+  assert.strictEqual(report.pending.commitCount, total);
+  assert.strictEqual(report.pending.commits.length, PENDING_COMMIT_CAP);
+  assert.strictEqual(report.pending.commitsTruncated, true);
+  assert.strictEqual(report.pending.fileCount, PENDING_FILE_CAP + 1);
+  assert.strictEqual(report.pending.files.length, PENDING_FILE_CAP);
+  assert.strictEqual(report.pending.filesTruncated, true);
+
+  const out = runShip(dir, ["--cwd", "."]);
+  assert.match(out, new RegExp(`truncated: showing ${PENDING_COMMIT_CAP} of ${total} commits`));
+  assert.match(out, new RegExp(`truncated: showing ${PENDING_FILE_CAP} of ${PENDING_FILE_CAP + 1} files`));
 });
 
 // --- unit: buildErrorFallbackReport (main()'s otherwise-unreachable outer catch-all -- every check above
@@ -718,7 +828,11 @@ test("buildErrorFallbackReport: the JSON-mode fallback now carries the error det
   error.code = "ENOENT";
   const fallback = buildErrorFallbackReport(error);
   assert.strictEqual(fallback.marker.found, false);
-  assert.deepStrictEqual(fallback.pending, []);
+  assert.strictEqual(fallback.pending.state, "unverified", "an internal error never reads as an empty pending list");
+  assert.deepStrictEqual(fallback.pending.commits, []);
+  assert.strictEqual(fallback.pending.disclaimer, PENDING_DISCLAIMER);
+  assert.match(fallback.pending.note, /ENOENT/);
+  assert.ok(!fallback.pending.note.includes("secret-project"), "must never leak the raw error message or a local path");
   assert.deepStrictEqual(fallback.checks, {});
   assert.match(fallback.marker.note, /ENOENT/);
   assert.ok(!fallback.marker.note.includes("secret-project"), "must never leak the raw error message or a local path");
@@ -740,7 +854,6 @@ test("ship.mjs NEVER writes anything — whole working-tree (incl. .ctide/) byte
   git(dir, "tag", "v1.0.0");
   writePkg(dir, "package.json", JSON.stringify({ version: "1.0.0" }));
   fs.writeFileSync(path.join(dir, "CHANGELOG.md"), "# Changelog\n", "utf8");
-  writeLedger(dir, [runRecord({ ts: Date.now() })]);
   writeMapDoc(dir, { commit: git(dir, "rev-parse", "HEAD"), rollbackLines: ["- Exact steps: x <!-- CTIDE:TRUST:verified:2026-01-01 -->"] });
   fs.writeFileSync(path.join(dir, "artifact.tar.gz"), "bytes\n", "utf8");
   fs.writeFileSync(path.join(dir, "artifact.tar.gz.sha256"), sha256Hex(Buffer.from("bytes\n")) + "  artifact.tar.gz\n", "utf8");
@@ -751,7 +864,7 @@ test("ship.mjs NEVER writes anything — whole working-tree (incl. .ctide/) byte
   assertSameSnapshot(before, after);
 });
 
-// --- fail-open: missing git / missing ledger / corrupt ledger JSON all still exit 0, valid JSON ---
+// --- fail-open: a missing git repository / a malformed manifest still exit 0, valid JSON ---
 
 test("fail-open: a missing git repository still exits 0 and prints valid, well-shaped JSON", () => {
   const dir = temporary("ctide-ship-fo-nogit-");
@@ -759,26 +872,7 @@ test("fail-open: a missing git repository still exits 0 and prints valid, well-s
   assert.strictEqual(result.status, 0);
   const parsed = JSON.parse(result.stdout);
   assert.strictEqual(parsed.marker.found, false);
-  assert.deepStrictEqual(parsed.pending, []);
-});
-
-test("fail-open: a missing ledger file still exits 0 with an empty pending list", () => {
-  const dir = bareRepository();
-  const result = cp.spawnSync("node", [SCRIPT, "--cwd", dir, "--json"], { encoding: "utf8" });
-  assert.strictEqual(result.status, 0);
-  const parsed = JSON.parse(result.stdout);
-  assert.deepStrictEqual(parsed.pending, []);
-});
-
-test("fail-open: a ledger file that is entirely corrupt JSON still exits 0 with an empty pending list, no uncaught exception", () => {
-  const dir = bareRepository();
-  fs.mkdirSync(path.dirname(ledgerPath(dir)), { recursive: true });
-  fs.writeFileSync(ledgerPath(dir), "not json at all\n{{{ broken\n", "utf8");
-  const result = cp.spawnSync("node", [SCRIPT, "--cwd", dir, "--json"], { encoding: "utf8" });
-  assert.strictEqual(result.status, 0);
-  const parsed = JSON.parse(result.stdout);
-  assert.deepStrictEqual(parsed.pending, []);
-  assert.strictEqual(result.stderr, "");
+  assert.strictEqual(parsed.pending.state, "not-a-git-repo");
 });
 
 test("fail-open: a malformed package.json alongside a missing Map and no tags still exits 0 with every check reporting a defined status", () => {

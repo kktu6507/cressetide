@@ -664,16 +664,11 @@ if (plugin && Array.isArray(plugin.agents)) {
 // the caps leave headroom so ordinary edits do not trip. Raising a cap is allowed —
 // but must be a CONSCIOUS decision made here with a justifying comment, not accretion.
 {
-  // arbiter.agent.md was consciously raised 27000 -> 30000 for the TP v1.21 §D11 integration: §D11
-  // requires the arbiter to make the one fresh `evaluateGate` call itself, so the complete gate
-  // contract -- the exact command, the forbidden authorities, the stream/exit handling and the
-  // separated loop/provenance reporting -- has to be present in the agent's own prompt. Indirecting
-  // it to a reference would leave a mandatory gate depending on a file the spawned agent is not
-  // guaranteed to load. The file was 26991 bytes before that section, so no honest consolidation
-  // could have funded it. 30000 matches SKILL.md's cap and restores ordinary-edit headroom.
+  // arbiter.agent.md is loaded on every arbiter spawn (and every repair-iteration re-spawn), so its
+  // cap is held at 27000: growth must be funded by consolidating existing text, not by raising it.
   const SIZE_CAPS = [
     [`${PLUGIN}/skills/vigil/SKILL.md`, 30000],
-    [`${PLUGIN}/agents/arbiter.agent.md`, 30000],
+    [`${PLUGIN}/agents/arbiter.agent.md`, 27000],
   ];
   for (const [rel, cap] of SIZE_CAPS) {
     const abs = path.join(root, rel);
@@ -686,7 +681,7 @@ if (plugin && Array.isArray(plugin.agents)) {
 
 // 9d. Copy-sync guards for documented byte-identical infra copies (deterministic string/regex
 // extraction only): the per-hook copies in cressetide/hooks/, the map.mjs/ship.mjs skill-script
-// pair (d4, below), and the 15-site isInvokedDirectly() CLI entry-point cluster (d5, below). Each
+// pair (d4, below), and the 11-site isInvokedDirectly() CLI entry-point cluster (d5, below). Each
 // check fails CLOSED when it cannot locate what it guards, so a refactor cannot silently disarm it
 // — the message then says to re-point the guard.
 {
@@ -835,14 +830,14 @@ if (plugin && Array.isArray(plugin.agents)) {
     }
   }
 
-  // d5. isInvokedDirectly() entry-point self-check, byte-identical across 14 CLI scripts (the
+  // d5. isInvokedDirectly() entry-point self-check, byte-identical across 10 CLI scripts (the
   // fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url) forward-direction form)
-  // plus a 15th sibling, publish-release-core.mjs, which imports pathToFileURL rather than
+  // plus an 11th sibling, publish-release-core.mjs, which imports pathToFileURL rather than
   // fileURLToPath and so necessarily carries the reverse-direction pathToFileURL(fs.realpathSync(...))
   // .href === import.meta.url form — semantically identical, not a body match, so it is checked only
-  // for marker presence below, never body-compared against the 14. Reuses extractSkillFn (defined
+  // for marker presence below, never body-compared against the 10. Reuses extractSkillFn (defined
   // above, shared with d4) unmodified: isInvokedDirectly() needs no per-file substitution since the
-  // 14 forward bodies are already 100% textually identical.
+  // 10 forward bodies are already 100% textually identical.
   const ENTRY_POINT_FORWARD = [
     `${PLUGIN}/skills/doctor/scripts/doctor.mjs`,
     `${PLUGIN}/skills/map/scripts/map.mjs`,
@@ -850,12 +845,8 @@ if (plugin && Array.isArray(plugin.agents)) {
     `${PLUGIN}/skills/vigil/scripts/contract-check.mjs`,
     `${PLUGIN}/skills/vigil/scripts/failure-retrieve.mjs`,
     `${PLUGIN}/skills/vigil/scripts/failure-consolidate.mjs`,
-    `${PLUGIN}/skills/vigil/scripts/run-reconcile.mjs`,
     `${PLUGIN}/skills/vigil/scripts/regression-delta.mjs`,
-    `${PLUGIN}/skills/vigil/scripts/run-ledger.mjs`,
     `${PLUGIN}/skills/vigil/scripts/pack-review-diff.mjs`,
-    `${PLUGIN}/skills/vigil/scripts/run-consolidate.mjs`,
-    `${PLUGIN}/skills/vigil/scripts/provenance-store.mjs`,
     "eval/check-model-provenance.mjs",
     ".github/scripts/publish-release.mjs",
   ];
@@ -870,7 +861,7 @@ if (plugin && Array.isArray(plugin.agents)) {
   const entryPointFound = entryPointBodies.filter(([, b]) => b !== null);
   for (let i = 1; i < entryPointFound.length; i++) {
     if (entryPointFound[i][1] !== entryPointFound[0][1])
-      fail(`garden 9d: isInvokedDirectly() drifted between ${entryPointFound[0][0]} and ${entryPointFound[i][0]} — these are documented byte-identical copies (14 of 15 — publish-release-core.mjs is the documented reverse-direction exception, checked separately below); change ALL 14 together`);
+      fail(`garden 9d: isInvokedDirectly() drifted between ${entryPointFound[0][0]} and ${entryPointFound[i][0]} — these are documented byte-identical copies (10 of 11 — publish-release-core.mjs is the documented reverse-direction exception, checked separately below); change ALL 10 together`);
   }
 
   for (const rel of [...ENTRY_POINT_FORWARD, ENTRY_POINT_REVERSE]) {

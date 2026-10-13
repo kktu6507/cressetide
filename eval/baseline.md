@@ -86,9 +86,9 @@ There were no implicit retries: the failed pilot is retained unchanged and accou
 ## Evidence and reproducibility
 
 - Full evidence, per-call accounting and reviewer outputs:
-  [`../docs/superpowers/reviews/2026-09-08-efficiency-l1b-evidence.json`](../docs/superpowers/reviews/2026-09-08-efficiency-l1b-evidence.json)
+  [`docs/superpowers/reviews/2026-09-08-efficiency-l1b-evidence.json`](https://github.com/kktu6507/cressetide/blob/archive/v0.7.2-full/docs/superpowers/reviews/2026-09-08-efficiency-l1b-evidence.json) (archived)
 - Protocol, boundaries and disclosures:
-  [`../docs/efficiency-measurement.md`](../docs/efficiency-measurement.md)
+  [`docs/efficiency-measurement.md`](https://github.com/kktu6507/cressetide/blob/archive/v0.7.2-full/docs/efficiency-measurement.md) (archived)
 - Frozen identity for this run — manifest file SHA-256
   `759d5d15444d8093cae1698a6a5fd1507dffd095b8cb314ea9f46d11756f546e`, reviewer system prompt
   `c09639569335c220a9580784c6be9816e1beb91af35d8fd0380e1bd332b466e0`, shared reviewer contract

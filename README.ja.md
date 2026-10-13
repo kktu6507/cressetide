@@ -29,21 +29,20 @@ Incident flow  アラート -> Triage -> 証拠保全 -> まず止血（可逆�
                       -> 診断 -> red repro -> 上の dev flow 経由で修正（--lite）
                       -> 本番への再投入 + 観察期間 -> postmortem
 
-学習ループ      run verdict -> ledger 記録 -> 次の planning が照合：escaped / survived？
-               incident postmortem -> FAILURE_MEMORY -> 次の dev flow の planning がそれを読む
+学習ループ      incident postmortem -> FAILURE_MEMORY -> 次の dev flow の planning がそれを読む
 ```
 
 ## 同梱されているもの
 
 <p align="center">
-  <img src=".github/assets/flow_overview.svg" alt="Cressetide のコンポーネントフロー：intent が plan を生み、人間が承認してから implement と verify に進み、リスクに応じた subagent パネルが判定します；salvage、map、committed なメモリファイル、ローカルの run ledger がこのループに供給します；doctor と ship は手動起動・独立した読み取り専用チェックで、ループには接続しません" width="100%">
+  <img src=".github/assets/flow_overview.svg" alt="Cressetide のコンポーネントフロー：intent が plan を生み、人間が承認してから implement と verify に進み、リスクに応じた subagent パネルが判定します；salvage、map、committed なメモリファイルがこのループに供給します；doctor と ship は手動起動・独立した読み取り専用チェックで、ループには接続しません" width="100%">
 </p>
 
 - **2つのフロー**：dev（[`vigil`](#開発フローvigil)）と incident（[`salvage`](#インシデントフローsalvage)）。インシデントの正式な修正は、「インシデントの reproduction がグリーンになる」を主要な acceptance criterion として `--lite` run で dev flow に戻されます。
 - **5つの skill**：`vigil` と `salvage` は自動で起動します（小さな修正を超える開発作業で／インシデントらしい言葉づかいで）；[`map`](#ops-マップmap)、[`doctor`](#ヘルスチェックdoctor)、[`ship`](#release-readiness-チェックship) は手動で開始します（`/ctide:map`、`/ctide:doctor`、`/ctide:ship`）。
 - **[11個の subagent](#開発フローvigil)**：navigator、implementer、リスクに応じて選ばれる7人の reviewer、cartographer、そして readiness を判定する arbiter。
 - **[6つの hook](#hooks-と安全性モデル)**：local-only で依存関係ゼロの Node guardrails。plan gate、破壊的コマンドの guard、contract guard、failure-memory の注入、compaction リマインダー、delivery-claim チェックをカバーします。
-- **[学習ループ](#学習ループ)**：完了した run は workflow 自身が書く ledger 記録で終わり、次の run は過去の verdict が実際に持ちこたえたかの確認から始まります。
+- **[学習ループ](#学習ループ)**：インシデントの postmortem と escaped な欠陥から得た教訓は git 管理される failure memory に残り、次の plan がそれを読みます。
 
 ### プロジェクトレイアウト
 
@@ -56,10 +55,7 @@ ctide があなたのプロジェクト内に保持するものは、すべて1�
   map/        # SYSTEM_MAP.md — リポジトリと運用準備の Map（committed）
   incidents/  # INCIDENT-<date>-<slug>.md journals — 監査証跡（committed）
   decisions/  # DECISION-<date>-<slug>.md — Y ではなく X を選んだ理由と見直す条件（committed）
-  provenance.json  # test-provenance ストア — canonical state（committed）
-  ledger/     # runs.jsonl — append-only の実行履歴（永続的な episodic state、自前の gitignore 付き）
   output/     # 実行ごとのスクラッチ：contract.md、evidence、review diffs（決して commit しない、自前の gitignore 付き）
-  test-provenance-loop/  # review-loop controller の永続プレフィックス——ツール所有、git に入らない
 ```
 
 旧レイアウト（`ai/FAILURE_MEMORY.md`、リポジトリ直下の `design.md`、`.ctide/legacy-output/`）の移行は一度だけ。workflow 自身が移動し、何を動かしたかはその実行の中で説明されます。
@@ -155,14 +151,6 @@ Verdicts は release-readiness の判断であり、絶対的な真実ではあ�
 - **reviewer は editor 系ツールを持ちません**：検査用に `Read` / `Grep` / `Glob` / `Bash` のみ。review-only という振る舞いは政策とコンテキスト分離によって強制されているのであり、厳密な read-only の権限境界ではありません（詳細は [`ARCHITECTURE.md`](ARCHITECTURE.md)）。修正案を提案するのは reviewer で、実際に適用するのは `implementer` です。
 - **正確性が重要な経路には、独立した視点を2つ以上割り当てます**：parsing、数値／エンコーディング／overflow、並行処理、セキュリティ、データ整合性。パネル全員が同じ盲点を共有しないためです。
 
-**Test-provenance run はより厳格です。** provenance workflow を伴うタスク——validated store に現行の TaskState を持つタスク——では、review ステップの **TP-active** 版が動きます。その影響には次が含まれます：
-
-- 本物の `test-reviewer` が必ず動きます。evidence-substituted されることは決してなく、**changed-test inventory が正当に空であっても**同じなので、下記の fast lane は一切適用されません。
-- `arbiter` は `loop` と `provenance` の2つの gate 半分と、その `combined` 結果を別々に報告します。**どちらかが false なら `READY` はブロックされます。**
-- この run は canonical state を保持します：git に入る `.ctide/provenance.json` ストアと、永続的でツール所有の `.ctide/test-provenance-loop/` プレフィックス。controller はそこに入れ子の `.gitignore` を書かないため、利用側プロジェクトは**このプレフィックスのみ**を ignore してください——`.ctide/` を丸ごと ignore すると、git に入るべき semantic state まで落ちます。head view によるこのプレフィックスの除外は gitignore とは独立に効きます。
-
-provenance workflow を使わないタスクは影響を受けません：このステップは丸ごとスキップされ、通常の lifecycle が適用されます。これは「その workflow の外にある」ことの性質です——workflow の中にあって state が欠落または検証に失敗しているタスクが、それによって必要な検査を免れるわけではありません。パス、プレフィックス、state 分類の仕様は [`docs/runtime-contract.md`](docs/runtime-contract.md)（英語）に、コンポーネント視点は [`ARCHITECTURE.md`](ARCHITECTURE.md)（英語）にあります。
-
 **良いタスクの書き方。** ctide はあなたが明示した意図に照らしてレビューするため、最良のタスクには要件、acceptance criteria、変更禁止範囲、期待する検証、リスク領域が書かれています。テンプレートと bad / better / best の例：[`docs/task-writing-guide.md`](docs/task-writing-guide.md)（英語）。
 
 **実行単位のフラグ。** `--lite`（最小パネル）、`--deep`（adversarial verification）、`--report full`（詳細レポート）；詳細は「設定リファレンス」の節へ。
@@ -205,11 +193,11 @@ Map は operational-preparation の契約を担います：[`operational-readine
 
 `/ctide:doctor` は hooks と環境のローカルで読み取り専用のセルフチェック（plugin の同一性、Node の有無、hook がつながっているか）を行います。helper と hooks 自体はネットワーク通信も telemetry 送信も行いません。外側の Claude Code セッションは通常どおり動作するため、これは ctide 自身のコードについての記述であって、セッションのプライバシー保証ではありません。gate が一度も block しない、hooks が無反応、あるいは Node が入っていない可能性があるときに実行してください。
 
-`--project`（`--cwd <path>` を併用可）を付けると、3つのチェックが追加で重なります：`failure-memory-health` はプロジェクト自身の `FAILURE_MEMORY.md` を要約します（マシン全体のものには触れません）、`incident-journals` は `.ctide/incidents/*.md` のうち `closed` と確認されていない項目を報告します、`ledger-health` は reconciliation debt と、ledger の最後の記録から `HEAD` が何コミット進んだかを報告します。3つともオプトインかつ加算的——デフォルトの `/ctide:doctor` 出力は変わりません。
+`--project`（`--cwd <path>` を併用可）を付けると、2つのチェックが追加で重なります：`failure-memory-health` はプロジェクト自身の `FAILURE_MEMORY.md` を要約します（マシン全体のものには触れません）、`incident-journals` は `.ctide/incidents/*.md` のうち `closed` と確認されていない項目を報告します。2つともオプトインかつ加算的——デフォルトの `/ctide:doctor` 出力は変わりません。
 
 ## Release-readiness チェック（ship）
 
-`/ctide:ship` は手動・読み取り専用です：build、test、deploy パイプラインを実行することは決してなく、何も書き込みません（git tag も、バージョン更新も、changelog へのエントリも一切なし）。既存のものを読むだけです——前回の release tag 以降 ledger にある `READY` の run すべて、`package.json`、`CHANGELOG.md` の git 履歴、git tags、そして `SYSTEM_MAP.md` の Rollback セクション——そして decision card を出力します：pending なバッチ、続いて4つのチェック（バージョンの整合性、`CHANGELOG.md` が変更されたか、tag の準備状況、Map から得られる migration compatibility）で、それぞれ `pass` / `fail` / `not-applicable` / `unverified` を引用証拠つきで報告します。
+`/ctide:ship` は手動・読み取り専用です：build、test、deploy パイプラインを実行することは決してなく、何も書き込みません（git tag も、バージョン更新も、changelog へのエントリも一切なし）。既存のものを読むだけです——前回の release tag 以降の commit と変更ファイル、`package.json`、`CHANGELOG.md` の git 履歴、git tags、そして `SYSTEM_MAP.md` の Rollback セクション——そして decision card を出力します：pending な変更（git から列挙したもので、readiness の主張ではなく、`READY` verdict を意味しません）、続いて4つのチェック（バージョンの整合性、`CHANGELOG.md` が変更されたか、tag の準備状況、Map から得られる migration compatibility）で、それぞれ `pass` / `fail` / `not-applicable` / `unverified` を引用証拠つきで報告します。
 
 5つ目のチェック——checksum 検証——は `--artifact` と `--checksum` を明示的に渡したときだけ実行されます；ship はリポジトリ内のどのファイルが build artifact かを推測することは決してありません。バージョンの整合性が比較するのは、依存・ビルド・ランタイム用のディレクトリを除外したうえで ship が見つけた `package.json` です——このエコシステムのみが対象で、他の manifest 形式も、ctide 自身の入れ子の `plugin.json` も含みません。除外されるディレクトリの正確な一覧は [`docs/command-reference.md`](docs/command-reference.md)（英語）にあります。
 
@@ -219,11 +207,9 @@ Ship は実際に公開する前に読む pre-flight checklist であり、あ�
 
 run と run のあいだで、ctide は学んだことを持ち越します——負けも勝ちも：
 
-- **完了した run は ledger への記録で終わります。** verdict が確定した後、workflow の main thread が event-fact の1行を `.ctide/ledger/runs.jsonl` に追記します：タスク、変更されたファイル（`git diff` から算出され、agent の申告は決して信用しない）、verdict、検証ステータス、パネル、repair 回数、findings、計画された scope と観測された drift。事実のみ：ledger がスコア、率、パーセンテージを保存することはありません。この追記は workflow 自身の一部であり fail-open です——run を自動的に記録する hook は存在しないため、そのステップに到達せずに終わった run は ledger 行を残しません。`/ctide:doctor --project` の `ledger-health` は、ledger の不在、reconciliation debt、および `HEAD` が最後の記録から何コミット進んだかを報告できますが、記録されなかった run を復元することはできません。
-- **次の run は、過去の verdict が持ちこたえたかの確認から始まります。** planning は、記録された各 run のファイルがその後の commit で手直しされていないかをスキャンし、その run を `escaped` / `survived` / `superseded` / `building-upon` として処置します。判断がつかない重なりは「needs human review」として人に渡し、黙って合格にはしません。14日以内に `escaped` のクローズが3件になると、最終レポートが retro を提案します（[`docs/advanced/retro-practice.md`](docs/advanced/retro-practice.md)（英語））。この集計はあなたに知らせるためのもので、verdict の確定後にだけ現れ、現在の run の scope、パネル、verdict を調整することは決してありません。
 - **教訓は、git 管理される2つのメモリファイルが記憶します。** `.ctide/memory/FAILURE_MEMORY.md` は prevention rule（インシデントの postmortem と escaped な欠陥から）を保持し、SessionStart hook が untrusted な digest を注入して次の plan が読みます。`.ctide/memory/EXPERIENCE.md` は検証済みのポジティブなパターンを保持します（`candidate → validated → standard`；`standard` にはリンクされた実行可能アセットが必須で、文章だけでは決して昇格しません）。
 
-完全な契約：[`run-ledger.md`](cressetide/skills/vigil/references/run-ledger.md)（英語）· [`experience-memory.md`](cressetide/skills/vigil/references/experience-memory.md)（英語）。
+完全な契約：[`experience-memory.md`](cressetide/skills/vigil/references/experience-memory.md)（英語）。
 
 ## Hooks と安全性モデル
 
@@ -332,7 +318,7 @@ Release checksum はあくまで整合性チェックです：ダウンロード
 
 ## コスト
 
-変更そのものを作る作業に加えて、plan、verify、reviewer パネル、repair がそれぞれ作業を上乗せします。run が実際にいくらかかるかは、以下のレバーと、あなたのプロジェクト自身のコマンドにかかるコスト次第です。**代表的なエンドツーエンドのコストや所要時間は確立しておらず、コスト削減効果も確立していません。** メンテナの efficiency 調査は confirmation 段階を実行しないまま終結しました（[最終処置](docs/superpowers/reviews/2026-09-10-efficiency-final-disposition.md)（英語））。そこに記録されている CLI 推定値は、それらの個別実験に限定されたものであり、一般的な数値ではありません。以下に挙げるのはコストを動かす要因であって、いくらになるかではありません。
+変更そのものを作る作業に加えて、plan、verify、reviewer パネル、repair がそれぞれ作業を上乗せします。run が実際にいくらかかるかは、以下のレバーと、あなたのプロジェクト自身のコマンドにかかるコスト次第です。**代表的なエンドツーエンドのコストや所要時間は確立しておらず、コスト削減効果も確立していません。** メンテナの efficiency 調査は confirmation 段階を実行しないまま終結しました（[最終処置](https://github.com/kktu6507/cressetide/blob/archive/v0.7.2-full/docs/superpowers/reviews/2026-09-10-efficiency-final-disposition.md)（英語））。そこに記録されている CLI 推定値は、それらの個別実験に限定されたものであり、一般的な数値ではありません。以下に挙げるのはコストを動かす要因であって、いくらになるかではありません。
 
 レバーは次のとおりです：
 
@@ -343,7 +329,7 @@ Release checksum はあくまで整合性チェックです：ダウンロード
 
 incident flow は戦時のターンを短く保つ設計です——decision card 1枚ずつ、長文なし。正式な修正は dev flow に戻って `--lite` run として走り、Map の更新はツリー全体ではなく repo の限られた範囲をスキャンします。
 
-小さな低／中リスクの変更では、自動の **fast lane** がさらに一歩進みます：実行エビデンスがすでに reviewer の問いに答えている場合（behavior-changing な基準すべてに red→green テストがあり、full required suite がグリーン）、`test-reviewer` はエビデンスで代替され、`ctide:panel=substituted:test-reviewer` として開示されます。同じエビデンスで、より少ない agents。高リスクな作業、いずれかの tier の deep-mode run、そして [TP-active run](#開発フローvigil) には一切適用されません——TP-active run では、**changed-test inventory が空の場合も含めて**本物の `test-reviewer` が必ず動きます。
+小さな低／中リスクの変更では、自動の **fast lane** がさらに一歩進みます：実行エビデンスがすでに reviewer の問いに答えている場合（behavior-changing な基準すべてに red→green テストがあり、full required suite がグリーン）、`test-reviewer` はエビデンスで代替され、`ctide:panel=substituted:test-reviewer` として開示されます。同じエビデンスで、より少ない agents。高リスクな作業と、いずれかの tier の deep-mode run には一切適用されません。
 
 ## サンプルとエビデンス
 

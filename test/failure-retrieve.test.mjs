@@ -242,7 +242,7 @@ test("resolveMemoryFile: legacy-only -> ai/ fallback, and the usage ledger stays
 });
 
 // --- e2e: failure-retrieve whole-class flag-swallow guard (get() itself now guards EVERY flag in this
-// file's own KNOWN_FLAGS -- the same shared-mechanism fix run-reconcile.mjs / run-ledger.mjs apply over
+// file's own KNOWN_FLAGS -- the same shared-mechanism fix the sibling CLI scripts apply over
 // their own flag sets. `--log` is a boolean flag read via `args.includes`, not `get()` -- it has no value
 // position of its own to attack, so it is excluded from the OUTER (attacked) loop below, but it stays a
 // full member of KNOWN_FLAGS and appears in the INNER (swallower) loop) ---
@@ -276,7 +276,7 @@ test("failure-retrieve: for EVERY value-bearing flag in KNOWN_FLAGS, a value slo
         values["--log-file"] = path.join(dir, "usage-ledger.jsonl");
 
         // Order: G's own legitimate occurrence FIRST, then every other flag, then F LAST with its value
-        // slot occupied by the literal token G (mirrors run-reconcile.test.mjs's / run-ledger.test.mjs's
+        // slot occupied by the literal token G (mirrors the sibling CLI tests'
         // identical loop-test ordering discipline -- keeps every flag's `indexOf` lookup unambiguous).
         const order = [G, ...KNOWN_FLAGS.filter((x) => x !== F && x !== G), F];
         const argv = [];

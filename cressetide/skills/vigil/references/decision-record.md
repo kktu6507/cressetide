@@ -120,8 +120,8 @@ subjective judgment to keep the record from becoming noise:
 When a signal fires, no separate user approval is required beyond the run's normal verdict flow —
 the same as `FAILURE_MEMORY.md`'s write trigger. `arbiter` proposes the entry text and filename
 (and, when the decision supersedes a prior `active` one, the old file's updated `Status` line too);
-the main thread performs the single serialized write at Step 9, alongside the failure-memory write
-and ledger append — never during the review/repair loop itself.
+the main thread performs the single serialized write at Step 9, alongside the failure-memory write —
+never during the review/repair loop itself.
 
 **Discussion path.** No prior plan-approval gate covers this write (unlike the vigil path, where the
 underlying decision was already approved at `ExitPlanMode`). Get one lightweight explicit
@@ -148,7 +148,7 @@ read never updates a `Status` field or any other file.
 
 - **Prose contract, not a machine lint.** See *`Status`: two states, no automatic expiry* above;
   this is a deliberate, disclosed non-goal for this version.
-- **Committed, unlike the ledger.** `.ctide/decisions/` is tracked by Git in the consuming project,
+- **Committed.** `.ctide/decisions/` is tracked by Git in the consuming project,
   the same as `FAILURE_MEMORY.md` and `EXPERIENCE.md`; entries are not gitignored and not per-run
   scratch.
 - **No migration duty.** New path, no legacy predecessor.

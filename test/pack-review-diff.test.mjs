@@ -255,7 +255,7 @@ test("FIX4: a spaced filename's trailing tab is stripped from the ---/+++ path (
 });
 
 // --- e2e: pack-review-diff whole-class flag-swallow guard (get() itself now guards EVERY flag in this
-// file's own KNOWN_FLAGS -- the same shared-mechanism fix run-reconcile.mjs / run-ledger.mjs apply over
+// file's own KNOWN_FLAGS -- the same shared-mechanism fix the sibling CLI scripts apply over
 // their own flag sets. Only 2 flags here, so the loop is just the 2 possible (F, G) orderings) ---
 
 test("pack-review-diff: for EVERY flag in KNOWN_FLAGS, a value slot occupied by the OTHER known flag's own name is treated as omitted, never as a literal value -- --regen falls back to the default regenerate pointer (never the bogus '--max-lines'-shaped literal) while --max-lines' own legitimate value (4) still forces the real trim; --max-lines swallowed by --regen falls back to 0 (unlimited) so NOTHING is trimmed at all, regardless of --regen's value", () => {
