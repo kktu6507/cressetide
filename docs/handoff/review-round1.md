@@ -1,0 +1,119 @@
+# Review round 1 (P1 + P2) — packet, findings, arbiter verdict, repair status
+
+> 原檔在 gitignored 的 `.ctide/output/review/`。這裡是交接用的合併版。
+
+## Arbiter verdict (round 1, HEAD 5afc115): FIX REQUIRED
+
+- Blockers: none. Majors (all confirmed by the arbiter's own reproduction):
+  - **M1** ship disclaimer contained the machine token `READY` → the plugin's own Stop hook (`orchestration-check.js`) emitted a false "panel did not run" advisory on every ship session; the test was tautological (compared against the module's own export, stripped before scanning).
+  - **M2** two release-tag definitions (pending used a `git describe` glob; marker used `TAG_VERSION_RE`) → pre-release / four-part tags hid unreleased commits; bare `1.0.0` reported `no-release-tag`.
+  - **M3** `isShallowClone` checked `<cwd>/.git/shallow` → subdirectory / worktree `--cwd` of a shallow clone reported `ok` with a silent undercount.
+  - **M4** the `unverified` read-failure branch of `pendingChanges` had no test.
+  - **M5** the new "assert only what a source states" rule contradicted the existing implied-edge-input mandate (arbiter withholds READY without edge tests).
+  - **M6** edge-checklist inputs untested (Unicode+space names, empty repo, exact caps).
+- AC check: AC1 unmet as evidenced (npm test exit 1 from load-timing tests); AC2 met (archive tag holds 146/146 deleted paths) pending D-1; AC3 met on content (M5 separately); AC4 met; AC13 unmet (M1–M3); AC22 partial met.
+- Rulings: (a) drop the unapproved severity mapping in the ported test-reviewer rules; (b) EVIDENCE.md historical rows stay unchanged → owner decision D-1; (c) plugin validate re-run on the pinned 2.1.272 passed at both commits; npm test exit 1 is authoritative → owner decision D-2; (d) arbiter cap 27000 kept (P8 shrinks the arbiter).
+- Owner decisions (2026-10-13): **D-1** EVIDENCE.md historical-record sections added to AC2's exclusion list; **D-2** the three named wall-clock tests (session-memory-hooks ReDoS 800ms, structure 10s validator timeout, doctor-security `--plugin-root` probe) are a disclosed exception until P3/P5 move them in-process; **D-3** the shared `isShallowClone` fix may also correct marker/tagReady (approved).
+- Repair list R1–R8 → **implemented and committed in 72b01a0** (see the commit message and `progress.md`). Red→green evidence was recorded per item by the implementer.
+- Riding items with deadlines (not yet done): code#5 1 MiB maxBuffer → P4; test#7 contract-check removed-flags CLI test → P4; test#9 Doctor node-row binding test → P4; arch#3 failure-memory `--log` usage file missing from the state model → P5; arch#7 README×3 should link `docs/history.md` instead of the archive permalink → P11; test#8 port TP-free fast-lane + test-reviewer QA-output prose guards → **before the first P8 prose edit**; P6 note: the Stop rewrite needs a ship-session regression case.
+- Open item for the round-1 re-check: `plan-gate F1 … dd …` timed 3078 ms vs a `< 3000` bound in the post-repair full run (passes alone in 549 ms; also failed at baseline). It is the same load-timing class but NOT on the owner's D-2 list — the re-check arbiter must rule (or the owner extends D-2).
+
+---
+
+## Review Packet — v0.8 slim refactor, review round 1 (phases P1 + P2)
+
+Task: Phases P1 (Node floor 22.12 + `npm test` scoped to `test/**/*.test.mjs`) and P2 (remove the test-provenance (TP) subsystem and the run-ledger subsystem; ship "pending" becomes git-derived; docs/superpowers archived) of the owner-approved plan `docs/handoff/plan.md` (zh-TW). Commits: cd8a02d (P1), 5afc115 (P2). Base: acbe433. Branch refactor/v0.8-slim. Removed content is preserved in the local annotated tag `archive/v0.7.2-full`.
+
+Owner decisions in force (not up for review): D1 remove TP entirely (incl. intent-scan / shared-decision specs, 9/11 roadmap); D3 remove ledger/reconcile/consolidate entirely, ship pending git-derived and explicitly NOT a readiness claim; port three TP ideas into ordinary test review.
+
+Acceptance criteria in scope for this round (numbering = plan AC list):
+1. (P1/P2 portion) each phase commit leaves `npm run validate`, `npm test`, `claude plugin validate --strict ./cressetide` green.
+2. (TP + ledger portion) `git grep` for TP and run-ledger identifiers returns nothing outside CHANGELOG history and docs/history.md (archive permalinks allowed); the archive tag contains every removed file.
+3. test-reviewer and verification-gate carry the three rules (silence is not an assertion; stay inside the source's scope; look for extra assertions, not only missing ones) and test→source traceability.
+4. `npm test` runs only `test/**/*.test.mjs`.
+13. Ship: after a release tag plus one non-vigil commit, that commit is listed as pending and no READY claim is made.
+22. (partial) docs no longer describe TP/ledger; docs/history.md exists.
+Task contract: `.ctide/output/contract.md` (high-risk, 24 ACs; other ACs belong to later phases).
+
+In scope: everything changed in acbe433..HEAD (67 modified/added files; 146 deletions listed in `.ctide/output/review/deleted-r1.txt`).
+
+Out of scope (deferred to later phases — deferred ≠ missing): Copilot removal and hooks rewrite (P5), shared `cressetide/lib/` extraction and garden-9d deletion (P4), Stop/SubagentStop rewrite incl. the Task-vs-Agent bug (P6), failure-memory `##`/`###` parsing and raw-prose fallback (P5), debug redaction (P5), untracked files in contract-check/pack-review-diff, map freshness, regression-delta missing tests, doctor probes (P7), reviewer-contract skill / effort prose / context splits / EXPERIENCE removal / map overlays (P8), workflow (P9), eval/efficiency removal and plugin-eval conversion (P10), CI path filters, logos, README voice pass, CHANGELOG 0.8.0, version bump (P11). Known pre-existing wall-clock timing tests that fail only under load.
+
+Must-not-change (invariants): hooks' fail-open boundary; `ctide.*` opt-out settings semantics; the three sentinel tokens/values (`ctide:delivery=` / `ctide:verify=` / `ctide:panel=`) and `### Live run`; verdict tokens READY / FIX REQUIRED / NOT READY and severities; intent-reviewer is never substituted; the arbiter's per-acceptance-criterion check; the evidence-substitution fast lane for ordinary (non-TP) runs; contract-check default mode's always-exit-0 fail-open contract; ship's five readiness checks and its always-exit-0 CLI.
+
+Edge checklist: ship pending — no release tag; repo with no commits; shallow clone; non-git dir; git binary missing; 0 commits since tag; >200 commits / >500 files caps + truncation note; `--cwd` pointing at a subdirectory; Unicode/space file names (NUL-separated). contract-check — removed flags (`--provenance`, `--inventory`, `--task`) now unknown. Doctor `--project` — exactly two added checks. Node floor — 22.11.99 fails, 22.12.0-rc.1 fails, 22.12.0 passes, unparsable fails without throwing. README×3 parity (17 `##` sections each). Archive permalinks 404 until the tag is pushed (owner pushes later; expected).
+
+Assumptions: Ship pending uses `git describe` nearest reachable `vX.Y.Z` tag, while the readiness marker keeps the highest-version tag (unchanged check) — they can differ on unusual branch layouts and both name their tag; ship's old "human may exclude ledger entries" step was dropped because excluding commits from a git range has no meaning (direct consequence of D3); the ship JSON `pending` field changed from array to object (breaking; CHANGELOG in P11).
+
+Implementation summary: P1 — engines >=22.12, test glob, CI Node 22, Doctor semver node row + boundary test, docs synced. P2 — deleted 37 vigil scripts (34 TP + run-ledger/reconcile/consolidate), vendor/, eval/loop-e2e/, the vendored-parser ADR, test/fixtures/, 34 test files, references/run-ledger.md, docs/superpowers/** (61 files), docs/efficiency-measurement.md, docs/advanced/retro-practice.md; contract-check lost `--provenance`; Doctor lost ledger-health; ship.mjs pending = `pendingChanges()` (git-derived, disclaimer, states, caps); SKILL steps 2/3/4b/9 and TP clauses removed; arbiter TP gate removed (cap 30000→27000); test-reviewer TP section replaced by "Assertion discipline"; implementer + verification-gate gained one traceability line each; navigator lost reconcile deliverable; references (review-packet, reviewer-selection, final-report, plan-grounding, experience-memory, decision-record) cleaned; README×3/ARCHITECTURE/SECURITY/CONTRIBUTING/runtime-contract/command-reference/how-to-read-verdicts/benchmark-contract/evaluation/examples cleaned; flow_overview.svg ledger shape removed; docs/history.md added; typos.toml trimmed; validator ENTRY_POINT lists and counts fixed.
+
+Changed files: see `git diff --stat acbe433..HEAD` (key code: cressetide/skills/ship/scripts/ship.mjs, cressetide/skills/doctor/scripts/doctor.mjs, cressetide/skills/vigil/scripts/contract-check.mjs, .github/scripts/validate-structure-core.mjs; key prose: cressetide/skills/vigil/SKILL.md, cressetide/agents/{arbiter,test-reviewer,implementer,navigator}.agent.md, cressetide/skills/vigil/references/*.md, cressetide/skills/ship/{SKILL.md,references/ship-contract.md}, cressetide/skills/doctor/{SKILL.md,references/diagnostic-contract.md}; tests: test/ship.test.mjs, test/doctor-project.test.mjs, test/release-doctor.test.mjs, test/contract-check.test.mjs, test/documented-facts.test.mjs, test/workflow-contracts.test.mjs, test/validate-structure.test.mjs, test/release-cli.test.mjs).
+
+Changed diff (filtered): `.ctide/output/review/diff-r1.patch` (4835 lines; added/modified/renamed files only, packed by pack-review-diff.mjs)
+— Trimmed: pure deletions excluded (list in `.ctide/output/review/deleted-r1.txt`; their old content: `git show acbe433:<path>`).
+— Regenerate (same scope): `git diff --diff-filter=AMR acbe433..HEAD`; full incl. deletions: `git diff acbe433..HEAD`.
+
+Verification evidence:
+| command | type | required | ran | exit | note |
+|---|---|---|---|---|---|
+| `npm run validate` | structure | yes | yes | 0 | after P2 |
+| `claude plugin validate --strict ./cressetide` (CLI 2.1.296) | plugin schema | yes | yes | 0 | "Validation passed" |
+| `node --test --test-reporter=tap "test/**/*.test.mjs"` | test | yes | yes | 1 | 905 tests, 899 pass, 3 fail, 3 skip; the 3 fails (doctor-security "statically inspects --plugin-root", session-memory-hooks ReDoS 800ms bound, structure 10s validator timeout) are child-process timeouts under load, all pre-existing in the P0 baseline, and each file passes alone: doctor-security 8/8, session-memory-hooks 49/49(+1 skip), structure 4/4 |
+| `node cressetide/skills/vigil/scripts/contract-check.mjs --base acbe433` | scope/AC | yes | yes | 0 | scope clean; every behavior-changing AC maps to a verification entry |
+| `git grep` TP/ledger identifiers (excl. CHANGELOG, EVIDENCE, docs/history.md, eval/efficiency, archive permalinks) | residue | yes | yes | 0 hits | |
+Summary: required checks green except load-induced timing timeouts that pass in isolation.
+
+Known risks: archive permalinks 404 until the owner pushes `archive/v0.7.2-full`; eval/efficiency still references docs/superpowers in a SHA-frozen JSON (P10 deletes eval/efficiency); wall-clock tests flaky under load (P3/P5 move them in-process).
+
+Context exclusions: the upstream 2026-09-11 master roadmap (archived; superseded by the owner's D1–D5 decisions) — do not treat its TP/intent-scan/ledger obligations as requirements.
+
+External-capability notes: none used by the implementation; live host probes for later phases are recorded in `.ctide/output/probes.md` (context only).
+
+Design contract (design.md path, or "none"): none (no UI).
+
+Migration status: n/a (no legacy `ai/FAILURE_MEMORY.md` in this repo).
+
+---
+
+# Round-1 reviewer findings (P1 + P2, acbe433..5afc115) — consolidated by the orchestrator, indexes reproduced from each reviewer
+
+## intent-reviewer
+1. major · ship.mjs:117 + ship SKILL.md:46 vs hooks/orchestration-check.js:83-84,104-106,395 · the mandatory verbatim disclaimer "…no READY verdict is implied" contains the machine-checked READY token; the plugin's own Stop hook reads it as an asserted READY and emits the false "panel did not run" advisory on every ship session; AC13 broken at the machine-token level · anchored+reproduced (hook fed the disclaimer → systemMessage; control silent) · fix: reword without uppercase READY (e.g. "…not a readiness claim; nothing listed here has been reviewed or approved"), sync README×3/command-reference/ship-contract, make the test forbid READY anywhere.
+2. major · ship.mjs:121,153-154 vs parseVersionTag/pickLatestVersionTag + ship-contract.md:40,48 · pending boundary glob accepts v1.3.0-rc1 / v1.2.3.4 (under-lists unreleased commits) and rejects bare 1.2.0 that the marker accepts; contract's "same tag on linear history" false · anchored+reproduced · fix: derive the pending tag via `git tag --merged HEAD` + existing pickLatestVersionTag (one grammar); correct ship-contract:48.
+3. major · test-reviewer.agent.md:42-43, implementer.agent.md:36 vs verification-gate.md:16, arbiter.agent.md:70 · "assert only what a source states" conflicts with the existing mandate to test implied edge inputs (e.g. sum([])===0 stated by no source): implementer told not to pin, test-reviewer flags over-specification, arbiter blocks READY without it · anchored (prose both sides) · fix: name implied edge expectations / the contract assumption register / the edge checklist as admissible sources that must be cited.
+4. minor · ship.mjs:55-57,149 · isShallowClone checks `<cwd>/.git/shallow`; subdir/worktree of a shallow clone → no-release-tag instead of shallow-clone · reproduced · fix: `git rev-parse --is-shallow-repository`.
+5. minor · ship.mjs:153-154 · any `git describe` failure incl. timeout maps to no-release-tag; contract table says read failures/timeouts are unverified · anchored · fix: only "no names found"/no HEAD → no-release-tag; else unverified.
+6. minor · test-reviewer.agent.md:42 · the severity mapping (minor default, major when freezing accidental behavior) is not among the owner's three rules; major blocks READY → new release-affecting obligation not approved · anchored · fix: surface to owner or drop the mapping.
+7. minor · docs/history.md:19 · "about 6.5k tokens and 4–5 tool calls per run" has no source (0 grep hits); :55 "saved 15 bytes" but candidate never adopted · fix: label as estimate from reference size or remove; "would have removed".
+8. minor · AC2 vs EVIDENCE.md:30,50 · residue grep exclusion widened to EVIDENCE.md (2 historical ledger-health mentions) and eval/efficiency; AC text allows only CHANGELOG + history.md · fix: explicit owner/arbiter ruling or amend AC2.
+9. minor · AC1 evidence · npm test exit 1 at both phase commits (load-timing fails pass in isolation; packet defers); plugin validate ran on CLI 2.1.296 not the plan's pinned 2.1.272 · fix: arbiter rules on deferral; rerun strict validate on 2.1.272.
+10. minor · ship SKILL.md:33-36,50 · rollback relevance judged on pending.files even when filesTruncated (>500) · fix: relevance statement must say it covered N of M files.
+
+## architecture-reviewer
+1. major · ship.mjs:121,153 vs :63,84 (+ ship-contract.md:39,47-48, docs/command-reference.md:128) · two release-tag definitions; bare `1.0.0`+1 commit → marker 1.0.0 but pending NO-RELEASE-TAG (AC13 unmet for an accepted tag shape); v1.0.0→a→v1.1.0-rc.1→b → pending ok lists only b · reproduced · fix: pendingChanges picks tag via `git tag --merged HEAD` → pickLatestVersionTag; note when pending.tag ≠ marker.tag; fix contract/command-reference wording; bare-tag + prerelease tests.
+2. minor · ship.mjs:55-57 · isShallowClone subdir --cwd (same as intent #4) · reproduced.
+3. minor · runtime-contract.md:93, ARCHITECTURE.md:130, SECURITY.md:47 vs failure-retrieve.mjs:191-193,219 · "memory/ is committed" yet `--log` writes untracked `.ctide/memory/.failure-memory-usage.jsonl` (gitignore required per verification-gate.md:172-174, no self-gitignore); pre-existing · fix: one line in the state model, or defer to P5 explicitly.
+4. minor · implementer.agent.md:36, test-reviewer.agent.md:42-45, verification-gate.md:14 · assertion-source list omits the contract assumptions register and the edge-input checklist (same root as intent #3) · fix: add "a recorded contract assumption or the run's edge-input checklist" in all three.
+5. minor · EVIDENCE.md:30,50 · AC2 literal residue (same as intent #8) · fix: ruling to amend AC2 exclusion for historical records.
+6. minor · docs/history.md:29 · says the tag "holds the full v0.7.2 tree" but it points at acbe433 (v0.7.2 + 7 commits) · fix: "main at acbe433, just before the v0.8 refactor".
+7. minor · README×3:321 · links the archive permalink directly instead of in-tree docs/history.md · fix: point README×3 at docs/history.md#the-efficiency-investigation.
+
+## code-reviewer
+1. major · ship.mjs:121,153 vs :63, ship-contract.md:47-49 · two tag definitions (same as above) · reproduced; `--exclude 'v*[!0-9.]*'` and two-`--match` variants each fixed one case · fix: one definition via `git tag --merged HEAD` + pickLatestVersionTag.
+2. minor · ship.mjs:55-57 (used :149) · isShallowClone subdir/worktree (same as above) · reproduced (root/subdir/worktree) · fix: `git rev-parse --is-shallow-repository` (also fixes marker + tagReady paths).
+3. minor · ship.mjs:163 · rename detection on → renamed migration lists only the new path; Rollback relevance matches against pending.files · reproduced (`git mv`) · fix: `--no-renames`.
+4. minor · ship.mjs:163 · user `diff.relative=true` + subdir --cwd → fileCount 0 · reproduced · fix: `-c diff.relative=false`.
+5. minor · ship.mjs:44-48 with :163 · NUL file list unbounded vs Node default 1 MiB maxBuffer → >~15k files gives unverified instead of "showing 500 of N" · mechanism confirmed (ENOBUFS), e2e masked by timeout · fix: larger maxBuffer for that call, or state the limit in the contract's unverified row.
+6. minor · validate-structure-core.mjs:667-671 · arbiter 26,798 vs cap 27,000 (202 B headroom) contradicts the 9c header "caps leave headroom" · fix: say the cap is deliberately tight, or confirm with owner.
+
+## test-reviewer
+1. major · test/ship.test.mjs:649-650 (+:629,:670,:833) · disclaimer / no-READY checks compare against the module's own exported PENDING_DISCLAIMER and strip it before scanning for /READY/ → a disclaimer that itself claims readiness passes · reproduced (mutant "READY — safe to ship…" → 9/9 pass) · fix: assert the literal (as in ship-contract.md:43), strip only the literal negation phrase before the scan, add /not a readiness claim/.
+2. major · ship.mjs:55-57,149 · shallow subdir/worktree → `ok` with undercounted list (depth-4 clone: root shallow-clone; src/ ok count 5 vs true 7; worktree ok 5) — the silent undercount the state exists to prevent; no subdir test · reproduced · fix: `--is-shallow-repository` + subdir/worktree tests.
+3. major · ship.mjs:164-167 · the `unverified` read-failure branch has no test; a mutant returning ok passed 12/12; real fixture (delete tag root tree object) shows HEAD unverified vs mutant ok · reproduced · fix: add that fixture test (state unverified, commitCount null, five checks ran, text UNVERIFIED).
+4. minor · ship.test.mjs:786-818 · caps only at cap+1; `>=` mutant survives; truncated case doesn't assert five checks; subject/path caps untested · reproduced · fix: 500-file case expects filesTruncated false; assertFiveChecksRan in caps test.
+5. minor · ship.mjs:163,172 · NUL-separated list and empty repo untested; no-`-z` mutant passes 12/12 and on a real repo mangles a Unicode+space name · reproduced · fix: Unicode+space filename test, empty-repo test.
+6. minor · process · no recorded red-before-change run in the packet/artifacts (reviewer reproduced AC13 red itself: 3/3 fail on base) · fix: record red runs for AC13, node floor, Doctor exact set.
+7. minor · contract-check.mjs:123 · removed flags (--provenance/--inventory/--task) now fall through to default report exit 0 (base exited 1) — untested · fix: CLI test exit 0 + default report + no provenance JSON.
+8. minor · test/workflow-contracts.test.mjs · D11 removal took out the only prose guards that each fast-lane document still grants evidence substitution, the general fast lane is preserved, and test-reviewer's Required output keeps Missing required tests / Regression risks / Confidence · grep confirmed no other guard · fix: port TP-free per-document assertions + QA-output assertion before P8.
+9. minor · doctor.mjs:460 · no test that the node row actually uses nodeVersionMeetsFloor (revert to major>=20 stays green on Node ≥22.12) · fix: assert the row detail contains `requires Node >=22.12.0`.
+10. minor · assertion discipline · ship.test.mjs:685,:701,:706,:732,:749,:783,:672 pin wording/labels/layout no source documents · fix: assert `out.includes(json.pending.note)` and state names case-insensitively.
