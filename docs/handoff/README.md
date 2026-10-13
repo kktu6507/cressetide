@@ -22,7 +22,9 @@
 | P1 Node 下限 22.12、`npm test` 只跑 `test/**/*.test.mjs` | 完成 | `cd8a02d` |
 | P2 移除 TP 與 run ledger、ship pending 改從 git 推得、封存 `docs/superpowers` | 完成 | `5afc115` |
 | 第 1 輪 review（intent / test / code / architecture + arbiter） | **FIX REQUIRED** | — |
-| 第 1 輪修復 R1–R7 | 完成，**尚未複審** | `72b01a0` |
+| 第 1 輪修復 R1–R7 | 完成 | `72b01a0` |
+| 第 1 輪複審（intent / test / code + arbiter，新機器） | **FIX REQUIRED**（無 blocker；4 個 major 都很小） | — |
+| 第 1 輪修復 R2-1～R2-5（含使用者核准的兩項順手修正） | 完成，**待窄範圍複審 2** | `ec91bf6` |
 | P3 → P13 | 未開始 | — |
 
 逐步紀錄在 [progress.md](progress.md)，第 1 輪 review 的完整內容在 [review-round1.md](review-round1.md)，實機探測結果在 [probes.md](probes.md)。
@@ -62,19 +64,22 @@
 
 ## 下一步（依序）
 
-1. **第 1 輪複審**：針對 `5afc115..72b01a0`，只重跑受影響的 reviewer（intent、test、code），再由 arbiter 判定。arbiter 必須對一件事做出裁定：
-   - `plan-gate F1 … dd …` 這個計時測試在修復後的全套測試中跑了 3078 ms，上限是 3000 ms；單獨跑只要 549 ms，baseline 時也失敗過。它和 D-2 屬於同一類，但**不在使用者核准的三個名單裡**。
-   - 只能由 arbiter 裁定，或請使用者擴大 D-2；不要自己改門檻。
-2. **P3**：validator 合併成 `validate({root, read})`，負向測試改用 overlay reader，不再複製整個 repo；`helpers.mjs` 和 `support.mjs` 合併，只留一個 `makeRepo`，temp 目錄要清掉。
+1. **窄範圍複審 2**：第 1 輪複審（2026-10-14，新機器）判定 FIX REQUIRED，修復清單 R2-1～R2-5 見 [review-round1.md](review-round1.md) 的「Round-1 re-check」。R2 已在 `ec91bf6` 完成，red→green 記在 [r2-redgreen.md](r2-redgreen.md)。接下來只重跑 intent、test、code 三個 reviewer 和 arbiter，範圍限 `2306078..ec91bf6`。回 READY 才開始 P3。
+2. **P3**：validator 合併成 `validate({root, read})`，負向測試改用 overlay reader，不再複製整個 repo；`helpers.mjs` 和 `support.mjs` 合併，只留一個 `makeRepo`，temp 目錄要清掉。另外兩項要求：
+   - **temp helper 要涵蓋所有沒清理的測試檔**：`ship.test.mjs`、`contract-check.test.mjs`、`support.mjs`、`helpers.mjs` 等所有 `mkdtempSync` 都改走同一個會自動清理的 helper（`t.after`），並用全套 `npm test` 前後的 `ctide-*` 目錄數量比對來證明（AC-20）。
+   - **validator 只掃追蹤中、未被忽略的檔案**（使用者 2026-10-14 核准）：scratch 檔與文字完整性檢查改用 `git ls-files -co --exclude-standard`，本機 gitignored 的 `.ctide/collaboration/` dogfood 資料才不會讓 `npm run validate` 失敗。最終報告列為核准的順手修正。
 3. **P4**：建立共用模組 `cressetide/lib/`，刪掉 publish-release-core。期限在這一階段的待辦：
    - `git()` 的 1 MiB maxBuffer
    - contract-check 移除 flag 的 CLI 測試
    - Doctor node 列的綁定測試
-4. **P5**：重寫 hooks、移除 Copilot、debug 遮蔽 secret、failure memory 支援 `##`／`###`。期限在這一階段的待辦：failure memory 的 `--log` usage 檔要寫進狀態模型。
-5. **P6**：SubagentStop 紀錄器加上新的 Stop；要包含一個 ship session 的回歸案例。
-6. **P7 → P13**：照計畫做。注意 **P8 第一次改 prose 之前**，要先把被刪掉的 fast-lane 和 test-reviewer QA 輸出的 prose 守衛補回來（拿掉 TP 的部分）。
+4. **P5**：重寫 hooks、移除 Copilot、debug 遮蔽 secret、failure memory 支援 `##`／`###`。期限在這一階段的待辦：
+   - failure memory 的 `--log` usage 檔要寫進狀態模型。
+   - **D-4 的硬性要求**：plan-gate 的 4 個 F1 計時測試（sed / perl / git apply / dd）改成 in-process 量 classifier 時間（例如 `< 250 ms`），並在 scratch 副本拿掉 `{0,200}` 上限時錄到紅燈；做不到紅燈就不算完成。
+5. **P6**：SubagentStop 紀錄器加上新的 Stop；要包含一個 ship session 的回歸案例。這個案例的 commit subject 要含 `READY`、`major`、`minor`，報告裡也要有否定句「never means 'safe to ship'」，新的 Stop 都必須保持安靜（第 1 輪複審 F-k）。
+6. **P7 → P13**：照計畫做。注意 **P8 第一次改 prose 之前**，要先把被刪掉的 fast-lane 和 test-reviewer QA 輸出的 prose 守衛補回來（拿掉 TP 的部分）。同一個期限內，還要替低／中風險 run 定義實作階段可引用的 edge 來源（第 1 輪複審 F-l）。
+   - **P4** 另外要處理：`counted.status` 的 fault-injection 測試，並把 `rev-list --count` 改成嚴格解析 `/^\d+$/`（F-j）；ship 搬到 `lib/git` 時，逐一檢查 code-reviewer 留下的四條線索（resolveMarker 讀 tag 清單失敗、tagReady 的 rev-parse 失敗、子目錄 `--cwd` 的 changelogTouched、HEAD 損壞被標成 `no-release-tag`）。
 
-每個階段的共同要求：`npm run validate`、`npm test`、`npx --yes @anthropic-ai/claude-code@2.1.272 plugin validate --strict ./cressetide` 三項都要綠，用 `git grep` 確認該清的東西零命中，然後 commit。只有 D-2 那三個計時測試例外。
+每個階段的共同要求：`npm run validate`、`npm test`、`npx --yes @anthropic-ai/claude-code@2.1.272 plugin validate --strict ./cressetide` 三項都要綠，用 `git grep` 確認該清的東西零命中，然後 commit。只有 D-2 那三個、D-4 那四個計時測試例外。在這台機器上，因為本機有 `.ctide/collaboration/` dogfood 資料，P3 修好 validator 之前，三項驗證都要在乾淨的 detached worktree 裡跑。每個階段結束時，順手清掉多餘的檔案（scratch 副本、用完的 worktree、測試漏掉的 `ctide-*` 暫存目錄）。
 
 ## 已確定的決定（不要重新討論）
 
@@ -88,6 +93,9 @@
 - **D-1**：EVIDENCE.md 的歷史紀錄段落列入 AC2 的例外。
 - **D-2**：三個計時測試（session-memory-hooks 的 ReDoS 800 ms、structure 的 validator 10 s timeout、doctor-security 的 `--plugin-root` 探測）在 P3/P5 改成 in-process 計時之前，當作已揭露的例外。
 - **D-3**：共用的 `isShallowClone` 修正會順帶影響 marker 和 tagReady，已核准。
+- **D-4**（2026-10-14）：plan-gate 的 4 個 F1 計時測試（sed / perl / git apply / dd）和 D-2 同一類（計時區間 9 成以上是啟動 node），在 P5 改成 in-process 計時之前當作已揭露的例外。門檻不改。
+- **簽章**（2026-10-14，新機器）：這台機器用本機的 GPG 金鑰 `C446A14B5ED9EB97` 簽章（只設在這個 repo：`commit.gpgsign`、`tag.gpgSign`）。`2306078` 以前的 commit 是原機器的 `…1DDE4E2631D2F19D` 簽的。
+- **validator 掃描範圍**（2026-10-14）：併進 P3，只掃追蹤中、未被忽略的檔案。
 - **依實機探測定的設計**（見 [probes.md](probes.md)）：
   - hooks.json 用 shell 形式：`node "${CLAUDE_PLUGIN_ROOT}/hooks/<x>.mjs"`
   - 刪掉 `agents[]`，改靠 auto-discovery
@@ -134,8 +142,11 @@
    - 預防：含反斜線的改動用 Write/Edit 工具做，或寫成獨立 script 檔再執行；每次用 script 改完都讀回檢查。
    - tags: windows, git-bash, escaping, scripted-edits
 2. **否定句裡的判決 token 仍然是那個 token。** ship 規定要逐字附上的免責聲明「no READY verdict is implied」裡有 `READY`，plugin 自己的 Stop hook 把它當成宣稱 READY，每個 ship session 都會跳出假警告。對應的測試拿模組自己匯出的常數比對，還在掃描前先把聲明切掉，等於自己驗自己。
-   - 預防：要求模型逐字轉述的文字裡，不放機器解析的 token；測試用文件上的字面值，掃描整份輸出不切任何區段；另寫一個端到端測試，把真實的最後訊息餵給真的 hook，並加一個對照組證明 hook 確實會觸發。
+   - 預防：要求模型逐字轉述的文字裡，不放機器解析的 token；測試用文件上的字面值，掃描整份輸出不切任何區段；另寫一個端到端測試，把真實的最後訊息餵給真的 hook，並加一個對照組證明 hook 確實會觸發。改寫機器解析 token 的措辭時，要 grep 所有文件、所有語言裡的轉述（例如 README×3），不只逐字引用的那幾處。
    - tags: machine-token, verbatim-disclaimer, hook-false-positive, tautological-oracle
+3. **解析 porcelain 指令的輸出時，使用者的 git 設定會改變輸出形狀。** `column.ui=always` 讓 `git tag` 把所有 tag 印成一行，`log.showSignature=true` 在 `git log --format` 前面多印簽章結果，`tag.sort` 改變同版號 tag 的先後。修 M2 時改用 `git tag --merged HEAD`，在預設設定下全綠，卻在這些設定下把原本 `ok` 的結果變成 `no-release-tag`。
+   - 預防：程式要解析的 git 輸出，一律明確關掉會改形狀的設定（`--no-column`、`--sort=<key>`、`--no-show-signature`），或改用 plumbing（`for-each-ref`）；測試裡要有一個在敵意設定（`column.ui=always`、`tag.sort=-refname`、`log.showSignature=true`）下跑的案例。
+   - tags: git-porcelain, user-config, output-parsing, regression-from-fix
 
 ## 這個資料夾的檔案
 
@@ -143,4 +154,5 @@
 - [contract.md](contract.md)：task contract，24 條 AC，已含 D-1
 - [progress.md](progress.md)：逐步進度
 - [probes.md](probes.md)：P0 實機探測紀錄
-- [review-round1.md](review-round1.md)：第 1 輪 review 的判決、packet、findings
+- [review-round1.md](review-round1.md)：第 1 輪 review 的判決、packet、findings，以及第 1 輪複審（2026-10-14）
+- [r2-redgreen.md](r2-redgreen.md)：R2 修復逐項的 red→green 與 mutant 紀錄

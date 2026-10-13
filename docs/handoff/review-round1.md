@@ -16,7 +16,39 @@
 - Owner decisions (2026-10-13): **D-1** EVIDENCE.md historical-record sections added to AC2's exclusion list; **D-2** the three named wall-clock tests (session-memory-hooks ReDoS 800ms, structure 10s validator timeout, doctor-security `--plugin-root` probe) are a disclosed exception until P3/P5 move them in-process; **D-3** the shared `isShallowClone` fix may also correct marker/tagReady (approved).
 - Repair list R1–R8 → **implemented and committed in 72b01a0** (see the commit message and `progress.md`). Red→green evidence was recorded per item by the implementer.
 - Riding items with deadlines (not yet done): code#5 1 MiB maxBuffer → P4; test#7 contract-check removed-flags CLI test → P4; test#9 Doctor node-row binding test → P4; arch#3 failure-memory `--log` usage file missing from the state model → P5; arch#7 README×3 should link `docs/history.md` instead of the archive permalink → P11; test#8 port TP-free fast-lane + test-reviewer QA-output prose guards → **before the first P8 prose edit**; P6 note: the Stop rewrite needs a ship-session regression case.
-- Open item for the round-1 re-check: `plan-gate F1 … dd …` timed 3078 ms vs a `< 3000` bound in the post-repair full run (passes alone in 549 ms; also failed at baseline). It is the same load-timing class but NOT on the owner's D-2 list — the re-check arbiter must rule (or the owner extends D-2).
+- Open item for the round-1 re-check: `plan-gate F1 … dd …` timed 3078 ms vs a `< 3000` bound in the post-repair full run (passes alone in 549 ms; also failed at baseline). It is the same load-timing class but NOT on the owner's D-2 list — the re-check arbiter must rule (or the owner extends D-2). → Ruled in the re-check below; owner approved **D-4**.
+
+## Round-1 re-check (2026-10-14, new machine) — arbiter verdict on 5afc115..72b01a0: FIX REQUIRED
+
+- Panel: intent, test, code (all real, none substituted) + arbiter. Packet and full reports: gitignored `.ctide/output/review/packet-recheck.md` and `recheck-findings.md` on the new machine.
+- Verification (clean detached worktree of 2306078, Node 24.19.0): `npm run validate` 0; `plugin validate --strict` on the pinned 2.1.272 0; `npm test` 0 — 917 tests, 911 pass, 0 fail, 6 skip (platform-only), 87 s; `contract-check --base 5afc115` 0, scope clean. In the main checkout `npm run validate` exits 1 only because of gitignored `.ctide/collaboration/` dogfood data (validator scans ignored files; fix folded into P3 with owner approval).
+- Round-1 majors: all six closed in substance; M1 (README×3 doc sync), M2 (fix introduced the `column.*` regression) and M3 (unknown probe answer) leave work for R2. Test-reviewer reproduced the missing red runs: 5afc115 ship.mjs under the new tests → 17/78 fail.
+- AC check: AC-1 met (no exception needed in this run); AC-3 met (N5 wording gap → P8); **AC-13 unmet** under `column.ui=always` / `column.tag=always` (met under default config); AC-2 slice met; AC-22 slice partial (README×3:200).
+- No blockers. Majors (re-rated by the arbiter from reviewer minors, each reproduced by the arbiter):
+  1. `column.ui|column.tag=always` columnizes `git tag` → pending `no-release-tag` (regression from 72b01a0; 5afc115 was `ok`).
+  2. `log.showSignature=true` adds a fake row to `pending.commits` (from P2).
+  3. README×3:200 still paraphrases the old disclaimer with `READY` (incomplete R1 doc sync; trips the Stop hook).
+  4. Shallow probe treats any answer other than `true` (git < 2.15 echoing the flag, a timeout) as "not shallow" → silent undercount and `tagReady: pass`; contradicts ship-contract.md:63.
+- Repair list (owner approved the doc wording 2026-10-14):
+  - **R2-1** [Safe] `git tag --no-column --sort=refname` on both tag reads; `--no-show-signature` on the pending `git log`; tests under hostile config, version ordering end-to-end (v9→v10, merged-back v1.9.5), SSH-signed commit.
+  - **R2-2** [Safe, doc] README×3:200 → "not a readiness claim; nothing listed here has been reviewed or approved" (localized); real-hook silence test per README with the firing control.
+  - **R2-3** [Extended-Safe, disclosed] tri-state shallow probe: unknown → pending `unverified`, tagReady `unverified`, marker note says history may be truncated; no old-git fallback; tests via a probe-only preload (echo / timeout) and a real shallow clone from `src/` and a linked worktree.
+  - **R2-4** [Safe] `pendingChanges(root, marker.found ? marker.tag : null)`; `no-release-tag` note names an unreachable resolvable marker; ship-contract.md:52 / command-reference.md:132-133 narrowed; ship-contract.md §1 gains the N-of-M clause.
+  - **R2-5** [Safe, test] pin `core.quotePath=true` in the Unicode fixture.
+- Routed with deadlines: F-j `counted.status` fault-injection + strict count parse → P4; code-reviewer's four untouched leads (resolveMarker tag-list failure, tagReady rev-parse failure, subdir `--cwd` changelogTouched, corrupt HEAD label) → P4; F-k READY/major/minor in commit subjects and the negated "safe to ship" trip the Stop hook (advisory only) → P6 ship-session case; F-l edge-source definition for low/medium runs → P8 (with test#8); F-m red-run records → replaced by recording R2 red→green in `docs/handoff/progress.md`.
+- Temp-dir leak: P3's auto-cleaning helper must cover every test file that calls `mkdtempSync` without cleanup (ship.test.mjs, contract-check.test.mjs, support.mjs, helpers.mjs, …), proven by a before/after `ctide-*` count around a full `npm test`. The existing %TEMP% backlog (~114.5k dirs) is machine state, out of scope (the owner cleaned it separately).
+- Failure memory: proposed only (item 3 in `docs/handoff/README.md`, plus an extension to item 2); the owner's global file is not written in this plan.
+- `ctide:delivery=held` · `ctide:verify=pass` · `ctide:panel=full` (re-check run).
+
+### DECISION-20261014-plan-gate-f1-timing-class (owner-approved as D-4)
+
+- **Status**: active
+- **Context**: The four plan-gate F1 ReDoS tests (sed / perl / git apply / dd) time a spawned node child — more than 90% of the window is process startup (bare `node -e 0` 118–139 ms vs `gate()` 133–152 ms vs in-process classifier ~7 ms). dd hit 3078 ms against a 3000 ms bound under load on the original machine, and stays green with the `{0,200}` bound removed on a fast machine (2414–2468 ms).
+- **Decision**: Same load-timing class as D-2; disclosed exception until P5; the 3000 ms threshold is never edited. P5 must replace them with in-process classifier timing (e.g. `< 250 ms`) and record a red run with the bound removed.
+- **Alternatives considered**: raise the threshold (hides load flakiness, still blind to the regression); an arbiter-granted exception (relaxes an approved AC without owner consent); a linear-growth ratio check now (noisy at single-digit ms; belongs in-process).
+- **Consequences**: a full-run timeout of any of the four is a disclosed exception, not AC-1 red, until P5; P5 carries a hard in-process requirement.
+- **Revisit trigger**: P5 lands the in-process tests, or any of the four fails when run alone.
+- **Tags**: tests / plan-gate / timing-exception
 
 ---
 
