@@ -317,6 +317,20 @@ test("tagReadinessCheck: dirty working tree -> fail", () => {
   assert.match(result.evidence, /dirty/);
 });
 
+// ship-contract.md, tagReady: "A dirty working tree → `fail`" — and under default config an untracked file
+// makes the tree dirty (the test above). Round-1 re-check follow-up: a repository's
+// status.showUntrackedFiles=no must not hide that untracked file.
+test("tagReadinessCheck: status.showUntrackedFiles=no does not hide an untracked file — same result as under default config", () => {
+  const dir = bareRepository();
+  fs.writeFileSync(path.join(dir, "untracked.txt"), "new\n", "utf8");
+  const target = { status: "not-applicable", manifests: [{ file: "package.json", version: "1.0.0" }] };
+  const underDefault = tagReadinessCheck(dir, target);
+  assert.strictEqual(underDefault.status, "fail", "default config: an untracked file is a dirty working tree");
+  git(dir, "config", "status.showUntrackedFiles", "no");
+  assert.strictEqual(git(dir, "status", "--porcelain"), "", "fixture sanity: this config hides the untracked file from git status");
+  assert.strictEqual(tagReadinessCheck(dir, target).status, underDefault.status);
+});
+
 test("tagReadinessCheck: upstream version-consistency FAIL -> unverified, never guesses a target version", () => {
   const dir = bareRepository();
   const result = tagReadinessCheck(dir, { status: "fail", manifests: [{ file: "a", version: "1.0.0" }, { file: "b", version: "2.0.0" }] });
@@ -800,6 +814,85 @@ test("pending view: a subdirectory --cwd or a linked-worktree --cwd of a shallow
     "every --cwd inside the shallow clone is shallow-clone, with no count and no list");
 });
 
+// ship-contract.md, Release-marker resolution: on a shallow clone — "which also holds from a subdirectory
+// or a linked worktree" — marker.note and tagReady's unverified evidence disclose "history truncated —
+// weak-signal only" (owner decision D-3). A real clone; the root-only tests above fake `.git/shallow`.
+test("resolveMarker and tagReadinessCheck: from a subdirectory or a linked worktree of a real shallow clone whose release tag was not fetched, both disclose history truncation", () => {
+  const origin = bareRepository();
+  commitFile(origin, "src/one.txt", "1\n", "2026-01-02T00:00:00Z", "one");
+  git(origin, "tag", "v1.0.0");
+  commitFile(origin, "src/two.txt", "2\n", "2026-01-03T00:00:00Z", "two");
+  const clone = path.join(temporary("ctide-ship-shallow-notag-"), "clone");
+  git(path.dirname(clone), "clone", "-q", "--depth", "1", pathToFileURL(origin).href, clone);
+  assert.strictEqual(git(clone, "rev-parse", "--is-shallow-repository"), "true", "fixture sanity: the clone is shallow");
+  assert.strictEqual(git(clone, "tag", "--list"), "", "fixture sanity: the release tag was not fetched");
+  const worktree = path.join(temporary("ctide-ship-shallow-notag-wt-"), "wt");
+  git(clone, "worktree", "add", "-q", "--detach", worktree, "HEAD");
+  for (const [where, cwd] of [["subdirectory", path.join(clone, "src")], ["worktree", worktree]]) {
+    const marker = resolveMarker(cwd);
+    assert.strictEqual(marker.found, false, `${where}: no tag is visible locally`);
+    assert.match(marker.note, /history truncated — weak-signal only/, `${where}: marker.note`);
+    const tagReady = tagReadinessCheck(cwd, { status: "not-applicable", manifests: [{ file: "package.json", version: "1.0.0" }] });
+    assert.strictEqual(tagReady.status, "unverified", `${where}: tagReady`);
+    assert.match(tagReady.evidence, /history truncated — weak-signal only/, `${where}: tagReady evidence`);
+  }
+});
+
+// Serialized into a `node -r` preload (Function.prototype.toString), never called in this file. It
+// rewrites only the `git rev-parse --is-shallow-repository` probe's result and leaves every other git
+// call real. ship.mjs imports spawnSync as a named ESM binding, so the preload re-syncs the builtin's
+// ESM exports after patching.
+function shallowProbePreload(mode) {
+  const childProcess = require("node:child_process");
+  const realSpawnSync = childProcess.spawnSync;
+  childProcess.spawnSync = function patchedSpawnSync(command, args) {
+    if (command === "git" && Array.isArray(args) && args.includes("--is-shallow-repository")) {
+      if (mode === "echo") { // git < 2.15 does not know the flag and prints it back, exit 0
+        const stdout = "--is-shallow-repository\n";
+        return { pid: 0, output: [null, stdout, ""], stdout, stderr: "", status: 0, signal: null };
+      }
+      const error = Object.assign(new Error("spawnSync git ETIMEDOUT"), { code: "ETIMEDOUT", syscall: "spawnSync git" });
+      return { pid: 0, output: null, stdout: "", stderr: "", status: null, signal: "SIGTERM", error };
+    }
+    return realSpawnSync.apply(this, arguments);
+  };
+  require("node:module").syncBuiltinESMExports();
+}
+
+// ship-contract.md, Release-marker resolution (owner-approved, round-1 re-check): when the shallow probe
+// answers neither `true` nor `false` — an older git echoing the flag back, a timeout — whether history is
+// truncated is unknown: `marker.note` says history may be truncated and `tagReady` reports `unverified`;
+// the `unverified` pending row includes "determining whether the history is shallow".
+test("an unanswered shallow probe (flag echoed back by an older git, or a timeout) is unknown, never 'not shallow': pending and tagReady are unverified and the marker note says history may be truncated", () => {
+  const tagged = bareRepository();
+  git(tagged, "tag", "v0.9.0");
+  commitFile(tagged, "package.json", JSON.stringify({ version: "1.0.0" }), "2026-01-02T00:00:00Z", "prepare 1.0.0");
+  const untagged = bareRepository();
+  for (const dir of [tagged, untagged]) {
+    assert.strictEqual(git(dir, "rev-parse", "--is-shallow-repository"), "false", "fixture sanity: a full, non-shallow repository");
+  }
+  const preloads = temporary("ctide-ship-probe-preload-");
+  const env = { ...process.env };
+  delete env.CLAUDE_PROJECT_DIR;
+  for (const mode of ["echo", "timeout"]) {
+    const preload = path.join(preloads, `${mode}.cjs`);
+    fs.writeFileSync(preload, `(${shallowProbePreload})(${JSON.stringify(mode)});\n`, "utf8");
+    const runWithProbe = (dir) => {
+      const result = cp.spawnSync(process.execPath, ["-r", preload, SCRIPT, "--cwd", dir, "--json"], { encoding: "utf8", env });
+      assert.strictEqual(result.status, 0, `${mode}: the CLI exits 0: ${result.stderr}`);
+      return JSON.parse(result.stdout);
+    };
+    const report = runWithProbe(tagged);
+    assert.strictEqual(report.pending.state, "unverified", `${mode}: pending`);
+    assert.strictEqual(report.pending.commitCount, null, `${mode}: no count is claimed`);
+    assert.strictEqual(report.checks.tagReady.status, "unverified", `${mode}: tagReady`);
+    assertFiveChecksRan(report);
+    const noTag = runWithProbe(untagged);
+    assert.strictEqual(noTag.marker.found, false, `${mode}: fixture sanity: no tag`);
+    assert.match(noTag.marker.note, /history may be truncated/, `${mode}: marker.note`);
+  }
+});
+
 test("pending view: a non-git directory is disclosed as not-a-git-repo, the CLI exits 0 in both modes, and the five checks still run", () => {
   const dir = temporary("ctide-ship-pending-nongit-");
   const json = cp.spawnSync("node", [SCRIPT, "--cwd", dir, "--json"], { encoding: "utf8" });
@@ -828,6 +921,41 @@ test("pending view: git missing from PATH is disclosed as git-unavailable and th
   assert.strictEqual(parsed.pending.state, "git-unavailable");
   assert.deepStrictEqual(parsed.pending.commits, []);
   assertFiveChecksRan(parsed);
+});
+
+// Owner decision (round-1 re-check follow-up, 2026-10-14): "history may be truncated" applies only inside
+// a git work tree. Outside one, or with git missing, there is no history to be truncated, so neither
+// marker.note nor tagReady's evidence carries a truncation clause (ship-contract.md, Release-marker
+// resolution, describes that clause for a shallow clone or an unanswered probe only).
+function assertNoTruncationClause(report, where) {
+  assert.notStrictEqual(report.checks.tagReady.status, "not-applicable",
+    `${where}: fixture sanity: a target version was found, so tagReady reached its tag-not-found branch`);
+  for (const [field, text] of [["marker.note", report.marker.note], ["tagReady evidence", report.checks.tagReady.evidence]]) {
+    assert.doesNotMatch(text, /history truncated|may be truncated/, `${where}: ${field} has no truncation clause`);
+  }
+}
+
+test("outside a git work tree, neither marker.note nor tagReady's evidence says history is or may be truncated", () => {
+  const dir = temporary("ctide-ship-nongit-trunc-");
+  writePkg(dir, "package.json", JSON.stringify({ version: "1.0.0" }));
+  const result = cp.spawnSync(process.execPath, [SCRIPT, "--cwd", dir, "--json"], { encoding: "utf8" });
+  assert.strictEqual(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.strictEqual(report.pending.state, "not-a-git-repo", "fixture sanity: not inside a git work tree");
+  assertNoTruncationClause(report, "non-git directory");
+});
+
+test("with git missing from PATH, neither marker.note nor tagReady's evidence says history is or may be truncated", () => {
+  const dir = bareRepository();
+  writePkg(dir, "package.json", JSON.stringify({ version: "1.0.0" }));
+  const emptyBin = temporary("ctide-ship-nogit-path-");
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"));
+  env.PATH = emptyBin;
+  const result = cp.spawnSync(process.execPath, [SCRIPT, "--cwd", dir, "--json"], { encoding: "utf8", env });
+  assert.strictEqual(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.strictEqual(report.pending.state, "git-unavailable", "fixture sanity: git cannot be run");
+  assertNoTruncationClause(report, "git unavailable");
 });
 
 test("pending view: zero commits since the tag is state ok with 'no commits since <tag>' — and all five readiness checks still run", async () => {
@@ -941,6 +1069,118 @@ test("pending view: a four-part tag (v1.2.3.4) is never the boundary", async () 
   assert.deepStrictEqual(sortedSubjects(report.pending), ["a", "b"]);
 });
 
+// ship-contract.md, Release-marker resolution and Pending view: the marker is the highest-version tag
+// and the boundary the highest-version tag reachable from HEAD, and the pending view "does not depend on
+// `column.*`, `tag.sort`, …" (round-1 re-check edge: the marker's tag list must not either).
+test("pending view and marker: a repository's column.ui/column.tag=always and tag.sort=-refname do not hide the release tag", async () => {
+  const dir = bareRepository();
+  git(dir, "tag", "v0.9.0");
+  commitFile(dir, "rel.txt", "r\n", "2026-01-02T00:00:00Z", "release 1.0.0");
+  git(dir, "tag", "v1.0.0");
+  commitFile(dir, "after.txt", "a\n", "2026-01-03T00:00:00Z", "after the release");
+  for (const [key, value] of [["column.ui", "always"], ["column.tag", "always"], ["tag.sort", "-refname"]]) git(dir, "config", key, value);
+  assert.ok(git(dir, "tag", "--list").split(/\r?\n/).some((line) => line.includes("v0.9.0") && line.includes("v1.0.0")),
+    "fixture sanity: this config prints several tags on one line");
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.marker.found, true);
+  assert.strictEqual(report.marker.tag, "v1.0.0");
+  assert.strictEqual(report.pending.state, "ok");
+  assert.strictEqual(report.pending.tag, "v1.0.0");
+  assert.deepStrictEqual(sortedSubjects(report.pending), ["after the release"]);
+});
+
+// Round-1 re-check edge: a same-version tie (v1.0.0 and 1.0.0) breaks the same way for the marker and
+// the boundary, independent of tag.sort. Which of the two wins is not stated anywhere, so not pinned.
+test("marker and pending boundary break a same-version tie (v1.0.0 vs 1.0.0) the same way, whatever tag.sort says", async () => {
+  const dir = bareRepository();
+  git(dir, "tag", "1.0.0");
+  git(dir, "tag", "v1.0.0");
+  commitFile(dir, "b.txt", "b\n", "2026-01-02T00:00:00Z", "after the release");
+  const picked = {};
+  for (const order of ["refname", "-refname"]) {
+    git(dir, "config", "tag.sort", order);
+    const report = await buildShipReport(dir, {});
+    assert.strictEqual(report.pending.state, "ok");
+    assert.strictEqual(report.pending.tag, report.marker.tag, `tag.sort=${order}: the marker and the boundary pick the same tag`);
+    picked[order] = report.marker.tag;
+  }
+  assert.strictEqual(picked["-refname"], picked.refname, "the tie-break does not follow tag.sort");
+});
+
+// ship-contract.md, Release-marker resolution / Pending view: ordered by version, "never lexicographic
+// string sort — v9.0.0 must not outrank v10.0.0".
+test("pending view: the boundary is ordered by version — v9.0.0, a, v10.0.0, b lists only b since v10.0.0", async () => {
+  const dir = bareRepository();
+  git(dir, "tag", "v9.0.0");
+  commitFile(dir, "a1.txt", "a\n", "2026-01-02T00:00:00Z", "a");
+  git(dir, "tag", "v10.0.0");
+  commitFile(dir, "b1.txt", "b\n", "2026-01-03T00:00:00Z", "b");
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.pending.state, "ok");
+  assert.strictEqual(report.pending.tag, "v10.0.0");
+  assert.deepStrictEqual(sortedSubjects(report.pending), ["b"]);
+});
+
+// command-reference.md / ship-contract.md: the boundary is "the highest-version vX.Y.Z tag reachable
+// from HEAD" — not the most recently dated one.
+test("pending view: a maintenance tag merged back after a higher release (v1.9.5 dated after v2.0.0) is not the boundary", async () => {
+  const dir = bareRepository();
+  git(dir, "checkout", "-q", "-b", "maintenance");
+  commitFile(dir, "fix.txt", "f\n", "2026-01-04T00:00:00Z", "maintenance fix");
+  git(dir, "tag", "v1.9.5");
+  git(dir, "checkout", "-q", "main");
+  commitFile(dir, "two.txt", "2\n", "2026-01-02T00:00:00Z", "release 2.0.0");
+  git(dir, "tag", "v2.0.0");
+  cp.execFileSync("git", ["merge", "-q", "--no-ff", "-m", "merge maintenance", "maintenance"], {
+    cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, GIT_AUTHOR_DATE: "2026-01-05T00:00:00Z", GIT_COMMITTER_DATE: "2026-01-05T00:00:00Z" },
+  });
+  const merged = git(dir, "tag", "--merged", "HEAD").split(/\r?\n/);
+  assert.ok(merged.includes("v1.9.5") && merged.includes("v2.0.0"), "fixture sanity: both tags are reachable from HEAD");
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.pending.state, "ok");
+  assert.strictEqual(report.pending.tag, "v2.0.0");
+});
+
+// ship-contract.md, Pending view: the commits (short SHA and subject) with `commitCount` their uncapped
+// total, and the pending view "does not depend on … `log.showSignature`"; changelogTouched diffs against
+// "the marker commit" (round-1 re-check edge: log.showSignature must not corrupt it either).
+test("pending view and marker: log.showSignature=true with SSH-signed commits adds no row to the commit list and leaves the marker commit intact", async (t) => {
+  const keygen = cp.spawnSync("ssh-keygen", ["-?"], { encoding: "utf8" });
+  if (keygen.error) {
+    t.skip(`ssh-keygen is unavailable (${keygen.error.code}), so no SSH-signed commit can be made`);
+    return;
+  }
+  const dir = bareRepository();
+  const key = path.join(temporary("ctide-ship-sshkey-"), "signing_key");
+  cp.execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "ship-test", "-f", key], { stdio: ["ignore", "pipe", "pipe"] });
+  git(dir, "config", "gpg.format", "ssh");
+  git(dir, "config", "user.signingkey", key.replaceAll(path.sep, "/"));
+  const signedCommit = (relPath, isoDate, message) => {
+    writePkg(dir, relPath, `${message}\n`);
+    git(dir, "add", ".");
+    cp.execFileSync("git", ["commit", "-q", "-S", "-m", message], {
+      cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, GIT_AUTHOR_DATE: isoDate, GIT_COMMITTER_DATE: isoDate },
+    });
+  };
+  signedCommit("rel.txt", "2026-01-02T00:00:00Z", "signed release");
+  git(dir, "tag", "v1.0.0");
+  signedCommit("pending.txt", "2026-01-03T00:00:00Z", "signed pending commit");
+  git(dir, "config", "log.showSignature", "true"); // no gpg.ssh.allowedSignersFile on purpose
+  const signatureRows = git(dir, "log", "--format=%h%x09%s", "v1.0.0..HEAD").split(/\r?\n/)
+    .filter((row) => row && !row.includes("\t"));
+  assert.ok(signatureRows.length > 0, "fixture sanity: log.showSignature adds non-commit rows to `git log` output");
+
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.marker.commit, git(dir, "rev-parse", "v1.0.0^{commit}"), "the marker commit is the tag's commit");
+  assert.strictEqual(report.pending.state, "ok");
+  assert.strictEqual(report.pending.commits.length, report.pending.commitCount);
+  assert.deepStrictEqual(sortedSubjects(report.pending), ["signed pending commit"]);
+  const out = runShip(dir, ["--cwd", "."]);
+  for (const row of signatureRows) assert.ok(!out.includes(`- ${row}`), `a signature row is not listed as a commit: ${row}`);
+});
+
 test("pending view: when the release marker is a tag not reachable from HEAD, the pending note names both tags", async () => {
   const dir = bareRepository();
   git(dir, "tag", "v1.0.0");
@@ -955,6 +1195,37 @@ test("pending view: when the release marker is a tag not reachable from HEAD, th
   assert.strictEqual(report.pending.tag, "v1.0.0");
   assert.deepStrictEqual(sortedSubjects(report.pending), ["work on main"]);
   assert.ok(report.pending.note.includes("v1.0.0") && report.pending.note.includes("v2.0.0"), `note names both tags: ${report.pending.note}`);
+});
+
+// ship-contract.md, Pending view: "When the marker resolves to a commit but is not the pending boundary,
+// pending.note names it … as 'the release marker <tag> is not reachable from HEAD' when it is
+// no-release-tag."
+test("pending view: a release tag only on an unmerged branch is no-release-tag, and the note names that release marker", async () => {
+  const dir = bareRepository();
+  git(dir, "checkout", "-q", "-b", "release");
+  commitFile(dir, "rel.txt", "r\n", "2026-01-02T00:00:00Z", "release on a side branch");
+  git(dir, "tag", "v1.4.2");
+  git(dir, "checkout", "-q", "main");
+  commitFile(dir, "work.txt", "w\n", "2026-01-03T00:00:00Z", "work on main");
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.marker.found, true, "fixture sanity: the marker resolves to a commit");
+  assert.strictEqual(report.marker.tag, "v1.4.2");
+  assert.strictEqual(report.pending.state, "no-release-tag");
+  assert.ok(report.pending.note.includes("v1.4.2"), `the note names the release marker: ${report.pending.note}`);
+});
+
+// ship-contract.md, Pending view: only a marker that "resolves to a commit" is named in pending.note.
+test("pending view: a tag pointing at a tree object is never named in the pending note as the release marker", async () => {
+  const dir = bareRepository();
+  git(dir, "tag", "v1.0.0");
+  commitFile(dir, "b.txt", "b\n", "2026-01-02T00:00:00Z", "after the release");
+  git(dir, "tag", "v9.9.9", "HEAD^{tree}");
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.marker.tag, "v9.9.9", "fixture sanity: the tree tag is the highest-version tag");
+  assert.strictEqual(report.marker.found, false, "fixture sanity: it resolves to no commit");
+  assert.strictEqual(report.pending.state, "ok");
+  assert.strictEqual(report.pending.tag, "v1.0.0");
+  assert.ok(!report.pending.note.includes("v9.9.9"), `the note does not name an unresolved tag: ${report.pending.note}`);
 });
 
 test("pending view: a failed read of the tags reachable from HEAD is unverified, never no-release-tag", async () => {
@@ -996,6 +1267,9 @@ test("pending view: a failed read of the commits or files since a found tag is u
 
 test("pending view: a file name with spaces and non-ASCII characters is listed verbatim", async () => {
   const dir = bareRepository();
+  // Pinned so a developer's global core.quotePath=false cannot hide a lost `-z`: with quoting on, a
+  // non-ASCII path read without `-z` comes back C-quoted and fails this test.
+  git(dir, "config", "core.quotePath", "true");
   git(dir, "tag", "v1.0.0");
   const name = "docs/résumé ü 文件 notes.txt";
   commitFile(dir, name, "x\n", "2026-01-02T00:00:00Z", "add a unicode file name");
@@ -1071,6 +1345,27 @@ test("a realistic ship report, disclaimer quoted verbatim, ends a session withou
   assert.ok(control && /core review panel/.test(control.systemMessage),
     "control: the same report plus an asserted READY verdict does trip the advisory, so the silence above is meaningful");
 });
+
+// README × 3, ship section (owner-approved wording, round-1 re-check): the paragraph describing the
+// pending view, quoted as a final message, is not an asserted READY verdict to the plugin's own Stop hook.
+for (const readme of ["README.md", "README.zh-TW.md", "README.ja.md"]) {
+  test(`${readme}: the ship section's paragraph, quoted as a final message, does not trip the Stop hook's READY/panel advisory`, () => {
+    const lines = fs.readFileSync(path.join(root, readme), "utf8").split(/\r?\n/);
+    const heading = lines.findIndex((line) => line.startsWith("## Release-readiness"));
+    assert.ok(heading >= 0, `${readme} has a "## Release-readiness" section`);
+    const paragraph = lines.slice(heading + 1).find((line) => line.trim());
+    assert.ok(paragraph.includes("/ctide:ship"), "fixture sanity: the first paragraph under the heading describes ship");
+    const transcript = mkTranscript([
+      { role: "user", content: "/ctide:ship" },
+      { role: "assistant", content: paragraph },
+    ]);
+    assert.strictEqual(orch({ transcript_path: transcript, last_assistant_message: paragraph }), null,
+      "the README's ship paragraph is not a READY verdict: the Stop hook stays silent");
+    const control = orch({ transcript_path: transcript, last_assistant_message: `${paragraph}\n\nFinal verdict: READY` });
+    assert.ok(control && /core review panel/.test(control.systemMessage),
+      "control: the same paragraph plus an asserted READY verdict does trip the advisory, so the silence above is meaningful");
+  });
+}
 
 // --- unit: buildErrorFallbackReport (main()'s otherwise-unreachable outer catch-all -- every check above
 // already swallows its own fs/git/parse failures, so this path can only be exercised directly, not by

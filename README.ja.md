@@ -197,7 +197,7 @@ Map は operational-preparation の契約を担います：[`operational-readine
 
 ## Release-readiness チェック（ship）
 
-`/ctide:ship` は手動・読み取り専用です：build、test、deploy パイプラインを実行することは決してなく、何も書き込みません（git tag も、バージョン更新も、changelog へのエントリも一切なし）。既存のものを読むだけです——前回の release tag 以降の commit と変更ファイル、`package.json`、`CHANGELOG.md` の git 履歴、git tags、そして `SYSTEM_MAP.md` の Rollback セクション——そして decision card を出力します：pending な変更（git から列挙したもので、readiness の主張ではなく、`READY` verdict を意味しません）、続いて4つのチェック（バージョンの整合性、`CHANGELOG.md` が変更されたか、tag の準備状況、Map から得られる migration compatibility）で、それぞれ `pass` / `fail` / `not-applicable` / `unverified` を引用証拠つきで報告します。
+`/ctide:ship` は手動・読み取り専用です：build、test、deploy パイプラインを実行することは決してなく、何も書き込みません（git tag も、バージョン更新も、changelog へのエントリも一切なし）。既存のものを読むだけです——前回の release tag 以降の commit と変更ファイル、`package.json`、`CHANGELOG.md` の git 履歴、git tags、そして `SYSTEM_MAP.md` の Rollback セクション——そして decision card を出力します：pending な変更（git から列挙したもので、readiness の主張ではなく、ここに挙がったものはどれもレビューも承認もされていません）、続いて4つのチェック（バージョンの整合性、`CHANGELOG.md` が変更されたか、tag の準備状況、Map から得られる migration compatibility）で、それぞれ `pass` / `fail` / `not-applicable` / `unverified` を引用証拠つきで報告します。
 
 5つ目のチェック——checksum 検証——は `--artifact` と `--checksum` を明示的に渡したときだけ実行されます；ship はリポジトリ内のどのファイルが build artifact かを推測することは決してありません。バージョンの整合性が比較するのは、依存・ビルド・ランタイム用のディレクトリを除外したうえで ship が見つけた `package.json` です——このエコシステムのみが対象で、他の manifest 形式も、ctide 自身の入れ子の `plugin.json` も含みません。除外されるディレクトリの正確な一覧は [`docs/command-reference.md`](docs/command-reference.md)（英語）にあります。
 

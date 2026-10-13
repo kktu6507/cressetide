@@ -197,7 +197,7 @@ Map 承接 operational-preparation 契約：[`operational-readiness.md`](cresset
 
 ## Release-readiness 檢查（ship）
 
-`/ctide:ship` 是手動、唯讀的：它從不執行你的 build、test 或 deploy pipeline，也從不寫入任何東西（不打 git tag、不改版號、不寫 changelog 條目）。它讀取既有的東西——上次 release tag 以來的 commits 與變更檔案、`package.json`、`CHANGELOG.md` 的 git 歷史、git tags，以及 `SYSTEM_MAP.md` 的 Rollback 章節——輸出一張 decision card：待處理的變更（直接從 git 列出，不是 readiness 判定，也不代表任何 `READY` verdict），接著四項檢查（版號一致性、`CHANGELOG.md` 是否改過、tag 是否就緒，以及 Map 帶來的 migration compatibility），每項都是 `pass` / `fail` / `not-applicable` / `unverified`，並附引用證據。
+`/ctide:ship` 是手動、唯讀的：它從不執行你的 build、test 或 deploy pipeline，也從不寫入任何東西（不打 git tag、不改版號、不寫 changelog 條目）。它讀取既有的東西——上次 release tag 以來的 commits 與變更檔案、`package.json`、`CHANGELOG.md` 的 git 歷史、git tags，以及 `SYSTEM_MAP.md` 的 Rollback 章節——輸出一張 decision card：待處理的變更（直接從 git 列出，不是 readiness 判定；這裡列出的東西都沒有經過審查或核准），接著四項檢查（版號一致性、`CHANGELOG.md` 是否改過、tag 是否就緒，以及 Map 帶來的 migration compatibility），每項都是 `pass` / `fail` / `not-applicable` / `unverified`，並附引用證據。
 
 第五項檢查——checksum 驗證——只在你明確帶入 `--artifact` 與 `--checksum` 時才跑；ship 從不猜你 repo 裡哪個檔案是 build artifact。版號一致性比對的是 ship 在排除掉相依、建置與執行期目錄之後找到的那些 `package.json`——只涵蓋這個生態系，不含其他 manifest 格式，也不含 ctide 自己的巢狀 `plugin.json`。確切的排除清單見 [`docs/command-reference.md`](docs/command-reference.md)（英文）。
 

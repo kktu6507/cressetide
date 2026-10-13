@@ -129,9 +129,9 @@ Ship lists the commits and changed files since the highest-version `vX.Y.Z`
 tag (`v` optional — the same tag grammar as the release marker) reachable from
 `HEAD` as a pending view — "changes since the last release tag — not a
 readiness claim; nothing listed here has been reviewed or approved". When the
-release marker is a different tag (one not reachable from `HEAD`), the pending
-note names both. When that boundary cannot be established it names the reason
-(`no-release-tag`, `shallow-clone`, `not-a-git-repo`, `git-unavailable`,
+release marker resolves to a commit that is not reachable from `HEAD`, the
+pending note names it. When that boundary cannot be established it names the
+reason (`no-release-tag`, `shallow-clone`, `not-a-git-repo`, `git-unavailable`,
 `unverified`) instead of an empty list.
 The list is capped at 200 commits and 500 files; neither its state nor its size
 changes which checks run. Ship never executes a build/test/deploy step, picks or

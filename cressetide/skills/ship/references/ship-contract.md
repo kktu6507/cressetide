@@ -33,23 +33,32 @@ matching tag found → fail-open: the gap is disclosed in `marker.note` and `cha
 reports `true` — which also holds from a subdirectory or a linked worktree), a tag can exist upstream
 without being fetched locally, so a locally-absent tag is never treated as confidently absent:
 `marker.note` and `tagReady`'s `unverified` evidence both disclose "history truncated — weak-signal
-only" rather than risking a false `pass`.
+only" rather than risking a false `pass`. When that probe answers neither `true` nor `false` — an
+older git that echoes the unknown flag back, a timeout, or another read failure — whether history is
+truncated is unknown, and it is handled the same cautious way: `marker.note` says history may be
+truncated, `tagReady` reports `unverified`, and a locally-absent tag is still never treated as
+confidently absent.
 
 ## Pending view (git-derived)
 
 `pending` lists what changed since the last release tag. Its boundary, `pending.tag`, uses the
 release marker's tag grammar and version ordering above (`vX.Y.Z`, `v` optional, no pre-release or
-extra parts), applied only to the tags reachable from `HEAD` (`git tag --merged HEAD`). Then it lists
-the commits (`git log --format=%h%x09%s <tag>..HEAD` — short SHA and subject) and the changed file
-paths (`git -c diff.relative=false diff --name-only --no-renames -z <tag>..HEAD` — always
-repository-relative, and a renamed file appears under both its old and its new path) in that range.
-It is a plain git fact, **not a readiness claim**: every report carries `pending.disclaimer` —
-"changes since the last release tag — not a readiness claim; nothing listed here has been reviewed or
-approved". A commit is listed whether or not anything ever reviewed it, and an empty list never means
-"safe to ship".
+extra parts), applied only to the tags reachable from `HEAD`
+(`git tag --no-column --sort=refname --merged HEAD`). Then it lists the commits
+(`git log --no-show-signature --format=%h%x09%s <tag>..HEAD` — short SHA and subject) and the
+changed file paths (`git -c diff.relative=false diff --name-only --no-renames -z <tag>..HEAD` —
+always repository-relative, and a renamed file appears under both its old and its new path) in that
+range. These reads pin the flags a user's git config would otherwise change (`--no-column`,
+`--sort=refname`, `--no-show-signature`, `-c diff.relative=false`), so the pending view does not
+depend on `column.*`, `tag.sort`, `log.showSignature` or `diff.relative`. It is a plain git fact,
+**not a readiness claim**: every report carries `pending.disclaimer` — "changes since the last
+release tag — not a readiness claim; nothing listed here has been reviewed or approved". A commit is
+listed whether or not anything ever reviewed it, and an empty list never means "safe to ship".
 
 The release marker can be a tag that is not reachable from `HEAD` (for example, a higher version
-tagged on another branch). When `pending.tag` differs from `marker.tag`, `pending.note` names both.
+tagged on another branch). When the marker resolves to a commit but is not the pending boundary,
+`pending.note` names it: beside `pending.tag` when the state is `ok`, or as "the release marker
+<tag> is not reachable from HEAD" when it is `no-release-tag`.
 
 Every state is disclosed by name, and only `ok` carries a list:
 
@@ -60,7 +69,7 @@ Every state is disclosed by name, and only `ok` carries a list:
 | `shallow-clone` | `git rev-parse --is-shallow-repository` reports `true` (from the repository root, a subdirectory, or a linked worktree) — history cannot be bounded, so no list or count is claimed. |
 | `not-a-git-repo` | The working directory is not inside a git working tree. |
 | `git-unavailable` | `git` could not be run. |
-| `unverified` | git started but a read failed or timed out — listing the tags reachable from `HEAD`, or reading the commits or changed files since the tag (or an unexpected internal error). |
+| `unverified` | git started but a read failed or timed out — determining whether the history is shallow, listing the tags reachable from `HEAD`, or reading the commits or changed files since the tag (or an unexpected internal error). |
 
 Lists are capped — at most 200 commits (`pending.commitCount` keeps the uncapped total) and 500 files
 (`pending.fileCount`), with `commitsTruncated` / `filesTruncated` set and a "truncated: showing N of
@@ -121,8 +130,10 @@ the script, the coordinating thread:
 
 1. **Reads `migrationCompat.rollbackText`** against `pending.files` (the files changed since the last
    release tag) and states, specifically, whether the Rollback content actually bears on what this
-   batch touched — never just "the field is filled in." When `pending.state` is not `ok`, the changed
-   files are unknown: say so and why, rather than judging relevance against an empty list.
+   batch touched — never just "the field is filled in." When `pending.filesTruncated` is true, the
+   statement says it covered N of M files (`pending.files` length of `pending.fileCount`). When
+   `pending.state` is not `ok`, the changed files are unknown: say so and why, rather than judging
+   relevance against an empty list.
 2. **Assembles the decision card**: the pending view first, introduced with `pending.disclaimer`
    verbatim, then each check in order, stated plainly with its evidence.
 3. **Attaches a remediation recommendation** to any `fail`, matched to *why* it failed, never a generic

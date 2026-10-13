@@ -52,11 +52,23 @@ function git(root, args) {
 // such a tag, indistinguishable locally from the tag genuinely not existing anywhere. Every shallow-clone
 // disclosure below (marker note, tagReady evidence, pending view) uses the same weak-signal wording,
 // "history truncated — weak-signal only". Asked of git itself, so the answer holds from a subdirectory
-// or a linked worktree too (neither has a `.git/shallow` of its own). A failed probe reads as "not
-// shallow", as before.
-function isShallowClone(root) {
+// or a linked worktree too (neither has a `.git/shallow` of its own). Inside a git work tree only a
+// literal `true` or `false` is an answer. Anything else — a non-zero exit, a timeout or spawn error, an
+// older git (< 2.15) that echoes the unknown flag back, empty output — is "unknown", and every caller
+// treats unknown as cautiously as shallow (a locally-absent tag is never confidently absent), disclosed
+// as "could not determine" rather than read as "not shallow". Outside a work tree, or with git missing,
+// there is no history to be truncated: "no-work-tree", which callers word like "not shallow" (the
+// pending view reports `not-a-git-repo` / `git-unavailable` itself, before asking).
+function shallowState(root) {
+  const inside = git(root, ["rev-parse", "--is-inside-work-tree"]);
+  if (inside.error) return inside.error.code === "ENOENT" ? "no-work-tree" : "unknown";
+  if (inside.status !== 0 || String(inside.stdout || "").trim() !== "true") return "no-work-tree";
   const probe = git(root, ["rev-parse", "--is-shallow-repository"]);
-  return probe.status === 0 && String(probe.stdout || "").trim() === "true";
+  if (probe.error || probe.status !== 0) return "unknown";
+  const answer = String(probe.stdout || "").trim();
+  if (answer === "true") return "shallow";
+  if (answer === "false") return "not-shallow";
+  return "unknown";
 }
 
 // One trimmed, non-empty entry per output line (e.g. one tag name per line from `git tag`).
@@ -89,13 +101,22 @@ export function pickLatestVersionTag(tagNames) {
 
 // No tag found -> fail-open: { found: false }, with the gap disclosed via `note` (changelogTouched then
 // reports `unverified` — no diff boundary). Swallows any git failure (non-git cwd, git missing) the same way.
+//
+// Every git call whose output is parsed here and in pendingChanges pins the flags a user's config would
+// otherwise change: `--no-column` (column.ui / column.tag would print several tags per line),
+// `--sort=refname` (tag.sort would reorder the list, and with it which of two same-version tags such as
+// `v1.0.0` / `1.0.0` wins the tie — the marker and the pending boundary must break it the same way), and
+// `--no-show-signature` (log.showSignature would print signature lines among the parsed ones).
 export function resolveMarker(root) {
-  const listed = git(root, ["tag", "--list"]);
+  const listed = git(root, ["tag", "--no-column", "--sort=refname", "--list"]);
   const winner = pickLatestVersionTag(listed.status === 0 ? outputLines(listed.stdout) : []);
   if (!winner) {
-    const shallowNote = isShallowClone(root)
+    const shallow = shallowState(root);
+    const shallowNote = shallow === "shallow"
       ? " (history truncated — weak-signal only: this is a shallow clone, so a matching tag may exist upstream without having been fetched locally)"
-      : "";
+      : shallow === "unknown"
+        ? " (history may be truncated — weak-signal only: could not determine whether this is a shallow clone, so a matching tag may exist upstream without having been fetched locally)"
+        : "";
     return {
       found: false, tag: null, commit: null,
       note: "no vX.Y.Z release tag found" + shallowNote,
@@ -103,7 +124,7 @@ export function resolveMarker(root) {
   }
   // `git log` transparently dereferences an annotated tag to its underlying commit, so this resolves
   // correctly whether `winner` is a lightweight or an annotated/signed tag.
-  const info = git(root, ["log", "-1", "--format=%H", winner]);
+  const info = git(root, ["log", "-1", "--no-show-signature", "--format=%H", winner]);
   const commitRaw = info.status === 0 ? String(info.stdout || "").trim() : "";
   if (!commitRaw) {
     return {
@@ -139,13 +160,15 @@ function pendingView(state, note, extra = {}) {
 // standing in for "nothing to ship". States: `git-unavailable` (git could not be spawned),
 // `not-a-git-repo`, `shallow-clone` (history cannot be bounded), `no-release-tag` (no vX.Y.Z tag
 // reachable from HEAD, including a repository with no commits yet), `unverified` (git started but a
-// read failed or timed out), `ok` (0..N commits and files, each list capped with an explicit
-// truncation flag and the uncapped total).
+// read failed or timed out — including the shallow probe, when whether history is truncated is
+// unknown), `ok` (0..N commits and files, each list capped with an explicit truncation flag and the
+// uncapped total).
 //
 // The boundary uses the release marker's own tag grammar and version ordering (parseVersionTag /
 // pickLatestVersionTag), applied only to the tags reachable from HEAD — so a pre-release or four-part
-// tag is never a boundary, and a bare X.Y.Z tag is one. `markerTag` (the release marker's tag) is only
-// used to name both tags when they differ.
+// tag is never a boundary, and a bare X.Y.Z tag is one. `markerTag` is the release marker's tag only
+// when it resolved to a commit (null otherwise), and is used only to name it in the note when it is
+// not the boundary: beside the boundary in `ok`, or as not reachable from HEAD in `no-release-tag`.
 export function pendingChanges(root, markerTag = null) {
   const inside = git(root, ["rev-parse", "--is-inside-work-tree"]);
   if (inside.error) {
@@ -156,18 +179,26 @@ export function pendingChanges(root, markerTag = null) {
   if (inside.status !== 0 || String(inside.stdout || "").trim() !== "true") {
     return pendingView("not-a-git-repo", "not inside a git working tree — commits since the last release tag are unknown");
   }
-  if (isShallowClone(root)) {
+  const shallow = shallowState(root);
+  if (shallow === "shallow") {
     return pendingView("shallow-clone",
       "history truncated — weak-signal only: this is a shallow clone, so commits since the last release tag cannot be bounded (fetch full history and tags to see them)");
   }
+  if (shallow === "unknown") {
+    return pendingView("unverified",
+      "could not determine whether history is truncated (whether this is a shallow clone) — commits since the last release tag cannot be bounded");
+  }
+  // In `no-release-tag`, a release marker that resolved to a commit is by construction not reachable
+  // from HEAD (it would otherwise be a boundary candidate), so the note says so rather than leaving it out.
+  const unreachableMarker = markerTag ? ` (the release marker ${markerTag} is not reachable from HEAD)` : "";
   const noReleaseTag = () => pendingView("no-release-tag",
-    "no vX.Y.Z release tag is reachable from HEAD — there is no boundary to list changes from; this is not \"nothing to ship\"");
+    "no vX.Y.Z release tag is reachable from HEAD — there is no boundary to list changes from; this is not \"nothing to ship\"" + unreachableMarker);
   const head = git(root, ["rev-parse", "-q", "--verify", "HEAD"]);
   if (head.error) {
     return pendingView("unverified", "reading HEAD failed — commits since the last release tag are unknown");
   }
   if (head.status !== 0) return noReleaseTag(); // no commits yet
-  const merged = git(root, ["tag", "--merged", "HEAD"]);
+  const merged = git(root, ["tag", "--no-column", "--sort=refname", "--merged", "HEAD"]);
   if (merged.error || merged.status !== 0) {
     return pendingView("unverified", "listing the tags reachable from HEAD failed — commits since the last release tag are unknown");
   }
@@ -179,7 +210,7 @@ export function pendingChanges(root, markerTag = null) {
   const range = `${tag}..HEAD`;
   const tagInfo = git(root, ["rev-parse", "--short", `${tag}^{commit}`]);
   const counted = git(root, ["rev-list", "--count", range]);
-  const logged = git(root, ["log", `--max-count=${PENDING_COMMIT_CAP}`, "--format=%h%x09%s", range]);
+  const logged = git(root, ["log", "--no-show-signature", `--max-count=${PENDING_COMMIT_CAP}`, "--format=%h%x09%s", range]);
   // `--no-renames`: a renamed file is listed under both its old and its new path, so a reader matching
   // paths (e.g. Rollback relevance) still sees the old one. `-c diff.relative=false`: a user's
   // `diff.relative=true` would otherwise make the paths relative to a subdirectory `--cwd` and drop
@@ -320,14 +351,24 @@ export function tagReadinessCheck(root, versionConsistency) {
   // A shallow clone can be missing a tag that exists upstream without ever having been fetched locally —
   // "no matching ref found here" is then indistinguishable from "no such tag exists anywhere", so neither
   // a confident `pass` nor a dirty-tree `fail` can be trusted; downgrade the whole not-found branch to
-  // `unverified` rather than risk exactly the duplicate-tag mistake this check exists to catch.
-  if (isShallowClone(root)) {
+  // `unverified` rather than risk exactly the duplicate-tag mistake this check exists to catch. When
+  // whether this is a shallow clone is itself unknown, the same caution applies.
+  const shallow = shallowState(root);
+  if (shallow === "shallow") {
     return {
       status: "unverified",
       evidence: `history truncated — weak-signal only: this is a shallow clone, so a tag for v${target} cannot be confirmed absent — it may already exist upstream without having been fetched locally`,
     };
   }
-  const statusResult = git(root, ["status", "--porcelain"]);
+  if (shallow === "unknown") {
+    return {
+      status: "unverified",
+      evidence: `history may be truncated — weak-signal only: could not determine whether this is a shallow clone, so a tag for v${target} cannot be confirmed absent — it may already exist upstream without having been fetched locally`,
+    };
+  }
+  // `--untracked-files=normal`: a user's status.showUntrackedFiles=no would otherwise hide an untracked
+  // file and read a dirty tree as clean.
+  const statusResult = git(root, ["status", "--porcelain", "--untracked-files=normal"]);
   if (statusResult.status !== 0) {
     return { status: "unverified", evidence: "could not determine working-tree cleanliness (git status failed)" };
   }
@@ -526,7 +567,7 @@ export async function checksumVerifyCheck(root, artifactFlag, checksumFlag) {
 export async function buildShipReport(cwdInput, options = {}) {
   const root = path.resolve(cwdInput || process.env.CLAUDE_PROJECT_DIR || process.cwd());
   const marker = resolveMarker(root);
-  const pending = pendingChanges(root, marker.tag);
+  const pending = pendingChanges(root, marker.found ? marker.tag : null);
   const versionConsistency = versionConsistencyCheck(root);
   const changelogTouched = changelogTouchedCheck(root, marker);
   const tagReady = tagReadinessCheck(root, versionConsistency);
