@@ -52,23 +52,27 @@ function git(root, args) {
 // such a tag, indistinguishable locally from the tag genuinely not existing anywhere. Every shallow-clone
 // disclosure below (marker note, tagReady evidence, pending view) uses the same weak-signal wording,
 // "history truncated — weak-signal only". Asked of git itself, so the answer holds from a subdirectory
-// or a linked worktree too (neither has a `.git/shallow` of its own). Inside a git work tree only a
-// literal `true` or `false` is an answer. Anything else — a non-zero exit, a timeout or spawn error, an
-// older git (< 2.15) that echoes the unknown flag back, empty output — is "unknown", and every caller
-// treats unknown as cautiously as shallow (a locally-absent tag is never confidently absent), disclosed
-// as "could not determine" rather than read as "not shallow". Outside a work tree, or with git missing,
-// there is no history to be truncated: "no-work-tree", which callers word like "not shallow" (the
-// pending view reports `not-a-git-repo` / `git-unavailable` itself, before asking).
+// or a linked worktree too (neither has a `.git/shallow` of its own), and from a bare repository or a
+// `.git` directory. The probe is asked first: a literal `true` or `false` (exit 0) is the answer, and git
+// missing (ENOENT) is "no-work-tree". Anything else — a non-zero exit, empty output, an older git
+// (< 2.15) that echoes the unknown flag back, a timeout or another spawn error — is no answer, and only
+// then is `--is-inside-work-tree` asked. Inside a work tree, or when that check cannot run either (other
+// than ENOENT), it is "unknown": every caller treats unknown as cautiously as shallow (a locally-absent
+// tag is never confidently absent), disclosed as "could not determine" rather than read as "not
+// shallow". Outside a work tree (no repository, a bare repository, a `.git` directory) or with git
+// missing it is "no-work-tree", which callers word like "not shallow" (the pending view reports
+// `not-a-git-repo` / `git-unavailable` itself, before asking).
 function shallowState(root) {
+  const probe = git(root, ["rev-parse", "--is-shallow-repository"]);
+  if (probe.error && probe.error.code === "ENOENT") return "no-work-tree";
+  if (!probe.error && probe.status === 0) {
+    const answer = String(probe.stdout || "").trim();
+    if (answer === "true") return "shallow";
+    if (answer === "false") return "not-shallow";
+  }
   const inside = git(root, ["rev-parse", "--is-inside-work-tree"]);
   if (inside.error) return inside.error.code === "ENOENT" ? "no-work-tree" : "unknown";
-  if (inside.status !== 0 || String(inside.stdout || "").trim() !== "true") return "no-work-tree";
-  const probe = git(root, ["rev-parse", "--is-shallow-repository"]);
-  if (probe.error || probe.status !== 0) return "unknown";
-  const answer = String(probe.stdout || "").trim();
-  if (answer === "true") return "shallow";
-  if (answer === "false") return "not-shallow";
-  return "unknown";
+  return inside.status === 0 && String(inside.stdout || "").trim() === "true" ? "unknown" : "no-work-tree";
 }
 
 // One trimmed, non-empty entry per output line (e.g. one tag name per line from `git tag`).
@@ -102,11 +106,12 @@ export function pickLatestVersionTag(tagNames) {
 // No tag found -> fail-open: { found: false }, with the gap disclosed via `note` (changelogTouched then
 // reports `unverified` — no diff boundary). Swallows any git failure (non-git cwd, git missing) the same way.
 //
-// Every git call whose output is parsed here and in pendingChanges pins the flags a user's config would
-// otherwise change: `--no-column` (column.ui / column.tag would print several tags per line),
-// `--sort=refname` (tag.sort would reorder the list, and with it which of two same-version tags such as
-// `v1.0.0` / `1.0.0` wins the tie — the marker and the pending boundary must break it the same way), and
-// `--no-show-signature` (log.showSignature would print signature lines among the parsed ones).
+// The tag-list and `git log` reads here and in pendingChanges pin three flags a user's config would
+// otherwise change (other keys, e.g. `i18n.logOutputEncoding`, are not neutralized yet): `--no-column`
+// (column.ui / column.tag would print several tags per line), `--sort=refname` (tag.sort would reorder
+// the list, and with it which of two same-version tags such as `v1.0.0` / `1.0.0` wins the tie — the
+// marker and the pending boundary must break it the same way), and `--no-show-signature`
+// (log.showSignature would print signature lines among the parsed ones).
 export function resolveMarker(root) {
   const listed = git(root, ["tag", "--no-column", "--sort=refname", "--list"]);
   const winner = pickLatestVersionTag(listed.status === 0 ? outputLines(listed.stdout) : []);

@@ -838,32 +838,72 @@ test("resolveMarker and tagReadinessCheck: from a subdirectory or a linked workt
   }
 });
 
+// ship-contract.md, Release-marker resolution: on a shallow clone (`git rev-parse
+// --is-shallow-repository` reports `true`) marker.note discloses "history truncated — weak-signal only".
+// That probe answers `true` in a bare shallow clone and inside a shallow clone's `.git` directory too,
+// neither of which is a work tree.
+test("resolveMarker: a bare shallow clone and a shallow clone's .git directory, given as --cwd, disclose history truncation in the marker note", () => {
+  const origin = bareRepository();
+  git(origin, "tag", "v1.0.0");
+  commitFile(origin, "one.txt", "1\n", "2026-01-02T00:00:00Z", "one");
+  commitFile(origin, "two.txt", "2\n", "2026-01-03T00:00:00Z", "two");
+  const parent = temporary("ctide-ship-shallow-bare-");
+  const bare = path.join(parent, "bare.git");
+  git(parent, "clone", "-q", "--bare", "--depth", "2", "--no-tags", pathToFileURL(origin).href, bare);
+  const clone = path.join(parent, "clone");
+  git(parent, "clone", "-q", "--depth", "1", pathToFileURL(origin).href, clone);
+  const dotGit = path.join(clone, ".git");
+  for (const [where, cwd] of [["bare shallow clone", bare], ["shallow clone's .git", dotGit]]) {
+    assert.strictEqual(git(cwd, "rev-parse", "--is-shallow-repository"), "true", `fixture sanity: ${where} is shallow`);
+    assert.strictEqual(git(cwd, "rev-parse", "--is-inside-work-tree"), "false", `fixture sanity: ${where} is not a work tree`);
+    assert.strictEqual(git(cwd, "tag", "--list"), "", `fixture sanity: ${where} has no local tag`);
+    const result = cp.spawnSync(process.execPath, [SCRIPT, "--cwd", cwd, "--json"], { encoding: "utf8" });
+    assert.strictEqual(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.strictEqual(report.marker.found, false, `${where}: no tag is visible locally`);
+    assert.match(report.marker.note, /history truncated — weak-signal only/, `${where}: marker.note`);
+  }
+});
+
 // Serialized into a `node -r` preload (Function.prototype.toString), never called in this file. It
-// rewrites only the `git rev-parse --is-shallow-repository` probe's result and leaves every other git
-// call real. ship.mjs imports spawnSync as a named ESM binding, so the preload re-syncs the builtin's
-// ESM exports after patching.
+// rewrites the `git rev-parse --is-shallow-repository` probe's result — and, in mode "both-timeout", the
+// `--is-inside-work-tree` check's too — and leaves every other git call real. ship.mjs imports spawnSync
+// as a named ESM binding, so the preload re-syncs the builtin's ESM exports after patching.
 function shallowProbePreload(mode) {
   const childProcess = require("node:child_process");
   const realSpawnSync = childProcess.spawnSync;
+  const exited = (stdout, status) => ({ pid: 0, output: [null, stdout, ""], stdout, stderr: "", status, signal: null });
+  const timedOut = () => {
+    const error = Object.assign(new Error("spawnSync git ETIMEDOUT"), { code: "ETIMEDOUT", syscall: "spawnSync git" });
+    return { pid: 0, output: null, stdout: "", stderr: "", status: null, signal: "SIGTERM", error };
+  };
   childProcess.spawnSync = function patchedSpawnSync(command, args) {
-    if (command === "git" && Array.isArray(args) && args.includes("--is-shallow-repository")) {
-      if (mode === "echo") { // git < 2.15 does not know the flag and prints it back, exit 0
-        const stdout = "--is-shallow-repository\n";
-        return { pid: 0, output: [null, stdout, ""], stdout, stderr: "", status: 0, signal: null };
-      }
-      const error = Object.assign(new Error("spawnSync git ETIMEDOUT"), { code: "ETIMEDOUT", syscall: "spawnSync git" });
-      return { pid: 0, output: null, stdout: "", stderr: "", status: null, signal: "SIGTERM", error };
+    const asks = (flag) => command === "git" && Array.isArray(args) && args.includes(flag);
+    if (asks("--is-shallow-repository")) {
+      if (mode === "echo") return exited("--is-shallow-repository\n", 0); // git < 2.15 prints the unknown flag back
+      if (mode === "nonzero") return exited("", 128);
+      if (mode === "empty") return exited("", 0);
+      return timedOut(); // "timeout" and "both-timeout"
     }
+    if (mode === "both-timeout" && asks("--is-inside-work-tree")) return timedOut();
     return realSpawnSync.apply(this, arguments);
   };
   require("node:module").syncBuiltinESMExports();
 }
 
-// ship-contract.md, Release-marker resolution (owner-approved, round-1 re-check): when the shallow probe
-// answers neither `true` nor `false` — an older git echoing the flag back, a timeout — whether history is
-// truncated is unknown: `marker.note` says history may be truncated and `tagReady` reports `unverified`;
-// the `unverified` pending row includes "determining whether the history is shallow".
-test("an unanswered shallow probe (flag echoed back by an older git, or a timeout) is unknown, never 'not shallow': pending and tagReady are unverified and the marker note says history may be truncated", () => {
+function runShipWithProbe(dir, mode) {
+  const preload = path.join(temporary("ctide-ship-probe-preload-"), `${mode}.cjs`);
+  fs.writeFileSync(preload, `(${shallowProbePreload})(${JSON.stringify(mode)});\n`, "utf8");
+  const env = { ...process.env };
+  delete env.CLAUDE_PROJECT_DIR;
+  const result = cp.spawnSync(process.execPath, ["-r", preload, SCRIPT, "--cwd", dir, "--json"], { encoding: "utf8", env });
+  assert.strictEqual(result.status, 0, `${mode}: the CLI exits 0: ${result.stderr}`);
+  return JSON.parse(result.stdout);
+}
+
+// Two full, non-shallow work trees: `tagged` (a tag, then a commit declaring version 1.0.0, which has no
+// tag) and `untagged` (no tag at all, so marker.note is the not-found note).
+function probeFixtures() {
   const tagged = bareRepository();
   git(tagged, "tag", "v0.9.0");
   commitFile(tagged, "package.json", JSON.stringify({ version: "1.0.0" }), "2026-01-02T00:00:00Z", "prepare 1.0.0");
@@ -871,26 +911,36 @@ test("an unanswered shallow probe (flag echoed back by an older git, or a timeou
   for (const dir of [tagged, untagged]) {
     assert.strictEqual(git(dir, "rev-parse", "--is-shallow-repository"), "false", "fixture sanity: a full, non-shallow repository");
   }
-  const preloads = temporary("ctide-ship-probe-preload-");
-  const env = { ...process.env };
-  delete env.CLAUDE_PROJECT_DIR;
-  for (const mode of ["echo", "timeout"]) {
-    const preload = path.join(preloads, `${mode}.cjs`);
-    fs.writeFileSync(preload, `(${shallowProbePreload})(${JSON.stringify(mode)});\n`, "utf8");
-    const runWithProbe = (dir) => {
-      const result = cp.spawnSync(process.execPath, ["-r", preload, SCRIPT, "--cwd", dir, "--json"], { encoding: "utf8", env });
-      assert.strictEqual(result.status, 0, `${mode}: the CLI exits 0: ${result.stderr}`);
-      return JSON.parse(result.stdout);
-    };
-    const report = runWithProbe(tagged);
+  return { tagged, untagged };
+}
+
+// ship-contract.md, Release-marker resolution (owner-approved, round-1 re-check): when the shallow probe
+// answers neither `true` nor `false` inside a git work tree — an older git echoing the flag back, a
+// timeout, or another read failure (a non-zero exit, empty output) — whether history is truncated is
+// unknown: `marker.note` says history may be truncated and `tagReady` reports `unverified`; the
+// `unverified` pending row includes "determining whether the history is shallow".
+test("an unanswered shallow probe (echoed flag, timeout, non-zero exit, empty output) inside a work tree is unknown, never 'not shallow': pending and tagReady are unverified and the marker note says history may be truncated", () => {
+  const { tagged, untagged } = probeFixtures();
+  for (const mode of ["echo", "timeout", "nonzero", "empty"]) {
+    const report = runShipWithProbe(tagged, mode);
     assert.strictEqual(report.pending.state, "unverified", `${mode}: pending`);
     assert.strictEqual(report.pending.commitCount, null, `${mode}: no count is claimed`);
     assert.strictEqual(report.checks.tagReady.status, "unverified", `${mode}: tagReady`);
     assertFiveChecksRan(report);
-    const noTag = runWithProbe(untagged);
+    const noTag = runShipWithProbe(untagged, mode);
     assert.strictEqual(noTag.marker.found, false, `${mode}: fixture sanity: no tag`);
     assert.match(noTag.marker.note, /history may be truncated/, `${mode}: marker.note`);
   }
+});
+
+// ship-contract.md, Release-marker resolution (owner-approved W1): "when whether this is a work tree
+// cannot itself be determined (that check times out), it is treated as unknown".
+test("when the shallow probe and the work-tree check both time out, it is unknown: the marker note says history may be truncated and tagReady is unverified", () => {
+  const { tagged, untagged } = probeFixtures();
+  const noTag = runShipWithProbe(untagged, "both-timeout");
+  assert.strictEqual(noTag.marker.found, false, "fixture sanity: no tag");
+  assert.match(noTag.marker.note, /may be truncated/, "marker.note");
+  assert.strictEqual(runShipWithProbe(tagged, "both-timeout").checks.tagReady.status, "unverified", "tagReady");
 });
 
 test("pending view: a non-git directory is disclosed as not-a-git-repo, the CLI exits 0 in both modes, and the five checks still run", () => {
@@ -923,10 +973,9 @@ test("pending view: git missing from PATH is disclosed as git-unavailable and th
   assertFiveChecksRan(parsed);
 });
 
-// Owner decision (round-1 re-check follow-up, 2026-10-14): "history may be truncated" applies only inside
-// a git work tree. Outside one, or with git missing, there is no history to be truncated, so neither
-// marker.note nor tagReady's evidence carries a truncation clause (ship-contract.md, Release-marker
-// resolution, describes that clause for a shallow clone or an unanswered probe only).
+// ship-contract.md, Release-marker resolution (owner-approved W1): "Outside a git work tree (a directory
+// outside any repository, a bare repository, or a `.git` directory), or when git cannot be run, a probe
+// that does not answer `true` adds no truncation clause" — to marker.note or tagReady's evidence.
 function assertNoTruncationClause(report, where) {
   assert.notStrictEqual(report.checks.tagReady.status, "not-applicable",
     `${where}: fixture sanity: a target version was found, so tagReady reached its tag-not-found branch`);
@@ -956,6 +1005,19 @@ test("with git missing from PATH, neither marker.note nor tagReady's evidence sa
   const report = JSON.parse(result.stdout);
   assert.strictEqual(report.pending.state, "git-unavailable", "fixture sanity: git cannot be run");
   assertNoTruncationClause(report, "git unavailable");
+});
+
+// Same W1 sentence: in a bare repository — not a work tree — a probe that does not answer `true` (here an
+// older git echoing the flag back) adds no truncation clause to marker.note.
+test("in a non-shallow bare repository, a shallow probe echoed back by an older git adds no truncation clause to the marker note", () => {
+  const parent = temporary("ctide-ship-bare-echo-");
+  const bare = path.join(parent, "bare.git");
+  git(parent, "clone", "-q", "--bare", pathToFileURL(bareRepository()).href, bare);
+  assert.strictEqual(git(bare, "rev-parse", "--is-shallow-repository"), "false", "fixture sanity: not shallow");
+  assert.strictEqual(git(bare, "rev-parse", "--is-bare-repository"), "true", "fixture sanity: a bare repository");
+  const report = runShipWithProbe(bare, "echo");
+  assert.strictEqual(report.marker.found, false, "fixture sanity: no tag");
+  assert.doesNotMatch(report.marker.note, /history truncated|may be truncated/, "marker.note has no truncation clause");
 });
 
 test("pending view: zero commits since the tag is state ok with 'no commits since <tag>' — and all five readiness checks still run", async () => {
@@ -1135,7 +1197,7 @@ test("pending view: a maintenance tag merged back after a higher release (v1.9.5
     cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, GIT_AUTHOR_DATE: "2026-01-05T00:00:00Z", GIT_COMMITTER_DATE: "2026-01-05T00:00:00Z" },
   });
-  const merged = git(dir, "tag", "--merged", "HEAD").split(/\r?\n/);
+  const merged = git(dir, "tag", "--no-column", "--merged", "HEAD").split(/\r?\n/);
   assert.ok(merged.includes("v1.9.5") && merged.includes("v2.0.0"), "fixture sanity: both tags are reachable from HEAD");
   const report = await buildShipReport(dir, {});
   assert.strictEqual(report.pending.state, "ok");
@@ -1156,6 +1218,7 @@ test("pending view and marker: log.showSignature=true with SSH-signed commits ad
   cp.execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "ship-test", "-f", key], { stdio: ["ignore", "pipe", "pipe"] });
   git(dir, "config", "gpg.format", "ssh");
   git(dir, "config", "user.signingkey", key.replaceAll(path.sep, "/"));
+  git(dir, "config", "gpg.ssh.program", "ssh-keygen");
   const signedCommit = (relPath, isoDate, message) => {
     writePkg(dir, relPath, `${message}\n`);
     git(dir, "add", ".");

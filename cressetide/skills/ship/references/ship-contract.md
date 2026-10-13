@@ -33,11 +33,14 @@ matching tag found → fail-open: the gap is disclosed in `marker.note` and `cha
 reports `true` — which also holds from a subdirectory or a linked worktree), a tag can exist upstream
 without being fetched locally, so a locally-absent tag is never treated as confidently absent:
 `marker.note` and `tagReady`'s `unverified` evidence both disclose "history truncated — weak-signal
-only" rather than risking a false `pass`. When that probe answers neither `true` nor `false` — an
-older git that echoes the unknown flag back, a timeout, or another read failure — whether history is
-truncated is unknown, and it is handled the same cautious way: `marker.note` says history may be
-truncated, `tagReady` reports `unverified`, and a locally-absent tag is still never treated as
-confidently absent.
+only" rather than risking a false `pass`. When that probe answers neither `true` nor `false` inside
+a git work tree — an older git that echoes the unknown flag back, a timeout, or another read failure
+— whether history is truncated is unknown, and it is handled the same cautious way: `marker.note`
+says history may be truncated, `tagReady` reports `unverified`, and a locally-absent tag is still
+never treated as confidently absent. Outside a git work tree (a directory outside any repository, a
+bare repository, or a `.git` directory), or when git cannot be run, a probe that does not answer
+`true` adds no truncation clause; when whether this is a work tree cannot itself be determined (that
+check times out), it is treated as unknown.
 
 ## Pending view (git-derived)
 
