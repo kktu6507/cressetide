@@ -15,9 +15,10 @@ assertion inside its source's scope, and look for extra assertions as well as mi
 
 **The run ledger.** Each vigil run appended a record to `.ctide/ledger/runs.jsonl`; the next run
 reconciled earlier runs against later commits, and a consolidation step suggested a retro after
-repeated escapes. That output never fed any decision: no scope, panel or verdict depended on it. It
-cost about 6.5k tokens and 4–5 tool calls per run. The ledger, reconcile and consolidate scripts,
-`references/run-ledger.md`, the retro practice page and Doctor's `ledger-health` check were removed.
+repeated escapes. That output never fed any decision: no scope, panel or verdict depended on it.
+`references/run-ledger.md` was 26,177 bytes and was loaded on every run. The ledger, reconcile and
+consolidate scripts, `references/run-ledger.md`, the retro practice page and Doctor's `ledger-health`
+check were removed.
 Ship's pending section now comes from git (commits and changed files since the last release tag) and
 states that it is not a readiness claim.
 
@@ -26,8 +27,8 @@ Copilot-specific code and documentation is decided; it lands in a later phase of
 
 ## Where the history lives
 
-The annotated tag `archive/v0.7.2-full` holds the full v0.7.2 tree, including everything above. Read
-any archived file with:
+The annotated tag `archive/v0.7.2-full` points at main commit `acbe433` (v0.7.2 plus 7 later commits),
+just before the v0.8 refactor, so it holds everything above. Read any archived file with:
 
 ```bash
 git show archive/v0.7.2-full:<path>
@@ -52,8 +53,8 @@ losing review quality. It **closed on 2026-09-10**: the current default was kept
 investigated candidate was adopted**. The roadmap it followed was not completed.
 
 - **Input deduplication was retired at design.** Removing two apparently duplicated instruction pairs
-  from the `code-reviewer` input saved 15 bytes of 7,877 (≈0.19%), too small to be worth a paid
-  comparison.
+  from the `code-reviewer` input would have removed 15 of 7,877 bytes (≈0.19%), too small to be worth
+  a paid comparison.
 - **The reviewer-output trial was stopped by its own frozen quality gate** after 10 role calls (3
   reviewer pairs, 2 pairs judged, 0 confirmation calls; US$1.145441 CLI estimate). Two candidate-arm
   faults triggered the stop; whether the candidate's added guidance caused them was never established.

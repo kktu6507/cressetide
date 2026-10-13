@@ -39,8 +39,8 @@ Input validation, success/failure path coverage, boundary conditions, duplicate/
 
 ## Assertion discipline
 For every added or changed test:
-- **Silence is not an assertion.** Behavior that no requirement, approved acceptance criterion, cited spec clause, or approved decision states must not be pinned. A test that pins it anyway is over-specification: `minor` by default, `major` when it freezes accidental behavior (exact wording, ordering, or timing nobody asked for) or blocks a legitimate future change.
-- **Stay inside the source's scope.** Each assertion must trace to the requirement / AC / spec / decision that justifies it, and must not claim more than that source says.
+- **Silence is not an assertion.** An assertion may trace only to one of these sources: the requirement, an approved acceptance criterion, a cited spec clause, an approved decision, a recorded contract assumption, or the run's recorded implied edge-input checklist — and it must cite which. Behavior none of them states must not be pinned; a test that pins it anyway is over-specification.
+- **Stay inside the source's scope.** Each assertion must not claim more than the source it cites says.
 - **Look for extra assertions, not only missing ones.** Ask both "what required behavior is unpinned?" and "what does this test pin that nothing required?".
 - **Test → source traceability.** In your output, list every new or changed assertion you cannot map to an AC or cited source (or state that all of them map).
 

@@ -51,9 +51,17 @@ function git(root, args) {
 // fetched locally — `git tag --list` and `git rev-parse --verify refs/tags/<x>` both simply do not see
 // such a tag, indistinguishable locally from the tag genuinely not existing anywhere. Every shallow-clone
 // disclosure below (marker note, tagReady evidence, pending view) uses the same weak-signal wording,
-// "history truncated — weak-signal only".
+// "history truncated — weak-signal only". Asked of git itself, so the answer holds from a subdirectory
+// or a linked worktree too (neither has a `.git/shallow` of its own). A failed probe reads as "not
+// shallow", as before.
 function isShallowClone(root) {
-  try { return fs.existsSync(path.join(root, ".git", "shallow")); } catch { return false; }
+  const probe = git(root, ["rev-parse", "--is-shallow-repository"]);
+  return probe.status === 0 && String(probe.stdout || "").trim() === "true";
+}
+
+// One trimmed, non-empty entry per output line (e.g. one tag name per line from `git tag`).
+function outputLines(stdout) {
+  return String(stdout || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
 }
 
 // --- release-marker resolution ------------------------------------------------------------------------
@@ -83,10 +91,7 @@ export function pickLatestVersionTag(tagNames) {
 // reports `unverified` — no diff boundary). Swallows any git failure (non-git cwd, git missing) the same way.
 export function resolveMarker(root) {
   const listed = git(root, ["tag", "--list"]);
-  const tagNames = listed.status === 0
-    ? String(listed.stdout || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
-    : [];
-  const winner = pickLatestVersionTag(tagNames);
+  const winner = pickLatestVersionTag(listed.status === 0 ? outputLines(listed.stdout) : []);
   if (!winner) {
     const shallowNote = isShallowClone(root)
       ? " (history truncated — weak-signal only: this is a shallow clone, so a matching tag may exist upstream without having been fetched locally)"
@@ -113,12 +118,12 @@ export function resolveMarker(root) {
 
 // Stated verbatim in both output modes. The pending view is a plain git fact — what changed since the
 // last release tag — and carries no review outcome: a commit appearing here was never checked by
-// anything, and an empty list is never "safe to ship".
-export const PENDING_DISCLAIMER = "changes since the last release tag — not a readiness claim; no READY verdict is implied";
+// anything, and an empty list is never "safe to ship". The wording carries no verdict token: a ship
+// report quotes it verbatim, and the Stop hook reads READY anywhere in a final message as an asserted
+// verdict.
+export const PENDING_DISCLAIMER = "changes since the last release tag — not a readiness claim; nothing listed here has been reviewed or approved";
 export const PENDING_COMMIT_CAP = 200;
 export const PENDING_FILE_CAP = 500;
-// `vX.Y.Z` glob for `git describe --match` (a glob, not a regex — passed as one argv element, no shell).
-const RELEASE_TAG_GLOB = "v[0-9]*.[0-9]*.[0-9]*";
 
 function pendingView(state, note, extra = {}) {
   return {
@@ -136,7 +141,12 @@ function pendingView(state, note, extra = {}) {
 // reachable from HEAD, including a repository with no commits yet), `unverified` (git started but a
 // read failed or timed out), `ok` (0..N commits and files, each list capped with an explicit
 // truncation flag and the uncapped total).
-export function pendingChanges(root) {
+//
+// The boundary uses the release marker's own tag grammar and version ordering (parseVersionTag /
+// pickLatestVersionTag), applied only to the tags reachable from HEAD — so a pre-release or four-part
+// tag is never a boundary, and a bare X.Y.Z tag is one. `markerTag` (the release marker's tag) is only
+// used to name both tags when they differ.
+export function pendingChanges(root, markerTag = null) {
   const inside = git(root, ["rev-parse", "--is-inside-work-tree"]);
   if (inside.error) {
     return inside.error.code === "ENOENT"
@@ -150,21 +160,35 @@ export function pendingChanges(root) {
     return pendingView("shallow-clone",
       "history truncated — weak-signal only: this is a shallow clone, so commits since the last release tag cannot be bounded (fetch full history and tags to see them)");
   }
-  const described = git(root, ["describe", "--tags", "--match", RELEASE_TAG_GLOB, "--abbrev=0"]);
-  const tag = described.status === 0 ? String(described.stdout || "").trim() : "";
-  if (!tag) {
-    return pendingView("no-release-tag",
-      "no vX.Y.Z release tag is reachable from HEAD — there is no boundary to list changes from; this is not \"nothing to ship\"");
+  const noReleaseTag = () => pendingView("no-release-tag",
+    "no vX.Y.Z release tag is reachable from HEAD — there is no boundary to list changes from; this is not \"nothing to ship\"");
+  const head = git(root, ["rev-parse", "-q", "--verify", "HEAD"]);
+  if (head.error) {
+    return pendingView("unverified", "reading HEAD failed — commits since the last release tag are unknown");
   }
+  if (head.status !== 0) return noReleaseTag(); // no commits yet
+  const merged = git(root, ["tag", "--merged", "HEAD"]);
+  if (merged.error || merged.status !== 0) {
+    return pendingView("unverified", "listing the tags reachable from HEAD failed — commits since the last release tag are unknown");
+  }
+  const tag = pickLatestVersionTag(outputLines(merged.stdout));
+  if (!tag) return noReleaseTag();
+  const markerNote = markerTag && markerTag !== tag
+    ? ` (the release marker is ${markerTag}; this list counts from ${tag}, the highest-version release tag reachable from HEAD)`
+    : "";
   const range = `${tag}..HEAD`;
   const tagInfo = git(root, ["rev-parse", "--short", `${tag}^{commit}`]);
   const counted = git(root, ["rev-list", "--count", range]);
   const logged = git(root, ["log", `--max-count=${PENDING_COMMIT_CAP}`, "--format=%h%x09%s", range]);
-  const diffed = git(root, ["diff", "--name-only", "-z", range]);
+  // `--no-renames`: a renamed file is listed under both its old and its new path, so a reader matching
+  // paths (e.g. Rollback relevance) still sees the old one. `-c diff.relative=false`: a user's
+  // `diff.relative=true` would otherwise make the paths relative to a subdirectory `--cwd` and drop
+  // every file outside it.
+  const diffed = git(root, ["-c", "diff.relative=false", "diff", "--name-only", "--no-renames", "-z", range]);
   const commitCount = Number(String(counted.stdout || "").trim());
   if (tagInfo.status !== 0 || counted.status !== 0 || logged.status !== 0 || diffed.status !== 0
       || !Number.isInteger(commitCount)) {
-    return pendingView("unverified", `found ${tag}, but reading the commits or changed files since it failed`, { tag });
+    return pendingView("unverified", `found ${tag}, but reading the commits or changed files since it failed${markerNote}`, { tag });
   }
   const commits = String(logged.stdout || "").split(/\r?\n/).filter(Boolean).map((line) => {
     const tab = line.indexOf("\t");
@@ -175,7 +199,7 @@ export function pendingChanges(root) {
   const allFiles = String(diffed.stdout || "").split("\0").filter(Boolean);
   const tagCommit = String(tagInfo.stdout || "").trim();
   return pendingView("ok",
-    commitCount === 0 ? `no commits since ${tag}` : `${commitCount} commit(s) and ${allFiles.length} changed file(s) since ${tag}`,
+    (commitCount === 0 ? `no commits since ${tag}` : `${commitCount} commit(s) and ${allFiles.length} changed file(s) since ${tag}`) + markerNote,
     {
       tag, tagCommit,
       commitCount, commits, commitsTruncated: commitCount > commits.length,
@@ -502,7 +526,7 @@ export async function checksumVerifyCheck(root, artifactFlag, checksumFlag) {
 export async function buildShipReport(cwdInput, options = {}) {
   const root = path.resolve(cwdInput || process.env.CLAUDE_PROJECT_DIR || process.cwd());
   const marker = resolveMarker(root);
-  const pending = pendingChanges(root);
+  const pending = pendingChanges(root, marker.tag);
   const versionConsistency = versionConsistencyCheck(root);
   const changelogTouched = changelogTouchedCheck(root, marker);
   const tagReady = tagReadinessCheck(root, versionConsistency);

@@ -29,24 +29,27 @@ The marker is the latest git tag matching `vX.Y.Z` (the `v` prefix is optional �
 `RELEASING.md` already defines for this repository's own tags), ordered by parsed **version** (major,
 then minor, then patch), never lexicographic string sort — `v9.0.0` must not outrank `v10.0.0`. No
 matching tag found → fail-open: the gap is disclosed in `marker.note` and `changelogTouched` reports
-`unverified` (no diff boundary). On a shallow clone
-(`.git/shallow` present), a tag can exist upstream without being fetched locally, so a locally-absent
-tag is never treated as confidently absent: `marker.note` and `tagReady`'s `unverified` evidence both
-disclose "history truncated — weak-signal only" rather than risking a false `pass`.
+`unverified` (no diff boundary). On a shallow clone (`git rev-parse --is-shallow-repository`
+reports `true` — which also holds from a subdirectory or a linked worktree), a tag can exist upstream
+without being fetched locally, so a locally-absent tag is never treated as confidently absent:
+`marker.note` and `tagReady`'s `unverified` evidence both disclose "history truncated — weak-signal
+only" rather than risking a false `pass`.
 
 ## Pending view (git-derived)
 
-`pending` lists what changed since the last release tag: the latest `vX.Y.Z` tag reachable from
-`HEAD` (`git describe --tags --match "v[0-9]*.[0-9]*.[0-9]*" --abbrev=0`), then the commits
-(`git log --format=%h%x09%s <tag>..HEAD` — short SHA and subject) and the changed file paths
-(`git diff --name-only -z <tag>..HEAD`) in that range. It is a plain git fact, **not a readiness
-claim**: every report carries `pending.disclaimer` — "changes since the last release tag — not a
-readiness claim; no READY verdict is implied". A commit is listed whether or not anything ever
-reviewed it, and an empty list never means "safe to ship".
+`pending` lists what changed since the last release tag. Its boundary, `pending.tag`, uses the
+release marker's tag grammar and version ordering above (`vX.Y.Z`, `v` optional, no pre-release or
+extra parts), applied only to the tags reachable from `HEAD` (`git tag --merged HEAD`). Then it lists
+the commits (`git log --format=%h%x09%s <tag>..HEAD` — short SHA and subject) and the changed file
+paths (`git -c diff.relative=false diff --name-only --no-renames -z <tag>..HEAD` — always
+repository-relative, and a renamed file appears under both its old and its new path) in that range.
+It is a plain git fact, **not a readiness claim**: every report carries `pending.disclaimer` —
+"changes since the last release tag — not a readiness claim; nothing listed here has been reviewed or
+approved". A commit is listed whether or not anything ever reviewed it, and an empty list never means
+"safe to ship".
 
-This tag is found by reachability from `HEAD`, while the release marker above is the highest-version
-tag in the repository; on a normal linear history they are the same tag, and the pending view always
-names its own (`pending.tag`).
+The release marker can be a tag that is not reachable from `HEAD` (for example, a higher version
+tagged on another branch). When `pending.tag` differs from `marker.tag`, `pending.note` names both.
 
 Every state is disclosed by name, and only `ok` carries a list:
 
@@ -54,10 +57,10 @@ Every state is disclosed by name, and only `ok` carries a list:
 |---|---|
 | `ok` | A tag was found; 0..N commits and files are listed. Zero commits → `pending.note` reads "no commits since <tag>". |
 | `no-release-tag` | No `vX.Y.Z` tag is reachable from `HEAD` (including a repository with no commits yet) — no boundary, never "nothing to ship". |
-| `shallow-clone` | `.git/shallow` is present — history cannot be bounded, so no list or count is claimed. |
+| `shallow-clone` | `git rev-parse --is-shallow-repository` reports `true` (from the repository root, a subdirectory, or a linked worktree) — history cannot be bounded, so no list or count is claimed. |
 | `not-a-git-repo` | The working directory is not inside a git working tree. |
 | `git-unavailable` | `git` could not be run. |
-| `unverified` | git started but a read failed or timed out (or an unexpected internal error). |
+| `unverified` | git started but a read failed or timed out — listing the tags reachable from `HEAD`, or reading the commits or changed files since the tag (or an unexpected internal error). |
 
 Lists are capped — at most 200 commits (`pending.commitCount` keeps the uncapped total) and 500 files
 (`pending.fileCount`), with `commitsTruncated` / `filesTruncated` set and a "truncated: showing N of

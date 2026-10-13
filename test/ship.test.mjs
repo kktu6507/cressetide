@@ -19,15 +19,19 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-  parseVersionTag, pickLatestVersionTag, PENDING_DISCLAIMER,
+  parseVersionTag, pickLatestVersionTag,
   PENDING_COMMIT_CAP, PENDING_FILE_CAP, resolveMarker, versionConsistencyCheck, changelogTouchedCheck, tagReadinessCheck,
   migrationCompatibilityCheck, checksumVerifyCheck, buildShipReport, KNOWN_FLAGS,
   buildErrorFallbackReport,
 } from "../cressetide/skills/ship/scripts/ship.mjs";
 import { hardenGitSigning } from "./helpers.mjs";
+import { mkTranscript, orch } from "./support.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = path.join(root, "cressetide", "skills", "ship", "scripts", "ship.mjs");
+// The verbatim disclaimer ship-contract.md and ship SKILL.md require — asserted as this literal, never
+// via the module's own export, so a reworded disclaimer cannot pass by agreeing with itself.
+const DISCLAIMER = "changes since the last release tag — not a readiness claim; nothing listed here has been reviewed or approved";
 
 function temporary(prefix) { return fs.mkdtempSync(path.join(os.tmpdir(), prefix)); }
 
@@ -626,7 +630,7 @@ test("CLI --json emits one parseable JSON object with marker/pending/checks", ()
   const out = runShip(dir, ["--cwd", ".", "--json"]);
   const parsed = JSON.parse(out);
   assert.ok("marker" in parsed && "pending" in parsed && "checks" in parsed);
-  assert.strictEqual(parsed.pending.disclaimer, PENDING_DISCLAIMER);
+  assert.strictEqual(parsed.pending.disclaimer, DISCLAIMER);
   assert.ok(["versionConsistency", "changelogTouched", "tagReady", "migrationCompat", "checksumVerify"]
     .every((name) => name in parsed.checks));
 });
@@ -643,12 +647,38 @@ function assertFiveChecksRan(report) {
   }
 }
 
-// The disclaimer itself names READY ("no READY verdict is implied"); anywhere ELSE in the output a READY
-// token would be a readiness claim the pending view must never make.
+// The whole output, nothing stripped: the disclaimer is stated verbatim and no READY token appears
+// anywhere — not even inside the disclaimer, since the Stop hook reads any READY in a final message
+// as an asserted verdict.
 function assertNoReadyClaim(text) {
-  assert.ok(text.includes(PENDING_DISCLAIMER), "the not-a-readiness-claim wording is stated");
-  assert.doesNotMatch(text.split(PENDING_DISCLAIMER).join(""), /READY/, "no READY wording outside the disclaimer");
+  assert.ok(text.includes(DISCLAIMER), "the verbatim disclaimer is stated");
+  assert.match(text, /not a readiness claim/);
+  assert.doesNotMatch(text, /\bREADY\b/, "no READY token anywhere in the output");
 }
+
+// A non-ok pending state is stated with its note (ship SKILL.md, Report shape): the line that prints
+// pending.note also names pending.state. The label's case and the line layout are not pinned.
+function assertStateStatedWithNote(text, pending) {
+  const line = text.split(/\r?\n/).find((l) => l.includes(pending.note));
+  assert.ok(line, "pending.note is printed verbatim");
+  assert.ok(line.toLowerCase().includes(pending.state.toLowerCase()), `the note's line names the state ${pending.state}`);
+}
+
+function commitFile(cwd, relPath, content, isoDate, message) {
+  writePkg(cwd, relPath, content);
+  git(cwd, "add", ".");
+  commitAt(cwd, isoDate, message);
+}
+
+// Git writes loose objects read-only, and Windows refuses to unlink a read-only file — clear the bit first.
+function deleteLooseObject(dir, sha) {
+  const file = path.join(dir, ".git", "objects", sha.slice(0, 2), sha.slice(2));
+  assert.ok(fs.existsSync(file), `fixture sanity: object ${sha} is a loose object`);
+  fs.chmodSync(file, 0o666);
+  fs.unlinkSync(file);
+}
+
+function sortedSubjects(pending) { return pending.commits.map((c) => c.subject).sort(); }
 
 test("pending view: a tagged release followed by one new, ordinary (non-vigil) commit lists that commit and its changed files since the LATEST reachable tag, and states it is not a readiness claim", async () => {
   const dir = bareRepository();
@@ -657,7 +687,6 @@ test("pending view: a tagged release followed by one new, ordinary (non-vigil) c
   git(dir, "add", ".");
   commitAt(dir, "2026-01-02T00:00:00Z", "change released in v1.1.0");
   git(dir, "tag", "-a", "v1.1.0", "-m", "release 1.1.0"); // annotated: the base must dereference to its commit
-  const releasedCommit = git(dir, "rev-parse", "--short", "HEAD");
   fs.mkdirSync(path.join(dir, "src"), { recursive: true });
   fs.writeFileSync(path.join(dir, "src", "feature.js"), "export const feature = 1;\n", "utf8");
   fs.appendFileSync(path.join(dir, "a.txt"), "edited\n");
@@ -667,9 +696,8 @@ test("pending view: a tagged release followed by one new, ordinary (non-vigil) c
 
   const report = await buildShipReport(dir, {});
   assert.strictEqual(report.pending.state, "ok");
-  assert.strictEqual(report.pending.disclaimer, PENDING_DISCLAIMER);
+  assert.strictEqual(report.pending.disclaimer, DISCLAIMER);
   assert.strictEqual(report.pending.tag, "v1.1.0", "the base is the latest reachable vX.Y.Z tag, not the first one");
-  assert.strictEqual(report.pending.tagCommit, releasedCommit, "an annotated tag resolves to its commit");
   assert.strictEqual(report.pending.commitCount, 1);
   assert.deepStrictEqual(report.pending.commits, [{ sha: newCommit, subject: "add feature by hand" }]);
   assert.strictEqual(report.pending.commitsTruncated, false);
@@ -680,11 +708,12 @@ test("pending view: a tagged release followed by one new, ordinary (non-vigil) c
   assertFiveChecksRan(report);
 
   const out = runShip(dir, ["--cwd", "."]);
-  assert.match(out, new RegExp(`- ${newCommit} add feature by hand`));
-  assert.match(out, /- src\/feature\.js/);
-  assert.match(out, /1 commit\(s\) and 2 changed file\(s\) since v1\.1\.0/);
+  const json = runShip(dir, ["--cwd", ".", "--json"]);
+  assert.ok(out.includes(newCommit) && out.includes("add feature by hand"), "the commit is listed in text mode");
+  assert.ok(out.includes("src/feature.js"), "the changed file is listed in text mode");
+  assert.ok(out.includes(JSON.parse(json).pending.note), "the pending note is printed");
   assertNoReadyClaim(out);
-  assertNoReadyClaim(runShip(dir, ["--cwd", ".", "--json"]));
+  assertNoReadyClaim(json);
 });
 
 test("pending view: no vX.Y.Z tag reachable from HEAD is disclosed as no-release-tag, never an empty list read as 'nothing to ship'", async () => {
@@ -698,13 +727,11 @@ test("pending view: no vX.Y.Z tag reachable from HEAD is disclosed as no-release
   assert.strictEqual(report.pending.state, "no-release-tag");
   assert.strictEqual(report.pending.commitCount, null, "no count is claimed without a boundary");
   assert.deepStrictEqual(report.pending.commits, []);
-  assert.match(report.pending.note, /no vX\.Y\.Z release tag is reachable from HEAD/);
-  assert.match(report.pending.note, /not "nothing to ship"/);
   assertFiveChecksRan(report);
 
   const out = runShip(dir, ["--cwd", "."]);
-  assert.match(out, /NO-RELEASE-TAG: no vX\.Y\.Z release tag is reachable from HEAD/);
-  assert.doesNotMatch(out, /nothing pending to ship/);
+  assertStateStatedWithNote(out, report.pending);
+  assert.doesNotMatch(out, /nothing pending/i);
   assertNoReadyClaim(out);
 });
 
@@ -725,12 +752,52 @@ test("pending view: a real shallow clone (git clone --depth 1) is disclosed as s
   assert.strictEqual(report.pending.commitCount, null);
   assert.deepStrictEqual(report.pending.commits, []);
   assert.deepStrictEqual(report.pending.files, []);
-  assert.match(report.pending.note, /history truncated — weak-signal only/);
   assertFiveChecksRan(report);
 
   const out = runShip(clone, ["--cwd", "."]);
-  assert.match(out, /SHALLOW-CLONE: history truncated — weak-signal only/);
+  assertStateStatedWithNote(out, report.pending);
   assertNoReadyClaim(out);
+});
+
+// A depth-limited clone of a merge history in which the tagged commit IS fetched but part of a merged
+// side branch is not: counting from the tag inside the clone silently undercounts (4 commits instead of
+// 6), which is exactly what the shallow-clone state exists to prevent.
+//   main: A ─ T(v1.0.0) ─ m1 ─ M(merge)      side (from A): s1 ─ s2 ─ s3 ─ s4 ─┘
+function shallowMergeClone() {
+  const origin = bareRepository(); // A
+  git(origin, "checkout", "-q", "-b", "side");
+  for (const n of [1, 2, 3, 4]) commitFile(origin, `src/side${n}.txt`, `${n}\n`, `2026-01-0${n + 1}T00:00:00Z`, `side ${n}`);
+  git(origin, "checkout", "-q", "main");
+  commitFile(origin, "src/tagged.txt", "t\n", "2026-01-06T00:00:00Z", "tagged");
+  git(origin, "tag", "v1.0.0");
+  commitFile(origin, "src/main1.txt", "m\n", "2026-01-07T00:00:00Z", "main 1");
+  cp.execFileSync("git", ["merge", "-q", "--no-ff", "-m", "merge side", "side"], {
+    cwd: origin, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, GIT_AUTHOR_DATE: "2026-01-08T00:00:00Z", GIT_COMMITTER_DATE: "2026-01-08T00:00:00Z" },
+  });
+  const clone = path.join(temporary("ctide-ship-shallow-merge-"), "clone");
+  git(path.dirname(clone), "clone", "-q", "--depth", "3", pathToFileURL(origin).href, clone);
+  assert.strictEqual(git(clone, "rev-parse", "--is-shallow-repository"), "true", "fixture sanity: the clone is shallow");
+  assert.ok(git(clone, "tag", "--list").split(/\r?\n/).includes("v1.0.0"), "fixture sanity: the tagged commit was fetched with its tag");
+  assert.strictEqual(git(origin, "rev-list", "--count", "v1.0.0..HEAD"), "6", "fixture sanity: 6 commits since the tag in full history");
+  assert.strictEqual(git(clone, "rev-list", "--count", "v1.0.0..HEAD"), "4", "fixture sanity: the shallow clone sees only 4 of them");
+  return clone;
+}
+
+test("pending view: a subdirectory --cwd or a linked-worktree --cwd of a shallow clone is still shallow-clone — never an ok list that undercounts the commits since the tag", async () => {
+  const clone = shallowMergeClone();
+  const worktree = path.join(temporary("ctide-ship-shallow-wt-"), "wt");
+  git(clone, "worktree", "add", "-q", "--detach", worktree, "HEAD");
+  const seen = {};
+  for (const [where, cwd] of [["root", clone], ["subdirectory", path.join(clone, "src")], ["worktree", worktree]]) {
+    const report = await buildShipReport(cwd, {});
+    const { state, commitCount, commits, files } = report.pending;
+    seen[where] = { state, commitCount, commits: commits.length, files: files.length };
+    assertFiveChecksRan(report);
+  }
+  const shallow = { state: "shallow-clone", commitCount: null, commits: 0, files: 0 };
+  assert.deepStrictEqual(seen, { root: shallow, subdirectory: shallow, worktree: shallow },
+    "every --cwd inside the shallow clone is shallow-clone, with no count and no list");
 });
 
 test("pending view: a non-git directory is disclosed as not-a-git-repo, the CLI exits 0 in both modes, and the five checks still run", () => {
@@ -746,7 +813,7 @@ test("pending view: a non-git directory is disclosed as not-a-git-repo, the CLI 
 
   const text = cp.spawnSync("node", [SCRIPT, "--cwd", dir], { encoding: "utf8" });
   assert.strictEqual(text.status, 0);
-  assert.match(text.stdout, /NOT-A-GIT-REPO: not inside a git working tree/);
+  assertStateStatedWithNote(text.stdout, parsed.pending);
   assertNoReadyClaim(text.stdout);
 });
 
@@ -780,29 +847,44 @@ test("pending view: zero commits since the tag is state ok with 'no commits sinc
 
   const out = runShip(dir, ["--cwd", "."]);
   assert.match(out, /no commits since v1\.0\.0/);
-  assert.match(out, /checks:\n {2}\S+ versionConsistency:/);
   assertNoReadyClaim(out);
 });
 
-test("pending view: commit and file lists are capped with an explicit truncation note and the uncapped totals", async () => {
+test("pending view: exactly at the caps nothing is truncated; one past each cap the lists are capped with an explicit truncation note and the uncapped totals — and the five checks run either way", async () => {
+  // One repository for both boundaries: first exactly PENDING_FILE_CAP files and PENDING_COMMIT_CAP
+  // commits since the tag, then one more file in one more commit.
   const dir = bareRepository();
   git(dir, "tag", "v1.0.0");
   const many = path.join(dir, "many");
   fs.mkdirSync(many);
-  for (let i = 0; i <= PENDING_FILE_CAP; i++) fs.writeFileSync(path.join(many, `f${i}.txt`), `${i}\n`, "utf8");
+  for (let i = 1; i <= PENDING_FILE_CAP; i++) fs.writeFileSync(path.join(many, `f${i}.txt`), `${i}\n`, "utf8");
   git(dir, "add", ".");
   commitAt(dir, "2026-01-02T00:00:00Z", "add many files");
-  // PENDING_COMMIT_CAP more empty commits in ONE git process (fast-import), so the fixture stays fast.
+  // The remaining PENDING_COMMIT_CAP - 1 empty commits in ONE git process (fast-import), so the fixture stays fast.
   const stream = [];
-  for (let i = 1; i <= PENDING_COMMIT_CAP; i++) {
+  for (let i = 1; i < PENDING_COMMIT_CAP; i++) {
     stream.push("commit refs/heads/main", "committer Ship Test <ship@example.invalid> 1767312000 +0000", `data ${`c${i}`.length}`, `c${i}`);
     if (i === 1) stream.push("from refs/heads/main^0");
     stream.push("");
   }
   const imported = cp.spawnSync("git", ["fast-import", "--quiet", "--force"], { cwd: dir, input: stream.join("\n") + "\n", encoding: "utf8" });
   assert.strictEqual(imported.status, 0, `fixture sanity: fast-import failed: ${imported.stderr}`);
+  assert.strictEqual(git(dir, "rev-list", "--count", "v1.0.0..HEAD"), String(PENDING_COMMIT_CAP), "fixture sanity: commit count at the cap");
+
+  const atCap = await buildShipReport(dir, {});
+  assert.strictEqual(atCap.pending.state, "ok");
+  assert.strictEqual(atCap.pending.commitCount, PENDING_COMMIT_CAP);
+  assert.strictEqual(atCap.pending.commits.length, PENDING_COMMIT_CAP);
+  assert.strictEqual(atCap.pending.commitsTruncated, false, "exactly at the commit cap is not truncated");
+  assert.strictEqual(atCap.pending.fileCount, PENDING_FILE_CAP);
+  assert.strictEqual(atCap.pending.files.length, PENDING_FILE_CAP);
+  assert.strictEqual(atCap.pending.filesTruncated, false, "exactly at the file cap is not truncated");
+  assertFiveChecksRan(atCap);
+
+  // fast-import moved the branch without touching the index; the commits are empty, so HEAD's tree still matches it.
+  commitFile(dir, "many/extra.txt", "extra\n", "2026-01-03T00:00:00Z", "one past both caps");
   const total = PENDING_COMMIT_CAP + 1;
-  assert.strictEqual(git(dir, "rev-list", "--count", "v1.0.0..HEAD"), String(total), "fixture sanity: commit count");
+  assert.strictEqual(git(dir, "rev-list", "--count", "v1.0.0..HEAD"), String(total), "fixture sanity: commit count past the cap");
 
   const report = await buildShipReport(dir, {});
   assert.strictEqual(report.pending.state, "ok");
@@ -812,10 +894,182 @@ test("pending view: commit and file lists are capped with an explicit truncation
   assert.strictEqual(report.pending.fileCount, PENDING_FILE_CAP + 1);
   assert.strictEqual(report.pending.files.length, PENDING_FILE_CAP);
   assert.strictEqual(report.pending.filesTruncated, true);
+  assertFiveChecksRan(report);
 
   const out = runShip(dir, ["--cwd", "."]);
-  assert.match(out, new RegExp(`truncated: showing ${PENDING_COMMIT_CAP} of ${total} commits`));
-  assert.match(out, new RegExp(`truncated: showing ${PENDING_FILE_CAP} of ${PENDING_FILE_CAP + 1} files`));
+  assert.match(out, new RegExp(`truncated: showing ${PENDING_COMMIT_CAP} of ${total}`));
+  assert.match(out, new RegExp(`truncated: showing ${PENDING_FILE_CAP} of ${PENDING_FILE_CAP + 1}`));
+});
+
+// --- e2e: pending boundary grammar (one release-tag grammar shared with the marker: optional `v`,
+// X.Y.Z, no pre-release or extra parts; only tags reachable from HEAD) ---
+
+test("pending view: a bare X.Y.Z tag (no v prefix) is a release boundary, as it is for the release marker", async () => {
+  const dir = bareRepository();
+  git(dir, "tag", "1.0.0");
+  commitFile(dir, "b.txt", "b\n", "2026-01-02T00:00:00Z", "after the bare tag");
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.marker.tag, "1.0.0");
+  assert.strictEqual(report.pending.state, "ok");
+  assert.strictEqual(report.pending.tag, "1.0.0");
+  assert.deepStrictEqual(sortedSubjects(report.pending), ["after the bare tag"]);
+  assert.deepStrictEqual(report.pending.files, ["b.txt"]);
+});
+
+test("pending view: a pre-release tag is never the boundary — v1.0.0, a, v1.1.0-rc.1, b lists both a and b since v1.0.0", async () => {
+  const dir = bareRepository();
+  git(dir, "tag", "v1.0.0");
+  commitFile(dir, "a1.txt", "a\n", "2026-01-02T00:00:00Z", "a");
+  git(dir, "tag", "v1.1.0-rc.1");
+  commitFile(dir, "b1.txt", "b\n", "2026-01-03T00:00:00Z", "b");
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.pending.state, "ok");
+  assert.strictEqual(report.pending.tag, "v1.0.0");
+  assert.strictEqual(report.pending.commitCount, 2);
+  assert.deepStrictEqual(sortedSubjects(report.pending), ["a", "b"]);
+});
+
+test("pending view: a four-part tag (v1.2.3.4) is never the boundary", async () => {
+  const dir = bareRepository();
+  git(dir, "tag", "v1.0.0");
+  commitFile(dir, "a1.txt", "a\n", "2026-01-02T00:00:00Z", "a");
+  git(dir, "tag", "v1.2.3.4");
+  commitFile(dir, "b1.txt", "b\n", "2026-01-03T00:00:00Z", "b");
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.pending.state, "ok");
+  assert.strictEqual(report.pending.tag, "v1.0.0");
+  assert.deepStrictEqual(sortedSubjects(report.pending), ["a", "b"]);
+});
+
+test("pending view: when the release marker is a tag not reachable from HEAD, the pending note names both tags", async () => {
+  const dir = bareRepository();
+  git(dir, "tag", "v1.0.0");
+  git(dir, "checkout", "-q", "-b", "maintenance");
+  commitFile(dir, "hotfix.txt", "h\n", "2026-01-02T00:00:00Z", "hotfix on another branch");
+  git(dir, "tag", "v2.0.0");
+  git(dir, "checkout", "-q", "main");
+  commitFile(dir, "work.txt", "w\n", "2026-01-03T00:00:00Z", "work on main");
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.marker.tag, "v2.0.0", "fixture sanity: the marker is the highest-version tag overall");
+  assert.strictEqual(report.pending.state, "ok");
+  assert.strictEqual(report.pending.tag, "v1.0.0");
+  assert.deepStrictEqual(sortedSubjects(report.pending), ["work on main"]);
+  assert.ok(report.pending.note.includes("v1.0.0") && report.pending.note.includes("v2.0.0"), `note names both tags: ${report.pending.note}`);
+});
+
+test("pending view: a failed read of the tags reachable from HEAD is unverified, never no-release-tag", async () => {
+  const dir = bareRepository();
+  git(dir, "tag", "v1.0.0");
+  commitFile(dir, "b.txt", "b\n", "2026-01-02T00:00:00Z", "unreadable head commit");
+  deleteLooseObject(dir, git(dir, "rev-parse", "HEAD"));
+  assert.notStrictEqual(cp.spawnSync("git", ["tag", "--merged", "HEAD"], { cwd: dir, encoding: "utf8" }).status, 0,
+    "fixture sanity: listing the tags reachable from HEAD fails");
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.pending.state, "unverified");
+  assert.strictEqual(report.pending.commitCount, null);
+  assert.deepStrictEqual(report.pending.commits, []);
+  assertFiveChecksRan(report);
+});
+
+// --- e2e: pending view read failure inside the range, file names, empty repository ---
+
+test("pending view: a failed read of the commits or files since a found tag is unverified — no count, the five checks still run, and the text output states it", async () => {
+  const dir = bareRepository();
+  git(dir, "tag", "v1.0.0");
+  commitFile(dir, "b.txt", "b\n", "2026-01-02T00:00:00Z", "after the tag");
+  deleteLooseObject(dir, git(dir, "rev-parse", "v1.0.0^{tree}")); // the tag's root tree: the range diff cannot be read
+  assert.ok(git(dir, "tag", "--merged", "HEAD").split(/\r?\n/).includes("v1.0.0"), "fixture sanity: the tag is still found");
+  assert.notStrictEqual(cp.spawnSync("git", ["diff", "--name-only", "v1.0.0..HEAD"], { cwd: dir, encoding: "utf8" }).status, 0,
+    "fixture sanity: the range diff fails");
+
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.pending.state, "unverified");
+  assert.strictEqual(report.pending.commitCount, null);
+  assert.deepStrictEqual(report.pending.commits, []);
+  assert.deepStrictEqual(report.pending.files, []);
+  assertFiveChecksRan(report);
+
+  const out = runShip(dir, ["--cwd", "."]);
+  assertStateStatedWithNote(out, report.pending);
+  assertNoReadyClaim(out);
+});
+
+test("pending view: a file name with spaces and non-ASCII characters is listed verbatim", async () => {
+  const dir = bareRepository();
+  git(dir, "tag", "v1.0.0");
+  const name = "docs/résumé ü 文件 notes.txt";
+  commitFile(dir, name, "x\n", "2026-01-02T00:00:00Z", "add a unicode file name");
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.pending.state, "ok");
+  assert.deepStrictEqual(report.pending.files, [name]);
+});
+
+test("pending view: an empty repository (no commits yet) is no-release-tag, the five checks still run, and the CLI exits 0", () => {
+  const dir = temporary("ctide-ship-empty-");
+  git(dir, "init", "-q", "--initial-branch=main");
+  const result = cp.spawnSync("node", [SCRIPT, "--cwd", dir, "--json"], { encoding: "utf8" });
+  assert.strictEqual(result.status, 0, result.stderr);
+  const parsed = JSON.parse(result.stdout);
+  assert.strictEqual(parsed.pending.state, "no-release-tag");
+  assert.strictEqual(parsed.pending.commitCount, null);
+  assert.deepStrictEqual(parsed.pending.commits, []);
+  assertFiveChecksRan(parsed);
+});
+
+test("pending view: a renamed file is listed under both its old and its new path", async () => {
+  const dir = bareRepository();
+  commitFile(dir, "db/old-migration.sql", "ALTER TABLE orders ADD COLUMN discount_pct INT;\n".repeat(5), "2026-01-02T00:00:00Z", "add migration");
+  git(dir, "tag", "v1.0.0");
+  git(dir, "mv", "db/old-migration.sql", "db/new-migration.sql");
+  commitAt(dir, "2026-01-03T00:00:00Z", "rename migration");
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.pending.state, "ok");
+  assert.deepStrictEqual([...report.pending.files].sort(), ["db/new-migration.sql", "db/old-migration.sql"]);
+});
+
+test("pending view: a repository's diff.relative=true does not relativize the paths for a subdirectory --cwd", async () => {
+  const dir = bareRepository();
+  git(dir, "tag", "v1.0.0");
+  writePkg(dir, "root.txt", "r\n");
+  commitFile(dir, "sub/inner.txt", "i\n", "2026-01-02T00:00:00Z", "touch root and sub");
+  git(dir, "config", "diff.relative", "true");
+  const report = await buildShipReport(path.join(dir, "sub"), {});
+  assert.strictEqual(report.pending.state, "ok");
+  assert.deepStrictEqual([...report.pending.files].sort(), ["root.txt", "sub/inner.txt"]);
+});
+
+// --- regression: the plugin's own Stop hook must not read a ship report as an asserted READY verdict ---
+
+test("a realistic ship report, disclaimer quoted verbatim, ends a session without tripping the Stop hook's READY/panel advisory", () => {
+  const dir = bareRepository();
+  git(dir, "tag", "v1.0.0");
+  commitFile(dir, "src/feature.js", "export const feature = 1;\n", "2026-01-02T00:00:00Z", "add feature");
+  const json = JSON.parse(runShip(dir, ["--cwd", ".", "--json"]));
+  const text = runShip(dir, ["--cwd", "."]);
+  const shipReport = [
+    "## Ship decision card",
+    "",
+    `Pending changes — ${json.pending.disclaimer}:`,
+    ...json.pending.commits.map((c) => `- ${c.sha} ${c.subject}`),
+    ...json.pending.files.map((f) => `- ${f}`),
+    "",
+    ...Object.entries(json.checks).map(([name, check]) => `- ${name}: ${check.status} — ${check.evidence}`),
+    "",
+    "Rollback relevance: there is no SYSTEM_MAP.md, so the changed files cannot be checked against a Rollback section.",
+    "",
+    "Helper output:",
+    text,
+  ].join("\n");
+  assert.ok(text.includes(json.pending.disclaimer), "fixture sanity: the report quotes ship's own disclaimer verbatim");
+  const transcript = mkTranscript([
+    { role: "user", content: "/ctide:ship" },
+    { role: "assistant", content: shipReport },
+  ]);
+  assert.strictEqual(orch({ transcript_path: transcript, last_assistant_message: shipReport }), null,
+    "a ship report is not a READY verdict: the Stop hook stays silent");
+  const control = orch({ transcript_path: transcript, last_assistant_message: `${shipReport}\n\nFinal verdict: READY` });
+  assert.ok(control && /core review panel/.test(control.systemMessage),
+    "control: the same report plus an asserted READY verdict does trip the advisory, so the silence above is meaningful");
 });
 
 // --- unit: buildErrorFallbackReport (main()'s otherwise-unreachable outer catch-all -- every check above
@@ -830,7 +1084,7 @@ test("buildErrorFallbackReport: the JSON-mode fallback now carries the error det
   assert.strictEqual(fallback.marker.found, false);
   assert.strictEqual(fallback.pending.state, "unverified", "an internal error never reads as an empty pending list");
   assert.deepStrictEqual(fallback.pending.commits, []);
-  assert.strictEqual(fallback.pending.disclaimer, PENDING_DISCLAIMER);
+  assert.strictEqual(fallback.pending.disclaimer, DISCLAIMER);
   assert.match(fallback.pending.note, /ENOENT/);
   assert.ok(!fallback.pending.note.includes("secret-project"), "must never leak the raw error message or a local path");
   assert.deepStrictEqual(fallback.checks, {});

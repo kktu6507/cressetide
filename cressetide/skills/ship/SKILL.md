@@ -33,8 +33,9 @@ never the script:
 1. **Rollback relevance.** Read `checks.migrationCompat.rollbackText` (the raw Rollback-section prose)
    against `pending.files` (the files changed since the last release tag) and state, specifically,
    whether it actually bears on this batch — never just that the field happens to be filled in. When
-   `pending.state` is not `ok`, say the changed files are unknown and why, instead of judging against
-   an empty list.
+   `pending.filesTruncated` is true, the statement says it covered N of M files (`pending.files`
+   length of `pending.fileCount`). When `pending.state` is not `ok`, say the changed files are unknown
+   and why, instead of judging against an empty list.
 2. **Remediation routing.** A `versionConsistency` or `changelogTouched` `fail` is a code/documentation
    gap → recommend `/ctide:vigil --lite`. A `checksumVerify` `fail` means the artifact is stale or the
    build was wrong, never a code bug → recommend re-running the project's own build/release pipeline
@@ -44,10 +45,11 @@ never the script:
 
 1. **Pending changes** first: the commits and changed files since the last release tag, introduced
    with `pending.disclaimer` verbatim — "changes since the last release tag — not a readiness claim;
-   no READY verdict is implied". Nothing in this list has been reviewed by being listed. A non-`ok`
-   `pending.state` (`no-release-tag`, `shallow-clone`, `not-a-git-repo`, `git-unavailable`,
-   `unverified`) is stated with its `pending.note` — never as "nothing pending". `ok` with zero commits
-   → state "no commits since <tag>" as one line. A truncated list says so, with the total.
+   nothing listed here has been reviewed or approved". Nothing in this list has been reviewed by being
+   listed. A non-`ok` `pending.state` (`no-release-tag`, `shallow-clone`, `not-a-git-repo`,
+   `git-unavailable`, `unverified`) is stated with its `pending.note` — never as "nothing pending".
+   `ok` with zero commits → state "no commits since <tag>" as one line. A truncated list says so, with
+   the total.
 2. **Each check**, in order (`versionConsistency`, `changelogTouched`, `tagReady`, `migrationCompat`,
    `checksumVerify`), stated plainly with its status and cited evidence.
 3. **A remediation recommendation** on any `fail`, per *Remediation routing* above.
