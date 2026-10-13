@@ -5,10 +5,10 @@
   "description": "Cressetide — evidence-gated engineering loops for AI-made changes.",
   "license": "MIT",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.12"
   },
   "scripts": {
-    "test": "node --test",
+    "test": "node --test \"test/**/*.test.mjs\"",
     "validate": "node .github/scripts/validate-structure.mjs",
     "eval": "node eval/run-eval.mjs",
     "release:archive": "node .github/scripts/publish-release.mjs --archive",

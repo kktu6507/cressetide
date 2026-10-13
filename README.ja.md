@@ -93,7 +93,7 @@ ctide は CI の代替でも、linter や static analyzer でも、zero-bug の�
 
 ## クイックスタート
 
-前提条件：**Claude Code** と、`PATH` 上に **Node 20 以降**があること。hooks は Node スクリプトなので、Node がない場合は何もしません（エラーも出しません）。
+前提条件：**Claude Code** と、`PATH` 上に **Node 22.12 以降**があること。hooks は Node スクリプトなので、Node がない場合は何もしません（エラーも出しません）。
 
 ```text
 # プロジェクトディレクトリで、Claude Code 内から：

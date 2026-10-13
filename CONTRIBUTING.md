@@ -41,7 +41,7 @@ Doctor, the release publisher, the structure validator, workflow contracts, the
 provenance and loop modules, and the E2E harness helpers.
 
 ```bash
-npm test        # node --test across the repository
+npm test        # node --test over test/**/*.test.mjs
 npm run validate  # structure, identity, inventory, release contract, text integrity
 npm run eval      # deterministic evaluation cases
 ```

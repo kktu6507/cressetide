@@ -9,7 +9,7 @@ If you want reference material instead of a guided tour, see [`task-writing-guid
 ## What you'll need
 
 - **Claude Code**, running in a project directory — any small repo where you can safely make a trivial change.
-- **Node 20 or newer on your `PATH`.** ctide's hooks are Node scripts; with no Node they silently no-op and you would miss half the guardrails. Check with `node --version`.
+- **Node 22.12 or newer on your `PATH`.** Every ctide hook is a Node script, so with no Node all of them silently no-op: no plan-mode gate, no destructive-command or contract guard, no failure-memory injection, no post-compaction reminder, no Stop-time review check. Check with `node --version`.
 
 That is all: ctide itself needs no additional API key, service or configuration. Your Claude Code session still authenticates and bills as it normally does.
 

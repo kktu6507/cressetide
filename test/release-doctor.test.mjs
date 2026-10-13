@@ -7,7 +7,7 @@ import { gunzipSync } from "node:zlib";
 import { inspect } from "node:util";
 import test from "node:test";
 import * as releasePublisher from "../.github/scripts/publish-release.mjs";
-import { diagnose, probeFailureDetail } from "../cressetide/skills/doctor/scripts/doctor.mjs";
+import { diagnose, nodeVersionMeetsFloor, probeFailureDetail } from "../cressetide/skills/doctor/scripts/doctor.mjs";
 import { root, temporary } from "./helpers.mjs";
 
 const {
@@ -591,6 +591,27 @@ test("Doctor probe failures expose only structured status metadata", () => {
   assert.match(detail, /^syntax=null\(stderr=\d+ bytes error=present\)$/);
   assert.ok(detail.length <= 260);
   assert.doesNotMatch(detail, /SyntaxError|TOKEN|super-secret|spawn timed out/);
+});
+
+test("Doctor node row enforces the package.json engines floor as a full semantic version, not major-only", () => {
+  const { engines } = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  assert.equal(engines.node, ">=22.12", "Doctor's floor below must move together with package.json engines");
+  for (const [version, expected] of [
+    ["22.12.0", true],
+    ["22.12.1", true],
+    ["22.13.0", true],
+    ["23.0.0", true],
+    ["24.0.0-nightly20260101abcdef", true],
+    ["22.11.99", false],
+    ["22.0.0", false],
+    ["21.99.99", false],
+    ["20.19.5", false],
+    ["22.12.0-rc.1", false],
+    ["", false],
+    ["not-a-version", false],
+  ]) {
+    assert.equal(nodeVersionMeetsFloor(version), expected, version);
+  }
 });
 
 for (const diagnostic of [

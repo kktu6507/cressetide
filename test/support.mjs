@@ -1,7 +1,6 @@
-// Shared infrastructure for the per-subject hook/CI test files. Note: bare `node --test`
-// discovers EVERY .mjs under test/, so this file runs as one contentless always-passing entry in
-// the suite totals (it defines no test()); the ".test."-less name is for human clarity, not runner
-// semantics. Accepted: excluding it would need quoted globs (Node ≥21 only; CI floor is 20).
+// Shared infrastructure for the per-subject hook/CI test files. `npm test` runs only the quoted glob
+// "test/**/*.test.mjs" (Node 22.12+ floor), so this ".test."-less module is imported by test files
+// and never executed as a test file of its own.
 import cp from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";

@@ -40,6 +40,9 @@ const expectedHooks = [
 ];
 const expectedSkills = ["doctor", "map", "salvage", "ship", "vigil"];
 const SEMVER = /^\d+\.\d+\.\d+(?:[-+].+)?$/;
+// Lowest Node.js the hooks and helpers support (major, minor, patch); the root package.json engines field
+// states the same floor (">=22.12"). Checked as a full version: a major-only check would accept 22.0-22.11.
+const NODE_FLOOR = [22, 12, 0];
 const expectedAgents = [
   "navigator", "implementer", "intent-reviewer", "test-reviewer", "code-reviewer",
   "security-reviewer", "architecture-reviewer", "operability-reviewer",
@@ -109,6 +112,18 @@ function sanitizeDiagnostic(value, limit = 2000) {
   return text.slice(0, limit);
 }
 function result(name, status, detail) { return { name, status, detail: sanitizeDiagnostic(detail) }; }
+// True when a process.versions.node string (e.g. "22.12.0") is at or above NODE_FLOOR under semantic
+// version precedence: major, minor and patch compared numerically, and a pre-release of the floor itself
+// ("22.12.0-rc.1") ranks below it. An unparsable version is false, so the row reports fail and never throws.
+export function nodeVersionMeetsFloor(version) {
+  const match = /^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(String(version ?? ""));
+  if (!match) return false;
+  for (let index = 0; index < NODE_FLOOR.length; index++) {
+    const part = Number(match[index + 1]);
+    if (part !== NODE_FLOOR[index]) return part > NODE_FLOOR[index];
+  }
+  return match[4] === undefined;
+}
 export function probeFailureDetail(label, probe) {
   const metadata = [];
   const stderrBytes = Buffer.byteLength(String(probe?.stderr ?? ""), "utf8");
@@ -562,8 +577,7 @@ export async function diagnose(pluginRoot = resolvePluginRoot(), options = {}) {
     checks.push(result("manifest", manifestIdentityValid ? "pass" : "fail", manifestIdentityValid ? `ctide@${manifest.version}` : `expected ctide@<semver>, got ${manifest.name}@${manifest.version}`));
   } catch (error) { checks.push(result("manifest", "fail", `manifest check failed (${safeErrorCode(error)})`)); }
 
-  const nodeMajor = Number.parseInt(process.versions.node.split(".")[0], 10);
-  checks.push(result("node", nodeMajor >= 20 ? "pass" : "fail", `${process.execPath} ${process.version}`));
+  checks.push(result("node", nodeVersionMeetsFloor(process.versions.node) ? "pass" : "fail", `${process.execPath} ${process.version} (requires Node >=${NODE_FLOOR.join(".")})`));
 
   let hookConfiguration;
   let hookWiringExact = false;

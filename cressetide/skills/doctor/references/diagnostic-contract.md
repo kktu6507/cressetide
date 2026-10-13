@@ -60,10 +60,11 @@ to this run.
    require.
 
 3. **Identity and Node.** Row `manifest`: `.claude-plugin/plugin.json` names `ctide` at a valid
-   semantic version. Row `node`: the executable and version running the helper; **Node 20 or newer
-   is required**. If `node` is **absent** from the PATH the editor or agent launched with, that is
-   the single most common silent failure — **all six hooks no-op** (fail-open by design) — so
-   report it as the top finding. Step 6 is how you check that PATH.
+   semantic version. Row `node`: the executable and version running the helper; **Node 22.12 or
+   newer is required**, compared as a full major.minor.patch version (22.11 fails). If `node` is
+   **absent** from the PATH the editor or agent launched with, that is the single most common
+   silent failure — **all six hooks no-op** (fail-open by design) — so report it as the top
+   finding. Step 6 is how you check that PATH.
 
 4. **Hook wiring, fail-open and debug isolation.** Reuse these helper rows:
 

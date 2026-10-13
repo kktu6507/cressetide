@@ -93,7 +93,7 @@ ctide **不是** CI 替代品、linter 或 static analysis、零 bug 保證，�
 
 ## 快速開始
 
-前置需求：**Claude Code** + `PATH` 上有 **Node 20 或更新版本**。hook 是 Node 腳本；沒有 Node 的話 hooks 就直接不動作，也不會報錯。
+前置需求：**Claude Code** + `PATH` 上有 **Node 22.12 或更新版本**。hook 是 Node 腳本；沒有 Node 的話 hooks 就直接不動作，也不會報錯。
 
 ```text
 # 在你的專案目錄、Claude Code 內：

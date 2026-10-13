@@ -93,7 +93,7 @@ ctide is **not** a CI replacement, a linter or static analyzer, or a zero-bug gu
 
 ## Quick start
 
-Prerequisites: **Claude Code** + **Node 20 or newer** on `PATH`. The hooks are Node scripts; without Node they simply do nothing, and never raise an error.
+Prerequisites: **Claude Code** + **Node 22.12 or newer** on `PATH`. The hooks are Node scripts; without Node they simply do nothing, and never raise an error.
 
 ```text
 # in your project directory, inside Claude Code:

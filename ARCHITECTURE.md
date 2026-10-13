@@ -69,7 +69,7 @@ accelerates discovery; consumers must verify the affected area directly.
 
 ### Doctor
 
-Doctor performs read-only local probes for manifest identity, Node 20 or newer,
+Doctor performs read-only local probes for manifest identity, Node 22.12 or newer,
 hook wiring, harmless fail-open behavior, debug output, skill inventory, and
 agent inventory. It does not change configuration or perform telemetry and
 network probes.
