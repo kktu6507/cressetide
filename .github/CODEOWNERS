@@ -1,4 +1,8 @@
 # The hooks are the only code that auto-executes in every consumer's session,
 # and the workflow controls CI — require owner review on changes to them.
+# lib/ is the shared code every script (and, from P5, every hook) imports, and
+# workflows/ orchestrates the review panel — owner review on those too.
 /cressetide/hooks/        @kktu6507
+/cressetide/lib/          @kktu6507
+/cressetide/workflows/    @kktu6507
 /.github/             @kktu6507

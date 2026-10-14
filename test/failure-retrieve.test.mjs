@@ -10,7 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { tempDir, test } from "./helpers.mjs";
 import {
-  tokenize, parseEntries, scoreEntry, retrieve, formatRetrieval, buildLedgerLines, ledgerKey, KNOWN_FLAGS,
+  tokenize, parseEntries, scoreEntry, retrieve, formatRetrieval, buildLedgerLines, ledgerKey,
 } from "../cressetide/skills/vigil/scripts/failure-retrieve.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -240,67 +240,82 @@ test("resolveMemoryFile: legacy-only -> ai/ fallback, and the usage ledger stays
   assert.strictEqual(defaultLedgerPath(resolveMemoryFile(newDir)), path.join(newDir, ".ctide", "memory", ".failure-memory-usage.jsonl"), "after migration the ledger follows the selected file into the new layout");
 });
 
-// --- e2e: failure-retrieve whole-class flag-swallow guard (get() itself now guards EVERY flag in this
-// file's own KNOWN_FLAGS -- the same shared-mechanism fix the sibling CLI scripts apply over
-// their own flag sets. `--log` is a boolean flag read via `args.includes`, not `get()` -- it has no value
-// position of its own to attack, so it is excluded from the OUTER (attacked) loop below, but it stays a
-// full member of KNOWN_FLAGS and appears in the INNER (swallower) loop) ---
+// --- the command line goes through cressetide/lib/cli.mjs parseCli; the memory file through
+// cressetide/lib/read-capped.mjs (the first 256 KiB, fail-open) ---
 
-// A deliberately distinctive, single-token, dictionary-free marker (never a substring of any OTHER value
-// used in this test's own invocation -- the temp-dir prefix, --session's value, --log-file's name, etc.)
-// so a coincidental token overlap can never produce a false "match" via the SEPARATE, out-of-scope
-// positional-argument fallback scan below (that scan has its own pre-existing misalignment quirk with a
-// bare boolean flag like --log -- it can pick up an unrelated leftover token, such as --cwd's own path
-// value, as a stray "positional" -- harmless here specifically BECAUSE this marker cannot collide with it).
-const CANARY_MEM = `# FM
+// Distinctive, dictionary-free tags, so no other token in an invocation (a temp path, a session id) can
+// produce a coincidental match.
+const CLI_MEM = `# FM
 
 ### 2026-07-01 — qzxcanary8471 lesson
 - **Prevention rule**: r.
 - **Tags**: qzxcanary8471.
+
+### 2026-07-02 — qzxsrcfile lesson
+- **Prevention rule**: r.
+- **Tags**: src / ts.
 `;
 
-test("failure-retrieve: for EVERY value-bearing flag in KNOWN_FLAGS, a value slot occupied by any OTHER known flag's own name (including the boolean --log) is treated as omitted, never as a literal value -- --file falls back to resolveMemoryFile(--cwd) (finds the seeded canary lesson, not a bogus nonexistent '<flag-name>'-shaped file); --query falls back to empty/unrelated content (never the literal '<flag-name>' token itself as real search text), so the canary is correctly NOT surfaced", () => {
-  const VALUE_FLAGS = KNOWN_FLAGS.filter((f) => f !== "--log");
-  const BOOL_FLAGS = ["--log"];
-  const values = { "--query": "qzxcanary8471", "--top": "5", "--session": "logtoken1" };
-  for (const F of VALUE_FLAGS) {
-    for (const G of KNOWN_FLAGS) {
-      if (G === F) continue;
-      const dir = tempDir("ctide-frtest-");
-      try {
-        fs.mkdirSync(path.join(dir, ".ctide", "memory"), { recursive: true });
-        const memFile = path.join(dir, ".ctide", "memory", "FAILURE_MEMORY.md");
-        fs.writeFileSync(memFile, CANARY_MEM, "utf8");
-        values["--file"] = memFile;
-        values["--log-file"] = path.join(dir, "usage-ledger.jsonl");
+// A project whose .ctide/memory/FAILURE_MEMORY.md is `memory`; the retrieval runs with that project as its
+// working directory and no CLAUDE_PROJECT_DIR. Returns the spawn result plus the paths involved.
+function runRetrieve(args, memory = CLI_MEM) {
+  const dir = tempDir("ctide-frcli-");
+  const memFile = path.join(dir, ".ctide", "memory", "FAILURE_MEMORY.md");
+  fs.mkdirSync(path.dirname(memFile), { recursive: true });
+  fs.writeFileSync(memFile, memory, "utf8");
+  const env = { ...process.env };
+  delete env.CLAUDE_PROJECT_DIR;
+  const result = cp.spawnSync("node", [SCRIPT, ...args], { cwd: dir, encoding: "utf8", env });
+  return { ...result, dir, memFile, ledger: defaultLedgerPath(memFile) };
+}
+const readLedgerLines = (file) => fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
 
-        // Order: G's own legitimate occurrence FIRST, then every other flag, then F LAST with its value
-        // slot occupied by the literal token G (mirrors the sibling CLI tests'
-        // identical loop-test ordering discipline -- keeps every flag's `indexOf` lookup unambiguous).
-        const order = [G, ...KNOWN_FLAGS.filter((x) => x !== F && x !== G), F];
-        const argv = [];
-        for (const flagName of order) {
-          if (flagName === F) argv.push(F, G); // F's own value slot swallowed by G's literal name
-          else if (flagName === "--cwd") argv.push("--cwd", dir);
-          else if (BOOL_FLAGS.includes(flagName)) argv.push(flagName); // bare boolean, no value slot
-          else argv.push(flagName, values[flagName]);
-        }
-        // Hermetic: strip CLAUDE_PROJECT_DIR so --cwd's fallback resolves to the spawned process's own cwd
-        // (this temp dir), never a developer's ambient project dir.
-        const env = { ...process.env };
-        delete env.CLAUDE_PROJECT_DIR;
-        const r = cp.spawnSync("node", [SCRIPT, ...argv], { cwd: dir, encoding: "utf8", env });
-        assert.strictEqual(r.status, 0, `${F} swallowed by ${G} must still exit 0 (fail-open): ${r.stderr}`);
-        if (F === "--query") {
-          assert.match(r.stdout, /no matching failure-memory entries/i,
-            `${F} swallowed by ${G}: an omitted query must fall back to EMPTY (no match), never treat '${G}' as real search text`);
-        } else {
-          assert.match(r.stdout, /qzxcanary8471 lesson/,
-            `${F} swallowed by ${G}: the seeded canary lesson must still be found (never a bogus '${G}'-shaped path/value)`);
-        }
-      } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
-      }
-    }
+test("CLI binding (parseCli): --log is a boolean — `--log src/a.ts node` keeps src/a.ts in the query (it surfaces the src/ts lesson and the ledger records the whole query)", () => {
+  const r = runRetrieve(["--log", "src/a.ts", "node"]);
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.strictEqual(r.stderr, "");
+  assert.match(r.stdout, /qzxsrcfile lesson/, "src/a.ts reached the query (its src/ts tokens match the lesson's tags)");
+  const records = readLedgerLines(r.ledger);
+  assert.deepStrictEqual(records.map((record) => record.q), ["src/a.ts node"], "one hit, logged with the full positional query");
+});
+
+test("CLI (parseCli): an unknown flag is a usage error — stderr names it, stdout is the no-claim line, exit 0, and --log appends NO ledger line", () => {
+  const r = runRetrieve(["--bogus", "--log", "--query", "qzxcanary8471"]);
+  assert.strictEqual(r.status, 0, "must always exit 0");
+  assert.match(r.stderr, /^failure-retrieve: .*--bogus.*\(usage: failure-retrieve\.mjs .*\)\n$/);
+  assert.strictEqual(r.stdout, formatRetrieval([], { file: "none" }) + "\n", "the no-match no-claim line, nothing retrieved");
+  assert.strictEqual(fs.existsSync(r.ledger), false, "a usage error records nothing");
+});
+
+test("CLI (parseCli): a value flag without its value (--query at the end, --file followed by --query) is a usage error with no ledger append", () => {
+  for (const args of [["--log", "--query"], ["--log", "--file", "--query", "qzxcanary8471"]]) {
+    const r = runRetrieve(args);
+    assert.strictEqual(r.status, 0, args.join(" "));
+    assert.match(r.stderr, /^failure-retrieve: /, `${args.join(" ")}: one usage line on stderr`);
+    assert.match(r.stdout, /no matching failure-memory entries/);
+    assert.strictEqual(fs.existsSync(r.ledger), false, `${args.join(" ")}: nothing recorded`);
   }
+});
+
+test("CLI (parseCli): the `=` form works for every value flag, and a repeated flag keeps its last value", () => {
+  const equals = runRetrieve(["--query=qzxcanary8471", "--top=1", "--log", "--session=s-eq"]);
+  assert.strictEqual(equals.stderr, "");
+  assert.match(equals.stdout, /qzxcanary8471 lesson/);
+  assert.deepStrictEqual(readLedgerLines(equals.ledger).map((record) => [record.q, record.sid]), [["qzxcanary8471", "s-eq"]]);
+
+  const repeated = runRetrieve(["--query", "nothing-matches-this", "--query", "qzxcanary8471"]);
+  assert.strictEqual(repeated.stderr, "");
+  assert.match(repeated.stdout, /qzxcanary8471 lesson/, "the last --query wins");
+});
+
+test("CLI binding (readCapped): an over-cap memory file is read from the head — an entry in the first 256 KiB is found, one past it is not", () => {
+  // Filler entries keep every byte between the two canaries inside a short, never-matching entry.
+  const filler = Array.from({ length: 12000 }, (_, index) => `### 2020-01-01 — filler ${index}\n`).join("");
+  assert.ok(Buffer.byteLength(filler) > 256 * 1024, "fixture sanity: the filler alone exceeds the 256 KiB cap");
+  const memory = "# FM\n\n### 2026-07-01 — qzxheadcanary lesson\n- **Tags**: qzxheadcanary.\n\n" + filler +
+    "\n### 2026-07-02 — qzxtailcanary lesson\n- **Tags**: qzxtailcanary.\n";
+  const r = runRetrieve(["--query", "qzxheadcanary qzxtailcanary"], memory);
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.match(r.stdout, /qzxheadcanary lesson/, "the entry at the top (inside the cap) is found");
+  assert.doesNotMatch(r.stdout, /qzxtailcanary lesson/, "the entry past the cap is never read");
 });

@@ -1,11 +1,8 @@
-// Coverage for the ACTUALLY-INVOKED release-publishing logic in .github/scripts/publish-release.mjs
-// -- its own createArchive()/publish() path and the `if (isInvokedDirectly())` CLI entry point,
-// which is what package.json's release:archive/release:publish scripts and the release workflow
-// really call. This is a deliberately stricter, tag-must-already-exist-and-match-HEAD implementation
-// (see this file's own header comment), separate from publish-release-core.mjs's runRelease() -- an
-// intentionally-kept, separately reusable library that nothing in this repo currently calls, already
-// covered end-to-end by test/release-publisher.test.mjs. Kept in its own file, with its own
-// "release CLI:" test-name prefix, so the two differently-behaved implementations are never confused.
+// Coverage for the release-publishing logic in .github/scripts/publish-release.mjs -- its own
+// createArchive()/publish() path and the `if (isMain(import.meta.url))` CLI entry point, which is what
+// package.json's release:archive/release:publish scripts and the release workflow really call: a
+// deliberately strict, tag-must-already-exist-and-match-HEAD implementation. Every test name carries the
+// "release CLI:" prefix.
 //
 // SAFETY: publish-release.mjs's --publish mode (and the publish()/runReleaseCommand()/
 // inspectPublishedRelease()/downloadPublished() functions it calls) can reach the real `gh` CLI and
@@ -23,6 +20,7 @@ import {
   downloadPublished,
   entriesFromTag,
   inspectPublishedRelease,
+  normalizeGzipOsByte,
   publish,
   releaseIdentityFromTag,
   runReleaseCommand,
@@ -41,9 +39,9 @@ const CHECKSUM_NAME = `${ASSET_NAME}.sha256`;
 // --- shared scratch-root fixture --------------------------------------------------------------------
 //
 // Builds a self-contained scratch copy that can locate itself: cressetide/ (the real plugin tree, so
-// tar-content assertions can compare against real shipped files) plus .github/scripts/publish-
-// release.mjs and its publish-release-core.mjs import dependency at the SAME relative path as the
-// real repo, so a spawned or dynamically-imported copy's own root-self-location logic (two
+// tar-content assertions can compare against real shipped files, and where the script's own
+// cressetide/lib/ imports resolve) plus .github/scripts/publish-release.mjs at the SAME relative path as
+// the real repo, so a spawned or dynamically-imported copy's own root-self-location logic (two
 // directories up from its own file) resolves to the scratch root, not the real repo. package.json and
 // the nested plugin.json are pinned to a FIXED test version/name (not the real repo's current
 // version), so this suite does not rot when the real version changes.
@@ -59,7 +57,6 @@ function releaseCliScratchRoot({ tag = false } = {}) {
   fs.writeFileSync(pluginJsonPath, JSON.stringify(pluginJson, null, 2), "utf8");
   fs.mkdirSync(path.join(scratchRoot, ".github", "scripts"), { recursive: true });
   fs.cpSync(path.join(root, ".github", "scripts", "publish-release.mjs"), path.join(scratchRoot, ".github", "scripts", "publish-release.mjs"));
-  fs.cpSync(path.join(root, ".github", "scripts", "publish-release-core.mjs"), path.join(scratchRoot, ".github", "scripts", "publish-release-core.mjs"));
   git(scratchRoot, ["add", "-A"]);
   git(scratchRoot, ["commit", "-m", "fixture"]);
   if (tag) git(scratchRoot, ["tag", "-a", TEST_TAG, "-m", TEST_TAG]);
@@ -104,64 +101,172 @@ function writeMismatchedDownload(directory, built) {
 
 test("release CLI: `publish-release.mjs --archive` spawned as a real subprocess writes a tag-bound archive and checksum with expected tar contents", () => {
   const scratchRoot = releaseCliScratchRoot();
-  try {
-    const result = cp.spawnSync(process.execPath, [scratchScriptPath(scratchRoot), "--archive"], { cwd: scratchRoot, encoding: "utf8" });
-    assert.strictEqual(result.status, 0, `spawned --archive must exit 0: ${result.stderr}`);
-    assert.strictEqual(result.stderr, "", "a clean --archive run must print nothing to stderr");
-    const parsed = JSON.parse(result.stdout);
-    assert.strictEqual(parsed.version, TEST_VERSION);
-    assert.strictEqual(parsed.tag, TEST_TAG);
-    assert.strictEqual(parsed.assetName, ASSET_NAME);
+  const result = cp.spawnSync(process.execPath, [scratchScriptPath(scratchRoot), "--archive"], { cwd: scratchRoot, encoding: "utf8" });
+  assert.strictEqual(result.status, 0, `spawned --archive must exit 0: ${result.stderr}`);
+  assert.strictEqual(result.stderr, "", "a clean --archive run must print nothing to stderr");
+  const parsed = JSON.parse(result.stdout);
+  assert.strictEqual(parsed.version, TEST_VERSION);
+  assert.strictEqual(parsed.tag, TEST_TAG);
+  assert.strictEqual(parsed.assetName, ASSET_NAME);
 
-    const assetPath = path.join(scratchRoot, "_release", ASSET_NAME);
-    const checksumPath = path.join(scratchRoot, "_release", CHECKSUM_NAME);
-    assert.ok(fs.existsSync(assetPath), "spawned --archive must write the release asset");
-    assert.ok(fs.existsSync(checksumPath), "spawned --archive must write the release checksum");
+  const assetPath = path.join(scratchRoot, "_release", ASSET_NAME);
+  const checksumPath = path.join(scratchRoot, "_release", CHECKSUM_NAME);
+  assert.ok(fs.existsSync(assetPath), "spawned --archive must write the release asset");
+  assert.ok(fs.existsSync(checksumPath), "spawned --archive must write the release checksum");
 
-    const checksumText = fs.readFileSync(checksumPath, "utf8");
-    const actualHash = crypto.createHash("sha256").update(fs.readFileSync(assetPath)).digest("hex");
-    assert.strictEqual(checksumText, `${actualHash}  ${ASSET_NAME}\n`, "checksum file must name the real asset and match its real bytes");
+  const checksumText = fs.readFileSync(checksumPath, "utf8");
+  const actualHash = crypto.createHash("sha256").update(fs.readFileSync(assetPath)).digest("hex");
+  assert.strictEqual(checksumText, `${actualHash}  ${ASSET_NAME}\n`, "checksum file must name the real asset and match its real bytes");
 
-    const entries = parseTar(zlib.gunzipSync(fs.readFileSync(assetPath)));
-    // Unlike publish-release-core.mjs's createDeterministicPluginArchive (which prefixes archive
-    // paths with `ctide-${tag}/`), THIS file's listFiles()/createArchive() prefix every path with
-    // the literal plugin directory name ("cressetide/"), not a tag-versioned root -- confirmed by
-    // reading listFiles() directly, not assumed from the sibling implementation's layout.
-    const hookEntry = entries.get("cressetide/hooks/plan-gate.js");
-    assert.ok(hookEntry, "archive must contain the real hooks/plan-gate.js under the cressetide/ prefix");
-    assert.strictEqual(hookEntry.type, "0");
-    // This file's own tar writer (unlike publish-release-core.mjs's) hardcodes every file entry to
-    // 0o644 and writes no directory entries at all -- confirmed by reading tarHeader()/createArchive()
-    // directly, not assumed from the sibling implementation's shape.
-    assert.strictEqual(hookEntry.mode, 0o644);
-    assert.deepStrictEqual(hookEntry.body, fs.readFileSync(path.join(root, "cressetide", "hooks", "plan-gate.js")),
-      "archived file bytes must match the real source file");
-  } finally {
-    fs.rmSync(scratchRoot, { recursive: true, force: true });
-  }
+  const entries = parseTar(zlib.gunzipSync(fs.readFileSync(assetPath)));
+  // listFiles()/createArchive() prefix every path with the literal plugin directory name
+  // ("cressetide/"), not a tag-versioned root -- confirmed by reading listFiles() directly.
+  const hookEntry = entries.get("cressetide/hooks/plan-gate.js");
+  assert.ok(hookEntry, "archive must contain the real hooks/plan-gate.js under the cressetide/ prefix");
+  assert.strictEqual(hookEntry.type, "0");
+  // The tar writer hardcodes every file entry to 0o644 and writes no directory entries at all --
+  // confirmed by reading tarHeader()/createArchive() directly.
+  assert.strictEqual(hookEntry.mode, 0o644);
+  assert.deepStrictEqual(hookEntry.body, fs.readFileSync(path.join(root, "cressetide", "hooks", "plan-gate.js")),
+    "archived file bytes must match the real source file");
 });
 
 test("release CLI: `publish-release.mjs --archive` invoked via a real symlinked/junctioned ancestor directory is still recognized as directly-invoked, running its full CLI body (isInvokedDirectly()'s fs.realpathSync check)", (t) => {
   const parentDir = tempDir("ctide-release-cli-symlink-entrypoint-");
+  const scratchRoot = releaseCliScratchRoot();
+  const linkedRoot = path.join(parentDir, "scratch-root-link");
   try {
-    const scratchRoot = releaseCliScratchRoot();
-    const linkedRoot = path.join(parentDir, "scratch-root-link");
-    try {
-      fs.symlinkSync(scratchRoot, linkedRoot, process.platform === "win32" ? "junction" : "dir");
-    } catch (e) {
-      return t.skip("cannot create a symlink/junction here: " + (e && e.code));
-    }
-    const scriptViaLink = path.join(linkedRoot, ".github", "scripts", "publish-release.mjs");
-    const result = cp.spawnSync(process.execPath, [scriptViaLink, "--archive"], { encoding: "utf8" });
-    assert.strictEqual(result.status, 0, `must recognize itself as directly-invoked through the symlink/junction and run its full CLI body, not silently no-op: ${result.stderr}`);
-    assert.ok(result.stdout && result.stdout.trim().length > 0, "must produce real JSON output, not empty stdout (the false-negative symptom the isInvokedDirectly() fix closes)");
-    const parsed = JSON.parse(result.stdout);
-    assert.strictEqual(parsed.assetName, ASSET_NAME);
-    assert.ok(fs.existsSync(path.join(scratchRoot, "_release", ASSET_NAME)),
-      "spawning through the symlink must still write the release asset under the real (resolved) scratch root");
-  } finally {
-    fs.rmSync(parentDir, { recursive: true, force: true });
+    fs.symlinkSync(scratchRoot, linkedRoot, process.platform === "win32" ? "junction" : "dir");
+  } catch (e) {
+    return t.skip("cannot create a symlink/junction here: " + (e && e.code));
   }
+  const scriptViaLink = path.join(linkedRoot, ".github", "scripts", "publish-release.mjs");
+  const result = cp.spawnSync(process.execPath, [scriptViaLink, "--archive"], { encoding: "utf8" });
+  assert.strictEqual(result.status, 0, `must recognize itself as directly-invoked through the symlink/junction and run its full CLI body, not silently no-op: ${result.stderr}`);
+  assert.ok(result.stdout && result.stdout.trim().length > 0, "must produce real JSON output, not empty stdout (the false-negative symptom the isInvokedDirectly() fix closes)");
+  const parsed = JSON.parse(result.stdout);
+  assert.strictEqual(parsed.assetName, ASSET_NAME);
+  assert.ok(fs.existsSync(path.join(scratchRoot, "_release", ASSET_NAME)),
+    "spawning through the symlink must still write the release asset under the real (resolved) scratch root");
+});
+
+function runRelease(scratchRoot, args, env = process.env) {
+  return cp.spawnSync(process.execPath, [scratchScriptPath(scratchRoot), ...args], { cwd: scratchRoot, encoding: "utf8", env });
+}
+
+// Writes every entry of a parsed archive under `directory`, at its archive path.
+function extractArchive(entries, directory) {
+  for (const [name, entry] of entries) {
+    const target = path.join(directory, ...name.split("/"));
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, entry.body);
+  }
+}
+
+const LIB_MODULES = ["cli", "git", "read-capped", "redact", "map-trust"];
+
+// Imports every file named on stdin (a JSON list) in a fresh process; argv carries no file, so no script's
+// isMain() guard fires and nothing runs beyond module evaluation.
+const IMPORT_EVERY_FILE = [
+  'import fs from "node:fs";',
+  'import { pathToFileURL } from "node:url";',
+  'for (const file of JSON.parse(fs.readFileSync(0, "utf8"))) await import(pathToFileURL(file).href);',
+  'console.log("imported");',
+].join("\n");
+
+test("release CLI: the archive ships cressetide/lib/ byte-identical to the source, and the plugin's scripts run from the extracted archive alone", () => {
+  const scratchRoot = releaseCliScratchRoot();
+  const result = runRelease(scratchRoot, ["--archive"]);
+  assert.strictEqual(result.status, 0, result.stderr);
+  const entries = parseTar(zlib.gunzipSync(fs.readFileSync(path.join(scratchRoot, "_release", ASSET_NAME))));
+  for (const module of LIB_MODULES) {
+    const entry = entries.get(`cressetide/lib/${module}.mjs`);
+    assert.ok(entry, `the archive contains cressetide/lib/${module}.mjs`);
+    assert.deepStrictEqual(entry.body, fs.readFileSync(path.join(root, "cressetide", "lib", `${module}.mjs`)), `cressetide/lib/${module}.mjs is byte-identical to the source`);
+  }
+
+  const extracted = tempDir("ctide-release-cli-extracted-");
+  extractArchive(entries, extracted);
+  const elsewhere = tempDir("ctide-release-cli-not-a-repo-");
+  const ship = cp.spawnSync(process.execPath, [path.join(extracted, "cressetide", "skills", "ship", "scripts", "ship.mjs"), "--cwd", elsewhere, "--json"],
+    { cwd: elsewhere, encoding: "utf8" });
+  assert.strictEqual(ship.status, 0, ship.stderr);
+  assert.strictEqual(ship.stderr, "", "ship.mjs from the extracted archive runs cleanly");
+  assert.strictEqual(JSON.parse(ship.stdout).pending.state, "not-a-git-repo");
+
+  // Every module in the archive resolves its imports inside the extracted tree: nothing reaches outside the plugin.
+  const modules = [...entries.keys()].filter((name) => name.endsWith(".mjs")).map((name) => path.join(extracted, ...name.split("/")));
+  assert.ok(modules.some((file) => file.endsWith(path.join("skills", "doctor", "scripts", "doctor.mjs"))), "fixture sanity: the scripts are in the list");
+  const imported = cp.spawnSync(process.execPath, ["--input-type=module", "-e", IMPORT_EVERY_FILE], { cwd: extracted, input: JSON.stringify(modules), encoding: "utf8" });
+  assert.strictEqual(imported.status, 0, `every archived module imports from the extracted tree: ${imported.stderr}`);
+  assert.strictEqual(imported.stdout.trim(), "imported");
+});
+
+test("release CLI: a usage error — an unknown flag, both modes, --tag without its value, a stray argument — exits 1 with the usage and builds nothing", () => {
+  const scratchRoot = releaseCliScratchRoot();
+  // Never --publish with --tag here: if parsing ever regressed, --publish without a tag still stops before gh.
+  for (const args of [["--archive", "--bogus"], ["--archive", "--publish"], ["--publish", "--archive"], ["--archive", "--tag"], ["stray"]]) {
+    const result = runRelease(scratchRoot, args);
+    const label = args.join(" ");
+    assert.strictEqual(result.status, 1, `${label}: exit 1`);
+    assert.strictEqual(result.stdout, "", `${label}: no result printed`);
+    assert.match(result.stderr, /^Cressetide release failed: .*\(usage: publish-release\.mjs .*\)/, `${label}: the usage is named`);
+    assert.ok(!fs.existsSync(path.join(scratchRoot, "_release")), `${label}: nothing was built`);
+  }
+});
+
+test("release CLI: `--tag v9.9.9 --archive` and `--archive --tag v9.9.9` both build the tag-bound archive", () => {
+  const scratchRoot = releaseCliScratchRoot({ tag: true });
+  fs.writeFileSync(path.join(scratchRoot, "cressetide", "hooks", "plan-gate.js"), "// dirtied after tagging\n", "utf8");
+  const runs = [["--tag", TEST_TAG, "--archive"], ["--archive", "--tag", TEST_TAG]].map((args) => {
+    const result = runRelease(scratchRoot, args);
+    assert.strictEqual(result.status, 0, `${args.join(" ")}: ${result.stderr}`);
+    assert.strictEqual(result.stderr, "");
+    return { result: JSON.parse(result.stdout), bytes: fs.readFileSync(path.join(scratchRoot, "_release", ASSET_NAME)) };
+  });
+  assert.strictEqual(runs[0].result.tag, TEST_TAG);
+  assert.deepStrictEqual(runs[0].result, runs[1].result, "the same result in either order");
+  assert.deepStrictEqual(runs[0].bytes, runs[1].bytes, "the same archive bytes in either order");
+  assert.deepStrictEqual(parseTar(zlib.gunzipSync(runs[0].bytes)).get("cressetide/hooks/plan-gate.js").body,
+    fs.readFileSync(path.join(root, "cressetide", "hooks", "plan-gate.js")), "the tagged blob, not the working-tree edit: --tag was honored");
+});
+
+test("release CLI: --archive with an inherited absolute GIT_DIR naming another repository still applies the scratch repository's own ignore rules", () => {
+  const scratchRoot = releaseCliScratchRoot();
+  fs.mkdirSync(path.join(scratchRoot, ".git", "info"), { recursive: true });
+  fs.writeFileSync(path.join(scratchRoot, ".git", "info", "exclude"), "cressetide/scratch-only-ignored.txt\n", "utf8");
+  fs.writeFileSync(path.join(scratchRoot, "cressetide", "scratch-only-ignored.txt"), "must not ship\n", "utf8");
+  assert.strictEqual(git(scratchRoot, ["check-ignore", "cressetide/scratch-only-ignored.txt"]), "cressetide/scratch-only-ignored.txt",
+    "fixture sanity: the scratch repository ignores the file");
+  const other = makeRepo({ prefix: "ctide-release-cli-other-" });
+  const result = runRelease(scratchRoot, ["--archive"], { ...process.env, GIT_DIR: path.join(other, ".git") });
+  assert.strictEqual(result.status, 0, result.stderr);
+  const entries = parseTar(zlib.gunzipSync(fs.readFileSync(path.join(scratchRoot, "_release", ASSET_NAME))));
+  assert.ok(entries.has("cressetide/hooks/plan-gate.js"), "fixture sanity: the plugin tree was archived");
+  assert.ok(!entries.has("cressetide/scratch-only-ignored.txt"), "the scratch repository's .git/info/exclude still applies");
+});
+
+test("release CLI: normalizeGzipOsByte patches a plain gzip header's OS byte in place", () => {
+  const real = zlib.gzipSync(Buffer.from("ctide"), { level: 9, mtime: 0 });
+  const patched = normalizeGzipOsByte(real);
+  assert.strictEqual(patched, real, "must patch the given buffer in place, not return a detached copy");
+  assert.strictEqual(patched[9], 0xff, "must set RFC 1952 offset 9 to the unknown-OS sentinel");
+  assert.deepStrictEqual(zlib.gunzipSync(patched), Buffer.from("ctide"), "patching the OS byte must not disturb the compressed payload");
+});
+
+test("release CLI: normalizeGzipOsByte refuses to patch a non-plain gzip header instead of silently skipping it", () => {
+  assert.throws(() => normalizeGzipOsByte(Buffer.alloc(0)), /Unsupported gzip header shape/, "empty buffer must be rejected, not treated as a no-op");
+  assert.throws(() => normalizeGzipOsByte(Buffer.from([0x1f, 0x8b, 0x08])), /Unsupported gzip header shape/, "a header shorter than 10 bytes must be rejected");
+  assert.throws(
+    () => normalizeGzipOsByte(Buffer.from([0x1f, 0x8b, 0x08, 0x08, 0, 0, 0, 0, 0, 0])),
+    /Unsupported gzip header shape/,
+    "a set FLG byte (e.g. FNAME) is outside gzipSync()'s own canonical output shape and must be rejected, not silently mis-patched",
+  );
+  assert.throws(
+    () => normalizeGzipOsByte(Buffer.from([0x00, 0x00, 0x08, 0x00, 0, 0, 0, 0, 0, 0])),
+    /Unsupported gzip header shape/,
+    "a wrong gzip magic must be rejected",
+  );
 });
 
 // === Part 2a: pure functions -- no DI seam needed, none of these ever shell out =====================
@@ -193,34 +298,22 @@ test("release CLI: validatePublishedAssetInventory rejects a duplicated asset na
 
 test("release CLI: verifyDownloaded returns false when either downloaded file is missing", () => {
   const dir = tempDir("ctide-release-cli-verifydl-");
-  try {
-    assert.strictEqual(verifyDownloaded(dir, fakeBuilt()), false);
-    fs.writeFileSync(path.join(dir, ASSET_NAME), "x", "utf8");
-    assert.strictEqual(verifyDownloaded(dir, fakeBuilt()), false, "asset alone without the checksum file must still be false");
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  assert.strictEqual(verifyDownloaded(dir, fakeBuilt()), false);
+  fs.writeFileSync(path.join(dir, ASSET_NAME), "x", "utf8");
+  assert.strictEqual(verifyDownloaded(dir, fakeBuilt()), false, "asset alone without the checksum file must still be false");
 });
 test("release CLI: verifyDownloaded returns true only when both sha256 bytes and the exact checksum line match", () => {
   const dir = tempDir("ctide-release-cli-verifydl-");
-  try {
-    const built = fakeBuilt();
-    writeMatchingDownload(dir, built);
-    assert.strictEqual(verifyDownloaded(dir, built), true);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  const built = fakeBuilt();
+  writeMatchingDownload(dir, built);
+  assert.strictEqual(verifyDownloaded(dir, built), true);
 });
 test("release CLI: verifyDownloaded returns false when the checksum file names the wrong asset even though the sha256 matches", () => {
   const dir = tempDir("ctide-release-cli-verifydl-");
-  try {
-    const built = fakeBuilt();
-    fs.writeFileSync(path.join(dir, built.assetName), "fake asset bytes", "utf8");
-    fs.writeFileSync(path.join(dir, built.checksumName), `${built.checksum}  WRONG-NAME.tar.gz\n`, "utf8");
-    assert.strictEqual(verifyDownloaded(dir, built), false);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  const built = fakeBuilt();
+  fs.writeFileSync(path.join(dir, built.assetName), "fake asset bytes", "utf8");
+  fs.writeFileSync(path.join(dir, built.checksumName), `${built.checksum}  WRONG-NAME.tar.gz\n`, "utf8");
+  assert.strictEqual(verifyDownloaded(dir, built), false);
 });
 
 // === Part 2b: DI-capable functions -- unit tests with fresh fakes matching THIS file's own exact ====
@@ -428,15 +521,11 @@ test("release CLI: verifyOrRepairPublished repairs a byte mismatch only with an 
 
 test("release CLI: releaseIdentityFromTag reads package/plugin identity from the tagged tree, not the dirtied working tree", () => {
   const scratchRoot = releaseCliScratchRoot({ tag: true });
-  try {
-    fs.writeFileSync(path.join(scratchRoot, "package.json"), JSON.stringify({ name: "ctide", version: "0.0.1" }), "utf8");
-    const identity = releaseIdentityFromTag(scratchRoot, TEST_TAG);
-    assert.strictEqual(identity.version, TEST_VERSION, "must read the tagged version, not the dirtied working-tree version");
-    assert.strictEqual(identity.assetName, ASSET_NAME);
-    assert.strictEqual(identity.checksumName, CHECKSUM_NAME);
-  } finally {
-    fs.rmSync(scratchRoot, { recursive: true, force: true });
-  }
+  fs.writeFileSync(path.join(scratchRoot, "package.json"), JSON.stringify({ name: "ctide", version: "0.0.1" }), "utf8");
+  const identity = releaseIdentityFromTag(scratchRoot, TEST_TAG);
+  assert.strictEqual(identity.version, TEST_VERSION, "must read the tagged version, not the dirtied working-tree version");
+  assert.strictEqual(identity.assetName, ASSET_NAME);
+  assert.strictEqual(identity.checksumName, CHECKSUM_NAME);
 });
 test("release CLI: releaseIdentityFromTag rejects a tag whose tagged version parity fails", () => {
   // A minimal, dedicated fixture (not releaseCliScratchRoot(), which always keeps the two versions in
@@ -444,68 +533,48 @@ test("release CLI: releaseIdentityFromTag rejects a tag whose tagged version par
   // an unrelated "Needed a single revision" error -- not the parity check this test targets), but its
   // tagged root package.json and nested plugin.json carry deliberately MISMATCHED versions.
   const scratchRoot = makeRepo({ prefix: "ctide-release-cli-parity-", name: "Test", email: "test@example.invalid" });
-  try {
-    fs.mkdirSync(path.join(scratchRoot, "cressetide", ".claude-plugin"), { recursive: true });
-    fs.writeFileSync(path.join(scratchRoot, "package.json"), JSON.stringify({ name: "ctide", version: TEST_VERSION }), "utf8");
-    fs.writeFileSync(path.join(scratchRoot, "cressetide", ".claude-plugin", "plugin.json"), JSON.stringify({ name: "ctide", version: "1.0.0" }), "utf8");
-    git(scratchRoot, ["add", "-A"]);
-    git(scratchRoot, ["commit", "-m", "mismatched versions"]);
-    git(scratchRoot, ["tag", "-a", TEST_TAG, "-m", TEST_TAG]);
-    assert.throws(() => releaseIdentityFromTag(scratchRoot, TEST_TAG), /version parity failed/);
-  } finally {
-    fs.rmSync(scratchRoot, { recursive: true, force: true });
-  }
+  fs.mkdirSync(path.join(scratchRoot, "cressetide", ".claude-plugin"), { recursive: true });
+  fs.writeFileSync(path.join(scratchRoot, "package.json"), JSON.stringify({ name: "ctide", version: TEST_VERSION }), "utf8");
+  fs.writeFileSync(path.join(scratchRoot, "cressetide", ".claude-plugin", "plugin.json"), JSON.stringify({ name: "ctide", version: "1.0.0" }), "utf8");
+  git(scratchRoot, ["add", "-A"]);
+  git(scratchRoot, ["commit", "-m", "mismatched versions"]);
+  git(scratchRoot, ["tag", "-a", TEST_TAG, "-m", TEST_TAG]);
+  assert.throws(() => releaseIdentityFromTag(scratchRoot, TEST_TAG), /version parity failed/);
 });
 
 test("release CLI: entriesFromTag reads file contents from the tagged tree, not the working tree", () => {
   const scratchRoot = releaseCliScratchRoot({ tag: true });
-  try {
-    fs.writeFileSync(path.join(scratchRoot, "cressetide", "hooks", "plan-gate.js"), "// dirtied after tagging\n", "utf8");
-    const entries = entriesFromTag(scratchRoot, TEST_TAG);
-    const hookEntry = entries.find((e) => e.archivePath === "cressetide/hooks/plan-gate.js");
-    assert.ok(hookEntry, "entriesFromTag must include the real hooks/plan-gate.js");
-    const realBytes = fs.readFileSync(path.join(root, "cressetide", "hooks", "plan-gate.js"));
-    assert.deepStrictEqual(hookEntry.content, realBytes, "must read the tagged blob, not the post-tag working-tree edit");
-  } finally {
-    fs.rmSync(scratchRoot, { recursive: true, force: true });
-  }
+  fs.writeFileSync(path.join(scratchRoot, "cressetide", "hooks", "plan-gate.js"), "// dirtied after tagging\n", "utf8");
+  const entries = entriesFromTag(scratchRoot, TEST_TAG);
+  const hookEntry = entries.find((e) => e.archivePath === "cressetide/hooks/plan-gate.js");
+  assert.ok(hookEntry, "entriesFromTag must include the real hooks/plan-gate.js");
+  const realBytes = fs.readFileSync(path.join(root, "cressetide", "hooks", "plan-gate.js"));
+  assert.deepStrictEqual(hookEntry.content, realBytes, "must read the tagged blob, not the post-tag working-tree edit");
 });
 test("release CLI: entriesFromTag rejects a tag with no plugin files under the prefix", () => {
   const scratchRoot = makeRepo({ prefix: "ctide-release-cli-no-plugin-", name: "Test", email: "test@example.invalid" });
-  try {
-    fs.writeFileSync(path.join(scratchRoot, "README.md"), "placeholder\n", "utf8");
-    git(scratchRoot, ["add", "-A"]);
-    git(scratchRoot, ["commit", "-m", "no plugin"]);
-    git(scratchRoot, ["tag", "-a", TEST_TAG, "-m", TEST_TAG]);
-    assert.throws(() => entriesFromTag(scratchRoot, TEST_TAG), /contains no plugin files under cressetide/);
-  } finally {
-    fs.rmSync(scratchRoot, { recursive: true, force: true });
-  }
+  fs.writeFileSync(path.join(scratchRoot, "README.md"), "placeholder\n", "utf8");
+  git(scratchRoot, ["add", "-A"]);
+  git(scratchRoot, ["commit", "-m", "no plugin"]);
+  git(scratchRoot, ["tag", "-a", TEST_TAG, "-m", TEST_TAG]);
+  assert.throws(() => entriesFromTag(scratchRoot, TEST_TAG), /contains no plugin files under cressetide/);
 });
 
 test("release CLI: validateTaggedReleaseState passes at a clean tagged HEAD and fails once tracked release inputs are dirtied", () => {
   const scratchRoot = releaseCliScratchRoot({ tag: true });
-  try {
-    const identity = releaseIdentityFromTag(scratchRoot, TEST_TAG);
-    assert.strictEqual(validateTaggedReleaseState(scratchRoot, identity), true);
-    fs.writeFileSync(path.join(scratchRoot, "cressetide", ".claude-plugin", "plugin.json"),
-      JSON.stringify({ name: "ctide", version: TEST_VERSION, dirty: true }), "utf8");
-    assert.throws(() => validateTaggedReleaseState(scratchRoot, identity), /Tracked release inputs differ/);
-  } finally {
-    fs.rmSync(scratchRoot, { recursive: true, force: true });
-  }
+  const identity = releaseIdentityFromTag(scratchRoot, TEST_TAG);
+  assert.strictEqual(validateTaggedReleaseState(scratchRoot, identity), true);
+  fs.writeFileSync(path.join(scratchRoot, "cressetide", ".claude-plugin", "plugin.json"),
+    JSON.stringify({ name: "ctide", version: TEST_VERSION, dirty: true }), "utf8");
+  assert.throws(() => validateTaggedReleaseState(scratchRoot, identity), /Tracked release inputs differ/);
 });
 test("release CLI: validateTaggedReleaseState rejects a tag that does not point at current HEAD", () => {
   const scratchRoot = releaseCliScratchRoot({ tag: true });
-  try {
-    const identity = releaseIdentityFromTag(scratchRoot, TEST_TAG);
-    fs.writeFileSync(path.join(scratchRoot, "README.md"), "advance HEAD past the tag\n", "utf8");
-    git(scratchRoot, ["add", "-A"]);
-    git(scratchRoot, ["commit", "-m", "advance"]);
-    assert.throws(() => validateTaggedReleaseState(scratchRoot, identity), /must already exist at current HEAD/);
-  } finally {
-    fs.rmSync(scratchRoot, { recursive: true, force: true });
-  }
+  const identity = releaseIdentityFromTag(scratchRoot, TEST_TAG);
+  fs.writeFileSync(path.join(scratchRoot, "README.md"), "advance HEAD past the tag\n", "utf8");
+  git(scratchRoot, ["add", "-A"]);
+  git(scratchRoot, ["commit", "-m", "advance"]);
+  assert.throws(() => validateTaggedReleaseState(scratchRoot, identity), /must already exist at current HEAD/);
 });
 
 // === Part 3: publish()'s guard clause and all three top-level outcomes, end-to-end, with fully-faked ==
@@ -537,106 +606,94 @@ test("release CLI: publish() rejects a missing tag before touching root-dependen
 // ever called on this branch.
 test("release CLI: publish() throws when gh's initial inspection returns neither found nor not-found, never reaching the runner/download fakes", async () => {
   const scratchRoot = releaseCliScratchRoot({ tag: true });
-  try {
-    const mod = await importScratchModule(scratchRoot);
-    const executeCalls = [];
-    const options = {
-      execute: (args) => {
-        executeCalls.push(args);
-        return { status: 1, stdout: "", stderr: "HTTP 500: Internal Server Error", error: undefined };
-      },
-      runner: () => { throw new Error("must not be reached: initial inspection returned a transport-error, not found/not-found"); },
-      download: () => { throw new Error("must not be reached: initial inspection returned a transport-error, not found/not-found"); },
-    };
-    assert.throws(() => mod.publish(TEST_TAG, options), /Unable to inspect release/);
-    assert.strictEqual(executeCalls.length, 1, "publish() must check for an existing release exactly once via the injected execute fake before throwing");
-  } finally {
-    fs.rmSync(scratchRoot, { recursive: true, force: true });
-  }
+  const mod = await importScratchModule(scratchRoot);
+  const executeCalls = [];
+  const options = {
+    execute: (args) => {
+      executeCalls.push(args);
+      return { status: 1, stdout: "", stderr: "HTTP 500: Internal Server Error", error: undefined };
+    },
+    runner: () => { throw new Error("must not be reached: initial inspection returned a transport-error, not found/not-found"); },
+    download: () => { throw new Error("must not be reached: initial inspection returned a transport-error, not found/not-found"); },
+  };
+  assert.throws(() => mod.publish(TEST_TAG, options), /Unable to inspect release/);
+  assert.strictEqual(executeCalls.length, 1, "publish() must check for an existing release exactly once via the injected execute fake before throwing");
 });
 
 test("release CLI: publish() creates a release when gh reports not-found, using fully-faked options -- zero real gh calls", async () => {
   const scratchRoot = releaseCliScratchRoot({ tag: true });
-  try {
-    const mod = await importScratchModule(scratchRoot);
-    const executeCalls = [];
-    const runnerCalls = [];
-    const inspectCalls = [];
-    const downloadCalls = [];
-    const options = {
-      // Used directly by inspectPublishedRelease(tag, options) -- publish()'s FIRST existence check.
-      execute: (args) => {
-        executeCalls.push(args);
-        return { status: 1, stdout: "", stderr: "HTTP 404: Not Found", error: undefined };
-      },
-      // Used by runReleaseCommand's "create" call AND by verifyOrRepairPublished's own runner
-      // fallback (only reached if a repair-upload is needed, which this happy path never needs).
-      runner: (cmd, args) => {
-        runnerCalls.push([cmd, ...args]);
-        return "";
-      },
-      // Used by verifyOrRepairPublished's inspectExisting -- a DIFFERENT seam than `execute` above.
-      // verifyOrRepairPublished never calls inspectPublishedRelease itself unless options.inspect is
-      // omitted, in which case it falls back to the bare inspectPublishedRelease reference called with
-      // NO options -- which would reach the real executeGh. Confirmed by reading verifyOrRepairPublished
-      // directly; this seam must be supplied explicitly, never assumed to inherit from `execute`.
-      inspect: (t) => {
-        inspectCalls.push(t);
-        return { outcome: "found", assets: [{ name: ASSET_NAME }, { name: CHECKSUM_NAME }] };
-      },
-      // Used by verifyOrRepairPublished's download step. Copies the REAL just-built archive bytes
-      // (built.assetPath/checksumPath, produced by the real, local, non-gh-related createArchive())
-      // into the requested directory -- simulating a successful "gh release download" of exactly what
-      // was just (fake-)created, with zero real subprocess calls.
-      download: (t, directory, built) => {
-        downloadCalls.push(t);
-        fs.copyFileSync(built.assetPath, path.join(directory, built.assetName));
-        fs.copyFileSync(built.checksumPath, path.join(directory, built.checksumName));
-        return { outcome: "downloaded", attempts: 1 };
-      },
-    };
-    const result = mod.publish(TEST_TAG, options);
-    assert.strictEqual(result.action, "verified-existing-release");
-    assert.strictEqual(executeCalls.length, 1, "publish() must check for an existing release exactly once via the injected execute fake");
-    assert.deepStrictEqual(executeCalls[0], ["release", "view", TEST_TAG, "--json", "assets"]);
-    assert.strictEqual(inspectCalls.length, 1, "verifyOrRepairPublished must re-inspect via the injected inspect fake");
-    assert.strictEqual(downloadCalls.length, 1);
-    const createCall = runnerCalls.find((c) => c[0] === "gh" && c[1] === "release" && c[2] === "create");
-    assert.ok(createCall, `not-found must create a release via the injected runner fake: ${JSON.stringify(runnerCalls)}`);
-    assert.ok(createCall.includes("--verify-tag"));
-    assert.ok(!runnerCalls.some((c) => c.includes("upload")), "a fresh create + matching verify must never attempt an asset-repair upload");
-  } finally {
-    fs.rmSync(scratchRoot, { recursive: true, force: true });
-  }
+  const mod = await importScratchModule(scratchRoot);
+  const executeCalls = [];
+  const runnerCalls = [];
+  const inspectCalls = [];
+  const downloadCalls = [];
+  const options = {
+    // Used directly by inspectPublishedRelease(tag, options) -- publish()'s FIRST existence check.
+    execute: (args) => {
+      executeCalls.push(args);
+      return { status: 1, stdout: "", stderr: "HTTP 404: Not Found", error: undefined };
+    },
+    // Used by runReleaseCommand's "create" call AND by verifyOrRepairPublished's own runner
+    // fallback (only reached if a repair-upload is needed, which this happy path never needs).
+    runner: (cmd, args) => {
+      runnerCalls.push([cmd, ...args]);
+      return "";
+    },
+    // Used by verifyOrRepairPublished's inspectExisting -- a DIFFERENT seam than `execute` above.
+    // verifyOrRepairPublished never calls inspectPublishedRelease itself unless options.inspect is
+    // omitted, in which case it falls back to the bare inspectPublishedRelease reference called with
+    // NO options -- which would reach the real executeGh. Confirmed by reading verifyOrRepairPublished
+    // directly; this seam must be supplied explicitly, never assumed to inherit from `execute`.
+    inspect: (t) => {
+      inspectCalls.push(t);
+      return { outcome: "found", assets: [{ name: ASSET_NAME }, { name: CHECKSUM_NAME }] };
+    },
+    // Used by verifyOrRepairPublished's download step. Copies the REAL just-built archive bytes
+    // (built.assetPath/checksumPath, produced by the real, local, non-gh-related createArchive())
+    // into the requested directory -- simulating a successful "gh release download" of exactly what
+    // was just (fake-)created, with zero real subprocess calls.
+    download: (t, directory, built) => {
+      downloadCalls.push(t);
+      fs.copyFileSync(built.assetPath, path.join(directory, built.assetName));
+      fs.copyFileSync(built.checksumPath, path.join(directory, built.checksumName));
+      return { outcome: "downloaded", attempts: 1 };
+    },
+  };
+  const result = mod.publish(TEST_TAG, options);
+  assert.strictEqual(result.action, "verified-existing-release");
+  assert.strictEqual(executeCalls.length, 1, "publish() must check for an existing release exactly once via the injected execute fake");
+  assert.deepStrictEqual(executeCalls[0], ["release", "view", TEST_TAG, "--json", "assets"]);
+  assert.strictEqual(inspectCalls.length, 1, "verifyOrRepairPublished must re-inspect via the injected inspect fake");
+  assert.strictEqual(downloadCalls.length, 1);
+  const createCall = runnerCalls.find((c) => c[0] === "gh" && c[1] === "release" && c[2] === "create");
+  assert.ok(createCall, `not-found must create a release via the injected runner fake: ${JSON.stringify(runnerCalls)}`);
+  assert.ok(createCall.includes("--verify-tag"));
+  assert.ok(!runnerCalls.some((c) => c.includes("upload")), "a fresh create + matching verify must never attempt an asset-repair upload");
 });
 
 test("release CLI: publish() verifies an existing matching release without uploading, using fully-faked options -- zero real gh calls", async () => {
   const scratchRoot = releaseCliScratchRoot({ tag: true });
-  try {
-    const mod = await importScratchModule(scratchRoot);
-    const executeCalls = [];
-    const runnerCalls = [];
-    const options = {
-      execute: (args) => {
-        executeCalls.push(args);
-        return { status: 0, stdout: JSON.stringify({ assets: [{ name: ASSET_NAME }, { name: CHECKSUM_NAME }] }), stderr: "", error: undefined };
-      },
-      runner: (cmd, args) => {
-        runnerCalls.push([cmd, ...args]);
-        return "";
-      },
-      inspect: () => ({ outcome: "found", assets: [{ name: ASSET_NAME }, { name: CHECKSUM_NAME }] }),
-      download: (t, directory, built) => {
-        fs.copyFileSync(built.assetPath, path.join(directory, built.assetName));
-        fs.copyFileSync(built.checksumPath, path.join(directory, built.checksumName));
-        return { outcome: "downloaded", attempts: 1 };
-      },
-    };
-    const result = mod.publish(TEST_TAG, options);
-    assert.strictEqual(result.action, "verified-existing-release");
-    assert.strictEqual(executeCalls.length, 1);
-    assert.strictEqual(runnerCalls.length, 0, "found+matching must never call the runner fake -- no create, no upload");
-  } finally {
-    fs.rmSync(scratchRoot, { recursive: true, force: true });
-  }
+  const mod = await importScratchModule(scratchRoot);
+  const executeCalls = [];
+  const runnerCalls = [];
+  const options = {
+    execute: (args) => {
+      executeCalls.push(args);
+      return { status: 0, stdout: JSON.stringify({ assets: [{ name: ASSET_NAME }, { name: CHECKSUM_NAME }] }), stderr: "", error: undefined };
+    },
+    runner: (cmd, args) => {
+      runnerCalls.push([cmd, ...args]);
+      return "";
+    },
+    inspect: () => ({ outcome: "found", assets: [{ name: ASSET_NAME }, { name: CHECKSUM_NAME }] }),
+    download: (t, directory, built) => {
+      fs.copyFileSync(built.assetPath, path.join(directory, built.assetName));
+      fs.copyFileSync(built.checksumPath, path.join(directory, built.checksumName));
+      return { outcome: "downloaded", attempts: 1 };
+    },
+  };
+  const result = mod.publish(TEST_TAG, options);
+  assert.strictEqual(result.action, "verified-existing-release");
+  assert.strictEqual(executeCalls.length, 1);
+  assert.strictEqual(runnerCalls.length, 0, "found+matching must never call the runner fake -- no create, no upload");
 });

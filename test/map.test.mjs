@@ -1193,10 +1193,9 @@ test("Map CLI: `create` then `verify` via real spawned subprocesses write and va
 });
 
 test("Map CLI: explicit `map` mode aliases to `create` via a real spawned subprocess", () => {
-  // args()'s mode is positional (argv[0]), so exercising the "map" -> "create" alias (`if (mode ===
-  // "map") mode = "create";`) while also passing --root deterministically requires the literal "map"
-  // token first -- omitting it entirely would make "--root" itself become argv[0], which is not a
-  // recognized mode and throws a usage error (confirmed directly, not assumed).
+  // args()'s mode is the one optional positional, so exercising the "map" -> "create" alias (`if (mode ===
+  // "map") mode = "create";`) while also passing --root requires the literal "map" token; omitting it
+  // entirely selects the default mode (create) instead, which would not exercise the alias.
   const projectRoot = repository();
   try {
     const target = path.join(projectRoot, ".ctide", "map", "SYSTEM_MAP.md");
@@ -1229,4 +1228,59 @@ test("Map CLI: invoked via a real symlinked/junctioned ancestor directory is sti
     fs.rmSync(parentDir, { recursive: true, force: true });
     fs.rmSync(projectRoot, { recursive: true, force: true });
   }
+});
+
+// --- the command line goes through cressetide/lib/cli.mjs parseCli; git through cressetide/lib/git.mjs ---
+
+const mapCli = (args, options = {}) => spawnSync(process.execPath, [mapScriptPath, ...args], { encoding: "utf8", cwd: tempDir("ctide-map-elsewhere-"), ...options });
+const mapTarget = (projectRoot) => path.join(projectRoot, ".ctide", "map", "SYSTEM_MAP.md");
+const USAGE_TAIL = /usage: map\.mjs \[create\|refresh\|verify\] \[--root PATH\]\n$/;
+
+test("Map CLI binding (parseCli): an unknown flag, a --root without its value, and a second positional are usage errors — exit 1, the usage on stderr, no map written", () => {
+  const projectRoot = repository();
+  for (const args of [["create", "--bogus", "--root", projectRoot], ["create", "--root"], ["create", "extra", "--root", projectRoot], ["bogus", "--root", projectRoot]]) {
+    const result = mapCli(args);
+    assert.strictEqual(result.status, 1, `${args.join(" ")}: a usage error exits 1`);
+    assert.strictEqual(result.stdout, "", args.join(" "));
+    assert.match(result.stderr, USAGE_TAIL, `${args.join(" ")}: the usage line`);
+    assert.strictEqual(fs.existsSync(mapTarget(projectRoot)), false, `${args.join(" ")}: nothing written`);
+  }
+});
+
+test("Map CLI (parseCli): --root=<dir> (the `=` form) and a mode-less --root <dir> both create; a repeated --root keeps its last value", () => {
+  const viaEquals = repository();
+  assert.strictEqual(mapCli(["create", `--root=${viaEquals}`]).status, 0);
+  assert.ok(fs.existsSync(mapTarget(viaEquals)), "--root=<dir> selected the repository");
+
+  const modeless = repository();
+  assert.strictEqual(mapCli(["--root", modeless]).status, 0, "no mode is the default mode, create");
+  assert.ok(fs.existsSync(mapTarget(modeless)));
+
+  const first = repository();
+  const last = repository();
+  assert.strictEqual(mapCli(["create", "--root", first, "--root", last]).status, 0);
+  assert.ok(fs.existsSync(mapTarget(last)), "the last --root is the repository");
+  assert.strictEqual(fs.existsSync(mapTarget(first)), false, "the first --root is not");
+});
+
+test("Map lib/git binding: an inherited GIT_DIR naming another repository does not change the commit recorded for --root", () => {
+  const projectRoot = repository();
+  const other = makeRepo({ prefix: "ctide-map-other-", files: { "other.txt": "another repository\n" } });
+  const expected = git(projectRoot, ["rev-parse", "HEAD"]);
+  assert.notStrictEqual(git(other, ["rev-parse", "HEAD"]), expected, "fixture sanity: two different commits");
+  const result = mapCli(["create", "--root", projectRoot], { env: { ...process.env, GIT_DIR: path.join(other, ".git") } });
+  assert.strictEqual(result.status, 0, result.stderr);
+  assert.match(fs.readFileSync(mapTarget(projectRoot), "utf8"), new RegExp(`^Verified at commit: ${expected}$`, "m"));
+});
+
+test("Map lib/git headState binding: a HEAD naming a missing object is an error, never a commit id written into the map", () => {
+  const projectRoot = repository();
+  fs.writeFileSync(path.join(projectRoot, ".git", "refs", "heads", "main"), "1".repeat(40) + "\n", "utf8");
+  assert.throws(() => writeMap(projectRoot), /Cannot establish repository commit provenance: HEAD does not resolve to a readable commit/);
+  assert.strictEqual(fs.existsSync(mapTarget(projectRoot)), false, "no map is written");
+
+  const result = mapCli(["create", "--root", projectRoot]);
+  assert.strictEqual(result.status, 1);
+  assert.match(result.stderr, /Cannot establish repository commit provenance/);
+  assert.strictEqual(fs.existsSync(mapTarget(projectRoot)), false);
 });

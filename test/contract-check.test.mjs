@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { makeRepo, tempDir, test } from "./helpers.mjs";
+import { git, makeRepo, tempDir, test } from "./helpers.mjs";
 import {
   extractContractJson, matchesGlob, scopeDiff,
 } from "../cressetide/skills/vigil/scripts/contract-check.mjs";
@@ -116,7 +116,7 @@ import cp from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveContractPath, KNOWN_FLAGS } from "../cressetide/skills/vigil/scripts/contract-check.mjs";
+import { resolveContractPath } from "../cressetide/skills/vigil/scripts/contract-check.mjs";
 
 const SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..",
   "cressetide", "skills", "vigil", "scripts", "contract-check.mjs");
@@ -170,14 +170,6 @@ test("contract-check CLI: an explicit --contract arg keeps precedence over the .
   assert.match(out, /AC missing verification mapping: AC-LEGACY/, "an explicit path must win over discovery");
 });
 
-// --- e2e: contract-check whole-class flag-swallow guard (get() itself now guards EVERY flag in this
-// file's own KNOWN_FLAGS -- the same shared-mechanism fix failure-retrieve.mjs / failure-consolidate.mjs apply
-// over their own flag sets) ---
-
-// A repo with one committed file plus a real UNCOMMITTED modification to it (so `git diff --name-only HEAD`
-// -- the correct --base fallback -- shows something non-trivial), and a contract at the DEFAULT
-// .ctide/output/contract.md discovery path (so a correctly-falling-back --contract finds it) whose
-// allowedPaths excludes that file (so a correctly-resolved --base reports it as out-of-scope).
 test("contract-check: a git failure (non-git cwd) stays fail-open with a clean caller stderr -- the child's raw stderr text must never leak through execFileSync's default-inherited stdio", () => {
   const dir = tempDir("ctide-cc-nongit-");
   const result = cp.spawnSync("node", [SCRIPT, "--base", "HEAD"], { cwd: dir, encoding: "utf8" });
@@ -186,40 +178,110 @@ test("contract-check: a git failure (non-git cwd) stays fail-open with a clean c
   assert.match(result.stdout, /scope/, "must still print a report (changedPathsFromGit swallowed the git failure to [])");
 });
 
-function repoForSwallowTest() {
-  const dir = makeRepo({
-    prefix: "ctide-cc-swallow-", name: "Contract Check Swallow Test", email: "cc@example.invalid",
-    files: { "tracked.ts": "original\n" }, message: "initial",
-  });
-  fs.writeFileSync(path.join(dir, "tracked.ts"), "changed\n", "utf8"); // uncommitted -> shows in `git diff HEAD`
+// --- the command line goes through cressetide/lib/cli.mjs parseCli, git through cressetide/lib/git.mjs ---
+
+// A repo with one committed file plus a real UNCOMMITTED modification to it (so `git diff --name-only HEAD`
+// shows something non-trivial), and a contract at the DEFAULT .ctide/output/contract.md discovery path
+// (untracked, so never itself a changed path) whose allowedPaths excludes that file, so a correct diff
+// reports it as out-of-scope. `contract` overrides the contract's fields; `files` the committed files.
+function repoWithOutOfScopeChange({ contract = {}, files = { "tracked.ts": "original\n" }, change = "tracked.ts" } = {}) {
+  const dir = makeRepo({ prefix: "ctide-cc-repo-", name: "Contract Check Test", email: "cc@example.invalid", files, message: "initial" });
+  fs.writeFileSync(path.join(dir, change), "changed\n", "utf8");
   fs.mkdirSync(path.join(dir, ".ctide", "output"), { recursive: true });
   fs.writeFileSync(
     path.join(dir, ".ctide", "output", "contract.md"),
-    "# C\n\n```json\n" + JSON.stringify({ allowedPaths: ["nonexistent/**"] }) + "\n```\n",
+    "# C\n\n```json\n" + JSON.stringify({ allowedPaths: ["nonexistent/**"], ...contract }) + "\n```\n",
     "utf8",
   );
   return dir;
 }
+const runCheck = (cwd, args, env) => cp.spawnSync("node", [SCRIPT, ...args], { cwd, encoding: "utf8", env });
+const CC_NO_CLAIM = "ctide contract-check: no claim — the command line could not be parsed (usage: contract-check.mjs [--contract <path>] [--base <ref>]) — NO deterministic scope/AC claim; arbiter uses prose judgment.\n";
+const CC_USAGE_LINE = /^contract-check: .*\(usage: contract-check\.mjs \[--contract <path>\] \[--base <ref>\]\)\n$/;
 
-test("contract-check: for EVERY flag in KNOWN_FLAGS, a value slot occupied by the OTHER known flag's own name is treated as omitted, never as a literal value -- --contract falls back to the .ctide default-discovery path (finds the seeded contract, not a bogus nonexistent '<flag-name>'-shaped file) and --base falls back to diffing against HEAD (reports the real uncommitted change as out-of-scope, rather than failing open on a bogus non-ref '<flag-name>'-shaped --base)", () => {
-  // Only 2 flags in this file -> order is simply [G, F] (no "everyone else" middle section).
-  for (const F of KNOWN_FLAGS) {
-    for (const G of KNOWN_FLAGS) {
-      if (G === F) continue;
-      const dir = repoForSwallowTest();
-      const contractPath = path.join(dir, ".ctide", "output", "contract.md");
-      // G's own legitimate occurrence: --contract -> the real seeded contract path; --base -> "HEAD" (an
-      // explicit ref equivalent to the default, so the expected report is identical either way).
-      const legitValueOf = (flagName) => (flagName === "--contract" ? contractPath : "HEAD");
-      const order = [G, F];
-      const argv = [];
-      for (const flagName of order) {
-        if (flagName === F) argv.push(F, G); // F's own value slot swallowed by G's literal name
-        else argv.push(flagName, legitValueOf(flagName));
-      }
-      const out = cp.execFileSync("node", [SCRIPT, ...argv], { cwd: dir, encoding: "utf8" });
-      assert.match(out, /out-of-scope changed files: tracked\.ts/,
-        `${F} swallowed by ${G} must still resolve to the real contract + diff against HEAD, not a bogus '${G}'-shaped path/ref`);
-    }
+test("--base injection (owner Q3): `--base --output=<file>` and `--base=--output=<file>` write no file, make no scope claim, and are usage errors naming --base", () => {
+  const dir = repoWithOutOfScopeChange();
+  const pwned = path.join(tempDir("ctide-cc-pwned-"), "pwned.txt");
+  for (const args of [["--base", `--output=${pwned}`], [`--base=--output=${pwned}`]]) {
+    const r = runCheck(dir, args);
+    assert.strictEqual(r.status, 0, `${args.join(" ")}: must always exit 0`);
+    assert.strictEqual(fs.existsSync(pwned), false, `${args.join(" ")}: git must never receive the value as an option (no file written)`);
+    assert.strictEqual(r.stdout, CC_NO_CLAIM, `${args.join(" ")}: no scope claim at all, least of all "scope: clean"`);
+    assert.match(r.stderr, CC_USAGE_LINE, `${args.join(" ")}: one usage line on stderr`);
+    assert.match(r.stderr, /'--base'/, `${args.join(" ")}: the usage line names --base`);
   }
+});
+
+test("an unresolvable --base reports scope as unverified — never \"scope: clean\", no forbidden-path claim either — and keeps the AC-coverage line, exit 0", () => {
+  const dir = repoWithOutOfScopeChange({ contract: { forbiddenPaths: ["tracked.ts"] } });
+  const r = runCheck(dir, ["--base", "no-such-ref"]);
+  assert.strictEqual(r.status, 0);
+  assert.strictEqual(r.stderr, "");
+  assert.strictEqual(r.stdout, [
+    "ctide contract-check (deterministic):",
+    '  scope: unverified (--base "no-such-ref" does not resolve to a commit) — NO scope or forbidden-path claim',
+    "  AC coverage: every behavior-changing criterion maps to a verification entry",
+    "",
+  ].join("\n"));
+});
+
+test("a valid --base (HEAD~1, its `=` form, an annotated tag) is resolved to its commit and diffed as before; no --base diffs against HEAD", () => {
+  const dir = repoWithOutOfScopeChange();
+  git(dir, ["tag", "-a", "v1", "-m", "v1"]);
+  fs.writeFileSync(path.join(dir, "other.ts"), "added in the second commit\n", "utf8");
+  git(dir, ["add", "other.ts"]);
+  git(dir, ["commit", "-q", "-m", "second"]);
+  for (const args of [["--base", "HEAD~1"], ["--base=HEAD~1"], ["--base", "v1"]]) {
+    const r = runCheck(dir, args);
+    assert.strictEqual(r.stderr, "", args.join(" "));
+    assert.ok(r.stdout.includes("  out-of-scope changed files: other.ts, tracked.ts\n"), `${args.join(" ")}: ${r.stdout}`);
+  }
+  assert.ok(runCheck(dir, []).stdout.includes("  out-of-scope changed files: tracked.ts\n"), "no --base: against HEAD");
+});
+
+test("removed flags (--provenance, --inventory, --task) are usage errors: exit 0, a stderr usage line naming the flag, the stdout no-claim line, no provenance JSON", () => {
+  const dir = repoWithOutOfScopeChange();
+  for (const args of [["--provenance"], ["--inventory"], ["--task", "T-1"]]) {
+    const r = runCheck(dir, args);
+    assert.strictEqual(r.status, 0, args.join(" "));
+    assert.match(r.stderr, CC_USAGE_LINE, `${args.join(" ")}: one usage line on stderr`);
+    assert.ok(r.stderr.includes(`'${args[0]}'`), `${args.join(" ")}: the usage line names the flag`);
+    assert.strictEqual(r.stdout, CC_NO_CLAIM, `${args.join(" ")}: the no-claim line only`);
+    assert.ok(!r.stdout.includes("{"), `${args.join(" ")}: no JSON of any kind`);
+  }
+});
+
+test("CLI (parseCli): an unknown flag, a value flag without its value, and a positional are usage errors; a repeated --base keeps its last value", () => {
+  const dir = repoWithOutOfScopeChange();
+  for (const args of [["--bogus"], ["--base"], ["--contract"], ["v1"]]) {
+    const r = runCheck(dir, args);
+    assert.strictEqual(r.status, 0, args.join(" "));
+    assert.strictEqual(r.stdout, CC_NO_CLAIM, args.join(" "));
+    assert.match(r.stderr, CC_USAGE_LINE, args.join(" "));
+  }
+  const repeated = runCheck(dir, ["--base", "no-such-ref", "--base", "HEAD"]);
+  assert.strictEqual(repeated.stderr, "");
+  assert.ok(repeated.stdout.includes("  out-of-scope changed files: tracked.ts\n"), "the last --base (HEAD) wins over the unresolvable first one");
+});
+
+test("lib/git binding: an inherited absolute GIT_DIR naming another repository does not redirect the diff", () => {
+  const dir = repoWithOutOfScopeChange();
+  const other = makeRepo({ prefix: "ctide-cc-other-", files: { "b-only.txt": "another repository\n" } });
+  const env = { ...process.env, GIT_DIR: path.join(other, ".git") };
+  for (const args of [[], ["--base", "HEAD"]]) {
+    const r = runCheck(dir, args, env);
+    assert.strictEqual(r.stderr, "", args.join(" "));
+    assert.ok(r.stdout.includes("  out-of-scope changed files: tracked.ts\n"), `${args.join(" ") || "(no args)"}: the diff is the working directory's own repository: ${r.stdout}`);
+    assert.ok(!r.stdout.includes("b-only.txt"), `${args.join(" ") || "(no args)"}: nothing from the inherited GIT_DIR's repository`);
+  }
+});
+
+test("lib/git binding: a non-ASCII changed path is matched by its glob (core.quotePath=false wins over a repo-local core.quotePath=true)", () => {
+  const name = "caf" + String.fromCodePoint(0xe9) + ".txt";
+  const dir = repoWithOutOfScopeChange({ files: { [name]: "original\n" }, change: name, contract: { allowedPaths: ["src/**"], forbiddenPaths: [name] } });
+  git(dir, ["config", "core.quotePath", "true"]);
+  const r = runCheck(dir, []);
+  assert.strictEqual(r.stderr, "");
+  assert.ok(r.stdout.includes(`  forbidden-path hits: ${name}\n`), `the forbidden non-ASCII path is reported unquoted: ${r.stdout}`);
+  assert.ok(r.stdout.includes(`  out-of-scope changed files: ${name}\n`), r.stdout);
 });

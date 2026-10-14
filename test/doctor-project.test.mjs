@@ -1,7 +1,7 @@
 // Tests for doctor.mjs's opt-in `--project`/`--cwd` flags: two
 // additive checks (failure-memory-health, incident-journals) layered on top of the existing
-// 14 plugin-health checks, plus a KNOWN_FLAGS-guarded argument() fix covering the pre-existing
-// --plugin-root flag too. Sibling to, not an extension of, test/doctor-security.test.mjs (that file is
+// 14 plugin-health checks, plus the command line as parsed by cressetide/lib/cli.mjs (parseCli, once, in
+// main()) and the capped project reads through cressetide/lib/read-capped.mjs. Sibling to, not an extension of, test/doctor-security.test.mjs (that file is
 // scoped to plugin-health tamper-resistance -- a different concern). Mirrors test/failure-consolidate.test.mjs's
 // synthetic-fixture style: temp directories, synthetic FAILURE_MEMORY.md / incident-journal content, cleanup.
 import assert from "node:assert/strict";
@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { before, after } from "node:test";
-import { diagnose, summarizeMemoryHealth, KNOWN_FLAGS } from "../cressetide/skills/doctor/scripts/doctor.mjs";
+import { diagnose, summarizeMemoryHealth } from "../cressetide/skills/doctor/scripts/doctor.mjs";
 import { consolidationReport, tagRecurrenceCandidates } from "../cressetide/skills/vigil/scripts/failure-consolidate.mjs";
 import { parseEntries, defaultLedgerPath } from "../cressetide/skills/vigil/scripts/failure-retrieve.mjs";
 import { isolatedHome, root, tempDir, test, write } from "./helpers.mjs";
@@ -552,72 +552,91 @@ test("--project run with ONLY a non-closed incident (clean memory file) adds ONL
   assert.ok(report.guidance.some((line) => /salvage/i.test(line)), "salvage line present for the open incident");
 });
 
-// --- item (f): KNOWN_FLAGS swallow-prevention (must cover --plugin-root too, not just the two new flags) -
+// --- the command line goes through cressetide/lib/cli.mjs parseCli, once, in main(); the project reads go
+// through cressetide/lib/read-capped.mjs --------------------------------------------------------------------
 
-test("KNOWN_FLAGS is exactly the complete recognized-flag set: 2 value-bearing (--plugin-root, --cwd) + 2 boolean (--project, --json)", () => {
-  assert.deepStrictEqual([...KNOWN_FLAGS].sort(), ["--cwd", "--json", "--plugin-root", "--project"]);
-});
+// The real CLI with no CLAUDE_PROJECT_DIR / CLAUDE_PLUGIN_ROOT, run from a fresh empty directory, so a --cwd
+// that were ignored could never find a canary by accident.
+function runDoctor(args) {
+  const env = { ...process.env };
+  delete env.CLAUDE_PROJECT_DIR;
+  delete env.CLAUDE_PLUGIN_ROOT;
+  return cp.spawnSync(process.execPath, [doctorScript, ...args], { cwd: tempDir("ctide-doctor-elsewhere-"), encoding: "utf8", env });
+}
+const DOCTOR_USAGE_LINE = /^doctor: .*\(usage: doctor\.mjs \[--json\] \[--project \[--cwd DIR\]\] \[--plugin-root DIR\]\)\n$/;
 
-test("KNOWN_FLAGS guard, literal task example: --cwd --project treats --project as an omitted value for --cwd (not swallowed), falling back to CLAUDE_PROJECT_DIR", () => {
-  const dir = tempDir("ctide-doctor-literal-swallow-");
-  writeIncident(dir, "INCIDENT-20260601-literalcanary.md", "# INCIDENT-20260601-literalcanary\n\n- Status: open\n");
-  const env = { ...process.env, CLAUDE_PROJECT_DIR: dir };
-  const r = cp.spawnSync(process.execPath, [doctorScript, "--cwd", "--project", "--json"], { cwd: dir, encoding: "utf8", env });
-  // Exit code (not asserted as exactly 0): this temp dir seeds an incident canary but no project-local
-  // FAILURE_MEMORY.md, so --project's failure-memory-health check correctly reports "unverified" (Fix
-  // 1/AC2: it must never fall through to the machine-global tier just to manufacture a "pass"), which
-  // rolls the overall report status to "unverified" and the CLI exit code to 1 -- expected, not a crash.
-  // Only "exited cleanly, not signal-killed" is asserted here; the actual swallow-guard signal under test
-  // is the canary check below.
-  assert.strictEqual(typeof r.status, "number", `must exit cleanly, not crash: ${r.stderr}`);
-  const report = JSON.parse(r.stdout);
-  const canary = report.checks.find((c) => c.name === "incident:literalcanary");
-  assert.ok(canary, "--cwd must fall back to CLAUDE_PROJECT_DIR, not resolve to the bogus literal path '--project'");
-  assert.strictEqual(canary.status, "pass");
+test("CLI binding (parseCli): --cwd=<dir> --project reads the project at <dir> (the `=` form)", () => {
+  const dir = tempDir("ctide-doctor-cwd-equals-");
+  writeIncident(dir, "INCIDENT-20260601-equalscanary.md", "# INCIDENT-20260601-equalscanary\n\n- Status: open\n");
+  const r = runDoctor([`--cwd=${dir}`, "--project", "--json"]);
+  assert.strictEqual(r.stderr, "", "no usage error");
+  const canary = JSON.parse(r.stdout).checks.find((c) => c.name === "incident:equalscanary");
+  assert.ok(canary, "--cwd=<dir> selects <dir>, never the process's own working directory");
   assert.match(canary.detail, /status=open/);
 });
 
-test("doctor: for EVERY value-bearing flag in KNOWN_FLAGS, a value slot occupied by any OTHER known flag's own name (including the boolean --project/--json) is treated as omitted, never as a literal value -- --plugin-root falls back to the real bundled plugin root (manifest still passes) and --cwd falls back to CLAUDE_PROJECT_DIR (the seeded canary incident is still found), proving the swallow never silently misdirects either resolution to a bogus '<flag-name>'-shaped path", () => {
-  const VALUE_FLAGS = KNOWN_FLAGS.filter((f) => f !== "--project" && f !== "--json");
-  const BOOL_FLAGS = KNOWN_FLAGS.filter((f) => f === "--project" || f === "--json");
-  for (const F of VALUE_FLAGS) {
-    for (const G of KNOWN_FLAGS) {
-      if (G === F) continue;
-      const dir = tempDir("ctide-doctor-swallow-");
-      writeIncident(dir, "INCIDENT-20260601-sweepcanary.md", "# INCIDENT-20260601-sweepcanary\n\n- Status: open\n");
-      const values = { "--plugin-root": pluginRoot, "--cwd": dir };
-
-      // Order: G's own legitimate occurrence FIRST, then every other flag, then F LAST with its value
-      // slot occupied by the literal token G -- keeps every flag's indexOf lookup unambiguous (mirrors
-      // test/failure-consolidate.test.mjs's identical loop-test ordering discipline).
-      const order = [G, ...KNOWN_FLAGS.filter((x) => x !== F && x !== G), F];
-      const argv = [];
-      for (const flagName of order) {
-        if (flagName === F) argv.push(F, G); // F's own value slot swallowed by G's literal name
-        else if (BOOL_FLAGS.includes(flagName)) argv.push(flagName); // bare boolean, no value slot
-        else argv.push(flagName, values[flagName]);
-      }
-
-      const env = { ...process.env, CLAUDE_PROJECT_DIR: dir };
-      delete env.CLAUDE_PLUGIN_ROOT; // hermetic: --plugin-root's fallback, if swallowed, must reach bundledPluginRoot
-      const r = cp.spawnSync(process.execPath, [doctorScript, ...argv], { cwd: dir, encoding: "utf8", env });
-      // Exit code (not asserted as exactly 0): same reasoning as the literal-example test above -- this
-      // temp dir has no project-local FAILURE_MEMORY.md, so failure-memory-health correctly reports
-      // "unverified" post-Fix-1, rolling the exit code to 1. Only "exited cleanly" (fail-open, not a
-      // crash) is asserted here; the swallow-guard signal under test is the manifest/canary checks below.
-      assert.strictEqual(typeof r.status, "number", `${F} swallowed by ${G} must still exit cleanly (fail-open): ${r.stderr}`);
-      const report = JSON.parse(r.stdout);
-
-      const manifest = report.checks.find((c) => c.name === "manifest");
-      assert.strictEqual(manifest?.status, "pass",
-        `${F} swallowed by ${G}: --plugin-root must still resolve to the real bundled plugin root, not a bogus '${G}'-shaped path`);
-
-      const canary = report.checks.find((c) => c.name === "incident:sweepcanary");
-      assert.ok(canary,
-        `${F} swallowed by ${G}: --cwd must still resolve to the real seeded project dir, not a bogus '${G}'-shaped path`);
-      assert.match(canary.detail, /status=open/);
-    }
+test("CLI (parseCli): an unknown flag, a value flag without its value, --cwd followed by --project, a boolean given a value, and a stray argument are usage errors — exit 1, one stderr line, no report", () => {
+  for (const args of [["--bogus"], ["--json", "--plugin-root"], ["--cwd", "--project", "--json"], ["--json=1"], ["--json", "stray"]]) {
+    const r = runDoctor(args);
+    assert.strictEqual(r.status, 1, `${args.join(" ")}: a usage error exits 1`);
+    assert.strictEqual(r.stdout, "", `${args.join(" ")}: no check runs and no report is printed`);
+    assert.match(r.stderr, DOCTOR_USAGE_LINE, `${args.join(" ")}: one usage line on stderr`);
   }
+});
+
+test("CLI (parseCli): a repeated --cwd keeps its last value", () => {
+  const first = tempDir("ctide-doctor-cwd-first-");
+  const last = tempDir("ctide-doctor-cwd-last-");
+  writeIncident(first, "INCIDENT-20260601-firstcanary.md", "# INCIDENT-20260601-firstcanary\n\n- Status: open\n");
+  writeIncident(last, "INCIDENT-20260601-lastcanary.md", "# INCIDENT-20260601-lastcanary\n\n- Status: open\n");
+  const r = runDoctor(["--project", "--cwd", first, "--cwd", last, "--json"]);
+  assert.strictEqual(r.stderr, "");
+  const names = JSON.parse(r.stdout).checks.map((c) => c.name);
+  assert.ok(names.includes("incident:lastcanary"), "the last --cwd is the project");
+  assert.ok(!names.includes("incident:firstcanary"), "the first --cwd is not");
+});
+
+test("diagnose() never reads process.argv: --plugin-root / --cwd in the importing process's own argv change neither the default plugin root nor the default project", async (t) => {
+  const bogus = path.join(tempDir("ctide-doctor-argv-"), "not-a-plugin");
+  const project = tempDir("ctide-doctor-argv-project-");
+  writeIncident(project, "INCIDENT-20260601-argvcanary.md", "# INCIDENT-20260601-argvcanary\n\n- Status: open\n");
+  const saved = { argv: process.argv, pluginRoot: process.env.CLAUDE_PLUGIN_ROOT, projectDir: process.env.CLAUDE_PROJECT_DIR };
+  t.after(() => {
+    process.argv = saved.argv;
+    if (saved.pluginRoot === undefined) delete process.env.CLAUDE_PLUGIN_ROOT; else process.env.CLAUDE_PLUGIN_ROOT = saved.pluginRoot;
+    if (saved.projectDir === undefined) delete process.env.CLAUDE_PROJECT_DIR; else process.env.CLAUDE_PROJECT_DIR = saved.projectDir;
+  });
+  process.argv = [...saved.argv, "--plugin-root", bogus, "--cwd", bogus];
+  delete process.env.CLAUDE_PLUGIN_ROOT;
+  process.env.CLAUDE_PROJECT_DIR = project;
+
+  const report = await diagnose(undefined, { project: true });
+  assert.strictEqual(report.checks.find((c) => c.name === "manifest")?.status, "pass", "the default root is the bundled plugin, not argv's --plugin-root");
+  assert.ok(report.checks.find((c) => c.name === "incident:argvcanary"), "the default project is CLAUDE_PROJECT_DIR, not argv's --cwd");
+});
+
+test("CLI binding (readCapped): an over-cap FAILURE_MEMORY.md is read from the tail — the entries in the last 4 MiB are summarized, one before them is not", async () => {
+  const dir = tempDir("ctide-doctor-overcap-");
+  const fillerLine = "filler line, no entry heading here\n";
+  const filler = fillerLine.repeat(Math.ceil((4 * 1024 * 1024 + 4096) / fillerLine.length));
+  assert.ok(Buffer.byteLength(filler) > 4 * 1024 * 1024, "fixture sanity: the filler alone exceeds the 4 MiB cap");
+  write(path.join(dir, ".ctide", "memory", "FAILURE_MEMORY.md"),
+    "# FM\n\n### 2026-06-01 — head-only lesson\n- **Tags**: alpha / beta.\n\n" + filler +
+    "\n### 2026-06-25 — tail lesson\n- **Tags**: gamma.\n\n### 2025-12-01 — tail retired lesson (expired)\n- **Tags**: delta.\n");
+  const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: Date.UTC(2026, 6, 1) });
+  const memory = report.checks.find((c) => c.name === "failure-memory-health");
+  assert.strictEqual(memory?.status, "pass", JSON.stringify(memory));
+  assert.match(memory.detail, /^2 entries, .*, 1 retired entry$/, "exactly the two tail entries were parsed");
+});
+
+test("CLI binding (readCapped): an over-cap incident journal is read from the head — its Status: line near the top decides, not one past the 64 KiB cap", async () => {
+  const dir = tempDir("ctide-doctor-overcap-incident-");
+  const filler = "journal filler line\n".repeat(Math.ceil((64 * 1024 + 1024) / "journal filler line\n".length));
+  writeIncident(dir, "INCIDENT-20260601-overcapcanary.md", "# INCIDENT-20260601-overcapcanary\n\n- Status: open\n\n" + filler + "- Status: closed\n");
+  const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: Date.UTC(2026, 6, 1) });
+  const canary = report.checks.find((c) => c.name === "incident:overcapcanary");
+  assert.ok(canary, "the journal is classified by the Status: line at its top (open), never by one past the cap (closed)");
+  assert.match(canary.detail, /^status=open, opened 30 days ago$/);
 });
 
 // --- entry-point regression test: doctor.mjs invoked through a REAL symlinked/junctioned ancestor ---------
@@ -661,47 +680,6 @@ test("doctor.mjs invoked via a path THROUGH a real symlinked/junctioned ancestor
   } finally {
     fs.rmSync(scratchDir, { recursive: true, force: true });
   }
-});
-
-// --- red-before/green-after proof that the swallow-prevention test above actually catches the bug it -----
-// --- targets, not just a smoke test that happens to pass either way ---------------------------------------
-
-test("red->green proof: the literal --cwd --project swallow example fails against the pre-fix unguarded argument() and passes against the shipped guarded one", () => {
-  const scratchDir = tempDir("ctide-doctor-redgreen-");
-  const scratchPlugin = path.join(scratchDir, "cressetide");
-  fs.cpSync(pluginRoot, scratchPlugin, { recursive: true });
-  const scratchDoctor = path.join(scratchPlugin, "skills", "doctor", "scripts", "doctor.mjs");
-  const source = fs.readFileSync(scratchDoctor, "utf8");
-
-  // Reproduce the exact pre-fix unguarded helper (confirmed by direct read before this task's fix):
-  // `const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1] : undefined;`
-  const guardedFunction = /function argument\(name\) \{[\s\S]*?\n\}/;
-  assert.match(source, guardedFunction, "fixture sanity: the guarded argument() function must be present to revert");
-  const unguarded = source.replace(guardedFunction,
-    'function argument(name) {\n  const index = process.argv.indexOf(name);\n  return index >= 0 ? process.argv[index + 1] : undefined;\n}');
-  assert.notStrictEqual(unguarded, source, "fixture sanity: the revert must actually change the source");
-  writeFileSyncDurable(scratchDoctor, unguarded);
-
-  const dir = tempDir("ctide-doctor-redgreen-project-");
-  writeIncident(dir, "INCIDENT-20260601-redgreencanary.md", "# INCIDENT-20260601-redgreencanary\n\n- Status: open\n");
-  const env = { ...process.env, CLAUDE_PROJECT_DIR: dir };
-  const argv = [scratchDoctor, "--cwd", "--project", "--json"];
-
-  // Exit CODE is not the signal under test here (an --project run's overall status/exit code also
-  // depends on ambient facts unrelated to this bug, e.g. whether this machine happens to have a global
-  // ~/.claude/FAILURE_MEMORY.md) -- only assert the process exited cleanly (not signal-killed) and
-  // printed valid JSON; the actual red/green signal is whether the canary check is present.
-  const red = cp.spawnSync(process.execPath, argv, { cwd: dir, encoding: "utf8", env });
-  assert.strictEqual(typeof red.status, "number", `unguarded run must exit cleanly, not crash: ${red.stderr}`);
-  const redReport = JSON.parse(red.stdout);
-  assert.strictEqual(redReport.checks.find((c) => c.name === "incident:redgreencanary"), undefined,
-    "RED: against the pre-fix unguarded argument(), --cwd's value is swallowed by the literal '--project' token, so the canary must NOT be found");
-
-  const green = cp.spawnSync(process.execPath, [doctorScript, "--cwd", "--project", "--json"], { cwd: dir, encoding: "utf8", env });
-  assert.strictEqual(typeof green.status, "number", `guarded run must exit cleanly, not crash: ${green.stderr}`);
-  const greenReport = JSON.parse(green.stdout);
-  assert.ok(greenReport.checks.find((c) => c.name === "incident:redgreencanary"),
-    "GREEN: against the shipped guarded argument(), --cwd correctly falls back to CLAUDE_PROJECT_DIR and the canary IS found");
 });
 
 // --- round-3 Fix 2: persisted proof of the "--project must never crash under a broken/missing vigil -------

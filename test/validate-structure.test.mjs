@@ -126,13 +126,16 @@ test("validate-structure: the CLI passes from a foreign cwd (root resolves from 
 });
 
 test("validate-structure: the CLI FAILS with exit 1, the FAILED header and one '  - ' line per failure, all on stderr", () => {
-  // Only the CLI and its core, copied into an otherwise empty temp tree (not a git work tree, not a repo copy).
+  // Only the CLI, its core and the one plugin module the core imports (cressetide/lib/git.mjs, which imports
+  // nothing but node built-ins), copied into an otherwise empty temp tree (not a git work tree, not a repo copy).
   const tree = tempDir("ctide-validate-fail-");
   const scripts = path.join(tree, ".github", "scripts");
   fs.mkdirSync(scripts, { recursive: true });
   for (const name of ["validate-structure.mjs", "validate-structure-core.mjs"]) {
     fs.copyFileSync(path.join(root, ".github", "scripts", name), path.join(scripts, name));
   }
+  fs.mkdirSync(path.join(tree, "cressetide", "lib"), { recursive: true });
+  fs.copyFileSync(path.join(root, "cressetide", "lib", "git.mjs"), path.join(tree, "cressetide", "lib", "git.mjs"));
   const r = cp.spawnSync(process.execPath, [path.join(scripts, "validate-structure.mjs")], { cwd: tree, encoding: "utf8" });
   assert.strictEqual(r.status, 1, `a failing tree must exit 1: ${r.stdout}${r.stderr}`);
   assert.strictEqual(r.stdout, "", "a failing run prints nothing to stdout");
@@ -226,6 +229,24 @@ test("validate-structure: gitFiles lists tracked + untracked-not-ignored files a
   assert.ok(!files.scan.some((p) => p.startsWith(".claude/")), "machine-private .claude/ must not be scanned");
   assert.strictEqual(gitFiles(path.join(repo, "sub")), null, "a subdirectory of a work tree is not a validation root");
   assert.strictEqual(gitFiles(plain), null, "a plain directory has no git file lists");
+});
+
+// P3 review m-1: gitFiles runs through cressetide/lib/git.mjs, so a GIT_DIR / GIT_INDEX_FILE inherited from
+// a caller running inside git (a hook, `git rebase --exec`) cannot swap in another repository's lists.
+test("validate-structure: gitFiles(fixture) with an inherited absolute GIT_DIR and GIT_INDEX_FILE naming another repository still returns the fixture's lists", (t) => {
+  const repo = makeRepo({ prefix: "ctide-gitfiles-mine-", files: { "mine.md": "mine\n" } });
+  write(path.join(repo, "untracked-mine.md"), "untracked\n");
+  const other = makeRepo({ prefix: "ctide-gitfiles-other-", files: { "theirs.md": "theirs\n" } });
+  const saved = ["GIT_DIR", "GIT_INDEX_FILE"].map((key) => [key, process.env[key]]);
+  t.after(() => {
+    for (const [key, value] of saved) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  });
+  process.env.GIT_DIR = path.join(other, ".git");
+  process.env.GIT_INDEX_FILE = path.join(other, ".git", "index");
+  const files = gitFiles(repo);
+  assert.ok(files, "the fixture is still read as the top of a git work tree");
+  assert.deepStrictEqual([...files.tracked].sort(), ["mine.md"]);
+  assert.deepStrictEqual([...files.scan].sort(), ["mine.md", "untracked-mine.md"]);
 });
 
 test("validate-structure: text-integrity check FAILS on a planted U+FFFD", () => {
@@ -718,62 +739,6 @@ test("validate-structure: garden 9d FAILS on drift in each guarded copy cluster 
     const { code, out } = runOverlay(edits);
     assert.notStrictEqual(code, 0, `a drifted documented copy must fail the build (${expected})`);
     assert.match(out, expected, "the failure must name the drifted pair/anchor");
-  }
-});
-
-test("validate-structure: garden 9d FAILS on drift in the map.mjs/ship.mjs mirrored skill constructs", () => {
-  for (const [edits, expected] of [
-    // git(): a single-token change inside the function body (well within the extracted
-    // `function git(` .. column-0 `}` range) breaks the documented byte-identical copy.
-    [{ "cressetide/skills/ship/scripts/ship.mjs": (s) => s.replace("timeout: 10000,", "timeout: 10001,") },
-      /garden 9d: git drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
-    // OPS_TRUST_TAG_ATTEMPT: a single-character change inside the const's own regex-literal line.
-    [{ "cressetide/skills/map/scripts/map.mjs": (s) => s.replace("[^>]*-->/g", "[^>]+-->/g") },
-      /garden 9d: OPS_TRUST_TAG_ATTEMPT drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
-    // OPS_TRUST_TAG_WELLFORMED: a single-character change inside the const's own regex-literal line.
-    [{ "cressetide/skills/ship/scripts/ship.mjs": (s) => s.replace("(\\S+)", "(\\S*)") },
-      /garden 9d: OPS_TRUST_TAG_WELLFORMED drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
-    // opsTrustTagIsWellFormed(): a single-token change inside the function body.
-    [{ "cressetide/skills/map/scripts/map.mjs": (s) => s.replace('tier === "unverified"', 'tier === "UNVERIFIED"') },
-      /garden 9d: opsTrustTagIsWellFormed drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
-    // isValidIsoDate(): a single-token change inside the function body.
-    [{ "cressetide/skills/ship/scripts/ship.mjs": (s) => s.replace('hourText || "00"', 'hourText || "01"') },
-      /garden 9d: isValidIsoDate drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
-    // Extraction-failure path: renaming git()'s signature in ONE file makes it unlocatable there,
-    // exercising the "cannot extract" branch rather than the drift branch.
-    [{ "cressetide/skills/map/scripts/map.mjs": (s) => s.replace("function git(", "function gitHelper(") },
-      /garden 9d: cannot extract git from cressetide\/skills\/map\/scripts\/map\.mjs — the construct moved or lost its expected shape/],
-  ]) {
-    const { code, out } = runOverlay(edits);
-    assert.notStrictEqual(code, 0, `a drifted/unextractable map.mjs↔ship.mjs mirrored construct must fail the build (${expected})`);
-    assert.match(out, expected, "the failure must name the drifted or unextractable construct");
-  }
-});
-
-test("validate-structure: garden 9d FAILS on drift/extraction/marker-loss in the isInvokedDirectly() entry-point cluster (11 CLI scripts)", () => {
-  for (const [edits, expected] of [
-    // Single-site body drift: one forward-direction file's isInvokedDirectly() body diverges from
-    // the rest of the 10-file forward cluster. doctor.mjs is first in the file list and stays
-    // unmutated, so it is the reference body every other site is compared against.
-    [{ "cressetide/skills/vigil/scripts/contract-check.mjs": (s) => s.replace("!process.argv[1]", "!process.argv[2]") },
-      /garden 9d: isInvokedDirectly\(\) drifted between cressetide\/skills\/doctor\/scripts\/doctor\.mjs and cressetide\/skills\/vigil\/scripts\/contract-check\.mjs/],
-    // Unextractable: renaming the function's declaration in ONE file makes it unlocatable there,
-    // exercising the "cannot extract" branch rather than the drift branch.
-    [{ "cressetide/skills/vigil/scripts/pack-review-diff.mjs": (s) => s.replace("function isInvokedDirectly(", "function isInvokedDirectlyRenamed(") },
-      /garden 9d: cannot extract isInvokedDirectly\(\) from cressetide\/skills\/vigil\/scripts\/pack-review-diff\.mjs — the function moved or lost its column-0 shape/],
-    // Missing stamp: the sync-comment line is deleted but the function body is left byte-identical,
-    // so only the marker-presence check (not the byte-identity check) must fire.
-    [{ "eval/check-model-provenance.mjs": (s) => s.replace(
-      "// isInvokedDirectly() kept in sync with the other 10 CLI entry points (documented copy — see garden hash guard)\n", "") },
-      /garden 9d: eval\/check-model-provenance\.mjs lost the isInvokedDirectly\(\) sync marker/],
-    // The one forward site outside cressetide/ (the release CLI): drifting its body must be caught
-    // exactly like any plugin-script site, proving the list's non-plugin member is registered too.
-    [{ ".github/scripts/publish-release.mjs": (s) => s.replace("!process.argv[1]", "!process.argv[2]") },
-      /garden 9d: isInvokedDirectly\(\) drifted between cressetide\/skills\/doctor\/scripts\/doctor\.mjs and \.github\/scripts\/publish-release\.mjs/],
-  ]) {
-    const { code, out } = runOverlay(edits);
-    assert.notStrictEqual(code, 0, `a drifted/unextractable/unmarked isInvokedDirectly() copy must fail the build (${expected})`);
-    assert.match(out, expected, "the failure must name the drifted, unextractable, or unmarked entry-point site");
   }
 });
 

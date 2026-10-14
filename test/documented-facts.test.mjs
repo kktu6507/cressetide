@@ -14,7 +14,7 @@
 // Hooks are never imported: they attach stdin listeners at module top level and export nothing, so
 // every hook observation is a spawn that must exit 0 with the expected output shape. A spawn error, a
 // non-zero exit, empty or non-JSON output, or an unexpected shape throws — it is never read as "the
-// hook rejected this value". doctor.mjs and ship.mjs are import-safe (isInvokedDirectly guard) and are
+// hook rejected this value". doctor.mjs and ship.mjs are import-safe (entry-point guard) and are
 // called only through functions they already export.
 import assert from "node:assert/strict";
 import cp from "node:child_process";

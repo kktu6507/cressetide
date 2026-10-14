@@ -10,14 +10,16 @@
 // decides the edits; the main thread (the single writer) applies them after the verdict. It never
 // modifies the memory file or the ledger. Dependency-free, fail-open: no ledger / no usage data => no
 // staleness claim, exit 0.
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { isMain, parseCli } from "../../../lib/cli.mjs";
+import { readCapped } from "../../../lib/read-capped.mjs";
 import { parseEntries, resolveMemoryFile, defaultLedgerPath, ledgerKey } from "./failure-retrieve.mjs";
 
 const DAY_MS = 86400000;
 const DEFAULT_STALE_DAYS = 60;
-const MAX_READ = 4 * 1024 * 1024; // cap ledger reads; a runaway log must not blow up the helper
+// Cap the memory-file and ledger reads; a runaway log must not blow up the helper. The read keeps the
+// TAIL of an oversized file (the newest events) — that is what the window cares about. Any read error
+// reads as "" (fail-open).
+const MAX_READ = 4 * 1024 * 1024;
 
 // Parse the JSONL usage ledger into {ts, key} records; silently skip blank / unparseable / keyless lines
 // (a corrupt line must not sink the aggregate). Returns [] for empty / null input (fail-open).
@@ -170,64 +172,33 @@ export function formatReport(report, tagCandidates = []) {
   return lines.join("\n");
 }
 
-function readCapped(file) {
-  try {
-    const size = fs.statSync(file).size;
-    if (size <= MAX_READ) return fs.readFileSync(file, "utf8");
-    const fd = fs.openSync(file, "r");
-    try {
-      const buf = Buffer.alloc(MAX_READ);
-      // Read the TAIL of an oversized ledger (newest events) — that is what the window cares about.
-      const n = fs.readSync(fd, buf, 0, MAX_READ, Math.max(0, size - MAX_READ));
-      return buf.toString("utf8", 0, n);
-    } finally { try { fs.closeSync(fd); } catch (e) {} }
-  } catch (e) { return ""; }
-}
+const USAGE = "failure-consolidate.mjs [--cwd DIR] [--file PATH] [--ledger PATH] [--stale DAYS]";
+const CLI_OPTIONS = { cwd: { type: "string" }, file: { type: "string" }, ledger: { type: "string" }, stale: { type: "string" } };
+const readTail = (file) => readCapped(file, { cap: MAX_READ, from: "tail", onError: "empty" });
 
-// Every flag token this file's `get()` closure is ever queried with (main()'s own --cwd/--file/--ledger/
-// --stale reads below -- the complete recognized-flag set of this CLI's parser). Exported so the test suite
-// can drive the SAME list `get()` guards against (no hardcoded duplicate list to drift out of sync). `get()`
-// itself (below) checks this list before ever returning `args[i + 1]` as a flag's value: when that next
-// token is itself one of these names, the value is treated as omitted -- `get()` returns the flag's own
-// default rather than swallowing the neighboring flag's name. Mirrors the sibling CLI scripts'
-// identical KNOWN_FLAGS guard, each over its own file's complete flag set.
-export const KNOWN_FLAGS = ["--cwd", "--file", "--ledger", "--stale"];
-
-function main(argv) {
-  const args = argv.slice(2);
-  // The one shared flag-value lookup EVERY flag in this file goes through. Guards the swallow at its single
-  // root: if the token immediately following `flag` is itself one of KNOWN_FLAGS (this file's own complete
-  // recognized-flag set, above), the value is treated as omitted -- `def` is returned instead of the
-  // neighboring flag's own name. Fixes every flag uniformly, not per-call-site.
-  const get = (flag, def) => {
-    const i = args.indexOf(flag);
-    const v = i >= 0 ? args[i + 1] : undefined;
-    return v && !KNOWN_FLAGS.includes(v) ? v : def;
-  };
-  const cwd = get("--cwd", process.env.CLAUDE_PROJECT_DIR || process.cwd());
-  const file = get("--file", "") || resolveMemoryFile(cwd);
+function main(args) {
+  const parsed = parseCli(args, { options: CLI_OPTIONS });
+  if (parsed.error) {
+    // A usage error reads nothing: one line on stderr, an explicit no-claim on stdout.
+    process.stderr.write(`failure-consolidate: ${parsed.error.replace(/\s+/g, " ")} (usage: ${USAGE})\n`);
+    process.stdout.write("ctide failure-consolidate: no claim — the command line could not be parsed, so nothing was read; this report modifies nothing.\n");
+    process.exit(0);
+  }
+  const { values } = parsed;
+  const cwd = values.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const file = values.file || resolveMemoryFile(cwd);
   if (!file) {
     process.stdout.write("ctide failure-consolidate: no FAILURE_MEMORY.md found — nothing to consolidate.\n");
     process.exit(0);
   }
-  const ledgerPath = get("--ledger", "") || defaultLedgerPath(file);
-  const entries = parseEntries(readCapped(file));
-  const records = readLedger(readCapped(ledgerPath));
-  const staleDays = parseInt(get("--stale", String(DEFAULT_STALE_DAYS)), 10);
+  const ledgerPath = values.ledger || defaultLedgerPath(file);
+  const entries = parseEntries(readTail(file));
+  const records = readLedger(readTail(ledgerPath));
+  const staleDays = parseInt(values.stale || String(DEFAULT_STALE_DAYS), 10);
   const report = consolidationReport(entries, records, { now: Date.now(), staleDays });
   const tagCandidates = tagRecurrenceCandidates(entries);
   process.stdout.write(formatReport(report, tagCandidates) + "\n");
   process.exit(0);
 }
 
-// isInvokedDirectly() kept in sync with the other 10 CLI entry points (documented copy — see garden hash guard)
-function isInvokedDirectly() {
-  if (!process.argv[1]) return false;
-  try {
-    return fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
-  } catch {
-    return false;
-  }
-}
-
-if (isInvokedDirectly()) main(process.argv);
+if (isMain(import.meta.url)) main(process.argv.slice(2));

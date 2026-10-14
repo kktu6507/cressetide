@@ -4,7 +4,10 @@
 deploy step, and it never writes anything — no working-tree mutation, no `.ctide/` write, no
 state-changing git command. Every check reports one status — `pass` / `fail` / `not-applicable` /
 `unverified` — with cited evidence; `ship` never computes a score, rate, or percentage
-(`docs/benchmark-contract.md`).
+(`docs/benchmark-contract.md`). A usage error (an unknown flag or a missing value) never exits
+non-zero either: the message goes to stderr, and stdout carries a one-line usage note — or, when
+`--json` appears anywhere in the arguments, a report whose `pending.state` is `unverified` with a
+usage-error note and no checks run. No usage-error output contains a readiness verdict.
 
 `not-applicable` and `unverified` are distinct and must never be conflated: `not-applicable` means the
 underlying concept genuinely does not apply to this project (no card noise). `unverified` means the
@@ -29,7 +32,8 @@ The marker is the latest git tag matching `vX.Y.Z` (the `v` prefix is optional �
 `RELEASING.md` already defines for this repository's own tags), ordered by parsed **version** (major,
 then minor, then patch), never lexicographic string sort — `v9.0.0` must not outrank `v10.0.0`. No
 matching tag found → fail-open: the gap is disclosed in `marker.note` and `changelogTouched` reports
-`unverified` (no diff boundary). On a shallow clone (`git rev-parse --is-shallow-repository`
+`unverified` (no diff boundary). A failure to list the tags inside a repository is stated as such in
+`marker.note`, never as "no tag found". On a shallow clone (`git rev-parse --is-shallow-repository`
 reports `true` — which also holds from a subdirectory or a linked worktree), a tag can exist upstream
 without being fetched locally, so a locally-absent tag is never treated as confidently absent:
 `marker.note` and `tagReady`'s `unverified` evidence both disclose "history truncated — weak-signal
@@ -47,13 +51,15 @@ check times out), it is treated as unknown.
 `pending` lists what changed since the last release tag. Its boundary, `pending.tag`, uses the
 release marker's tag grammar and version ordering above (`vX.Y.Z`, `v` optional, no pre-release or
 extra parts), applied only to the tags reachable from `HEAD`
-(`git tag --no-column --sort=refname --merged HEAD`). Then it lists the commits
-(`git log --no-show-signature --format=%h%x09%s <tag>..HEAD` — short SHA and subject) and the
-changed file paths (`git -c diff.relative=false diff --name-only --no-renames -z <tag>..HEAD` —
+(`git tag --sort=refname --merged HEAD`). Then it lists the commits
+(`git log --format=%h%x09%s <tag>..HEAD` — short SHA and subject) and the
+changed file paths (`git diff --name-only --no-renames -z <tag>..HEAD` —
 always repository-relative, and a renamed file appears under both its old and its new path) in that
-range. These reads pin the flags a user's git config would otherwise change (`--no-column`,
-`--sort=refname`, `--no-show-signature`, `-c diff.relative=false`), so the pending view does not
-depend on `column.*`, `tag.sort`, `log.showSignature` or `diff.relative`. It is a plain git fact,
+range. These reads go through the shared git layer, which pins a fixed list of config overrides
+(`core.quotePath`, `i18n.logOutputEncoding`, `log.showSignature`, `column.ui`, `diff.relative`,
+`diff.ignoreSubmodules`); with `--sort=refname` on the tag read, the pending view does not depend on
+a user's `column.*`, `tag.sort`, `log.showSignature`, `i18n.logOutputEncoding` or `diff.relative`. A
+project's own `.gitmodules` `ignore` setting still applies. It is a plain git fact,
 **not a readiness claim**: every report carries `pending.disclaimer` — "changes since the last
 release tag — not a readiness claim; nothing listed here has been reviewed or approved". A commit is
 listed whether or not anything ever reviewed it, and an empty list never means "safe to ship".
@@ -72,7 +78,7 @@ Every state is disclosed by name, and only `ok` carries a list:
 | `shallow-clone` | `git rev-parse --is-shallow-repository` reports `true` (from the repository root, a subdirectory, or a linked worktree) — history cannot be bounded, so no list or count is claimed. |
 | `not-a-git-repo` | The working directory is not inside a git working tree. |
 | `git-unavailable` | `git` could not be run. |
-| `unverified` | git started but a read failed or timed out — determining whether the history is shallow, listing the tags reachable from `HEAD`, or reading the commits or changed files since the tag (or an unexpected internal error). |
+| `unverified` | git started but a read failed or timed out — determining whether the history is shallow, listing the tags reachable from `HEAD`, or reading the commits or changed files since the tag; or `HEAD` cannot be resolved; or the commit count is not a number (or an unexpected internal error). |
 
 Lists are capped — at most 200 commits (`pending.commitCount` keeps the uncapped total) and 500 files
 (`pending.fileCount`), with `commitsTruncated` / `filesTruncated` set and a "truncated: showing N of
@@ -86,19 +92,22 @@ M" line in text mode. The five checks below always run, whatever the pending sta
    one manifest, and that is not noise). 2+ manifests agreeing → `pass`. 2+ disagreeing → `fail`,
    naming every `file@version`. Any manifest that fails to parse → `unverified`, naming the parse
    error — never silently excluded from the comparison as if it did not exist.
-2. **`changelogTouched`** — git-diff-based: did `CHANGELOG.md` change since the marker commit
-   (`git diff --name-only <marker-commit>`, inclusive of uncommitted working-tree changes, mirroring
-   this repository's own `git diff --name-only <base>` convention). No `CHANGELOG.md` in the
-   repository at all → `not-applicable`. No marker resolved → `unverified` (no diff boundary to
-   compare against).
+2. **`changelogTouched`** — git-diff-based: did `CHANGELOG.md` change since the marker commit,
+   inclusive of uncommitted changes — the staged changes
+   (`git diff --cached --name-only <marker-commit>`) plus the working tree against the index
+   (`git status --porcelain=v1 -z`), read without refreshing or writing `.git/index`. With a
+   subdirectory `--cwd`, `<cwd>/CHANGELOG.md` is the file checked and diffed. No `CHANGELOG.md`
+   there at all → `not-applicable`. No marker resolved → `unverified` (no diff boundary to compare
+   against).
 3. **`tagReady`** — "target version" is whatever `versionConsistency` already resolved; `ship` never
    picks or bumps a version itself. Depends on `versionConsistency` first: a `fail` (manifests
    disagree) or `unverified` (a manifest failed to parse) leaves no single trustworthy target, so
    `tagReady` reports `unverified` ("blocked by …") rather than guessing which manifest to trust. No
    declared version anywhere → `not-applicable`. Otherwise: a tag (`vX.Y.Z` or `X.Y.Z`) already
    existing for the target version → `fail` (a real duplicate-tag mistake, not a hypothetical one — a
-   second tag of the same version either no-ops or errors). A dirty working tree → `fail`. Clean tree,
-   no existing tag → `pass`.
+   second tag of the same version either no-ops or errors). A failure to look up the tag itself
+   (anything but git reporting that no such tag exists) → `unverified`, never read as no tag. A
+   dirty working tree → `fail`. Clean tree, no existing tag → `pass`.
 4. **`migrationCompat`** — reads only the `<!-- CTIDE:TRUST:tier[:date] -->` sentinel comment inside
    `SYSTEM_MAP.md`'s `## Rollback` section, never the surrounding free-form prose (the exact
    discipline `map.mjs`'s own `map verify` already uses, and for the same reason — point-patching a
@@ -120,7 +129,7 @@ M" line in text mode. The five checks below always run, whatever the pending sta
    count, or a read failure → `unverified`, naming the specific blocker. The checksum file's own
    filename column (when present) naming a different file than `--artifact` → `fail`. Digest
    mismatch → `fail`. Matching digest → `pass`. The accepted checksum-file format mirrors this
-   repository's own release tooling (`.github/scripts/publish-release-core.mjs`): a line reading
+   repository's own release tooling (`.github/scripts/publish-release.mjs`): a line reading
    `<sha256-digest>` followed by two spaces and the artifact's filename, or a bare digest-only line
    with no filename cross-check.
 

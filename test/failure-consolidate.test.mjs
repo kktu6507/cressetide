@@ -10,7 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { tempDir, test } from "./helpers.mjs";
 import { buildLedgerLines, retrieve, defaultLedgerPath, ledgerKey } from "../cressetide/skills/vigil/scripts/failure-retrieve.mjs";
-import { readLedger, consolidationReport, formatReport, tagRecurrenceCandidates, KNOWN_FLAGS } from "../cressetide/skills/vigil/scripts/failure-consolidate.mjs";
+import { readLedger, consolidationReport, formatReport, tagRecurrenceCandidates } from "../cressetide/skills/vigil/scripts/failure-consolidate.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const RETRIEVE = path.join(root, "cressetide", "skills", "vigil", "scripts", "failure-retrieve.mjs");
@@ -394,46 +394,58 @@ test("CLI e2e: a spawned failure-consolidate process actually prints the tag-rec
   }
 });
 
-// --- e2e: failure-consolidate whole-class flag-swallow guard (get() itself now guards EVERY flag in this
-// file's own KNOWN_FLAGS -- the same shared-mechanism fix the sibling CLI scripts apply over
-// their own flag sets) ---
+// --- the command line goes through cressetide/lib/cli.mjs parseCli; the memory file and the ledger through
+// cressetide/lib/read-capped.mjs (the last 4 MiB, fail-open) ---
 
-test("failure-consolidate: for EVERY flag in KNOWN_FLAGS, a value slot occupied by any OTHER known flag's own name is treated as omitted, never as a literal value -- --file falls back to resolveMemoryFile(--cwd) (finds the seeded memory file's retired entry, not a bogus nonexistent '<flag-name>'-shaped file), and --cwd/--ledger/--stale's swallow never breaks the retired-entry report either", () => {
-  const RETIRED_TITLE_RE = /retired go lesson/;
-  const values = { "--ledger": "irrelevant-nonexistent-ledger.jsonl", "--stale": "60" };
-  for (const F of KNOWN_FLAGS) {
-    for (const G of KNOWN_FLAGS) {
-      if (G === F) continue;
-      const dir = tempDir("ctide-fc-swallow-");
-      try {
-        fs.mkdirSync(path.join(dir, ".ctide", "memory"), { recursive: true });
-        const memFile = path.join(dir, ".ctide", "memory", "FAILURE_MEMORY.md");
-        fs.writeFileSync(memFile, MEM, "utf8"); // MEM's 3rd entry is retired ("retired go lesson")
-        values["--file"] = memFile;
+// A project whose .ctide/memory/FAILURE_MEMORY.md is `memory`; consolidation runs with that project as its
+// working directory and no CLAUDE_PROJECT_DIR.
+function runConsolidate(args, memory = MEM) {
+  const dir = tempDir("ctide-fccli-");
+  const memFile = path.join(dir, ".ctide", "memory", "FAILURE_MEMORY.md");
+  fs.mkdirSync(path.dirname(memFile), { recursive: true });
+  fs.writeFileSync(memFile, memory, "utf8");
+  const env = { ...process.env };
+  delete env.CLAUDE_PROJECT_DIR;
+  return { ...cp.spawnSync("node", [CONSOLIDATE, ...args], { cwd: dir, encoding: "utf8", env }), dir, memFile };
+}
+const CONSOLIDATE_NO_CLAIM = "ctide failure-consolidate: no claim — the command line could not be parsed, so nothing was read; this report modifies nothing.\n";
 
-        // Order: G's own legitimate occurrence FIRST, then every other flag, then F LAST with its value
-        // slot occupied by the literal token G (mirrors the sibling CLI tests'
-        // identical loop-test ordering discipline -- keeps every flag's `indexOf` lookup unambiguous).
-        const order = [G, ...KNOWN_FLAGS.filter((x) => x !== F && x !== G), F];
-        const argv = [];
-        for (const flagName of order) {
-          if (flagName === F) argv.push(F, G); // F's own value slot swallowed by G's literal name
-          else if (flagName === "--cwd") argv.push("--cwd", dir);
-          else argv.push(flagName, values[flagName]);
-        }
-        // Hermetic: strip CLAUDE_PROJECT_DIR so --cwd's fallback resolves to the spawned process's own cwd
-        // (this temp dir), never a developer's ambient project dir.
-        const env = { ...process.env };
-        delete env.CLAUDE_PROJECT_DIR;
-        const r = cp.spawnSync("node", [CONSOLIDATE, ...argv], { cwd: dir, encoding: "utf8", env });
-        assert.strictEqual(r.status, 0, `${F} swallowed by ${G} must still exit 0 (fail-open): ${r.stderr}`);
-        assert.match(r.stdout, /retired — delete on next write:/,
-          `${F} swallowed by ${G}: the memory file must still resolve (never a bogus '${G}'-shaped path/value)`);
-        assert.match(r.stdout, RETIRED_TITLE_RE,
-          `${F} swallowed by ${G}: the seeded retired entry must still be named`);
-      } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
-      }
-    }
+test("CLI binding (parseCli): an unknown flag is a usage error — stderr names it, stdout is the explicit no-claim line, exit 0", () => {
+  const r = runConsolidate(["--bogus"]);
+  assert.strictEqual(r.status, 0, "must always exit 0");
+  assert.strictEqual(r.stdout, CONSOLIDATE_NO_CLAIM, "no report is built from a command line that could not be parsed");
+  assert.match(r.stderr, /^failure-consolidate: .*--bogus.*\(usage: failure-consolidate\.mjs \[--cwd DIR\] \[--file PATH\] \[--ledger PATH\] \[--stale DAYS\]\)\n$/);
+});
+
+test("CLI (parseCli): a value flag without its value (--cwd at the end, --file followed by --ledger) and a stray argument are usage errors", () => {
+  for (const args of [["--cwd"], ["--file", "--ledger", "x.jsonl"], ["stray"]]) {
+    const r = runConsolidate(args);
+    assert.strictEqual(r.status, 0, args.join(" "));
+    assert.strictEqual(r.stdout, CONSOLIDATE_NO_CLAIM, args.join(" "));
+    assert.match(r.stderr, /^failure-consolidate: /, `${args.join(" ")}: one usage line on stderr`);
   }
+});
+
+test("CLI (parseCli): the `=` form works (--file=<path>), and a repeated --file keeps its last value", () => {
+  const equals = runConsolidate([]);
+  const viaEquals = cp.spawnSync("node", [CONSOLIDATE, `--file=${equals.memFile}`], { cwd: tempDir("ctide-fccli-elsewhere-"), encoding: "utf8" });
+  assert.strictEqual(viaEquals.stderr, "");
+  assert.match(viaEquals.stdout, /retired — delete on next write: .*retired go lesson/, "--file=<path> read the seeded file");
+
+  const repeated = cp.spawnSync("node", [CONSOLIDATE, "--file", path.join(equals.dir, "no-such.md"), "--file", equals.memFile],
+    { cwd: tempDir("ctide-fccli-elsewhere-"), encoding: "utf8" });
+  assert.strictEqual(repeated.stderr, "");
+  assert.match(repeated.stdout, /retired go lesson/, "the last --file wins");
+});
+
+test("CLI binding (readCapped): an over-cap memory file is read from the tail — the entries in the last 4 MiB are reported, one before them is not", () => {
+  const fillerLine = "filler line, no entry heading here\n";
+  const filler = fillerLine.repeat(Math.ceil((4 * 1024 * 1024 + 4096) / fillerLine.length));
+  const memory = "# FM\n\n### 2026-06-01 — qzx head-only lesson\n- **Tags**: alpha / beta.\n\n" + filler +
+    "\n### 2026-06-25 — qzx tail lesson\n- **Tags**: gamma.\n\n### 2025-12-01 — qzx tail retired lesson (expired)\n- **Tags**: delta.\n";
+  assert.ok(Buffer.byteLength(filler) > 4 * 1024 * 1024, "fixture sanity: the filler alone exceeds the 4 MiB cap");
+  const r = runConsolidate([], memory);
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.match(r.stdout, /entries: 2 \(0 matched in window, 1 retired\)/, "exactly the two tail entries were parsed");
+  assert.match(r.stdout, /retired — delete on next write: 2025-12-01 — qzx tail retired lesson \(expired\)/);
 });

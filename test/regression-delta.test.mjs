@@ -407,3 +407,44 @@ test("CLI: no arguments => usage no-claim, exit 0", () => {
   assert.strictEqual(r.status, 0);
   assert.ok(r.stdout.includes("no-claim") && r.stdout.includes("usage"), "missing args fail open with a usage hint");
 });
+
+// --- the command line goes through cressetide/lib/cli.mjs parseCli: exactly two capture paths, no flags ---
+
+const USAGE_NO_CLAIM = "regression-delta: no-claim (usage: regression-delta.mjs <before-file> <after-file>; exit status remains authority)\n";
+
+test("CLI binding (parseCli): an unknown flag before two real captures is a usage error — one stderr line naming the flag, the usage no-claim on stdout, exit 0, and no regression computed", () => {
+  withTempCaptures(NODE_SPEC_BEFORE, NODE_SPEC_AFTER, (bp, ap) => {
+    const r = cp.spawnSync("node", [SCRIPT, "--bogus", bp, ap], { encoding: "utf8" });
+    assert.strictEqual(r.status, 0, "must always exit 0");
+    assert.strictEqual(r.stdout, USAGE_NO_CLAIM, "the usage no-claim, never a computed report");
+    assert.match(r.stderr, /^regression-delta: .*--bogus.*\(usage: regression-delta\.mjs <before-file> <after-file>\)\n$/);
+  });
+});
+
+test("CLI (parseCli): a third capture path is a usage error (stderr + usage no-claim), and `--` before two paths still computes", () => {
+  withTempCaptures(NODE_SPEC_BEFORE, NODE_SPEC_AFTER, (bp, ap) => {
+    const extra = cp.spawnSync("node", [SCRIPT, bp, ap, ap], { encoding: "utf8" });
+    assert.strictEqual(extra.status, 0);
+    assert.strictEqual(extra.stdout, USAGE_NO_CLAIM);
+    assert.match(extra.stderr, /at most 2 positional/);
+
+    const dashed = cp.spawnSync("node", [SCRIPT, "--", bp, ap], { encoding: "utf8" });
+    assert.strictEqual(dashed.status, 0);
+    assert.strictEqual(dashed.stderr, "");
+    assert.ok(dashed.stdout.includes("REGRESSION") && dashed.stdout.includes("stays green"), "`--` ends the flags; the two paths are diffed");
+  });
+});
+
+test("CLI (parseCli): a short flag (-x) is a usage error too, while one missing path stays the plain usage no-claim with a clean stderr", () => {
+  withTempCaptures(NODE_SPEC_BEFORE, NODE_SPEC_AFTER, (bp, ap) => {
+    const short = cp.spawnSync("node", [SCRIPT, "-x", bp, ap], { encoding: "utf8" });
+    assert.strictEqual(short.status, 0);
+    assert.strictEqual(short.stdout, USAGE_NO_CLAIM);
+    assert.match(short.stderr, /'-x'/);
+
+    const one = cp.spawnSync("node", [SCRIPT, bp], { encoding: "utf8" });
+    assert.strictEqual(one.status, 0);
+    assert.strictEqual(one.stdout, USAGE_NO_CLAIM);
+    assert.strictEqual(one.stderr, "", "too few paths is not a parse error: no stderr line, as before");
+  });
+});

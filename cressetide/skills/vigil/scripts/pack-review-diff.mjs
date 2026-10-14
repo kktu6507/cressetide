@@ -6,14 +6,14 @@
 // text transform. Dependency-free (Node built-ins only). Fail-open: on ANY parse error or non-diff input it
 // echoes stdin UNCHANGED (raw passthrough), so it is never worse than today's raw diff; the CLI always exits
 // 0 and never throws to its caller. Exposes pure functions (parseDiff / classifyLang / rankAndPack /
-// formatPacked) for the test suite; main() wraps them under the import.meta.url guard.
+// formatPacked) for the test suite; main() wraps them when the script is run directly (isMain).
 //
 // G1 INVARIANT (the whole point): the packer only REORDERS and ANNOTATES for focus; it never drops content —
 // deletion-only and whitespace-only hunks are ranked LAST, never removed; any --max-lines trim is DISCLOSED
 // (the trimmed file names + a regenerate pointer), never silent. It strengthens focus; it never caps
 // investigation.
 import fs from "node:fs";
-import { fileURLToPath } from "node:url";
+import { isMain, parseCli } from "../../../lib/cli.mjs";
 
 // Coarse extension -> language label, used ONLY to group files into reviewer sections and order them; it is
 // a focus bucket, not a semantic language claim (the JS/TS family shares one bucket by design, per the
@@ -277,32 +277,23 @@ function readStdin() {
   try { return fs.readFileSync(0, "utf8"); } catch (e) { return ""; }
 }
 
-// Every flag token this file's `get()` closure is ever queried with (main()'s own --max-lines/--regen reads
-// below -- the complete recognized-flag set of this CLI's parser). Exported so the test suite can drive the
-// SAME list `get()` guards against (no hardcoded duplicate list to drift out of sync). `get()` itself
-// (below) checks this list before ever returning `args[i + 1]` as a flag's value: when that next token is
-// itself one of these names, the value is treated as omitted -- `get()` returns the flag's own default
-// rather than swallowing the neighboring flag's name. Mirrors the sibling CLI scripts'
-// identical KNOWN_FLAGS guard, each over its own file's complete flag set.
-export const KNOWN_FLAGS = ["--max-lines", "--regen"];
+const USAGE = "pack-review-diff.mjs [--max-lines N] [--regen <command>] < diff";
+const CLI_OPTIONS = { "max-lines": { type: "string" }, regen: { type: "string" } };
 
-function main(argv) {
-  const args = argv.slice(2);
-  // The one shared flag-value lookup EVERY flag in this file goes through. Guards the swallow at its single
-  // root: if the token immediately following `flag` is itself one of KNOWN_FLAGS (this file's own complete
-  // recognized-flag set, above), the value is treated as omitted -- `def` is returned instead of the
-  // neighboring flag's own name. Fixes every flag uniformly, not per-call-site.
-  const get = (flag, def) => {
-    const i = args.indexOf(flag);
-    const v = i >= 0 ? args[i + 1] : undefined;
-    return v && !KNOWN_FLAGS.includes(v) ? v : def;
-  };
-  const maxLines = Math.max(0, parseInt(get("--max-lines", "0"), 10) || 0);
-  const regen = get("--regen", "");
+// A usage error (an unknown flag, a flag without its value, a stray argument) prints one line on stderr and
+// then passes stdin through unchanged — the same raw passthrough as non-diff input, never a guessed packing.
+function main(args) {
+  const parsed = parseCli(args, { options: CLI_OPTIONS });
+  if (parsed.error) {
+    try { process.stderr.write(`pack-review-diff: ${parsed.error.replace(/\s+/g, " ")} (usage: ${USAGE}); input passed through unchanged\n`); } catch (e) {}
+  }
+  const values = parsed.error ? {} : parsed.values;
+  const maxLines = Math.max(0, parseInt(values["max-lines"] || "0", 10) || 0);
+  const regen = values.regen || "";
   let input = "";
   try {
     input = readStdin();
-    const files = parseDiff(input);
+    const files = parsed.error ? [] : parseDiff(input);
     if (files && files.length) {
       process.stdout.write(formatPacked(rankAndPack(files, { maxLines }), { regen }));
     } else {
@@ -314,14 +305,4 @@ function main(argv) {
   process.exit(0);
 }
 
-// isInvokedDirectly() kept in sync with the other 10 CLI entry points (documented copy — see garden hash guard)
-function isInvokedDirectly() {
-  if (!process.argv[1]) return false;
-  try {
-    return fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
-  } catch {
-    return false;
-  }
-}
-
-if (isInvokedDirectly()) main(process.argv);
+if (isMain(import.meta.url)) main(process.argv.slice(2));

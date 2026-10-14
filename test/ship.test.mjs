@@ -19,7 +19,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   parseVersionTag, pickLatestVersionTag,
   PENDING_COMMIT_CAP, PENDING_FILE_CAP, resolveMarker, versionConsistencyCheck, changelogTouchedCheck, tagReadinessCheck,
-  migrationCompatibilityCheck, checksumVerifyCheck, buildShipReport, KNOWN_FLAGS,
+  migrationCompatibilityCheck, checksumVerifyCheck, buildShipReport,
   buildErrorFallbackReport,
 } from "../cressetide/skills/ship/scripts/ship.mjs";
 import { git, makeRepo, mkTranscript, orch, sshSigningSkipReason, tempDir, test } from "./helpers.mjs";
@@ -71,11 +71,10 @@ function runShip(cwd, args) {
   return cp.execFileSync("node", [SCRIPT, ...args], { cwd, encoding: "utf8" });
 }
 
-// Recursive snapshot of every FILE under `dir`, excluding `.git` (git's own read commands can
-// legitimately rewrite internal bookkeeping like the index stat-cache even on a pure read such as
-// `git status`, which would make a snapshot INCLUDING `.git/` internals flaky for reasons unrelated to
-// whether ship.mjs itself wrote anything). This still covers the whole `.ctide/` tree and every other
-// working-tree file — everything the zero-writes invariant needs to prove.
+// Recursive snapshot of every FILE under `dir`, excluding `.git` (git's own bookkeeping there is not
+// part of the working tree; `.git/index`, the one file a read such as `git status` could rewrite, has its
+// own test: "ship.mjs never writes .git/index either"). This covers the whole `.ctide/` tree and every
+// other working-tree file.
 function snapshotTree(dir) {
   const out = new Map();
   function walk(absolute, relative) {
@@ -567,59 +566,81 @@ test("checksumVerifyCheck: a several-MB artifact still hashes correctly via the 
   assert.strictEqual(result.status, "pass");
 });
 
-// --- e2e: CLI integration / KNOWN_FLAGS ---
+// --- e2e: the command line (cressetide/lib/cli.mjs parseCli: strict flags, `--flag=value`, last value wins) ---
 
-test("KNOWN_FLAGS covers every flag the CLI's get() closure is queried with", () => {
-  assert.deepStrictEqual([...KNOWN_FLAGS].sort(), ["--artifact", "--checksum", "--cwd", "--json"].sort());
+// A repository tagged v1.0.0 with a matching artifact/checksum pair, and an untagged one: marker.tag says
+// which repository a run read, checksumVerify which artifact flags it took.
+function cliFixtures() {
+  const tagged = bareRepository();
+  git(tagged, ["tag", "v1.0.0"]);
+  const content = Buffer.from("cli artifact bytes\n");
+  fs.writeFileSync(path.join(tagged, "artifact.tar.gz"), content);
+  fs.writeFileSync(path.join(tagged, "artifact.tar.gz.sha256"), `${sha256Hex(content)}  artifact.tar.gz\n`, "utf8");
+  return { tagged, untagged: bareRepository() };
+}
+
+// Hermetic: no CLAUDE_PROJECT_DIR, so a run without --cwd reads the spawned process's own cwd.
+function runShipCli(args, cwd) {
+  const env = { ...process.env };
+  delete env.CLAUDE_PROJECT_DIR;
+  const result = cp.spawnSync(process.execPath, [SCRIPT, ...args], { cwd, encoding: "utf8", env });
+  assert.strictEqual(result.status, 0, `${args.join(" ")}: the CLI always exits 0: ${result.stderr}`);
+  return result;
+}
+
+test("CLI flags: the `--flag=value` form is honored for --cwd, --artifact and --checksum, and a repeated --cwd keeps its last value", () => {
+  const { tagged, untagged } = cliFixtures();
+  const equals = runShipCli([`--cwd=${tagged}`, "--artifact=artifact.tar.gz", "--checksum=artifact.tar.gz.sha256", "--json"], untagged);
+  assert.strictEqual(equals.stderr, "");
+  const report = JSON.parse(equals.stdout);
+  assert.strictEqual(report.marker.tag, "v1.0.0", "--cwd=<dir> reads <dir>, not the process cwd");
+  assert.strictEqual(report.checks.checksumVerify.status, "pass", "--artifact=/--checksum= are both taken");
+  const repeated = JSON.parse(runShipCli(["--cwd", untagged, "--cwd", tagged, "--json"], untagged).stdout);
+  assert.strictEqual(repeated.marker.tag, "v1.0.0", "the last --cwd wins");
+  const emptyValue = JSON.parse(runShipCli(["--cwd=", "--json"], tagged).stdout);
+  assert.strictEqual(emptyValue.marker.tag, "v1.0.0", "an empty --cwd= means \"not given\": the process cwd is read");
 });
 
-// --- e2e: ship whole-class flag-swallow guard (get() itself guards EVERY flag in this file's own
-// KNOWN_FLAGS -- the same shared-mechanism fix the sibling CLI scripts apply over their own flag sets. `--json` is a boolean flag read via `args.includes`, not `get()` -- it
-// has no value position of its own to attack, so it is excluded from the OUTER (attacked) loop below, but
-// it stays a full member of KNOWN_FLAGS and appears in the INNER (swallower) loop. A fixture repo tagged
-// v1.0.0 with a matching artifact/checksum pair makes marker.found/marker.tag (the --cwd discriminator)
-// and checksumVerify's evidence (the --artifact/--checksum discriminator) both independent of which
-// flag's value got swallowed.) ---
+test("CLI usage error: an unknown flag, a flag without its value, a flag whose value slot holds another flag, or a stray argument exits 0 with the usage on stderr and one no-run line on stdout — no report, no verdict word", () => {
+  const { tagged } = cliFixtures();
+  for (const args of [
+    ["--bogus", "--cwd", tagged],
+    ["-x", "--cwd", tagged],
+    ["--cwd", tagged, "extra"],
+    ["--cwd"],
+    ["--cwd", tagged, "--artifact", "--checksum", "artifact.tar.gz.sha256"],
+  ]) {
+    const result = runShipCli(args, tagged);
+    const label = args.join(" ");
+    assert.match(result.stderr, /^ship: .+ \(usage: ship\.mjs .*\)\n$/, `${label}: one usage line on stderr`);
+    const lines = result.stdout.split("\n").filter(Boolean);
+    assert.strictEqual(lines.length, 1, `${label}: exactly one stdout line, no report: ${result.stdout}`);
+    assert.match(lines[0], /usage error/, `${label}: the stdout line says it is a usage error`);
+    assert.doesNotMatch(result.stdout, /v1\.0\.0|marker:|checks:/, `${label}: nothing was read`);
+    assert.doesNotMatch(result.stdout + result.stderr, /\bREADY\b/, `${label}: no READY token anywhere`);
+  }
+});
 
-test("ship: for EVERY value-bearing flag in KNOWN_FLAGS, a value slot occupied by any OTHER known flag's own name (including the boolean --json) is treated as omitted, never as a literal value -- --cwd's swallow never misdirects the read to a bogus, nonexistent '<flag-name>' subdirectory, and --artifact/--checksum's swallow never treats the neighboring flag's own name as a literal path", async () => {
-  const VALUE_FLAGS = KNOWN_FLAGS.filter((f) => f !== "--json");
-  const legitValues = { "--artifact": "artifact.tar.gz", "--checksum": "artifact.tar.gz.sha256" };
-  for (const F of VALUE_FLAGS) {
-    for (const G of KNOWN_FLAGS) {
-      if (G === F) continue;
-      const dir = bareRepository();
-      git(dir, ["tag", "v1.0.0"]);
-      const content = Buffer.from("swallow-guard artifact bytes\n");
-      fs.writeFileSync(path.join(dir, "artifact.tar.gz"), content);
-      fs.writeFileSync(path.join(dir, "artifact.tar.gz.sha256"), `${sha256Hex(content)}  artifact.tar.gz\n`, "utf8");
-
-      // Order: G's own legitimate occurrence FIRST, then every other flag, then F LAST with its value slot
-      // occupied by the literal token G (mirrors the sibling CLI tests' identical loop-test ordering).
-      const order = [G, ...KNOWN_FLAGS.filter((x) => x !== F && x !== G), F];
-      const argv = [];
-      for (const flagName of order) {
-        if (flagName === F) argv.push(F, G); // F's own value slot swallowed by G's literal name
-        else if (flagName === "--cwd") argv.push("--cwd", dir);
-        else if (flagName === "--json") argv.push("--json"); // bare boolean, no value slot
-        else argv.push(flagName, legitValues[flagName]);
-      }
-      // Hermetic: strip CLAUDE_PROJECT_DIR so --cwd's fallback resolves to the spawned process's own cwd
-      // (this fixture repo), never a developer's ambient project dir.
-      const env = { ...process.env };
-      delete env.CLAUDE_PROJECT_DIR;
-      const result = cp.spawnSync("node", [SCRIPT, ...argv], { cwd: dir, encoding: "utf8", env });
-      assert.strictEqual(result.status, 0, `${F} swallowed by ${G} must still exit 0 (fail-open): ${result.stderr}`);
-      const report = JSON.parse(result.stdout.trim());
-
-      assert.strictEqual(report.marker.found, true, `${F} swallowed by ${G}: --cwd must still resolve to the real tagged repo`);
-      assert.strictEqual(report.marker.tag, "v1.0.0", `${F} swallowed by ${G}: --cwd must not be misdirected to a bogus '${G}' subdirectory`);
-
-      if (F === "--artifact" || F === "--checksum") {
-        assert.strictEqual(report.checks.checksumVerify.status, "unverified", `${F} swallowed by ${G}: checksumVerify status`);
-        assert.match(report.checks.checksumVerify.evidence, /required together/,
-          `${F} swallowed by ${G}: evidence must be the "required together" gap, not a bogus "not found: ${G}" (which would mean the swallowed value fell through to G's literal name instead of ${F}'s own default)`);
-      }
-    }
+test("CLI usage error with --json anywhere on the command line: a no-run JSON report — pending unverified with a usage-error note, the disclaimer, no checks", () => {
+  const { tagged } = cliFixtures();
+  for (const args of [
+    ["--json", "--bogus", "--cwd", tagged],
+    ["--cwd", tagged, "stray", "--json"],
+    ["--json=1", "--cwd", tagged],
+    ["--cwd", tagged, "--artifact", "--json"],
+  ]) {
+    const result = runShipCli(args, tagged);
+    const label = args.join(" ");
+    assert.match(result.stderr, /^ship: .+ \(usage: ship\.mjs .*\)\n$/, `${label}: one usage line on stderr`);
+    const report = JSON.parse(result.stdout);
+    assert.strictEqual(report.pending.state, "unverified", `${label}: pending state`);
+    assert.match(report.pending.note, /usage error/, `${label}: the note says why nothing is listed`);
+    assert.strictEqual(report.pending.disclaimer, DISCLAIMER);
+    assert.strictEqual(report.pending.commitCount, null);
+    assert.deepStrictEqual(report.pending.commits, []);
+    assert.strictEqual(report.marker.found, false, `${label}: no marker was read`);
+    assert.deepStrictEqual(report.checks, {}, `${label}: no check ran`);
+    assert.doesNotMatch(result.stdout + result.stderr, /\bREADY\b/, `${label}: no READY token anywhere`);
   }
 });
 
@@ -1355,6 +1376,238 @@ test("pending view: a repository's diff.relative=true does not relativize the pa
   const report = await buildShipReport(path.join(dir, "sub"), {});
   assert.strictEqual(report.pending.state, "ok");
   assert.deepStrictEqual([...report.pending.files].sort(), ["root.txt", "sub/inner.txt"]);
+});
+
+// --- e2e: reads through cressetide/lib/git.mjs, and the routed failure paths (round-1 F-j, code-review
+// leads 1-4, owner decisions Q2 and Q4) ---
+
+// Serialized into a `node -r` preload like shallowProbePreload above, never called in this file. It rewrites
+// the result of the one git read `fault.read` names and leaves every other git call real:
+//   count       `rev-list --count <range>` exits 0 printing fault.stdout
+//   tag-list    `git tag … --list` exits 128
+//   tag-lookup  `rev-parse … refs/tags/<x>` times out (fault.timeout) or exits 128
+//   merged      `git tag … --merged HEAD` exits 128
+function gitReadFaultPreload(fault) {
+  const childProcess = require("node:child_process");
+  const realSpawnSync = childProcess.spawnSync;
+  const exited = (stdout, status, stderr = "") => ({ pid: 0, output: [null, stdout, stderr], stdout, stderr, status, signal: null });
+  const timedOut = () => {
+    const error = Object.assign(new Error("spawnSync git ETIMEDOUT"), { code: "ETIMEDOUT", syscall: "spawnSync git" });
+    return { pid: 0, output: null, stdout: "", stderr: "", status: null, signal: "SIGTERM", error };
+  };
+  childProcess.spawnSync = function patchedSpawnSync(command, args) {
+    const list = command === "git" && Array.isArray(args) ? args.map(String) : [];
+    const has = (...words) => words.every((word) => list.includes(word));
+    if (fault.read === "count" && has("rev-list", "--count") && list.some((arg) => arg.includes(".."))) return exited(fault.stdout, 0);
+    if (fault.read === "tag-list" && has("tag", "--list")) return exited("", 128, "fatal: injected tag-list failure\n");
+    if (fault.read === "merged" && has("tag", "--merged")) return exited("", 128, "fatal: injected tag --merged failure\n");
+    if (fault.read === "tag-lookup" && has("rev-parse") && list.some((arg) => arg.startsWith("refs/tags/"))) {
+      return fault.timeout ? timedOut() : exited("", 128, "fatal: injected tag lookup failure\n");
+    }
+    return realSpawnSync.apply(this, arguments);
+  };
+  require("node:module").syncBuiltinESMExports();
+}
+
+function runShipWithFault(dir, fault) {
+  const preload = path.join(tempDir("ctide-ship-fault-preload-"), "fault.cjs");
+  fs.writeFileSync(preload, `(${gitReadFaultPreload})(${JSON.stringify(fault)});\n`, "utf8");
+  const env = { ...process.env };
+  delete env.CLAUDE_PROJECT_DIR;
+  const result = cp.spawnSync(process.execPath, ["-r", preload, SCRIPT, "--cwd", dir, "--json"], { encoding: "utf8", env });
+  assert.strictEqual(result.status, 0, `${JSON.stringify(fault)}: the CLI exits 0: ${result.stderr}`);
+  return JSON.parse(result.stdout);
+}
+
+// Round-1 F-j: `rev-list --count` is parsed strictly (/^\d+$/ after trimming). Empty output used to read as 0 —
+// "no commits since <tag>" beside a listed commit.
+test("pending view: a commit count that is not plain digits (empty, blank, hex, exponent) is unverified — never 'no commits since <tag>' beside a listed set", () => {
+  const dir = bareRepository();
+  git(dir, ["tag", "v1.0.0"]);
+  commitFile(dir, "b.txt", "b\n", "2026-01-02T00:00:00Z", "after the tag");
+  for (const stdout of ["", " \n", "0x10\n", "1e3\n"]) {
+    const report = runShipWithFault(dir, { read: "count", stdout });
+    const label = JSON.stringify(stdout);
+    assert.strictEqual(report.pending.state, "unverified", `${label}: pending state`);
+    assert.strictEqual(report.pending.commitCount, null, `${label}: no count is claimed`);
+    assert.deepStrictEqual(report.pending.commits, [], `${label}: no list beside an unknown count`);
+    assert.doesNotMatch(report.pending.note, /no commits since/, `${label}: pending note`);
+    assertFiveChecksRan(report);
+  }
+  assert.strictEqual(runShipWithFault(dir, { read: "count", stdout: "1\n" }).pending.commitCount, 1, "control: a plain count is taken");
+});
+
+// Lead 1 / ship-contract.md, Release-marker resolution: a failure to list tags is stated in marker.note.
+test("resolveMarker: a tag list that cannot be read inside a repository is stated as a read failure in marker.note, never 'no vX.Y.Z release tag found' — changelogTouched stays unverified", () => {
+  const dir = bareRepository();
+  commitFile(dir, "CHANGELOG.md", "# Changelog\n", "2026-01-02T00:00:00Z", "add changelog");
+  git(dir, ["tag", "v1.0.0"]);
+  commitFile(dir, "CHANGELOG.md", "# Changelog\n\n- entry\n", "2026-01-03T00:00:00Z", "touch changelog");
+  const report = runShipWithFault(dir, { read: "tag-list" });
+  assert.strictEqual(report.marker.found, false);
+  assert.doesNotMatch(report.marker.note, /no vX\.Y\.Z release tag found/, "a read failure is not 'no tag'");
+  assert.match(report.marker.note, /could not be read/, "the note states the read failure");
+  assert.strictEqual(report.checks.changelogTouched.status, "unverified", "no marker, no diff boundary");
+  // Control: outside any repository there is no tag list to read, and the note stays the not-found one.
+  const plain = tempDir("ctide-ship-nongit-marker-");
+  const outside = JSON.parse(runShipCli(["--cwd", plain, "--json"], plain).stdout);
+  assert.strictEqual(outside.marker.note, "no vX.Y.Z release tag found");
+});
+
+// Lead 2 / ship-contract.md, tagReady: a failure to look up the tag itself is unverified.
+test("tagReadinessCheck: a tag lookup that times out or fails (anything but git's quiet 'no such ref') is unverified, never read as 'no tag' and passed", () => {
+  const dir = bareRepository();
+  commitFile(dir, "package.json", JSON.stringify({ version: "1.0.0" }), "2026-01-02T00:00:00Z", "prepare 1.0.0");
+  assert.strictEqual(runShipWithFault(dir, { read: "none" }).checks.tagReady.status, "pass", "control: clean tree, no tag for 1.0.0");
+  for (const timeout of [true, false]) {
+    const tagReady = runShipWithFault(dir, { read: "tag-lookup", timeout }).checks.tagReady;
+    assert.strictEqual(tagReady.status, "unverified", `${timeout ? "timeout" : "exit 128"}: tagReady`);
+    assert.match(tagReady.evidence, /cannot be confirmed absent/, `${timeout ? "timeout" : "exit 128"}: evidence`);
+  }
+});
+
+// Lead 3 / owner decision Q2: with a subdirectory --cwd, <cwd>/CHANGELOG.md is the file checked and diffed.
+test("changelogTouchedCheck: with a subdirectory --cwd, <cwd>/CHANGELOG.md is the file checked and diffed — committed, staged or unstaged — whatever diff.relative says", () => {
+  const fixture = () => {
+    const dir = makeRepo({
+      prefix: "ctide-ship-subdir-changelog-",
+      files: { "CHANGELOG.md": "# Top\n", "pkg/CHANGELOG.md": "# Pkg\n", "pkg/package.json": JSON.stringify({ version: "2.0.0" }) },
+    });
+    git(dir, ["tag", "v1.0.0"]);
+    return dir;
+  };
+  const statusIn = (dir) => changelogTouchedCheck(path.join(dir, "pkg"), resolveMarker(path.join(dir, "pkg"))).status;
+  for (const relative of ["false", "true"]) {
+    const committed = fixture();
+    git(committed, ["config", "diff.relative", relative]);
+    commitFile(committed, "pkg/CHANGELOG.md", "# Pkg\n\n## 2.0.0\n", "2026-01-02T00:00:00Z", "pkg changelog");
+    assert.strictEqual(statusIn(committed), "pass", `diff.relative=${relative}: pkg/CHANGELOG.md changed in a commit`);
+
+    const topOnly = fixture();
+    git(topOnly, ["config", "diff.relative", relative]);
+    commitFile(topOnly, "CHANGELOG.md", "# Top\n\n## 2.0.0\n", "2026-01-02T00:00:00Z", "top changelog only");
+    assert.strictEqual(statusIn(topOnly), "fail", `diff.relative=${relative}: only the top-level CHANGELOG.md changed`);
+
+    const uncommitted = fixture();
+    git(uncommitted, ["config", "diff.relative", relative]);
+    fs.appendFileSync(path.join(uncommitted, "pkg", "CHANGELOG.md"), "- unreleased\n");
+    assert.strictEqual(statusIn(uncommitted), "pass", `diff.relative=${relative}: an unstaged change`);
+    git(uncommitted, ["add", "pkg/CHANGELOG.md"]);
+    assert.strictEqual(statusIn(uncommitted), "pass", `diff.relative=${relative}: a staged change`);
+  }
+});
+
+// Lead 4: HEAD that cannot be resolved in a repository with commits is not "no-release-tag".
+test("pending view: a broken or dangling HEAD in a repository that has commits is unverified, never no-release-tag", async () => {
+  const broken = bareRepository();
+  git(broken, ["tag", "v1.0.0"]);
+  commitFile(broken, "b.txt", "b\n", "2026-01-02T00:00:00Z", "after the tag");
+  fs.writeFileSync(path.join(broken, ".git", "refs", "heads", "main"), "not a commit id\n", "utf8");
+  const dangling = bareRepository();
+  git(dangling, ["tag", "v1.0.0"]);
+  fs.writeFileSync(path.join(dangling, ".git", "refs", "heads", "main"), `${"1".repeat(40)}\n`, "utf8");
+  for (const [where, dir] of [["broken HEAD ref", broken], ["dangling HEAD", dangling]]) {
+    const report = await buildShipReport(dir, {});
+    assert.strictEqual(report.pending.state, "unverified", `${where}: pending state`);
+    assert.strictEqual(report.pending.commitCount, null, `${where}: no count is claimed`);
+    assertFiveChecksRan(report);
+  }
+});
+
+// The HEAD check above now comes first, so "a failed read of the tags reachable from HEAD" (earlier in this
+// file) reaches it before `git tag --merged HEAD`; this keeps that read's own failure covered.
+test("pending view: a failing `git tag --merged HEAD` read with a readable HEAD is unverified, never no-release-tag", () => {
+  const dir = bareRepository();
+  git(dir, ["tag", "v1.0.0"]);
+  commitFile(dir, "b.txt", "b\n", "2026-01-02T00:00:00Z", "after the tag");
+  const report = runShipWithFault(dir, { read: "merged" });
+  assert.strictEqual(report.pending.state, "unverified");
+  assert.strictEqual(report.pending.commitCount, null);
+  assert.strictEqual(report.marker.tag, "v1.0.0", "fixture sanity: only the reachable-tags read failed");
+});
+
+// Owner decision Q4 #1 (and the P4a finding): ship writes nothing — .git/index included. With stale stat
+// data, `git status` without GIT_OPTIONAL_LOCKS=0 and `git diff <commit>` (working tree against a commit)
+// refresh and rewrite the index.
+test("ship.mjs never writes .git/index either: on a working tree with stale stat data, a full run leaves the index's bytes and mtime unchanged", () => {
+  const dir = bareRepository();
+  writePkg(dir, "package.json", JSON.stringify({ version: "1.1.0" }));
+  writePkg(dir, "CHANGELOG.md", "# Changelog\n");
+  git(dir, ["add", "."]);
+  commitAt(dir, "2026-01-02T00:00:00Z", "release 1.0.0");
+  git(dir, ["tag", "v1.0.0"]);
+  commitFile(dir, "CHANGELOG.md", "# Changelog\n\n## 1.1.0\n", "2026-01-03T00:00:00Z", "changelog for 1.1.0");
+  writeMapDoc(dir, { commit: git(dir, ["rev-parse", "HEAD"]), rollbackLines: ["- Exact steps: x <!-- CTIDE:TRUST:verified:2026-01-01 -->"] });
+  fs.writeFileSync(path.join(dir, "artifact.tar.gz"), "bytes\n", "utf8");
+  fs.writeFileSync(path.join(dir, "artifact.tar.gz.sha256"), sha256Hex(Buffer.from("bytes\n")) + "  artifact.tar.gz\n", "utf8");
+  const index = path.join(dir, ".git", "index");
+  const old = new Date("2020-01-01T00:00:00Z");
+  fs.utimesSync(index, old, old);
+  for (const tracked of ["a.txt", "CHANGELOG.md"]) fs.utimesSync(path.join(dir, tracked), new Date("2021-06-01T00:00:00Z"), new Date("2021-06-01T00:00:00Z"));
+  const before = fs.readFileSync(index);
+
+  const report = JSON.parse(runShip(dir, ["--cwd", ".", "--json", "--artifact", "artifact.tar.gz", "--checksum", "artifact.tar.gz.sha256"]));
+  runShip(dir, ["--cwd", "."]);
+  assert.strictEqual(report.checks.changelogTouched.status, "pass", "fixture sanity: the CHANGELOG.md diff ran");
+  assert.strictEqual(report.pending.state, "ok", "fixture sanity: the pending reads ran");
+  assert.strictEqual(fs.statSync(index).mtimeMs, old.getTime(), ".git/index was not rewritten");
+  assert.deepStrictEqual(fs.readFileSync(index), before, ".git/index is byte-identical");
+  git(dir, ["status", "--porcelain"], { env: { GIT_OPTIONAL_LOCKS: "1" } });
+  assert.notStrictEqual(fs.statSync(index).mtimeMs, old.getTime(), "fixture sanity: the stat data was stale enough to make a plain git status rewrite the index");
+});
+
+// Round-1 code#5: Node's default spawnSync maxBuffer is 1 MiB; lib/git's is 64 MiB. The ~20,000 paths are
+// added to the index only (`update-index --index-info`, one blob), so the fixture stays fast.
+test("pending view: a changed-file list over 1 MiB (NUL-separated) is still listed — 'showing 500 of N', not unverified", async () => {
+  const dir = bareRepository();
+  git(dir, ["tag", "v1.0.0"]);
+  const blob = git(dir, ["hash-object", "-w", "--stdin"], { input: "same bytes\n" });
+  const total = 20000;
+  const paths = Array.from({ length: total }, (_, i) => `many/a-deliberately-long-directory-name-for-padding/file-${String(i).padStart(5, "0")}-with-a-padded-name.txt`);
+  assert.ok(paths.reduce((sum, p) => sum + Buffer.byteLength(p) + 1, 0) > 1024 * 1024, "fixture sanity: the NUL-separated list is over 1 MiB");
+  git(dir, ["update-index", "--index-info"], { input: paths.map((p) => `100644 ${blob}\t${p}\n`).join("") });
+  commitAt(dir, "2026-01-02T00:00:00Z", "add many index-only paths");
+
+  const out = runShip(dir, ["--cwd", "."]);
+  assert.match(out, new RegExp(`truncated: showing ${PENDING_FILE_CAP} of ${total} files`));
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.pending.state, "ok");
+  assert.strictEqual(report.pending.fileCount, total);
+  assert.strictEqual(report.pending.files.length, PENDING_FILE_CAP);
+});
+
+// Round-1 re-check 2: lib/git pins i18n.logOutputEncoding=UTF-8 (a repository or user setting would make
+// `git log` re-encode the subject, which ship decodes as UTF-8).
+test("pending view: a non-ASCII commit subject is listed verbatim under i18n.logOutputEncoding=ISO-8859-1", async () => {
+  const dir = bareRepository();
+  git(dir, ["tag", "v1.0.0"]);
+  const subject = `add caf${String.fromCodePoint(0xe9)} notes`;
+  commitFile(dir, "notes.txt", "n\n", "2026-01-02T00:00:00Z", subject);
+  git(dir, ["config", "i18n.logOutputEncoding", "ISO-8859-1"]);
+  assert.ok(git(dir, ["log", "-1", "--format=%s"], { encoding: "buffer" }).includes(Buffer.from([0x63, 0x61, 0x66, 0xe9])),
+    "fixture sanity: git log re-encodes the subject to ISO-8859-1");
+  const report = await buildShipReport(dir, {});
+  assert.deepStrictEqual(sortedSubjects(report.pending), [subject]);
+  assert.ok(runShip(dir, ["--cwd", "."]).includes(subject), "text mode lists it verbatim too");
+});
+
+// P3 review m-1: --cwd is the repository read, whatever GIT_DIR / GIT_INDEX_FILE the caller inherited.
+test("CLI: an inherited absolute GIT_DIR and GIT_INDEX_FILE naming another repository do not change the repository --cwd reads", () => {
+  const mine = bareRepository();
+  git(mine, ["tag", "v1.0.0"]);
+  commitFile(mine, "mine.txt", "m\n", "2026-01-02T00:00:00Z", "only in the --cwd repository");
+  const other = bareRepository();
+  git(other, ["tag", "v2.0.0"]);
+  commitFile(other, "theirs.txt", "t\n", "2026-01-02T00:00:00Z", "only in the inherited GIT_DIR's repository");
+  const env = { ...process.env, GIT_DIR: path.join(other, ".git"), GIT_INDEX_FILE: path.join(other, ".git", "index") };
+  delete env.CLAUDE_PROJECT_DIR;
+  const result = cp.spawnSync(process.execPath, [SCRIPT, "--cwd", mine, "--json"], { encoding: "utf8", env });
+  assert.strictEqual(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.strictEqual(report.marker.tag, "v1.0.0");
+  assert.strictEqual(report.pending.tag, "v1.0.0");
+  assert.deepStrictEqual(sortedSubjects(report.pending), ["only in the --cwd repository"]);
+  assert.deepStrictEqual(report.pending.files, ["mine.txt"]);
 });
 
 // --- regression: the plugin's own Stop hook must not read a ship report as an asserted READY verdict ---

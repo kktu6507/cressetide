@@ -18,11 +18,11 @@
 // than imposing any id format on the project.
 //
 // Exposes pure functions (detectRunner / extractResults / computeRegressions / formatReport) for the test peer;
-// main() wraps them over the two files under the import.meta.url guard. All scanning is line-by-line with
-// anchored, non-backtracking regexes (ReDoS-safe) — faithful-or-null: an ambiguous/partial format returns null
-// (no-claim), never a half-parse.
+// main() wraps them over the two files when the script is run directly (isMain). All scanning is line-by-line
+// with anchored, non-backtracking regexes (ReDoS-safe) — faithful-or-null: an ambiguous/partial format returns
+// null (no-claim), never a half-parse.
 import fs from "node:fs";
-import { fileURLToPath } from "node:url";
+import { isMain, parseCli } from "../../../lib/cli.mjs";
 
 // Strip a leading run of ASCII whitespace (nested subtests are indented by the spec/go reporters). Cheap and
 // linear — not a regex, so there is nothing to backtrack.
@@ -237,13 +237,22 @@ export function formatReport(result) {
 
 function readFileSafe(p) { try { return fs.readFileSync(p, "utf8"); } catch (e) { return null; } }
 
-function main(argv) {
-  const positional = argv.slice(2).filter((a) => !a.startsWith("-"));
-  const [beforePath, afterPath] = positional;
+const USAGE = "regression-delta.mjs <before-file> <after-file>";
+const USAGE_NO_CLAIM = `regression-delta: no-claim (usage: ${USAGE}; exit status remains authority)`;
+
+// The command line is exactly two capture paths (`--` may precede them); it takes no flags. A flag or a
+// third path is a usage error: one line on stderr, then the usage no-claim on stdout. Fewer than two paths
+// is the usage no-claim alone, as it always was.
+function main(args) {
   let report;
   try {
-    if (!beforePath || !afterPath) {
-      report = "regression-delta: no-claim (usage: regression-delta.mjs <before-file> <after-file>; exit status remains authority)";
+    const parsed = parseCli(args, { allowPositionals: true, positionals: 2 });
+    const [beforePath, afterPath] = parsed.error ? [] : parsed.positionals;
+    if (parsed.error) {
+      process.stderr.write(`regression-delta: ${parsed.error.replace(/\s+/g, " ")} (usage: ${USAGE})\n`);
+      report = USAGE_NO_CLAIM;
+    } else if (!beforePath || !afterPath) {
+      report = USAGE_NO_CLAIM;
     } else {
       const before = readFileSafe(beforePath);
       const after = readFileSafe(afterPath);
@@ -260,14 +269,4 @@ function main(argv) {
   process.exit(0);
 }
 
-// isInvokedDirectly() kept in sync with the other 10 CLI entry points (documented copy — see garden hash guard)
-function isInvokedDirectly() {
-  if (!process.argv[1]) return false;
-  try {
-    return fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
-  } catch {
-    return false;
-  }
-}
-
-if (isInvokedDirectly()) main(process.argv);
+if (isMain(import.meta.url)) main(process.argv.slice(2));

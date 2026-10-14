@@ -11,13 +11,16 @@
 // always-on context. Dependency-free (Node built-ins only). Fail-open: an absent/unreadable/unstructured
 // file yields a no-claim report; the CLI always exits 0 and never throws to its caller. Exposes pure
 // functions (tokenize / parseEntries / scoreEntry / retrieve / formatRetrieval) for the test suite;
-// main() wraps them under the import.meta.url guard.
+// main() wraps them when the script is run directly (isMain).
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { isMain, parseCli } from "../../../lib/cli.mjs";
+import { readCapped } from "../../../lib/read-capped.mjs";
 
-const MAX_READ = 256 * 1024; // cap the read; the helper ranks entries, it does not need a huge tail
+// Read at most the first MAX_READ bytes (the newest = top entries); the helper ranks entries, it does not
+// need a huge tail. Any read error reads as "" (fail-open).
+const MAX_READ = 256 * 1024;
 const DEFAULT_TOP = 5;
 // Relevance floor: a single incidental body word shared with the task signature (e.g. the ubiquitous
 // "cross" from a "cross-project" scope line, or a generic "path"/"build") must NOT surface an unrelated
@@ -150,20 +153,6 @@ export function formatRetrieval(matches, meta = {}) {
   return head + "\n\n" + matches.map((m) => m.entry.raw).join("\n\n");
 }
 
-// Read at most MAX_READ bytes (the newest = top entries); "" on any error (fail-open).
-function readCapped(file) {
-  try {
-    const size = fs.statSync(file).size;
-    if (size <= MAX_READ) return fs.readFileSync(file, "utf8");
-    const fd = fs.openSync(file, "r");
-    try {
-      const buf = Buffer.alloc(MAX_READ);
-      const n = fs.readSync(fd, buf, 0, MAX_READ, 0);
-      return buf.toString("utf8", 0, n);
-    } finally { try { fs.closeSync(fd); } catch (e) {} }
-  } catch (e) { return ""; }
-}
-
 // Default source (READ priority only — this helper never migrates): project
 // `.ctide/memory/FAILURE_MEMORY.md` (current layout, anchored on CLAUDE_PROJECT_DIR like the hook),
 // else the legacy project `ai/FAILURE_MEMORY.md`, else the global `~/.claude/FAILURE_MEMORY.md` —
@@ -219,66 +208,42 @@ function appendLedger(file, lines) {
   try { fs.appendFileSync(file, lines.join("\n") + "\n"); } catch (e) {}
 }
 
-// Every flag token this file's `get()` closure is ever queried with, PLUS the boolean `--log` flag (read
-// via `args.includes`, not `get()` -- it carries no value of its own, but is still a recognized flag NAME
-// that must never be swallowed as some OTHER flag's value, e.g. `--file <path> --log --query <text>`
-// silently reading file="--log") -- this file's own complete recognized-flag set. Exported so the test
-// suite can drive the SAME list `get()` guards against (no hardcoded duplicate list to drift out of sync).
-// `get()` itself (below) checks this list before ever returning `args[i + 1]` as a flag's value: when that
-// next token is itself one of these names, the value is treated as omitted -- `get()` returns the flag's
-// own default rather than swallowing the neighboring flag's name. Mirrors the sibling CLI
-// scripts' identical KNOWN_FLAGS guard, each over its own file's complete flag set. The separate
-// positional-argument scan below (the --query fallback when --query is absent) is a DIFFERENT mechanism,
-// unguarded here and out of this task's scope.
-export const KNOWN_FLAGS = ["--cwd", "--query", "--top", "--file", "--log-file", "--session", "--log"];
+const USAGE = "failure-retrieve.mjs [--query <text> | <signature words...>] [--cwd DIR] [--file PATH] " +
+  "[--top N] [--log [--log-file PATH] [--session ID]]";
+// --log is a boolean: it never takes the next argument as a value, so `--log src/a.ts node` keeps both
+// words in the query.
+const CLI_OPTIONS = {
+  cwd: { type: "string" }, query: { type: "string" }, top: { type: "string" }, file: { type: "string" },
+  "log-file": { type: "string" }, session: { type: "string" }, log: { type: "boolean" },
+};
 
-function main(argv) {
-  const args = argv.slice(2);
-  // The one shared flag-value lookup EVERY flag in this file goes through. Guards the swallow at its single
-  // root: if the token immediately following `flag` is itself one of KNOWN_FLAGS (this file's own complete
-  // recognized-flag set, above), the value is treated as omitted -- `def` is returned instead of the
-  // neighboring flag's own name. Fixes every flag uniformly, not per-call-site.
-  const get = (flag, def) => {
-    const i = args.indexOf(flag);
-    const v = i >= 0 ? args[i + 1] : undefined;
-    return v && !KNOWN_FLAGS.includes(v) ? v : def;
-  };
-  const cwd = get("--cwd", process.env.CLAUDE_PROJECT_DIR || process.cwd());
-  // Query: explicit --query, else every non-flag positional argument joined (so a bare
-  // `failure-retrieve.mjs src/auth/login.ts node jsdom` works).
-  let query = get("--query", "");
-  if (!query) {
-    const pos = [];
-    for (let i = 0; i < args.length; i++) {
-      if (args[i].startsWith("--")) { i++; continue; } // skip a flag and its value
-      pos.push(args[i]);
-    }
-    query = pos.join(" ");
+function main(args) {
+  const parsed = parseCli(args, { options: CLI_OPTIONS, allowPositionals: true });
+  if (parsed.error) {
+    // A usage error reads nothing and records nothing: one line on stderr, the no-match no-claim on stdout.
+    process.stderr.write(`failure-retrieve: ${parsed.error.replace(/\s+/g, " ")} (usage: ${USAGE})\n`);
+    process.stdout.write(formatRetrieval([], { file: "none" }) + "\n");
+    process.exit(0);
   }
-  const top = parseInt(get("--top", String(DEFAULT_TOP)), 10);
-  const file = get("--file", "") || resolveMemoryFile(cwd);
-  const markdown = file ? readCapped(file) : "";
+  const { values, positionals } = parsed;
+  const cwd = values.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  // Query: explicit --query, else every positional argument joined (so a bare
+  // `failure-retrieve.mjs src/auth/login.ts node jsdom` works).
+  const query = values.query || positionals.join(" ");
+  const top = parseInt(values.top || String(DEFAULT_TOP), 10);
+  const file = values.file || resolveMemoryFile(cwd);
+  const markdown = file ? readCapped(file, { cap: MAX_READ, from: "head", onError: "empty" }) : "";
   const matches = retrieve(markdown, query, { top });
   // Print the ranked entries first; the result is the deliverable and must not depend on logging.
   process.stdout.write(formatRetrieval(matches, { file: file || "none" }) + "\n");
   // Opt-in usage recording (--log): append one hit per surfaced entry to the sibling ledger so
   // consolidation can later prune never-matched entries. Off by default (a bare retrieval is pure-read);
   // best-effort and fail-open. The memory file itself is never written here (single-writer invariant).
-  if (args.includes("--log") && file && matches.length) {
-    const ledger = get("--log-file", "") || defaultLedgerPath(file);
-    appendLedger(ledger, buildLedgerLines(matches, { query, session: get("--session", ""), now: Date.now() }));
+  if (values.log && file && matches.length) {
+    const ledger = values["log-file"] || defaultLedgerPath(file);
+    appendLedger(ledger, buildLedgerLines(matches, { query, session: values.session || "", now: Date.now() }));
   }
   process.exit(0);
 }
 
-// isInvokedDirectly() kept in sync with the other 10 CLI entry points (documented copy — see garden hash guard)
-function isInvokedDirectly() {
-  if (!process.argv[1]) return false;
-  try {
-    return fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
-  } catch {
-    return false;
-  }
-}
-
-if (isInvokedDirectly()) main(process.argv);
+if (isMain(import.meta.url)) main(process.argv.slice(2));

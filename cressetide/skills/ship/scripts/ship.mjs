@@ -8,17 +8,16 @@
 // gap (`unverified`, never silently treated as clean); the CLI always exits 0 — this repo's universal
 // fail-open contract (matches map.mjs / doctor.mjs / contract-check.mjs).
 //
-// Self-contained by design (no imports across skill directories — the same boundary map.mjs and
-// doctor.mjs each keep for their own scripts): the flag parser mirrors failure-consolidate.mjs's
-// KNOWN_FLAGS/get() shape, the git() helper mirrors map.mjs's spawnSync-with-piped-stdio
-// shape, and the migration-compatibility reader mirrors map.mjs's OPS_TRUST_TAG_ATTEMPT /
-// opsTrustTagIsWellFormed sentinel-only parsing — each reused as a PATTERN, not an import, per the
-// reject-cross-skill-import placement decision.
+// Shared plumbing comes from cressetide/lib/: the entry-point check and the strict flag parser (cli), the
+// one git runner (git: it pins the config keys that would reshape parsed output, ignores inherited
+// GIT_DIR-style variables so `--cwd` is the repository read, and sets GIT_OPTIONAL_LOCKS=0), and the
+// Map's CTIDE:TRUST grammar, which the migration-compatibility reader shares with map.mjs (map-trust).
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { isMain, parseCli } from "../../../lib/cli.mjs";
+import { git, headState, parseCount } from "../../../lib/git.mjs";
+import { OPS_TRUST_TAG_WELLFORMED, opsTrustTagIsWellFormed, trustTagAttempts } from "../../../lib/map-trust.mjs";
 
 // --- small shared helpers --------------------------------------------------------------------------
 
@@ -37,14 +36,11 @@ function safeErrorCode(error) {
   return /^[A-Z0-9_]{1,40}$/.test(code) ? code : "read error";
 }
 
-// --- git shelling (mirrors map.mjs's git() helper: spawnSync, explicit piped stdio, a timeout — the
-// FAILURE_MEMORY 2026-07-19 fix for execFileSync/execSync's stderr-inheritance leak) ------------------
+// --- git reads (lib/git's git(): the raw spawnSync result, piped stdio, a timeout) -----------------------
 
-// git() kept in sync with map.mjs (documented copy — see garden hash guard)
-function git(root, args) {
-  return spawnSync("git", ["-C", root, ...args], {
-    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000,
-  });
+// A git result's failure as a path-free reason: the spawn error's code, or the exit status.
+function gitFailure(result) {
+  return result.error ? safeErrorCode(result.error) : `exit ${result.status}`;
 }
 
 // A shallow clone (`git clone --depth N`) can be missing tags that exist upstream but were never
@@ -80,6 +76,16 @@ function outputLines(stdout) {
   return String(stdout || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
 }
 
+// Whether the failed git read `failed` happened inside a repository. False when git is missing or `root`
+// is in no repository at all (`git rev-parse --git-dir` exits non-zero): there was nothing to read. True
+// otherwise, including when that question cannot be answered either (a timeout) — the cautious reading.
+function insideRepository(root, failed) {
+  if (failed.error?.code === "ENOENT") return false;
+  const probe = git(root, ["rev-parse", "--git-dir"]);
+  if (probe.error) return probe.error.code !== "ENOENT";
+  return probe.status === 0;
+}
+
 // --- release-marker resolution ------------------------------------------------------------------------
 
 // `vX.Y.Z`, optionally without the `v` prefix — the same tag shape RELEASING.md already defines for
@@ -104,16 +110,22 @@ export function pickLatestVersionTag(tagNames) {
 }
 
 // No tag found -> fail-open: { found: false }, with the gap disclosed via `note` (changelogTouched then
-// reports `unverified` — no diff boundary). Swallows any git failure (non-git cwd, git missing) the same way.
+// reports `unverified` — no diff boundary). Outside a repository, or with git missing, there are no tags
+// to read, and that is the same not-found note. Inside a repository, a tag list that cannot be read is
+// a read failure, stated as such in `note` — never "no tag found".
 //
-// The tag-list and `git log` reads here and in pendingChanges pin three flags a user's config would
-// otherwise change (other keys, e.g. `i18n.logOutputEncoding`, are not neutralized yet): `--no-column`
-// (column.ui / column.tag would print several tags per line), `--sort=refname` (tag.sort would reorder
-// the list, and with it which of two same-version tags such as `v1.0.0` / `1.0.0` wins the tie — the
-// marker and the pending boundary must break it the same way), and `--no-show-signature`
-// (log.showSignature would print signature lines among the parsed ones).
+// lib/git's fixed config overrides keep column.*, log.showSignature and i18n.logOutputEncoding from
+// reshaping the tag-list and `git log` reads here and in pendingChanges. `--sort=refname` stays a query
+// flag: tag.sort would reorder the list, and with it which of two same-version tags such as `v1.0.0` /
+// `1.0.0` wins the tie — the marker and the pending boundary must break it the same way.
 export function resolveMarker(root) {
-  const listed = git(root, ["tag", "--no-column", "--sort=refname", "--list"]);
+  const listed = git(root, ["tag", "--sort=refname", "--list"]);
+  if ((listed.error || listed.status !== 0) && insideRepository(root, listed)) {
+    return {
+      found: false, tag: null, commit: null,
+      note: `the tag list could not be read (${gitFailure(listed)}) — whether a vX.Y.Z release tag exists is unknown`,
+    };
+  }
   const winner = pickLatestVersionTag(listed.status === 0 ? outputLines(listed.stdout) : []);
   if (!winner) {
     const shallow = shallowState(root);
@@ -129,7 +141,7 @@ export function resolveMarker(root) {
   }
   // `git log` transparently dereferences an annotated tag to its underlying commit, so this resolves
   // correctly whether `winner` is a lightweight or an annotated/signed tag.
-  const info = git(root, ["log", "-1", "--no-show-signature", "--format=%H", winner]);
+  const info = git(root, ["log", "-1", "--format=%H", winner]);
   const commitRaw = info.status === 0 ? String(info.stdout || "").trim() : "";
   if (!commitRaw) {
     return {
@@ -166,8 +178,9 @@ function pendingView(state, note, extra = {}) {
 // `not-a-git-repo`, `shallow-clone` (history cannot be bounded), `no-release-tag` (no vX.Y.Z tag
 // reachable from HEAD, including a repository with no commits yet), `unverified` (git started but a
 // read failed or timed out — including the shallow probe, when whether history is truncated is
-// unknown), `ok` (0..N commits and files, each list capped with an explicit truncation flag and the
-// uncapped total).
+// unknown; HEAD that cannot be resolved to a commit in a repository that has commits; a commit count
+// that is not a number), `ok` (0..N commits and files, each list capped with an explicit truncation flag
+// and the uncapped total).
 //
 // The boundary uses the release marker's own tag grammar and version ordering (parseVersionTag /
 // pickLatestVersionTag), applied only to the tags reachable from HEAD — so a pre-release or four-part
@@ -198,12 +211,14 @@ export function pendingChanges(root, markerTag = null) {
   const unreachableMarker = markerTag ? ` (the release marker ${markerTag} is not reachable from HEAD)` : "";
   const noReleaseTag = () => pendingView("no-release-tag",
     "no vX.Y.Z release tag is reachable from HEAD — there is no boundary to list changes from; this is not \"nothing to ship\"" + unreachableMarker);
-  const head = git(root, ["rev-parse", "-q", "--verify", "HEAD"]);
-  if (head.error) {
-    return pendingView("unverified", "reading HEAD failed — commits since the last release tag are unknown");
+  // headState: "unborn" only when the repository has no commits at all; a HEAD naming a missing object, a
+  // broken ref or a failed read is "unknown" — never labelled no-release-tag.
+  const head = headState(root);
+  if (head === "unborn") return noReleaseTag(); // no commits yet
+  if (head !== "born") {
+    return pendingView("unverified", "HEAD cannot be resolved to a readable commit — commits since the last release tag are unknown");
   }
-  if (head.status !== 0) return noReleaseTag(); // no commits yet
-  const merged = git(root, ["tag", "--no-column", "--sort=refname", "--merged", "HEAD"]);
+  const merged = git(root, ["tag", "--sort=refname", "--merged", "HEAD"]);
   if (merged.error || merged.status !== 0) {
     return pendingView("unverified", "listing the tags reachable from HEAD failed — commits since the last release tag are unknown");
   }
@@ -215,15 +230,14 @@ export function pendingChanges(root, markerTag = null) {
   const range = `${tag}..HEAD`;
   const tagInfo = git(root, ["rev-parse", "--short", `${tag}^{commit}`]);
   const counted = git(root, ["rev-list", "--count", range]);
-  const logged = git(root, ["log", "--no-show-signature", `--max-count=${PENDING_COMMIT_CAP}`, "--format=%h%x09%s", range]);
+  const logged = git(root, ["log", `--max-count=${PENDING_COMMIT_CAP}`, "--format=%h%x09%s", range]);
   // `--no-renames`: a renamed file is listed under both its old and its new path, so a reader matching
-  // paths (e.g. Rollback relevance) still sees the old one. `-c diff.relative=false`: a user's
-  // `diff.relative=true` would otherwise make the paths relative to a subdirectory `--cwd` and drop
-  // every file outside it.
-  const diffed = git(root, ["-c", "diff.relative=false", "diff", "--name-only", "--no-renames", "-z", range]);
-  const commitCount = Number(String(counted.stdout || "").trim());
-  if (tagInfo.status !== 0 || counted.status !== 0 || logged.status !== 0 || diffed.status !== 0
-      || !Number.isInteger(commitCount)) {
+  // paths (e.g. Rollback relevance) still sees the old one. Paths stay repository-relative from a
+  // subdirectory `--cwd` too: lib/git pins diff.relative=false.
+  const diffed = git(root, ["diff", "--name-only", "--no-renames", "-z", range]);
+  // parseCount: a count that is not plain digits (empty output included) is null, never 0.
+  const commitCount = parseCount(counted.stdout);
+  if ([tagInfo, counted, logged, diffed].some((read) => read.error || read.status !== 0) || commitCount === null) {
     return pendingView("unverified", `found ${tag}, but reading the commits or changed files since it failed${markerNote}`, { tag });
   }
   const commits = String(logged.stdout || "").split(/\r?\n/).filter(Boolean).map((line) => {
@@ -313,6 +327,16 @@ export function versionConsistencyCheck(root) {
 
 // --- changelog-touched checker (git-diff-based) ---------------------------------------------------------
 
+// The file checked is `<root>/CHANGELOG.md` — root being `--cwd`, so a subdirectory `--cwd` checks and
+// diffs its own CHANGELOG.md — and it counts as changed when it differs between the marker commit and the
+// working tree, uncommitted changes included. That is computed without ever writing .git/index:
+// `git diff <commit>` (working tree against a commit) refreshes and rewrites a stale index even under
+// GIT_OPTIONAL_LOCKS=0, so it is the union of
+//   marker commit vs index    git diff --cached --name-only -z --no-renames <commit> -- CHANGELOG.md
+//   index vs working tree     git status --porcelain=v1 -z --no-renames --untracked-files=no -- CHANGELOG.md
+//                             (its Y column)
+// neither of which writes the index (lib/changedFiles reads the same way). The pathspec is relative to
+// root, so it names exactly the file whose existence was checked.
 export function changelogTouchedCheck(root, marker) {
   if (!fs.existsSync(path.join(root, "CHANGELOG.md"))) {
     return { status: "not-applicable", evidence: "no CHANGELOG.md in this repository" };
@@ -320,12 +344,14 @@ export function changelogTouchedCheck(root, marker) {
   if (!marker.found || !marker.commit) {
     return { status: "unverified", evidence: "no release marker resolved — cannot determine a diff boundary for CHANGELOG.md" };
   }
-  const diff = git(root, ["diff", "--name-only", marker.commit]);
-  if (diff.status !== 0) {
+  const staged = git(root, ["diff", "--cached", "--name-only", "-z", "--no-renames", marker.commit, "--", "CHANGELOG.md"]);
+  const worktree = git(root, ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=no", "--", "CHANGELOG.md"]);
+  if ([staged, worktree].some((read) => read.error || read.status !== 0)) {
     return { status: "unverified", evidence: `git diff against ${marker.tag} (${marker.commit.slice(0, 7)}) failed` };
   }
-  const touched = String(diff.stdout || "").split(/\r?\n/)
-    .map((s) => s.trim().replaceAll("\\", "/")).filter(Boolean).includes("CHANGELOG.md");
+  // A porcelain v1 entry is "XY PATH"; Y (index vs working tree) is not a space when the file differs.
+  const touched = String(staged.stdout || "").split("\0").some(Boolean)
+    || String(worktree.stdout || "").split("\0").some((entry) => entry.length > 3 && entry[2] === " " && entry[1] !== " ");
   return touched
     ? { status: "pass", evidence: `CHANGELOG.md changed since ${marker.tag} (${marker.commit.slice(0, 7)})` }
     : { status: "fail", evidence: `CHANGELOG.md has not changed since ${marker.tag} (${marker.commit.slice(0, 7)})` };
@@ -348,8 +374,17 @@ export function tagReadinessCheck(root, versionConsistency) {
   if (!target) {
     return { status: "not-applicable", evidence: "no declared version found in this project's package.json" };
   }
+  // `rev-parse -q --verify` exits 1, quietly, for a ref that does not exist: only that is "no such tag". Any
+  // other outcome (a timeout, another exit status) leaves the tag's existence unknown — recorded here and
+  // reported as `unverified` below, never read as absent.
   const candidateTags = [...new Set([`v${target}`, target])];
-  const existingTag = candidateTags.find((tag) => git(root, ["rev-parse", "-q", "--verify", `refs/tags/${tag}`]).status === 0);
+  let existingTag = null;
+  let lookupFailure = null;
+  for (const tag of candidateTags) {
+    const lookup = git(root, ["rev-parse", "-q", "--verify", `refs/tags/${tag}`]);
+    if (!lookup.error && lookup.status === 0) { existingTag = tag; break; }
+    if (lookup.error || lookup.status !== 1) lookupFailure ??= `looking up tag ${tag} failed (${gitFailure(lookup)})`;
+  }
   if (existingTag) {
     return { status: "fail", evidence: `tag ${existingTag} already exists for version ${target} — bump the version before tagging again` };
   }
@@ -377,6 +412,12 @@ export function tagReadinessCheck(root, versionConsistency) {
   if (statusResult.status !== 0) {
     return { status: "unverified", evidence: "could not determine working-tree cleanliness (git status failed)" };
   }
+  // After the cleanliness read, so that outside a work tree (where every lookup fails too) the gap stated
+  // is the failed `git status`; and before the dirty-tree `fail`, like the shallow-clone case above: an
+  // unresolved tag-existence question is `unverified` whatever the tree's state.
+  if (lookupFailure) {
+    return { status: "unverified", evidence: `${lookupFailure}, so a tag for v${target} cannot be confirmed absent — it may already exist` };
+  }
   const dirty = String(statusResult.stdout || "").trim().length > 0;
   if (dirty) {
     return { status: "fail", evidence: `working tree is dirty — commit or stash changes before tagging v${target}` };
@@ -385,39 +426,11 @@ export function tagReadinessCheck(root, versionConsistency) {
 }
 
 // --- migration-compatibility reader (reads only the CTIDE:TRUST sentinel, never Rollback prose) --------
-// Mirrors map.mjs's OPS_TRUST_TAG_ATTEMPT / opsTrustTagIsWellFormed exactly (map.mjs:79,84,91-96):
-// the ONLY thing this reader parses out of the Rollback section is the machine-sentinel HTML comment;
-// the surrounding free-form prose is surfaced verbatim as `rollbackText` for the coordinating thread's
-// own relevance judgment, never pattern-matched here (FAILURE_MEMORY 2026-07-16: prose-heuristic
-// matching over free-form human-edited text never converged before this repo settled on
-// machine-sentinel-only parsing).
-// OPS_TRUST_TAG_ATTEMPT kept in sync with map.mjs (documented copy — see garden hash guard)
-const OPS_TRUST_TAG_ATTEMPT = /<!--\s*CTIDE:TRUST:[^>]*-->/g;
-// OPS_TRUST_TAG_WELLFORMED kept in sync with map.mjs (documented copy — see garden hash guard)
-const OPS_TRUST_TAG_WELLFORMED = /^<!--\s*CTIDE:TRUST:(verified|dry-run-verified|unverified)(?:\s*:\s*(\S+))?\s*-->$/;
-
-// isValidIsoDate() kept in sync with map.mjs (documented copy — see garden hash guard)
-function isValidIsoDate(value) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{3}))?Z)?$/.exec(value || "");
-  if (!match) return false;
-  const [, yearText, monthText, dayText, hourText, minuteText, secondText, millisecondText] = match;
-  const expected = [yearText, monthText, dayText, hourText || "00", minuteText || "00", secondText || "00", millisecondText || "000"].map(Number);
-  const parsed = new Date(0);
-  parsed.setUTCFullYear(expected[0], expected[1] - 1, expected[2]);
-  parsed.setUTCHours(expected[3], expected[4], expected[5], expected[6]);
-  return Number.isFinite(parsed.getTime()) && [
-    parsed.getUTCFullYear(), parsed.getUTCMonth() + 1, parsed.getUTCDate(),
-    parsed.getUTCHours(), parsed.getUTCMinutes(), parsed.getUTCSeconds(), parsed.getUTCMilliseconds(),
-  ].every((part, index) => part === expected[index]);
-}
-
-// opsTrustTagIsWellFormed() kept in sync with map.mjs (documented copy — see garden hash guard)
-function opsTrustTagIsWellFormed(tag) {
-  const match = OPS_TRUST_TAG_WELLFORMED.exec(tag);
-  if (!match) return false;
-  const [, tier, date] = match;
-  return tier === "unverified" || isValidIsoDate(date);
-}
+// The trust-tag grammar is lib/map-trust's, the one map.mjs's `map verify` uses: the ONLY thing this
+// reader parses out of the Rollback section is the machine-sentinel HTML comment; the surrounding
+// free-form prose is surfaced verbatim as `rollbackText` for the coordinating thread's own relevance
+// judgment, never pattern-matched here (FAILURE_MEMORY 2026-07-16: prose-heuristic matching over
+// free-form human-edited text never converged before this repo settled on machine-sentinel-only parsing).
 
 // Slices the "## Rollback" section's body out of a SYSTEM_MAP.md-shaped document, bounded by the next
 // "\n## " heading or end-of-file — mirrors map.mjs's sliceSection for the one section ship reads.
@@ -434,7 +447,7 @@ function sliceRollbackSection(text) {
 // (a block can have zero tags, or one-or-more tags where some are malformed — these are different
 // findings, never conflated).
 function analyzeRollbackBlock(block) {
-  const tags = block.match(OPS_TRUST_TAG_ATTEMPT) || [];
+  const tags = trustTagAttempts(block);
   const malformed = tags.filter((tag) => !opsTrustTagIsWellFormed(tag));
   const tiers = tags
     .filter((tag) => !malformed.includes(tag))
@@ -510,8 +523,8 @@ export function migrationCompatibilityCheck(root) {
 
 // --- checksum verifier (conditional, CLI-flag-only — no heuristic directory scanning) -------------------
 // Mirrors the `<sha256>  <filename>` shape this repo's own release tooling produces
-// (.github/scripts/publish-release-core.mjs / publish-release.mjs), tolerating a bare digest-only line
-// too (no filename cross-check in that case).
+// (.github/scripts/publish-release.mjs), tolerating a bare digest-only line too (no filename cross-check
+// in that case).
 const CHECKSUM_LINE_RE = /^([a-fA-F0-9]{64})(?:[ \t]+[*]?(\S.*))?$/;
 
 // Hashes a file by streaming fixed-size chunks through an incremental crypto.Hash, so a real release
@@ -618,11 +631,15 @@ function formatText(report) {
   return lines.join("\n");
 }
 
-// Every flag token this file's `get()` closure is ever queried with, plus the boolean `--json` flag —
-// this file's own complete recognized-flag set. Mirrors failure-consolidate.mjs's KNOWN_FLAGS guard: `get()`
-// treats the value slot as omitted when the next token is itself one of these names, so a swallowed
-// neighboring flag (e.g. `--artifact --checksum x`) never silently becomes another flag's value.
-export const KNOWN_FLAGS = ["--cwd", "--artifact", "--checksum", "--json"];
+// The report shape when ship ran no read at all: a marker not found and an `unverified` pending view, both
+// carrying `note`, and no checks.
+function noRunReport(note) {
+  return {
+    marker: { found: false, tag: null, commit: null, note },
+    pending: pendingView("unverified", `${note} — commits since the last release tag are unknown`),
+    checks: {},
+  };
+}
 
 // Builds the report shown when an unexpected internal error escapes every check's own swallowing (should
 // be unreachable — every check above already swallows its own fs/git/parse failures — but if ever
@@ -631,25 +648,37 @@ export const KNOWN_FLAGS = ["--cwd", "--artifact", "--checksum", "--json"];
 // Exported so this last-resort path stays independently testable without needing to force a real crash
 // through the CLI.
 export function buildErrorFallbackReport(error) {
-  const note = `ship encountered an unexpected internal error (${safeErrorCode(error)})`;
-  return {
-    marker: { found: false, tag: null, commit: null, note },
-    pending: pendingView("unverified", `${note} — commits since the last release tag are unknown`),
-    checks: {},
-  };
+  return noRunReport(`ship encountered an unexpected internal error (${safeErrorCode(error)})`);
 }
 
-async function main(argv) {
-  const args = argv.slice(2);
-  const get = (flag, def) => {
-    const i = args.indexOf(flag);
-    const v = i >= 0 ? args[i + 1] : undefined;
-    return v && !KNOWN_FLAGS.includes(v) ? v : def;
-  };
-  const asJson = args.includes("--json");
+const USAGE = "ship.mjs [--cwd DIR] [--artifact PATH --checksum PATH] [--json]";
+const CLI_OPTIONS = {
+  cwd: { type: "string" },
+  artifact: { type: "string" },
+  checksum: { type: "string" },
+  json: { type: "boolean" },
+};
+const USAGE_ERROR_NOTE = "usage error — the command line could not be parsed, so ship read nothing and ran no check";
+
+// Always exits 0. A usage error (an unknown flag, a flag without its value, a stray argument, a value for
+// --json) reads nothing and runs no check: the parser's message and the usage go to stderr, and stdout
+// carries a no-run report — as JSON (noRunReport) when `--json` appears anywhere on the command line, else
+// one line. Neither ever carries a verdict word. An empty value (`--cwd=`) means "not given".
+async function main(args) {
+  const parsed = parseCli(args, { options: CLI_OPTIONS });
+  if (parsed.error) {
+    process.stderr.write(`ship: ${parsed.error.replace(/\s+/g, " ")} (usage: ${USAGE})\n`);
+    const wantsJson = args.some((arg) => arg === "--json" || String(arg).startsWith("--json="));
+    process.stdout.write((wantsJson
+      ? JSON.stringify(noRunReport(USAGE_ERROR_NOTE), null, 2)
+      : `ctide-ship (read-only, writes nothing): ${USAGE_ERROR_NOTE} (usage: ${USAGE})`) + "\n");
+    process.exit(0);
+  }
+  const { cwd, artifact, checksum, json: asJson = false } = parsed.values;
   try {
-    const cwd = get("--cwd", process.env.CLAUDE_PROJECT_DIR || process.cwd());
-    const report = await buildShipReport(cwd, { artifact: get("--artifact", ""), checksum: get("--checksum", "") });
+    const report = await buildShipReport(cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd(), {
+      artifact: artifact || "", checksum: checksum || "",
+    });
     process.stdout.write((asJson ? JSON.stringify(report, null, 2) : formatText(report)) + "\n");
   } catch (error) {
     // Fail-open: this should be unreachable (every check above already swallows its own failures), but
@@ -661,16 +690,6 @@ async function main(argv) {
   process.exit(0);
 }
 
-// isInvokedDirectly() kept in sync with the other 10 CLI entry points (documented copy — see garden hash guard)
-function isInvokedDirectly() {
-  if (!process.argv[1]) return false;
-  try {
-    return fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
-  } catch {
-    return false;
-  }
-}
-
-if (isInvokedDirectly()) {
-  main(process.argv).catch(() => process.exit(0));
+if (isMain(import.meta.url)) {
+  main(process.argv.slice(2)).catch(() => process.exit(0));
 }

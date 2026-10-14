@@ -7,6 +7,7 @@ import cp from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { git as runGit } from "../../cressetide/lib/git.mjs";
 
 // The plugin itself lives in ./cressetide (only that subdir ships). The marketplace
 // manifest that lists it lives in the separate kktu6507/plugins repo, not here.
@@ -62,11 +63,12 @@ export function readerFiles(read, dir = "") {
 // (what the scratch-file and text-integrity scans cover, so ignored local run output such as .ctide/ is
 // out of scope) and `tracked` = the index (what the tracked-.ctide guard checks). null when git is
 // unavailable or fails, or when root is not the TOP of a git work tree (a subdirectory, or a plain copy
-// that happens to sit inside another repository). Runs with the plain process environment on purpose,
-// so the user's safe.directory setting still applies.
+// that happens to sit inside another repository). Runs through cressetide/lib/git.mjs: the user's own
+// configuration still applies (safe.directory included), while an inherited GIT_DIR, GIT_INDEX_FILE and
+// the like cannot point it at another repository than root.
 export function gitFiles(root) {
   const git = (args) => {
-    const r = cp.spawnSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+    const r = runGit(root, args, { maxBuffer: 256 * 1024 * 1024 });
     return r.error || r.status !== 0 || typeof r.stdout !== "string" ? null : r.stdout;
   };
   const prefix = git(["rev-parse", "--show-prefix"]);
@@ -803,25 +805,16 @@ export function validate({ root, read: reader, files } = {}) {
     }
   }
 
-  // 9d. Copy-sync guards for documented byte-identical infra copies (deterministic string/regex
-  // extraction only): the per-hook copies in cressetide/hooks/, the map.mjs/ship.mjs skill-script
-  // pair (d4, below), and the 11-site isInvokedDirectly() CLI entry-point cluster (d5, below). Each
-  // check fails CLOSED when it cannot locate what it guards, so a refactor cannot silently disarm it
-  // — the message then says to re-point the guard.
+  // 9d. Copy-sync guards for the documented byte-identical copies inside cressetide/hooks/
+  // (deterministic string/regex extraction only). Each check fails CLOSED when it cannot locate what it
+  // guards, so a refactor cannot silently disarm it — the message then says to re-point the guard. The
+  // script-side copies these guards used to cover (the map.mjs/ship.mjs constructs, the CLI entry-point
+  // check) have their single home in cressetide/lib/; test/lib-binding.test.mjs binds the scripts to it,
+  // allowlisting the ones not migrated yet. The hook copies move the same way in P5, and this section
+  // goes with them.
   {
     const hookRel = (name) => `${PLUGIN}/hooks/${name}`;
     const readHook = (rel) => (readText(rel) ?? "").replace(/\r\n/g, "\n");
-    // Shared with d4 and d5 below: given already-read file text and a function name, extract the
-    // `function <name>(` line through its closing `}` at column 0, or null if not found in that shape.
-    const extractSkillFn = (text, name) => {
-      const lines = text.split("\n");
-      const start = lines.findIndex((l) => l.startsWith(`function ${name}(`));
-      if (start === -1) return null;
-      for (let i = start + 1; i < lines.length; i++) {
-        if (lines[i] === "}") return lines.slice(start, i + 1).join("\n");
-      }
-      return null;
-    };
 
     // d1. dd-of= regex identity: plan-gate.js and destructive-guard.js each carry
     // the dd write-detection pattern with a "kept character-identical / reused verbatim" comment — make
@@ -910,88 +903,6 @@ export function validate({ root, read: reader, files } = {}) {
       if (!isFile(rel)) continue; // missing hooks are reported by §5c wiring
       if (!readHook(rel).includes(STDIN_MARKER))
         fail(`garden 9d: ${rel} lost the stdin-reader sync marker ("${STDIN_MARKER} …") — keep the stamp naming the sibling copies and the MAX_STDIN cap (or update this guard if the cluster was consciously dissolved)`);
-    }
-
-    // d4. Byte-identical construct copies shared between map.mjs and ship.mjs: git(), OPS_TRUST_TAG_ATTEMPT,
-    // OPS_TRUST_TAG_WELLFORMED, opsTrustTagIsWellFormed(), and isValidIsoDate() are deliberately mirrored
-    // (copied, not imported) across the two skill scripts, each stamped "kept in sync … (documented copy —
-    // see garden hash guard)" like the hooks above. This is a SEPARATE mechanism from FN_CLUSTERS: these
-    // two files do not live under hooks/, and 2 of the 5 constructs are single-line `const NAME = /regex/;`
-    // declarations rather than `function` blocks. Missing-file tolerance is COARSER than FN_CLUSTERS'
-    // per-file filter: FN_CLUSTERS still fail()s a present file whose function can't be extracted even
-    // when a sibling is missing, but this is a fixed 2-file pair (not an N-file cluster), so the whole
-    // check is a single pair-level AND-gate — if EITHER file is absent, the entire block silently no-ops,
-    // including skipping shape-verification of the file that IS still present. A fully-deleted map.mjs or
-    // ship.mjs is still caught elsewhere in the same CI job by test/map.test.mjs's / test/ship.test.mjs's
-    // static ES-module imports (a crash, non-zero exit), so this tolerance is narrower in blast radius
-    // than "silent" alone would suggest.
-    const mapRel = `${PLUGIN}/skills/map/scripts/map.mjs`;
-    const shipRel = `${PLUGIN}/skills/ship/scripts/ship.mjs`;
-    if (isFile(mapRel) && isFile(shipRel)) {
-      const mapText = readHook(mapRel);
-      const shipText = readHook(shipRel);
-      // extractSkillFn is defined once, above (shared with d5 below).
-      const extractSkillConst = (text, name) => {
-        const line = text.split("\n").find((l) => l.startsWith(`const ${name} = `));
-        return line === undefined ? null : line;
-      };
-      const SKILL_CONSTRUCTS = [
-        ["fn", "git"],
-        ["const", "OPS_TRUST_TAG_ATTEMPT"],
-        ["const", "OPS_TRUST_TAG_WELLFORMED"],
-        ["fn", "opsTrustTagIsWellFormed"],
-        ["fn", "isValidIsoDate"],
-      ];
-      for (const [kind, name] of SKILL_CONSTRUCTS) {
-        const extract = kind === "fn" ? extractSkillFn : extractSkillConst;
-        const mapBody = extract(mapText, name);
-        const shipBody = extract(shipText, name);
-        if (mapBody === null) fail(`garden 9d: cannot extract ${name} from ${mapRel} — the construct moved or lost its expected shape; re-point the 9d copy guard`);
-        if (shipBody === null) fail(`garden 9d: cannot extract ${name} from ${shipRel} — the construct moved or lost its expected shape; re-point the 9d copy guard`);
-        if (mapBody !== null && shipBody !== null && mapBody !== shipBody) {
-          fail(`garden 9d: ${name} drifted between ${mapRel} and ${shipRel} — documented byte-identical copy; change both together`);
-        }
-      }
-    }
-
-    // d5. isInvokedDirectly() entry-point self-check, byte-identical across 10 CLI scripts (the
-    // fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url) forward-direction form)
-    // plus an 11th sibling, publish-release-core.mjs, which imports pathToFileURL rather than
-    // fileURLToPath and so necessarily carries the reverse-direction pathToFileURL(fs.realpathSync(...))
-    // .href === import.meta.url form — semantically identical, not a body match, so it is checked only
-    // for marker presence below, never body-compared against the 10. Reuses extractSkillFn (defined
-    // above, shared with d4) unmodified: isInvokedDirectly() needs no per-file substitution since the
-    // 10 forward bodies are already 100% textually identical.
-    const ENTRY_POINT_FORWARD = [
-      `${PLUGIN}/skills/doctor/scripts/doctor.mjs`,
-      `${PLUGIN}/skills/map/scripts/map.mjs`,
-      `${PLUGIN}/skills/ship/scripts/ship.mjs`,
-      `${PLUGIN}/skills/vigil/scripts/contract-check.mjs`,
-      `${PLUGIN}/skills/vigil/scripts/failure-retrieve.mjs`,
-      `${PLUGIN}/skills/vigil/scripts/failure-consolidate.mjs`,
-      `${PLUGIN}/skills/vigil/scripts/regression-delta.mjs`,
-      `${PLUGIN}/skills/vigil/scripts/pack-review-diff.mjs`,
-      "eval/check-model-provenance.mjs",
-      ".github/scripts/publish-release.mjs",
-    ];
-    const ENTRY_POINT_REVERSE = ".github/scripts/publish-release-core.mjs";
-    const ENTRY_POINT_MARKER = "isInvokedDirectly() kept in sync with";
-
-    const entryPointPresent = ENTRY_POINT_FORWARD.filter((rel) => isFile(rel));
-    const entryPointBodies = entryPointPresent.map((rel) => [rel, extractSkillFn(readHook(rel), "isInvokedDirectly")]);
-    for (const [rel, body] of entryPointBodies) {
-      if (body === null) fail(`garden 9d: cannot extract isInvokedDirectly() from ${rel} — the function moved or lost its column-0 shape; re-point the 9d copy guard`);
-    }
-    const entryPointFound = entryPointBodies.filter(([, b]) => b !== null);
-    for (let i = 1; i < entryPointFound.length; i++) {
-      if (entryPointFound[i][1] !== entryPointFound[0][1])
-        fail(`garden 9d: isInvokedDirectly() drifted between ${entryPointFound[0][0]} and ${entryPointFound[i][0]} — these are documented byte-identical copies (10 of 11 — publish-release-core.mjs is the documented reverse-direction exception, checked separately below); change ALL 10 together`);
-    }
-
-    for (const rel of [...ENTRY_POINT_FORWARD, ENTRY_POINT_REVERSE]) {
-      if (!isFile(rel)) continue; // missing files are reported elsewhere (each site is statically imported by its own test — a module-import crash; publish-release.mjs also has a dedicated §5h existence check)
-      if (!readHook(rel).includes(ENTRY_POINT_MARKER))
-        fail(`garden 9d: ${rel} lost the isInvokedDirectly() sync marker ("${ENTRY_POINT_MARKER} …") — keep the stamp naming the sibling copies (or update this guard if the cluster was consciously dissolved)`);
     }
   }
 
@@ -1106,7 +1017,7 @@ export function validate({ root, read: reader, files } = {}) {
   }
 
   const envNames = new Set();
-  for (const rel of listFiles(PLUGIN).concat([".github/scripts/publish-release.mjs", ".github/scripts/publish-release-core.mjs"])) {
+  for (const rel of listFiles(PLUGIN).concat([".github/scripts/publish-release.mjs"])) {
     if (!/\.[cm]?js$/.test(rel)) continue;
     const text = readText(rel);
     if (text === null) continue;

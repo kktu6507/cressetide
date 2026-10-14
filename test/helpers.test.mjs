@@ -155,6 +155,18 @@ test("gitEnv: every inherited GIT_* variable in the table is stripped", (t) => {
   for (const key of STRIPPED_GIT_ENV) assert.strictEqual(env[key], undefined, `${key} must not reach fixture git`);
 });
 
+// Mixed-case spellings: on Windows each reaches git as its upper-case name, so each must be stripped too. Set
+// in a test of its own, because there process.env would fold them into the upper-case rows above.
+const MIXED_CASE_GIT_ENV = ["Git_Dir", "git_work_tree", "Git_Index_File", "Git_Config_Key_7"];
+test("gitEnv: a mixed-case inherited Git_Dir (and kin) is stripped on Windows, where environment names are case-insensitive", (t) => {
+  if (process.platform !== "win32") return t.skip("environment names are case-sensitive here; git never reads Git_Dir");
+  setProcessEnv(t, Object.fromEntries(MIXED_CASE_GIT_ENV.map((key) => [key, `inherited-${key}`])));
+  const env = gitEnv();
+  for (const key of MIXED_CASE_GIT_ENV) {
+    assert.deepStrictEqual(Object.keys(env).filter((name) => name.toUpperCase() === key.toUpperCase()), [], `${key} must not reach fixture git`);
+  }
+});
+
 test("gitEnv: every pinned config key in the table reads back its pinned value", () => {
   const cwd = tempDir("ctide-helpers-pins-");
   for (const [key, expected] of PINNED_GIT_CONFIG) {

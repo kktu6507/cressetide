@@ -5,12 +5,12 @@
 // arbiter step and feeds its report to the arbiter as evidence. Dependency-free (Node built-ins
 // only). Fail-open: an absent/unparseable contract yields a no-claim report; the CLI always exits 0 and
 // never throws to its caller. Exposes pure functions (extract / glob / scopeDiff / acCoverage /
-// formatReport / resolveContractPath) for the test suite; main() wraps them over git under the
-// import.meta.url guard.
+// formatReport / resolveContractPath) for the test suite; main() wraps them over git when the script is
+// run directly (isMain).
 import fs from "node:fs";
 import path from "node:path";
-import cp from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { isMain, parseCli } from "../../../lib/cli.mjs";
+import { git } from "../../../lib/git.mjs";
 
 // Extract the FIRST ```json fenced block and JSON.parse it. The machine contract is JSON (not YAML) so
 // it needs no dependency. Returns null on absence/parse error (the caller treats null as "no claim").
@@ -70,20 +70,26 @@ export function acCoverage(contract) {
 }
 
 // One compact, LLM-readable evidence block for the arbiter. No new `ctide:` machine sentinel is
-// emitted (the guarded-literal surface stays as-is, by design) — this is plain evidence text.
-export function formatReport({ contractFound, scope, coverage }) {
+// emitted (the guarded-literal surface stays as-is, by design) — this is plain evidence text. When the
+// changed-file list could not be established (`scopeUnverified` names why), the report makes no scope or
+// forbidden-path claim at all; the AC-coverage line does not depend on git and stays.
+export function formatReport({ contractFound, scope, coverage, scopeUnverified }) {
   if (!contractFound) {
     return "ctide contract-check: no machine-readable contract found (.ctide/output/contract.md — and the " +
       "legacy .ctide/legacy-output/contract.md — absent or no ```json block) — NO deterministic scope/AC claim; arbiter uses prose judgment.";
   }
   const lines = ["ctide contract-check (deterministic):"];
-  if (scope.forbiddenHits && scope.forbiddenHits.length) lines.push("  forbidden-path hits: " + scope.forbiddenHits.join(", "));
-  if (scope.allowListed) {
-    lines.push(scope.outOfScope && scope.outOfScope.length
-      ? "  out-of-scope changed files: " + scope.outOfScope.join(", ")
-      : "  scope: clean (all changed files within allowedPaths)");
+  if (scopeUnverified) {
+    lines.push("  scope: unverified (" + scopeUnverified + ") — NO scope or forbidden-path claim");
   } else {
-    lines.push("  scope: no allowedPaths declared — no allow-list claim");
+    if (scope.forbiddenHits && scope.forbiddenHits.length) lines.push("  forbidden-path hits: " + scope.forbiddenHits.join(", "));
+    if (scope.allowListed) {
+      lines.push(scope.outOfScope && scope.outOfScope.length
+        ? "  out-of-scope changed files: " + scope.outOfScope.join(", ")
+        : "  scope: clean (all changed files within allowedPaths)");
+    } else {
+      lines.push("  scope: no allowedPaths declared — no allow-list claim");
+    }
   }
   lines.push(coverage.uncovered && coverage.uncovered.length
     ? "  AC missing verification mapping: " + coverage.uncovered.join(", ")
@@ -91,13 +97,30 @@ export function formatReport({ contractFound, scope, coverage }) {
   return lines.join("\n");
 }
 
-// Changed paths come from `git diff --name-only` (vs --base, else HEAD); called directly by main().
-// A git failure is swallowed to [] so the checker stays fail-open and never throws to its caller.
+const COMMIT_ID = /^[a-f0-9]{40,64}$/i;
+
+// Changed paths come from `git diff --name-only <commit>` run in the process's working directory, against
+// --base or else HEAD; called directly by main(). Returns { paths } or { unverified: reason }.
+//   - An explicit --base is first resolved with `rev-parse -q --verify <base>^{commit}`, and only the
+//     resulting commit id reaches `git diff`, so the value is never read as a git option (main() already
+//     refuses one that starts with "-"). A base that does not resolve gives { unverified } — never an empty
+//     list that would read as "scope: clean".
+//   - Without --base, a git failure (not a repository, git missing) is swallowed to { paths: [] } as before,
+//     so the checker stays fail-open and never throws to its caller.
 function changedPathsFromGit(base) {
-  try {
-    const args = base ? ["diff", "--name-only", base] : ["diff", "--name-only", "HEAD"];
-    return cp.execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000 }).split(/\r?\n/).filter(Boolean);
-  } catch (e) { return []; }
+  const cwd = process.cwd();
+  let revision = "HEAD";
+  if (base) {
+    const resolved = git(cwd, ["rev-parse", "-q", "--verify", `${base}^{commit}`]);
+    const commit = String(resolved.stdout ?? "").trim();
+    if (resolved.error || resolved.status !== 0 || !COMMIT_ID.test(commit)) {
+      return { unverified: `--base ${JSON.stringify(base)} does not resolve to a commit` };
+    }
+    revision = commit;
+  }
+  const diff = git(cwd, ["diff", "--name-only", revision]);
+  if (diff.error || diff.status !== 0) return { paths: [] };
+  return { paths: String(diff.stdout ?? "").split(/\r?\n/).filter(Boolean) };
 }
 
 // Default contract discovery (READ priority only — this helper never writes):
@@ -115,47 +138,32 @@ export function resolveContractPath(cwd) {
   return candidates[0];
 }
 
-// Every flag token this file's `get()` closure is ever queried with (main()'s own --contract/--base reads
-// below -- the complete recognized-flag set of this CLI's parser). Exported so the test suite can drive the
-// SAME list `get()` guards against (no hardcoded duplicate list to drift out of sync). `get()` itself
-// (below) checks this list before ever returning `args[i + 1]` as a flag's value: when that next token is
-// itself one of these names, the value is treated as omitted -- `get()` returns the flag's own default
-// rather than swallowing the neighboring flag's name. Mirrors failure-retrieve.mjs's / failure-consolidate.mjs's
-// identical KNOWN_FLAGS guard, each over its own file's complete flag set.
-export const KNOWN_FLAGS = ["--contract", "--base"];
+const USAGE = "contract-check.mjs [--contract <path>] [--base <ref>]";
+const CLI_OPTIONS = { contract: { type: "string" }, base: { type: "string" } };
 
-function main(argv) {
-  const args = argv.slice(2);
-  // The one shared flag-value lookup EVERY flag in this file goes through. Guards the swallow at its single
-  // root: if the token immediately following `flag` is itself one of KNOWN_FLAGS (this file's own complete
-  // recognized-flag set, above), the value is treated as omitted -- `def` is returned instead of the
-  // neighboring flag's own name. Fixes every flag uniformly, not per-call-site.
-  const get = (flag, def) => {
-    const i = args.indexOf(flag);
-    const v = i >= 0 ? args[i + 1] : undefined;
-    return v && !KNOWN_FLAGS.includes(v) ? v : def;
-  };
-  const contractPath = get("--contract", "") || resolveContractPath(process.cwd());
-  const base = get("--base", "");
+function main(args) {
+  // --base is handed to git, so a value starting with "-" (`--base=--output=x`) is a usage error too.
+  const parsed = parseCli(args, { options: CLI_OPTIONS, rejectDashValues: ["base"] });
+  if (parsed.error) {
+    // A usage error (an unknown or removed flag, a flag without its value, a stray argument) runs no git
+    // and reads no contract: one line on stderr, an explicit no-claim on stdout.
+    process.stderr.write(`contract-check: ${parsed.error.replace(/\s+/g, " ")} (usage: ${USAGE})\n`);
+    process.stdout.write(`ctide contract-check: no claim — the command line could not be parsed (usage: ${USAGE}) — NO deterministic scope/AC claim; arbiter uses prose judgment.\n`);
+    process.exit(0);
+  }
+  const { values } = parsed;
+  const contractPath = values.contract || resolveContractPath(process.cwd());
   let markdown = "";
   try { markdown = fs.readFileSync(contractPath, "utf8"); } catch (e) { markdown = ""; }
   const contract = extractContractJson(markdown);
+  const changed = changedPathsFromGit(values.base || "");
   process.stdout.write(formatReport({
     contractFound: contract != null,
-    scope: scopeDiff(contract, changedPathsFromGit(base)),
+    scope: scopeDiff(contract, changed.paths || []),
     coverage: acCoverage(contract),
+    scopeUnverified: changed.unverified,
   }) + "\n");
   process.exit(0);
 }
 
-// isInvokedDirectly() kept in sync with the other 10 CLI entry points (documented copy — see garden hash guard)
-function isInvokedDirectly() {
-  if (!process.argv[1]) return false;
-  try {
-    return fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
-  } catch {
-    return false;
-  }
-}
-
-if (isInvokedDirectly()) main(process.argv);
+if (isMain(import.meta.url)) main(process.argv.slice(2));

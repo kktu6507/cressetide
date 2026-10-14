@@ -4,6 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { isMain, parseCli } from "../../../lib/cli.mjs";
+import { readCapped } from "../../../lib/read-capped.mjs";
+import { redactDiagnostic } from "../../../lib/redact.mjs";
 
 // Cross-skill dependency (doctor -> vigil, one-directional; vigil never imports from doctor): the
 // --project failure-memory-health check below reuses vigil's own FAILURE_MEMORY.md consolidation logic
@@ -38,68 +41,35 @@ const expectedAgents = [
 ];
 const bundledPluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
-// Every flag token this file's argument() helper is ever queried with, PLUS the boolean --project/--json
-// flags (read via process.argv.includes, not argument() -- they carry no value of their own, but are
-// still recognized flag NAMES that must never be swallowed as some OTHER flag's value, e.g.
-// `--plugin-root --project` silently reading plugin-root="--project") -- this file's own complete
-// recognized-flag set. Mirrors failure-consolidate.mjs's / failure-retrieve.mjs's
-// identical KNOWN_FLAGS guard, each over its own file's complete flag set. Exported so the test suite can
-// drive the SAME list argument() guards against (no hardcoded duplicate list to drift out of sync).
-export const KNOWN_FLAGS = ["--plugin-root", "--cwd", "--project", "--json"];
+// The command line, parsed once in main(); diagnose() and the resolvers below never read process.argv.
+const CLI_OPTIONS = {
+  "plugin-root": { type: "string" }, cwd: { type: "string" }, project: { type: "boolean" }, json: { type: "boolean" },
+};
+const USAGE = "doctor.mjs [--json] [--project [--cwd DIR]] [--plugin-root DIR]";
 
-// The one shared flag-value lookup EVERY value-bearing flag in this file goes through. Guards the swallow
-// at its single root: if the token immediately following `name` is itself one of KNOWN_FLAGS (this file's
-// own complete recognized-flag set, above), the value is treated as omitted -- undefined is returned
-// instead of the neighboring flag's own name. Fixes every flag uniformly, not per-call-site -- the exact
-// "next-token swallow" bug class this helper previously carried unguarded (confirmed by direct read
-// before this fix: `const index = process.argv.indexOf(name); return index >= 0 ? process.argv[index + 1]
-// : undefined;`), the same class already fixed this session in failure-consolidate.mjs /
-// failure-retrieve.mjs.
-function argument(name) {
-  const index = process.argv.indexOf(name);
-  const value = index >= 0 ? process.argv[index + 1] : undefined;
-  return value && !KNOWN_FLAGS.includes(value) ? value : undefined;
-}
-
-function resolvePluginRoot() {
+// --plugin-root (main() passes the parsed value), then CLAUDE_PLUGIN_ROOT, then this file's own plugin tree.
+function resolvePluginRoot(pluginRootFlag) {
   return path.resolve(
-    argument("--plugin-root") ||
+    pluginRootFlag ||
     process.env.CLAUDE_PLUGIN_ROOT ||
     bundledPluginRoot,
   );
 }
 
-// Project-root resolution for the opt-in --project checks below: --cwd override, then
-// CLAUDE_PROJECT_DIR (the same env var hooks/load-failure-memory.js and
+// Project-root resolution for the opt-in --project checks below: --cwd override (main() passes the parsed
+// value), then CLAUDE_PROJECT_DIR (the same env var hooks/load-failure-memory.js and
 // failure-consolidate.mjs already anchor on), then process.cwd() -- the identical
 // 3-tier precedence those sibling scripts already establish, reused here rather than inventing a new
 // order.
-function resolveProjectCwd() {
+function resolveProjectCwd(cwdFlag) {
   return path.resolve(
-    argument("--cwd") ||
+    cwdFlag ||
     process.env.CLAUDE_PROJECT_DIR ||
     process.cwd(),
   );
 }
 
-function replaceSensitivePath(text, sensitivePath, replacement) {
-  if (!sensitivePath) return text;
-  const escaped = sensitivePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return text.replace(new RegExp(escaped, process.platform === "win32" ? "gi" : "g"), replacement);
-}
-function sanitizeDiagnostic(value, limit = 2000) {
-  let text = String(value ?? "")
-    .replace(/-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/gi, "[redacted private key]")
-    .replace(/[\r\n\t]+/g, " ").trim()
-    .replace(/(["']?\bauthorization\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^,;|]+)/gi, "$1[redacted]")
-    .replace(/(["']?\b(?:api(?:[_-]|\s+)?key|private(?:[_-]|\s+)?key|gh(?:[_-]|\s+)?token|token|secret|password)\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^,;|]+)/gi, "$1[redacted]")
-    .replace(/\bbearer\s+["']?[A-Za-z0-9._~+/=-]+["']?/gi, "Bearer [redacted]")
-    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, "[redacted]");
-  text = replaceSensitivePath(text, os.tmpdir(), "<temp>");
-  text = replaceSensitivePath(text, os.homedir(), "~");
-  return text.slice(0, limit);
-}
-function result(name, status, detail) { return { name, status, detail: sanitizeDiagnostic(detail) }; }
+function result(name, status, detail) { return { name, status, detail: redactDiagnostic(detail) }; }
 // True when a process.versions.node string (e.g. "22.12.0") is at or above NODE_FLOOR under semantic
 // version precedence: major, minor and patch compared numerically, and a pre-release of the floor itself
 // ("22.12.0-rc.1") ranks below it. An unparsable version is false, so the row reports fail and never throws.
@@ -206,19 +176,10 @@ const PROJECT_READ_CAP = 4 * 1024 * 1024; // mirrors failure-consolidate.mjs's o
 
 // Read at most PROJECT_READ_CAP bytes from the END of `file` (the newest content). Throws on a genuine
 // filesystem error (missing/permissions/I-O) so the caller decides, per file, whether "could not read" is
-// an expected case (the usage ledger is normally absent -- fail-open, mirroring failure-consolidate.mjs's
-// own readCapped) or a surprising one worth naming specifically (the memory file itself, once resolved to
-// exist by resolveMemoryFile's own stat check).
-function readCappedTail(file) {
-  const size = fs.statSync(file).size;
-  if (size <= PROJECT_READ_CAP) return fs.readFileSync(file, "utf8");
-  const fd = fs.openSync(file, "r");
-  try {
-    const buf = Buffer.alloc(PROJECT_READ_CAP);
-    const n = fs.readSync(fd, buf, 0, PROJECT_READ_CAP, Math.max(0, size - PROJECT_READ_CAP));
-    return buf.toString("utf8", 0, n);
-  } finally { try { fs.closeSync(fd); } catch (e) {} }
-}
+// an expected case (the usage ledger is normally absent -- fail-open, like failure-consolidate.mjs's own
+// read) or a surprising one worth naming specifically (the memory file itself, once resolved to exist by
+// resolveMemoryFile's own stat check).
+const readCappedTail = (file) => readCapped(file, { cap: PROJECT_READ_CAP, from: "tail", onError: "throw" });
 
 // Naive "+s" pluralization mishandles this file's own "entry" word (e.g. "2 retired entrys"); the
 // correct English plural is "entries". A small suffix-aware branch, not a general pluralizer -- the
@@ -356,16 +317,7 @@ const INCIDENT_READ_CAP = 64 * 1024; // generous fixed cap for a single journal 
 // pathologically large journal without needing the whole file. Throws on a genuine filesystem error
 // (missing/permissions/I-O/broken symlink), same discipline as readCappedTail -- the caller decides how
 // to report it.
-function readCappedHead(file) {
-  const size = fs.statSync(file).size;
-  if (size <= INCIDENT_READ_CAP) return fs.readFileSync(file, "utf8");
-  const fd = fs.openSync(file, "r");
-  try {
-    const buf = Buffer.alloc(INCIDENT_READ_CAP);
-    const n = fs.readSync(fd, buf, 0, INCIDENT_READ_CAP, 0);
-    return buf.toString("utf8", 0, n);
-  } finally { try { fs.closeSync(fd); } catch (e) {} }
-}
+const readCappedHead = (file) => readCapped(file, { cap: INCIDENT_READ_CAP, from: "head", onError: "throw" });
 
 // Scans .ctide/incidents/*.md under the resolved project cwd. No directory => unverified (fail-open: no
 // claim about a project with no incident history at all); a genuine access error on a directory that DOES
@@ -578,19 +530,22 @@ export async function diagnose(pluginRoot = resolvePluginRoot(), options = {}) {
   };
 }
 
-// isInvokedDirectly() kept in sync with the other 10 CLI entry points (documented copy — see garden hash guard)
-function isInvokedDirectly() {
-  if (!process.argv[1]) return false;
-  try {
-    return fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
-  } catch {
-    return false;
+// Exit 1 when the report is not a pass, and for a usage error (an unknown flag, a flag without its value, a
+// stray argument), which prints one line on stderr and runs no check.
+async function main(args) {
+  const parsed = parseCli(args, { options: CLI_OPTIONS });
+  if (parsed.error) {
+    console.error(`doctor: ${parsed.error.replace(/\s+/g, " ")} (usage: ${USAGE})`);
+    process.exitCode = 1;
+    return;
   }
-}
-
-if (isInvokedDirectly()) {
-  const report = await diagnose(undefined, { project: process.argv.includes("--project") });
-  if (process.argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
+  const { values } = parsed;
+  const project = values.project === true;
+  const report = await diagnose(resolvePluginRoot(values["plugin-root"]), {
+    project,
+    cwd: project ? resolveProjectCwd(values.cwd) : undefined,
+  });
+  if (values.json) console.log(JSON.stringify(report, null, 2));
   else {
     console.log(`Cressetide doctor: ${report.status}`);
     for (const check of report.checks) console.log(`${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
@@ -598,3 +553,5 @@ if (isInvokedDirectly()) {
   }
   if (report.status !== "pass") process.exitCode = 1;
 }
+
+if (isMain(import.meta.url)) await main(process.argv.slice(2));

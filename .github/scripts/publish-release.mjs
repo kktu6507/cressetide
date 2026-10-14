@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+// Cressetide's release publisher: `--archive` writes the deterministic plugin archive and its checksum
+// under _release/; `--publish --tag vX.Y.Z` publishes them for an explicit tag that already exists at HEAD.
+// Exit 1 on any failure, usage errors included. Command-line parsing, git and diagnostic redaction come
+// from the plugin's own cressetide/lib/, which ships inside the archive this script builds.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,21 +10,39 @@ import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
-import { normalizeGzipOsByte } from "./publish-release-core.mjs";
-
-// Preserve the complete release API alongside Cressetide's stricter immutable-tag publisher.
-export {
-  createDeterministicPluginArchive,
-  defaultBytesRunner,
-  defaultRunner,
-  normalizeGzipOsByte,
-  runRelease,
-} from "./publish-release-core.mjs";
+import { isMain, parseCli } from "../../cressetide/lib/cli.mjs";
+import { git, gitOrThrow } from "../../cressetide/lib/git.mjs";
+import { redactDiagnostic } from "../../cressetide/lib/redact.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const defaultPluginPrefix = "cressetide";
 const versionTagPattern = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const RELEASE_COMMAND_TIMEOUT_MS = 30000;
+// Every git call is bounded too (owner decision Q4 #5).
+const GIT_TIMEOUT_MS = 30000;
+
+// The release diagnostics' redaction is cressetide/lib/redact.mjs's, exported under its old name.
+export { redactDiagnostic as redactReleaseDiagnostic };
+
+// RFC 1952 gzip header: byte offset 9 is the OS field. Node's zlib.gzipSync() sets it to a
+// platform-dependent value (observed: 0x0a on Windows, 0x03 on Linux) with no documented option
+// to override it, so identical source input produces byte-different archives across build
+// platforms. Patch it post-hoc to the RFC's "unknown" sentinel (0xFF) so the published bytes stop
+// depending on which OS built them. The OS byte is always at offset 9 per RFC 1952 (optional
+// fields such as FNAME/FCOMMENT/FEXTRA/FHCRC append after it, never before); the FLG === 0 check
+// below is not about locating the byte, it restricts patching to gzipSync()'s own canonical
+// plain-header output shape and refuses anything else, so an unrecognized input is never
+// silently mis-patched.
+export function normalizeGzipOsByte(buffer) {
+  const hasPlainHeader = buffer.length >= 10 && buffer[0] === 0x1f && buffer[1] === 0x8b && buffer[3] === 0x00;
+  if (!hasPlainHeader) {
+    const observed = [...buffer.subarray(0, Math.min(10, buffer.length))]
+      .map((byte) => byte.toString(16).padStart(2, "0")).join(" ");
+    throw new Error(`Unsupported gzip header shape for deterministic OS-byte normalization: ${observed || "<empty>"}`);
+  }
+  buffer[9] = 0xff;
+  return buffer;
+}
 
 function tagReference(tag) {
   if (!versionTagPattern.test(tag)) throw new Error(`Release tag ${tag} must match vX.Y.Z`);
@@ -82,10 +104,11 @@ function listFiles(directory, prefix = defaultPluginPrefix) {
   return result.sort((a, b) => a.archivePath.localeCompare(b.archivePath, "en"));
 }
 
+// `git check-ignore` exits 1 when no path is ignored: that is an answer, not a failure.
 function ignoredPaths(repositoryRoot, files) {
   const relative = files.map(file => path.relative(repositoryRoot, file.absolute).replaceAll("\\", "/"));
-  const checked = spawnSync("git", ["-C", repositoryRoot, "check-ignore", "--stdin", "-z"], {
-    input: relative.join("\0") + "\0", encoding: "utf8", timeout: 10000,
+  const checked = git(repositoryRoot, ["check-ignore", "--stdin", "-z"], {
+    input: relative.join("\0") + "\0", timeout: GIT_TIMEOUT_MS,
   });
   if (checked.status !== 0 && checked.status !== 1) {
     throw new Error(`Unable to evaluate ignored archive paths: ${checked.stderr || checked.error?.message || "git check-ignore failed"}`);
@@ -93,10 +116,9 @@ function ignoredPaths(repositoryRoot, files) {
   return new Set(checked.stdout.split("\0").filter(Boolean).map(item => item.replaceAll("\\", "/")));
 }
 
-function git(repositoryRoot, args, options = {}) {
-  return execFileSync("git", ["-C", repositoryRoot, ...args], {
-    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 16 * 1024 * 1024, ...options,
-  }).trim();
+// Trimmed stdout of a git read that must succeed; gitOrThrow's Error (with .stderr) otherwise.
+function gitText(repositoryRoot, args) {
+  return gitOrThrow(repositoryRoot, args, { timeout: GIT_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 }).trim();
 }
 
 function readJsonFile(file, label) {
@@ -107,10 +129,10 @@ function readJsonFile(file, label) {
 function readTaggedJson(repositoryRoot, tag, relative, label) {
   let object;
   try {
-    object = git(repositoryRoot, ["rev-parse", "--verify", `${tagReference(tag)}:${relative}`]);
-    if (git(repositoryRoot, ["cat-file", "-t", object]) !== "blob") throw new Error("tag object is not a blob");
-    const content = execFileSync("git", ["-C", repositoryRoot, "cat-file", "blob", object], {
-      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 4 * 1024 * 1024,
+    object = gitText(repositoryRoot, ["rev-parse", "--verify", `${tagReference(tag)}:${relative}`]);
+    if (gitText(repositoryRoot, ["cat-file", "-t", object]) !== "blob") throw new Error("tag object is not a blob");
+    const content = gitOrThrow(repositoryRoot, ["cat-file", "blob", object], {
+      timeout: GIT_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024,
     });
     return JSON.parse(content);
   } catch (error) {
@@ -155,7 +177,7 @@ export function releaseIdentityFromTag(repositoryRoot, tag) {
 }
 
 export function entriesFromTag(repositoryRoot, tag, prefix = defaultPluginPrefix) {
-  const listing = git(repositoryRoot, ["ls-tree", "-r", "-z", "--full-tree", tagReference(tag), "--", prefix]);
+  const listing = gitText(repositoryRoot, ["ls-tree", "-r", "-z", "--full-tree", tagReference(tag), "--", prefix]);
   const records = listing.split("\0").filter(Boolean);
   if (!records.length) throw new Error(`Explicit tag ${tag} contains no plugin files under ${prefix}`);
   return records.map(record => {
@@ -169,8 +191,8 @@ export function entriesFromTag(repositoryRoot, tag, prefix = defaultPluginPrefix
     if (!(archivePath === prefix || archivePath.startsWith(prefix + "/"))) {
       throw new Error(`Tagged archive path escapes plugin root: ${archivePath}`);
     }
-    const content = execFileSync("git", ["-C", repositoryRoot, "cat-file", "blob", object], {
-      encoding: null, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 32 * 1024 * 1024,
+    const content = gitOrThrow(repositoryRoot, ["cat-file", "blob", object], {
+      encoding: "buffer", timeout: GIT_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024,
     });
     return { archivePath, content };
   }).sort((a, b) => a.archivePath.localeCompare(b.archivePath, "en"));
@@ -215,32 +237,13 @@ function run(command, args, options = {}) {
   }).trim();
 }
 
-function replacePath(text, sensitivePath, replacement) {
-  if (!sensitivePath) return text;
-  const escaped = sensitivePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return text.replace(new RegExp(escaped, process.platform === "win32" ? "gi" : "g"), replacement);
-}
-
-export function redactReleaseDiagnostic(value) {
-  let text = String(value ?? "")
-    .replace(/-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/gi, "[redacted private key]")
-    .replace(/[\r\n\t]+/g, " ").trim()
-    .replace(/(["']?\bauthorization\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^,;|]+)/gi, "$1[redacted]")
-    .replace(/(["']?\b(?:api(?:[_-]|\s+)?key|private(?:[_-]|\s+)?key|gh(?:[_-]|\s+)?token|token|secret|password)\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^,;|]+)/gi, "$1[redacted]")
-    .replace(/\bbearer\s+["']?[A-Za-z0-9._~+/=-]+["']?/gi, "Bearer [redacted]")
-    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, "[redacted]");
-  text = replacePath(text, os.tmpdir(), "<temp>");
-  text = replacePath(text, os.homedir(), "~");
-  return text.slice(0, 2000);
-}
-
 export function runReleaseCommand(action, tag, args, options = {}) {
   const runner = options.runner || run;
   const timeoutMs = options.timeoutMs || RELEASE_COMMAND_TIMEOUT_MS;
   try {
     return runner("gh", args, { timeout: timeoutMs });
   } catch (error) {
-    const detail = redactReleaseDiagnostic([error?.stderr, error?.code, error?.message].filter(Boolean).join("; "))
+    const detail = redactDiagnostic([error?.stderr, error?.code, error?.message].filter(Boolean).join("; "))
       || "no subprocess detail captured";
     throw new Error(`Release ${action} for ${tag} failed or timed out after ${timeoutMs}ms: ${detail}`);
   }
@@ -265,9 +268,9 @@ export function validateReleaseIdentity({ tag, requiredTag, head, tagged, dirty 
 }
 
 export function validateTaggedReleaseState(repositoryRoot, identity) {
-  const head = git(repositoryRoot, ["rev-parse", "HEAD"]);
-  const tagged = git(repositoryRoot, ["rev-parse", "--verify", `${tagReference(identity.tag)}^{commit}`]);
-  const dirty = git(repositoryRoot, [
+  const head = gitText(repositoryRoot, ["rev-parse", "HEAD"]);
+  const tagged = gitText(repositoryRoot, ["rev-parse", "--verify", `${tagReference(identity.tag)}^{commit}`]);
+  const dirty = gitText(repositoryRoot, [
     "status", "--porcelain=v1", "--untracked-files=no", "--",
     "package.json", defaultPluginPrefix,
   ]);
@@ -298,7 +301,7 @@ function rawFailureText(result) {
 }
 
 function failureText(result) {
-  return redactReleaseDiagnostic(rawFailureText(result));
+  return redactDiagnostic(rawFailureText(result));
 }
 
 function wait(milliseconds) {
@@ -322,11 +325,11 @@ export function downloadPublished(tag, directory, options = {}) {
       "--clobber",
     ], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30000 });
     if (result.status === 0 && !result.error) {
-      const stderr = redactReleaseDiagnostic([errors.join("\n"), result.stderr?.trim()].filter(Boolean).join("\n"));
+      const stderr = redactDiagnostic([errors.join("\n"), result.stderr?.trim()].filter(Boolean).join("\n"));
       return { outcome: "downloaded", attempts: attempt, stderr };
     }
     const rawMessage = rawFailureText(result);
-    const message = redactReleaseDiagnostic(rawMessage);
+    const message = redactDiagnostic(rawMessage);
     errors.push(`attempt ${attempt}: ${message}`);
     const classified = classifyGhFailure(rawMessage);
     if (!classified.transient || attempt === maxAttempts) {
@@ -349,13 +352,13 @@ export function inspectPublishedRelease(tag, options = {}) {
     try {
       const parsed = JSON.parse(result.stdout);
       if (!Array.isArray(parsed.assets)) throw new Error("assets is not an array");
-      return { outcome: "found", assets: parsed.assets, stderr: redactReleaseDiagnostic(result.stderr?.trim() || "") };
+      return { outcome: "found", assets: parsed.assets, stderr: redactDiagnostic(result.stderr?.trim() || "") };
     } catch {
       return { outcome: "transport-error", category: "response", stderr: "Invalid gh release view response" };
     }
   }
   const rawStderr = rawFailureText(result);
-  const stderr = redactReleaseDiagnostic(rawStderr);
+  const stderr = redactDiagnostic(rawStderr);
   const classified = classifyGhFailure(rawStderr);
   return {
     outcome: classified.category === "not-found" ? "not-found" : "transport-error",
@@ -395,7 +398,7 @@ function assertDownloadSucceeded(tag, result) {
   if (result?.outcome === "downloaded") return;
   throw new Error(
     `Unable to download published assets for ${tag}: ${result?.category || result?.outcome || "unknown"}; `
-    + `${redactReleaseDiagnostic(result?.stderr || "no stderr captured")}`,
+    + `${redactDiagnostic(result?.stderr || "no stderr captured")}`,
   );
 }
 
@@ -404,7 +407,7 @@ function inspectExisting(tag, inspect, built) {
   if (inspection?.outcome !== "found") {
     throw new Error(
       `Unable to inspect existing release ${tag}: ${inspection?.category || inspection?.outcome}; `
-      + redactReleaseDiagnostic(inspection?.stderr || "no stderr captured"),
+      + redactDiagnostic(inspection?.stderr || "no stderr captured"),
     );
   }
   validatePublishedAssetInventory(inspection.assets, built);
@@ -461,29 +464,29 @@ export function publish(tag, options = {}) {
   return verifyOrRepairPublished(tag, built, options);
 }
 
-// isInvokedDirectly() kept in sync with the other 10 CLI entry points (documented copy — see garden hash guard)
-function isInvokedDirectly() {
-  if (!process.argv[1]) return false;
-  try {
-    return fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
-  } catch {
-    return false;
-  }
+const USAGE = "publish-release.mjs [--archive | --publish] [--tag vX.Y.Z]";
+const CLI_OPTIONS = { archive: { type: "boolean" }, publish: { type: "boolean" }, tag: { type: "string" } };
+
+// The mode and tag from the command line, in any order: `--archive` (the default when neither mode is
+// given) or `--publish`, never both. A usage error (an unknown flag, --tag without its value, a stray
+// argument, both modes) throws like every other failure here: exit 1, nothing built or published.
+function parseReleaseArgs(args) {
+  const parsed = parseCli(args, { options: CLI_OPTIONS });
+  if (parsed.error) throw new Error(`${parsed.error} (usage: ${USAGE})`);
+  const { archive = false, publish: publishMode = false, tag } = parsed.values;
+  if (archive && publishMode) throw new Error(`--archive and --publish cannot be combined (usage: ${USAGE})`);
+  return { mode: publishMode ? "publish" : "archive", tag: tag || undefined };
 }
 
-if (isInvokedDirectly()) {
+if (isMain(import.meta.url)) {
   try {
-    const mode = process.argv[2] || "--archive";
-    const tagIndex = process.argv.indexOf("--tag");
-    const tag = tagIndex >= 0 ? process.argv[tagIndex + 1] : undefined;
-    const result = mode === "--archive"
+    const { mode, tag } = parseReleaseArgs(process.argv.slice(2));
+    const result = mode === "archive"
       ? createArchive(path.join(root, "_release"), tag ? { tag } : {})
-      : mode === "--publish"
-        ? publish(tag)
-        : (() => { throw new Error(`Unknown mode: ${mode}`); })();
+      : publish(tag);
     console.log(formatReleaseResult(result));
   } catch (error) {
-    console.error(`Cressetide release failed: ${redactReleaseDiagnostic(error.message)}`);
+    console.error(`Cressetide release failed: ${redactDiagnostic(error.message)}`);
     process.exit(1);
   }
 }

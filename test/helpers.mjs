@@ -97,11 +97,14 @@ const PINNED_GIT_CONFIG = [
 
 // For fixture git only. The system config stays (Git for Windows keeps core.autocrlf, core.symlinks and
 // init.defaultBranch there), so this is not GIT_CONFIG_NOSYSTEM. `extra` is applied last, so a caller's own
-// GIT_AUTHOR_DATE / GIT_COMMITTER_DATE still win.
+// GIT_AUTHOR_DATE / GIT_COMMITTER_DATE still win. Windows environment names are case-insensitive (a
+// `Git_Dir` reaches git as GIT_DIR), so there the names are matched case-insensitively.
 export function gitEnv(extra = {}) {
   const env = { ...process.env };
+  const caseInsensitive = process.platform === "win32";
   for (const key of Object.keys(env)) {
-    if (INHERITED_GIT_ENV.includes(key) || /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(key)) delete env[key];
+    const name = caseInsensitive ? key.toUpperCase() : key;
+    if (INHERITED_GIT_ENV.includes(name) || /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(name)) delete env[key];
   }
   env.GIT_CONFIG_GLOBAL = NO_GLOBAL_GITCONFIG;
   env.GIT_CONFIG_COUNT = String(PINNED_GIT_CONFIG.length);
@@ -350,10 +353,6 @@ export function contractMd(jsonOverrides) {
 
 // --- release fixtures ---
 
-export function sha256File(filePath) {
-  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
-}
-
 export function parseTar(buffer) {
   const entries = new Map();
   for (let offset = 0; offset < buffer.length;) {
@@ -371,110 +370,4 @@ export function parseTar(buffer) {
     offset = bodyStart + Math.ceil(size / 512) * 512;
   }
   return entries;
-}
-
-export function makeReleaseRoot() {
-  const dir = tempDir("ctide-release-root-");
-  fs.mkdirSync(path.join(dir, "cressetide", ".claude-plugin"), { recursive: true });
-  fs.writeFileSync(path.join(dir, "cressetide", ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.2.3" }), "utf8");
-  fs.writeFileSync(path.join(dir, "CHANGELOG.md"), "## [1.2.3]\n\nRelease notes.\n\n## [1.2.2]\n\nOld.\n", "utf8");
-  return dir;
-}
-
-export function makeReleaseRunner({
-  state,
-  tagExists = true,
-  tagCommit = "head",
-  fatalReleaseView = false,
-  remoteAssetContent = "deterministic test asset",
-  remoteChecksumName,
-  remoteChecksumText,
-  downloadFailures = [],
-  downloadFailureStderr = {},
-  signedTagSucceeds = false,
-  signedTagFails = false,
-  requireIdentityForAnnotatedTag = false,
-} = {}) {
-  const calls = [];
-  let currentTagExists = tagExists;
-  let gitNameSet = false;
-  let gitEmailSet = false;
-  const runner = (cmd, args) => {
-    calls.push([cmd, ...args]);
-    if (cmd === "gh" && args[0] === "release" && args[1] === "view") {
-      if (fatalReleaseView) {
-        const err = new Error("rate limited");
-        err.stderr = "HTTP 403: rate limit";
-        throw err;
-      }
-      if (state == null) {
-        const err = new Error("not found");
-        err.stderr = "HTTP 404: Not Found";
-        throw err;
-      }
-      return state;
-    }
-    if (cmd === "gh" && args[0] === "release" && args[1] === "download") {
-      const pattern = args[args.indexOf("--pattern") + 1];
-      if (downloadFailures.includes(pattern)) {
-        const err = new Error(`download failed: ${pattern}`);
-        err.stderr = downloadFailureStderr[pattern] || `HTTP 404: Not Found (${pattern})`;
-        throw err;
-      }
-      const dir = args[args.indexOf("--dir") + 1];
-      fs.mkdirSync(dir, { recursive: true });
-      if (pattern.endsWith(".sha256")) {
-        const assetName = remoteChecksumName || pattern.replace(/\.sha256$/, "");
-        const hash = crypto.createHash("sha256").update(remoteAssetContent).digest("hex");
-        const content = typeof remoteChecksumText === "function"
-          ? remoteChecksumText(hash, assetName, pattern)
-          : remoteChecksumText || `${hash}  ${assetName}\n`;
-        fs.writeFileSync(path.join(dir, pattern), content, "utf8");
-      } else {
-        fs.writeFileSync(path.join(dir, pattern), remoteAssetContent, "utf8");
-      }
-      return "";
-    }
-    if (cmd === "git" && args[0] === "config") {
-      if (args[1] === "user.name") gitNameSet = true;
-      if (args[1] === "user.email") gitEmailSet = true;
-      return "";
-    }
-    if (cmd === "git" && args[0] === "rev-parse" && args[1] === "HEAD") return "head";
-    if (cmd === "git" && args[0] === "rev-parse" && args[1] === "-q") {
-      if (!currentTagExists) {
-        const err = new Error("missing tag");
-        err.stderr = "missing tag";
-        throw err;
-      }
-      return "tagref";
-    }
-    if (cmd === "git" && args[0] === "rev-parse" && args[1] === "v1.2.3^{commit}") return tagCommit;
-    if (cmd === "git" && args[0] === "tag" && args[1] === "-s") {
-      if (signedTagSucceeds) {
-        currentTagExists = true;
-        return "";
-      }
-      if (signedTagFails) {
-        const err = new Error("signing failed");
-        err.stderr = "signing failed";
-        throw err;
-      }
-    }
-    if (cmd === "git" && args[0] === "tag" && args[1] === "-a") {
-      if (requireIdentityForAnnotatedTag && (!gitNameSet || !gitEmailSet)) {
-        throw new Error("missing tagger identity");
-      }
-      currentTagExists = true;
-      return "";
-    }
-    if (cmd === "git" && args[0] === "push") return "";
-    if (cmd === "gh" && args[0] === "release" && ["upload", "edit", "create"].includes(args[1])) return "";
-    throw new Error(`unexpected command: ${cmd} ${args.join(" ")}`);
-  };
-  return { runner, calls };
-}
-
-export function fakeArchiveWriter({ assetPath }) {
-  fs.writeFileSync(assetPath, "deterministic test asset", "utf8");
 }

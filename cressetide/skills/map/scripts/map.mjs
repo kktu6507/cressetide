@@ -2,8 +2,9 @@
 import fs from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { isMain, parseCli } from "../../../lib/cli.mjs";
+import { git, headState } from "../../../lib/git.mjs";
+import { OPS_TRUST_TAG_ATTEMPT, isValidIsoDate, opsTrustTagIsWellFormed, trustTagAttempts } from "../../../lib/map-trust.mjs";
 
 const SECTION_NAMES = [
   "System overview", "Repository structure", "Architecture boundaries", "Execution flows", "Data flows",
@@ -70,33 +71,14 @@ const HEURISTIC_PLACEHOLDER = /<!-- CTIDE:HEURISTIC-PLACEHOLDER -->/;
 // top of it.
 //
 // A field's block can carry more than one entry needing its own marker (multiple Feature-flags
-// bullets, multiple Access-inventory rows); OPS_TRUST_TAG_ATTEMPT finds every "<!-- CTIDE:TRUST:...
-// -->"-shaped comment in a block -- deliberately loose (it matches even a garbled tier word or a missing
-// date), so a malformed tag is never invisible to the scan the way an out-of-shape string would be --
-// and each match is validated independently by opsTrustTagIsWellFormed, so a well-formed tag anywhere in
-// the block can never mask a separately malformed tag elsewhere (the old mechanism's dual-marker gap,
-// where a single whole-string well-formed match cleared an entire line/field, has no analogue here).
-// OPS_TRUST_TAG_ATTEMPT kept in sync with ship.mjs (documented copy — see garden hash guard)
-const OPS_TRUST_TAG_ATTEMPT = /<!--\s*CTIDE:TRUST:[^>]*-->/g;
-// The tier/date separator tolerates optional whitespace on both sides of its colon (mirroring the
-// tolerance already given around the outer "<!--"/"-->" delimiters), because the adjacent human-readable
-// prose on the same line conventionally writes "verified: <date>" WITH a space after the colon -- a
-// good-faith author formatting the tag the same way must not be flagged malformed for it.
-// OPS_TRUST_TAG_WELLFORMED kept in sync with ship.mjs (documented copy — see garden hash guard)
-const OPS_TRUST_TAG_WELLFORMED = /^<!--\s*CTIDE:TRUST:(verified|dry-run-verified|unverified)(?:\s*:\s*(\S+))?\s*-->$/;
-
-// A tag is well-formed only if its tier is exactly one of the 3 literal words -- an unrecognized tier
-// word makes OPS_TRUST_TAG_WELLFORMED fail to match at all, which is itself treated as malformed -- and,
-// for the 2 dated tiers, only if the trailing date passes the same isValidIsoDate check every other Map
-// provenance date is held to (reused, not reinvented). "unverified" carries no date, so its
-// well-formedness never depends on one.
-// opsTrustTagIsWellFormed() kept in sync with ship.mjs (documented copy — see garden hash guard)
-function opsTrustTagIsWellFormed(tag) {
-  const match = OPS_TRUST_TAG_WELLFORMED.exec(tag);
-  if (!match) return false;
-  const [, tier, date] = match;
-  return tier === "unverified" || isValidIsoDate(date);
-}
+// bullets, multiple Access-inventory rows); trustTagAttempts (cressetide/lib/map-trust.mjs, shared with
+// ship.mjs) finds every "<!-- CTIDE:TRUST:... -->"-shaped comment in a block -- deliberately loose (it
+// matches even a garbled tier word or a missing date), so a malformed tag is never invisible to the scan
+// the way an out-of-shape string would be -- and each match is validated independently by
+// opsTrustTagIsWellFormed (exactly one of the 3 tier words, and for the 2 dated tiers a date isValidIsoDate
+// accepts, with optional whitespace around the tier/date colon), so a well-formed tag anywhere in the block
+// can never mask a separately malformed tag elsewhere (the old mechanism's dual-marker gap, where a single
+// whole-string well-formed match cleared an entire line/field, has no analogue here).
 
 // Detects a malformed CTIDE:TRUST tag anywhere in one Ops Profile field's block. Unlike the
 // prose-heuristic mechanism this replaces, the scan is uniform across all 9 fields -- no per-field
@@ -105,8 +87,7 @@ function opsTrustTagIsWellFormed(tag) {
 // left for a field-scoped allowlist to protect against; Access inventory's table Trust cell, Rollback's
 // "Exact steps:" bullet, and Feature flags' per-flag bullets are all found the exact same way.
 function opsProfileMalformedTrustMarker(block) {
-  const tags = block.match(OPS_TRUST_TAG_ATTEMPT) || [];
-  return tags.some(tag => !opsTrustTagIsWellFormed(tag));
+  return trustTagAttempts(block).some(tag => !opsTrustTagIsWellFormed(tag));
 }
 
 // The fixed set of fields whose OPS_PROFILE_SKELETON template line(s) actually carry a CTIDE:TRUST tag
@@ -115,7 +96,7 @@ function opsProfileMalformedTrustMarker(block) {
 // can never drift from OPS_PROFILE_SKELETON itself. Evaluates to exactly Access inventory / Rollback /
 // Feature flags & kill switches.
 const OPS_TRUST_TAG_FIELDS = OPS_PROFILE_SECTIONS.filter(name =>
-  OPS_PROFILE_SKELETON[name].some(line => (line.match(OPS_TRUST_TAG_ATTEMPT) || []).length > 0));
+  OPS_PROFILE_SKELETON[name].some(line => trustTagAttempts(line).length > 0));
 
 // Access inventory's heuristic-placeholder DATA is a table row where at least one of the non-Trust
 // cells (What / Where / Runnable by) still reads "UNVERIFIED" (optionally backtick-wrapped, matching
@@ -147,28 +128,6 @@ const OPS_PROFILE_CORE_PLACEHOLDER_LINES = Object.fromEntries(
   ]),
 );
 
-// isValidIsoDate() kept in sync with ship.mjs (documented copy — see garden hash guard)
-function isValidIsoDate(value) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{3}))?Z)?$/.exec(value || "");
-  if (!match) return false;
-  const [, yearText, monthText, dayText, hourText, minuteText, secondText, millisecondText] = match;
-  const expected = [yearText, monthText, dayText, hourText || "00", minuteText || "00", secondText || "00", millisecondText || "000"].map(Number);
-  const parsed = new Date(0);
-  parsed.setUTCFullYear(expected[0], expected[1] - 1, expected[2]);
-  parsed.setUTCHours(expected[3], expected[4], expected[5], expected[6]);
-  return Number.isFinite(parsed.getTime()) && [
-    parsed.getUTCFullYear(), parsed.getUTCMonth() + 1, parsed.getUTCDate(),
-    parsed.getUTCHours(), parsed.getUTCMinutes(), parsed.getUTCSeconds(), parsed.getUTCMilliseconds(),
-  ].every((part, index) => part === expected[index]);
-}
-
-// git() kept in sync with ship.mjs (documented copy — see garden hash guard)
-function git(root, args) {
-  return spawnSync("git", ["-C", root, ...args], {
-    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000,
-  });
-}
-
 function repositoryRoot(input) {
   const resolved = path.resolve(input || process.cwd());
   const result = git(resolved, ["rev-parse", "--show-toplevel"]);
@@ -176,12 +135,17 @@ function repositoryRoot(input) {
   return fs.realpathSync.native(result.stdout.trim());
 }
 
+// The commit the Map is verified at: HEAD's commit when HEAD resolves to a commit that exists, "UNBORN" for
+// a repository with no commits at all (headState decides which), and otherwise an error. A HEAD that names
+// a missing object is unreadable state, never a commit id to record.
 function repositoryCommit(root) {
-  const head = git(root, ["rev-parse", "--verify", "HEAD"]);
-  if (head.status === 0 && /^[a-f0-9]{40,64}$/i.test(head.stdout.trim())) return head.stdout.trim();
-  const count = git(root, ["rev-list", "--all", "--count"]);
-  if (count.status === 0 && count.stdout.trim() === "0") return "UNBORN";
-  throw new Error(`Cannot establish repository commit provenance: ${head.stderr.trim() || count.stderr.trim() || "Git state is unreadable"}`);
+  const state = headState(root);
+  if (state === "unborn") return "UNBORN";
+  const head = git(root, ["rev-parse", "--verify", "HEAD^{commit}"]);
+  const commit = String(head.stdout ?? "").trim();
+  if (state === "born" && !head.error && head.status === 0 && /^[a-f0-9]{40,64}$/i.test(commit)) return commit;
+  const reason = String(head.stderr ?? "").trim() || "Git state is unreadable";
+  throw new Error(`Cannot establish repository commit provenance: HEAD does not resolve to a readable commit (${reason})`);
 }
 
 function containment(root, candidate) {
@@ -574,7 +538,7 @@ export function verifyMap(rootInput) {
     // the field would pass verify with no finding of any kind. This is a pure presence check (tag count
     // === 0), not prose interpretation, so it cannot mask -- nor be masked by -- the malformed-tag check
     // above, which only ever runs against tags that were actually found.
-    if (!stillPlaceholder && OPS_TRUST_TAG_FIELDS.includes(name) && (block.match(OPS_TRUST_TAG_ATTEMPT) || []).length === 0) {
+    if (!stillPlaceholder && OPS_TRUST_TAG_FIELDS.includes(name) && trustTagAttempts(block).length === 0) {
       findings.push("missing trust tag: " + name);
     }
   }
@@ -584,25 +548,20 @@ export function verifyMap(rootInput) {
   return { ok: findings.length === 0, findings };
 }
 
+const USAGE = "usage: map.mjs [create|refresh|verify] [--root PATH]";
+
+// One optional mode (default create; "map" is create) and --root (default the working directory). An
+// unknown mode or flag, a --root without its value, or a second positional is a usage error (exit 1).
 function args(argv) {
-  let mode = argv[0] || "create";
+  const parsed = parseCli(argv, { options: { root: { type: "string" } }, allowPositionals: true, positionals: 1 });
+  if (parsed.error) throw new Error(`${parsed.error.replace(/\s+/g, " ")}; ${USAGE}`);
+  let mode = parsed.positionals[0] || "create";
   if (mode === "map") mode = "create";
-  if (!["create", "refresh", "verify"].includes(mode)) throw new Error("usage: map.mjs [create|refresh|verify] [--root PATH]");
-  const index = argv.indexOf("--root");
-  return { mode, root: index >= 0 ? argv[index + 1] : process.cwd() };
+  if (!["create", "refresh", "verify"].includes(mode)) throw new Error(USAGE);
+  return { mode, root: parsed.values.root ?? process.cwd() };
 }
 
-// isInvokedDirectly() kept in sync with the other 10 CLI entry points (documented copy — see garden hash guard)
-function isInvokedDirectly() {
-  if (!process.argv[1]) return false;
-  try {
-    return fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
-  } catch {
-    return false;
-  }
-}
-
-if (isInvokedDirectly()) {
+if (isMain(import.meta.url)) {
   try {
     const input = args(process.argv.slice(2));
     if (input.mode === "verify") {

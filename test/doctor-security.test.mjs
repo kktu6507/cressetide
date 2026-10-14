@@ -78,6 +78,29 @@ test("Doctor reports an exact copied plugin root as unverified when runtime prob
   assert.equal(report.checks.find(check => check.name === "runtime-probes")?.status, "unverified");
 });
 
+test("Doctor node row (diagnose): process.versions.node 22.11.0 fails and 22.12.0 passes — the row applies the full >=22.12 floor, not a major-only check", async (t) => {
+  const copy = copyPlugin("ctide-doctor-node-row-"); // an untrusted copy: the runtime probes are skipped
+  const descriptor = Object.getOwnPropertyDescriptor(process.versions, "node");
+  t.after(() => Object.defineProperty(process.versions, "node", descriptor));
+  const nodeRow = async (version) => {
+    Object.defineProperty(process.versions, "node", { ...descriptor, value: version });
+    return (await diagnose(copy)).checks.find(check => check.name === "node");
+  };
+  assert.equal((await nodeRow("22.11.0")).status, "fail", "22.11.0 is below the 22.12 floor");
+  assert.equal((await nodeRow("22.12.0")).status, "pass", "22.12.0 meets the floor");
+  assert.equal((await nodeRow("20.19.5")).status, "fail", "an older major fails too");
+});
+
+test("Doctor redacts a secret carried in plugin.json's name before it reaches the manifest row (cressetide/lib/redact.mjs)", async () => {
+  const copy = copyPlugin("ctide-doctor-secret-name-");
+  rewriteManifest(copy, manifest => { manifest.name = "api_key=CTIDE_NAME_SENTINEL_SECRET"; });
+  const report = await diagnose(copy);
+  const manifestRow = report.checks.find(check => check.name === "manifest");
+  assert.equal(manifestRow?.status, "fail");
+  assert.match(manifestRow.detail, /^expected ctide@<semver>, got api_key=\[redacted\]$/);
+  assert.doesNotMatch(JSON.stringify(report), /CTIDE_NAME_SENTINEL_SECRET/);
+});
+
 test("Doctor sanitizes its public plugin root and filesystem failure details", async () => {
   const sensitiveRoot = path.join(os.homedir(), "ctide-doctor-sensitive-root");
   const report = await diagnose(sensitiveRoot);
