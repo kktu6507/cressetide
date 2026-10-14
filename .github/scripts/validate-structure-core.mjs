@@ -17,20 +17,45 @@ const PLUGIN = "cressetide";
 // same entries git's own file list leaves out.
 const SKIP_DIRS = new Set([".git", "node_modules", ".ctide", "_release"]);
 
-// Disk reader rooted at `root`. file(rel) -> Buffer, or null when rel is not a readable file;
-// list(rel) -> [{ name, dir }], or null when rel is not a directory. "" is the root itself.
+// Disk reader rooted at `root`. file(rel) -> Buffer, or null when rel is not a file;
+// list(rel) -> [{ name, dir }], or null when rel is not a directory. "" is the root itself. Only "absent"
+// reads as null: any other error (a path that exists but cannot be read — EACCES, EPERM, EBUSY, …) is
+// thrown, so an unreadable file is never mistaken for a missing one.
+const NOT_A_FILE = new Set(["ENOENT", "ENOTDIR", "EISDIR"]);
+const NOT_A_DIR = new Set(["ENOENT", "ENOTDIR"]);
 export function diskReader(root) {
   const abs = (rel) => path.join(root, ...rel.split("/"));
   return {
     file(rel) {
-      try { return fs.readFileSync(abs(rel)); } catch { return null; }
+      try {
+        return fs.readFileSync(abs(rel));
+      } catch (error) {
+        if (NOT_A_FILE.has(error.code)) return null;
+        throw error;
+      }
     },
     list(rel) {
       try {
         return fs.readdirSync(abs(rel), { withFileTypes: true }).map((e) => ({ name: e.name, dir: e.isDirectory() }));
-      } catch { return null; }
+      } catch (error) {
+        if (NOT_A_DIR.has(error.code)) return null;
+        throw error;
+      }
     },
   };
+}
+
+// Every file under `dir` in reader `read` (POSIX paths), skipping SKIP_DIRS at any depth: the scan list of a
+// tree that is not a git work tree, and the env-var inventory walk.
+export function readerFiles(read, dir = "") {
+  const out = [];
+  for (const e of read.list(dir) || []) {
+    if (SKIP_DIRS.has(e.name)) continue;
+    const rel = dir ? `${dir}/${e.name}` : e.name;
+    if (e.dir) out.push(...readerFiles(read, rel));
+    else out.push(rel);
+  }
+  return out;
 }
 
 // Git's view of the tree, as POSIX paths relative to root: `scan` = tracked + untracked-not-ignored files
@@ -75,17 +100,37 @@ function syntaxOk(name, buffer) {
 
 // validate({ root, read, files }) -> string[] of failures.
 //   root  — repository root (required; never inferred from the process cwd).
-//   read  — reader as returned by diskReader(); defaults to the disk under root.
-//   files — { scan, tracked } as returned by gitFiles(); defaults to gitFiles(root). Pass null for a
-//           tree that is not a git work tree: the scans then walk `read` (skipping SKIP_DIRS), and a
-//           present .ctide/ fails because its tracked state cannot be verified.
-export function validate({ root, read, files } = {}) {
+//   read  — reader as returned by diskReader(); defaults to the disk under root. A reader passed here
+//           must come with `files`: git's lists are taken from the disk, which a custom reader may not match.
+//   files — { scan, tracked } as returned by gitFiles(); defaults to gitFiles(root) when `read` is not
+//           given. Pass null for a tree that is not a git work tree: the scans then walk `read` (skipping
+//           SKIP_DIRS), and a present .ctide/ fails because its tracked state cannot be verified.
+export function validate({ root, read: reader, files } = {}) {
   if (typeof root !== "string" || root === "") throw new TypeError("validate: `root` (the repository root path) is required");
-  if (!read) read = diskReader(root);
+  if (reader && files === undefined) {
+    throw new TypeError("validate: a custom `read` needs explicit `files` (gitFiles(root), or null for a tree that is not a git work tree) — git's lists come from the disk, not from the reader");
+  }
+  if (!reader) reader = diskReader(root);
   if (files === undefined) files = gitFiles(root);
 
   const errors = [];
   const fail = (m) => errors.push(m);
+  // The checks below read only through `read`, the one guarded door to the reader: a read error (a path
+  // that exists but cannot be read) is reported once per path, and the path then reads as absent, so the
+  // remaining checks still run and the result still fails.
+  const unreadable = new Set();
+  const guarded = (method, rel) => {
+    try {
+      return reader[method](rel);
+    } catch (error) {
+      if (!unreadable.has(rel)) {
+        unreadable.add(rel);
+        fail(`cannot read ${rel || "."}: ${error?.code || error?.message || error}`);
+      }
+      return null;
+    }
+  };
+  const read = { file: (rel) => guarded("file", rel), list: (rel) => guarded("list", rel) };
   const readText = (rel) => {
     const buf = read.file(rel);
     return buf === null ? null : buf.toString("utf8");
@@ -94,17 +139,7 @@ export function validate({ root, read, files } = {}) {
   const exists = (rel) => isFile(rel) || read.list(rel) !== null;
   const names = (rel) => (read.list(rel) || []).map((e) => e.name);
   const subdirs = (rel) => (read.list(rel) || []).filter((e) => e.dir).map((e) => e.name);
-  // Every file under dir (POSIX paths), skipping SKIP_DIRS at any depth.
-  const listFiles = (dir) => {
-    const out = [];
-    for (const e of read.list(dir) || []) {
-      if (SKIP_DIRS.has(e.name)) continue;
-      const rel = dir ? `${dir}/${e.name}` : e.name;
-      if (e.dir) out.push(...listFiles(rel));
-      else out.push(rel);
-    }
-    return out;
-  };
+  const listFiles = (dir) => readerFiles(read, dir);
 
   function readJSON(rel) {
     const text = readText(rel);
@@ -669,6 +704,17 @@ export function validate({ root, read, files } = {}) {
       for (const base of wiredHookBases) {
         if (!translated.includes(base)) fail(`README parity: ${rel} does not mention the hook "${base}" (docs out of sync)`);
       }
+    }
+    // Beside the fence-skipping section count above (owner decision 2026-10-14), the raw count the pre-merge
+    // structure test enforced (37ea5df): lines matching /^##\s+/ with code fences NOT skipped, equal across
+    // every present README, so a "## " line inside a fenced sample must be mirrored in every translation.
+    const rawHeadingCount = (s) => (s.match(/^##\s+/gm) || []).length;
+    const rawCounts = ["README.md", ...TRANSLATED_READMES]
+      .map((rel) => [rel, rel === "README.md" ? en : readText(rel)])
+      .filter(([, text]) => text !== null)
+      .map(([rel, text]) => [rel, rawHeadingCount(text)]);
+    if (new Set(rawCounts.map(([, count]) => count)).size > 1) {
+      fail(`README raw ## count differs (code fences included): ${rawCounts.map(([rel, count]) => `${rel} ${count}`).join(", ")} — a "## " line in a fenced sample must appear in every README`);
     }
   }
 

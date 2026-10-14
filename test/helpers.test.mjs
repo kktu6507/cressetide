@@ -1,11 +1,34 @@
-// Tests for the shared test infrastructure in test/helpers.mjs: tempDir() cleanup (the no-leftover rule
-// every test file relies on), fixture-git isolation from a developer's git environment, and the
-// SSH-signing capability gate.
+// Tests for the shared test infrastructure in test/helpers.mjs: the test() wrapper, tempDir() cleanup (the
+// no-leftover rule every test file relies on), fixture-git isolation from a developer's git environment, and
+// the SSH-signing capability gate.
 import assert from "node:assert";
 import cp from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { git, makeRepo, sshSigningSkipReason, tempDir, tempEnv, test, write } from "./helpers.mjs";
+import { git, gitEnv, makeRepo, sshSigningSkipReason, tempDir, tempEnv, test, write } from "./helpers.mjs";
+
+// Sets process.env entries (undefined deletes one) until the running test ends.
+function setProcessEnv(t, vars) {
+  const assign = (entries) => {
+    for (const [key, value] of entries) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  };
+  const saved = Object.keys(vars).map((key) => [key, process.env[key]]);
+  t.after(() => assign(saved));
+  assign(Object.entries(vars));
+}
+
+// --- test() wrapper ---
+
+test(function namedBody(t) {
+  assert.strictEqual(t.name, "namedBody", "a nameless test is named after its body, as with node:test");
+});
+
+test("test(): a body with three parameters is not callback style (node:test: exactly two)", { timeout: 2000 }, (t, second, third) => {
+  assert.strictEqual(second, undefined, "no done callback is passed, so the test ends when the body returns");
+  assert.strictEqual(third, undefined);
+});
 
 // --- tempDir ---
 
@@ -86,13 +109,7 @@ function hostileGitEnvironment() {
 
 test("fixture git: makeRepo and git() commit, tag and merge under a hostile global config and inherited GIT_* overrides", (t) => {
   const hostile = hostileGitEnvironment();
-  const saved = Object.fromEntries(Object.keys(hostile.env).map((key) => [key, process.env[key]]));
-  t.after(() => {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[key]; else process.env[key] = value;
-    }
-  });
-  Object.assign(process.env, hostile.env);
+  setProcessEnv(t, hostile.env);
 
   const dir = makeRepo({ prefix: "ctide-helpers-repo-", files: { "a.txt": "a\n" } });
   assert.strictEqual(git(dir, ["symbolic-ref", "--short", "HEAD"]), "main");
@@ -112,6 +129,63 @@ test("fixture git: makeRepo and git() commit, tag and merge under a hostile glob
   // The pins switch off signing by default only: an explicit -S still asks the signing program.
   git(dir, ["config", "gpg.program", hostile.missingGpg]);
   assert.throws(() => git(dir, ["commit", "-q", "-S", "--allow-empty", "-m", "explicitly signed"]), /sign|gpg/i);
+});
+
+// Literal tables on purpose: importing gitEnv's own lists would let an entry removed there delete its row here.
+const STRIPPED_GIT_ENV = [
+  "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_COMMON_DIR", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG", "GIT_NAMESPACE",
+  "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
+  "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
+  "GIT_CONFIG_KEY_99", "GIT_CONFIG_VALUE_99",
+];
+const PINNED_GIT_CONFIG = [
+  ["commit.gpgSign", "false"],
+  ["tag.gpgSign", "false"],
+  ["tag.forceSignAnnotated", "false"],
+  ["merge.verifySignatures", "false"],
+  ["gc.auto", "0"],
+  ["maintenance.auto", "false"],
+  ["core.hooksPath", null], // null: an absolute path to a directory that does not exist
+];
+
+test("gitEnv: every inherited GIT_* variable in the table is stripped", (t) => {
+  setProcessEnv(t, Object.fromEntries(STRIPPED_GIT_ENV.map((key) => [key, `inherited-${key}`])));
+  const env = gitEnv();
+  for (const key of STRIPPED_GIT_ENV) assert.strictEqual(env[key], undefined, `${key} must not reach fixture git`);
+});
+
+test("gitEnv: every pinned config key in the table reads back its pinned value", () => {
+  const cwd = tempDir("ctide-helpers-pins-");
+  for (const [key, expected] of PINNED_GIT_CONFIG) {
+    let actual;
+    try {
+      actual = git(cwd, ["config", "--get", key]);
+    } catch (error) {
+      assert.fail(`${key} is not pinned: ${error.message}`);
+    }
+    if (expected === null) assert.ok(path.isAbsolute(actual) && !fs.existsSync(actual), `${key} must name a missing directory, got ${actual}`);
+    else assert.strictEqual(actual, expected, key);
+  }
+});
+
+test("gitEnv: an inherited GIT_CONFIG file is never written, and makeRepo still commits", (t) => {
+  const legacyConfig = path.join(tempDir("ctide-helpers-legacy-"), "gitconfig");
+  setProcessEnv(t, { GIT_CONFIG: legacyConfig });
+  const dir = makeRepo({ prefix: "ctide-helpers-repo-", files: { "a.txt": "a\n" } });
+  assert.strictEqual(git(dir, ["rev-list", "--count", "HEAD"]), "1", "the fixture commit exists");
+  assert.strictEqual(fs.existsSync(legacyConfig), false, "makeRepo's git config writes did not go to GIT_CONFIG");
+});
+
+test("makeRepo: production's %h equals the fixture's short SHA under a developer's global core.abbrev", () => {
+  const dir = makeRepo({ prefix: "ctide-helpers-repo-", files: { "a.txt": "a\n" } });
+  const globalConfig = path.join(tempDir("ctide-helpers-abbrev-"), "gitconfig");
+  write(globalConfig, "[core]\n\tabbrev = 12\n");
+  // Production code runs git with the plain process environment, so the global config applies to it.
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: globalConfig };
+  const plainGit = (args) => cp.execFileSync("git", args, { cwd: dir, env, encoding: "utf8" }).trim();
+  assert.strictEqual(plainGit(["config", "--global", "--get", "core.abbrev"]), "12", "fixture sanity: the global core.abbrev is live");
+  assert.strictEqual(plainGit(["log", "-1", "--format=%h"]), git(dir, ["rev-parse", "--short", "HEAD"]));
 });
 
 // --- SSH signing capability gate ---

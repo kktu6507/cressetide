@@ -1,14 +1,15 @@
 // Negative-path tests for the CI structure validator (.github/scripts/validate-structure-core.mjs): each
 // guard must FAIL on an injected defect, plus clean controls. Defects are injected IN MEMORY: validate()
 // reads every file through `read`, and its scratch-file / text-integrity / tracked-.ctide scans read the
-// `files` lists, so an overlay of both over the real checkout is exactly the tree the validator would see
-// on disk — no repository copies.
+// `files` lists. The overlay edits both the way git would see the same change in the working tree: an
+// added file is untracked (scanned unless marked ignored), and a deleted file that git tracks stays in
+// both lists, as `git ls-files -co` keeps listing it — no repository copies.
 import assert from "node:assert";
 import cp from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { diskReader, gitFiles, validate } from "../.github/scripts/validate-structure-core.mjs";
-import { git, makeRepo, root, tempDir, test } from "./helpers.mjs";
+import { diskReader, gitFiles, readerFiles, validate } from "../.github/scripts/validate-structure-core.mjs";
+import { git, makeRepo, root, tempDir, test, write } from "./helpers.mjs";
 
 const CLI = path.join(root, ".github", "scripts", "validate-structure.mjs");
 
@@ -34,12 +35,7 @@ function baseFiles() {
     if (baseFilesMemo === null) {
       // Not a git work tree (e.g. an unpacked archive): treat every file the validator's own fallback walk
       // would see as tracked, so overlays still have a `files` view to edit.
-      const walk = (dir) => (base.list(dir) || []).flatMap((e) => {
-        if ([".git", "node_modules", ".ctide", "_release"].includes(e.name)) return [];
-        const rel = dir ? `${dir}/${e.name}` : e.name;
-        return e.dir ? walk(rel) : [rel];
-      });
-      const all = walk("");
+      const all = readerFiles(base);
       baseFilesMemo = { scan: all, tracked: all };
     }
   }
@@ -83,12 +79,16 @@ function overlay(edits = {}, { tracked = [], ignored = [] } = {}) {
     },
   };
   const { scan, tracked: baseTracked } = baseFiles();
-  const hidden = new Set([...removed, ...ignored]);
+  const allTracked = [...baseTracked, ...tracked];
+  // `git ls-files -co` lists the index whatever the working tree holds, so a deleted tracked path stays in
+  // both lists; only a deleted untracked path (and an ignored one) leaves the scan.
+  const trackedSet = new Set(allTracked);
+  const hidden = new Set([...removed.filter((rel) => !trackedSet.has(rel)), ...ignored]);
   return {
     read,
     files: {
       scan: [...new Set([...scan, ...added])].filter((rel) => !hidden.has(rel)),
-      tracked: [...baseTracked, ...tracked],
+      tracked: allTracked,
     },
   };
 }
@@ -125,9 +125,72 @@ test("validate-structure: the CLI passes from a foreign cwd (root resolves from 
   assert.match(r.stdout, /Plugin structure validation passed\./);
 });
 
+test("validate-structure: the CLI FAILS with exit 1, the FAILED header and one '  - ' line per failure, all on stderr", () => {
+  // Only the CLI and its core, copied into an otherwise empty temp tree (not a git work tree, not a repo copy).
+  const tree = tempDir("ctide-validate-fail-");
+  const scripts = path.join(tree, ".github", "scripts");
+  fs.mkdirSync(scripts, { recursive: true });
+  for (const name of ["validate-structure.mjs", "validate-structure-core.mjs"]) {
+    fs.copyFileSync(path.join(root, ".github", "scripts", name), path.join(scripts, name));
+  }
+  const r = cp.spawnSync(process.execPath, [path.join(scripts, "validate-structure.mjs")], { cwd: tree, encoding: "utf8" });
+  assert.strictEqual(r.status, 1, `a failing tree must exit 1: ${r.stdout}${r.stderr}`);
+  assert.strictEqual(r.stdout, "", "a failing run prints nothing to stdout");
+  const lines = r.stderr.split(/\r?\n/).filter((line) => line !== "");
+  const header = lines.indexOf("Plugin structure validation FAILED:");
+  assert.ok(header !== -1, `stderr carries the FAILED header:\n${r.stderr}`);
+  assert.ok(lines.slice(0, header).some((line) => /^validate-structure: .+ is not the top of a git work tree/.test(line)),
+    `the not-a-work-tree notice precedes the header:\n${r.stderr}`);
+  const failures = lines.slice(header + 1);
+  assert.ok(failures.length > 0 && failures.every((line) => line.startsWith("  - ")), `only "  - " lines follow the header:\n${r.stderr}`);
+  assert.ok(failures.includes("  - missing file: cressetide/.claude-plugin/plugin.json"), `the missing manifest is listed:\n${r.stderr}`);
+});
+
 test("validate-structure: validate() requires an explicit root (never the process cwd)", () => {
   assert.throws(() => validate({}), TypeError);
   assert.throws(() => validate(), TypeError);
+});
+
+test("validate-structure: validate() with a custom reader requires explicit file lists (git's lists come from the disk)", () => {
+  assert.throws(() => validate({ root, read: diskReader(root) }), TypeError);
+});
+
+test("validate-structure: diskReader reads only absence as null and throws every other read error", () => {
+  const dir = tempDir("ctide-diskreader-");
+  write(path.join(dir, "a.md"), "a\n");
+  fs.mkdirSync(path.join(dir, "sub"));
+  const reader = diskReader(dir);
+  assert.strictEqual(reader.file("a.md").toString("utf8"), "a\n");
+  assert.deepStrictEqual(reader.list("").sort((x, y) => x.name.localeCompare(y.name)), [{ name: "a.md", dir: false }, { name: "sub", dir: true }]);
+  assert.strictEqual(reader.file("missing.md"), null, "a missing file");
+  assert.strictEqual(reader.file("a.md/child.md"), null, "a path under a file");
+  assert.strictEqual(reader.file("sub"), null, "a directory read as a file");
+  assert.strictEqual(reader.list("missing"), null, "a missing directory");
+  assert.strictEqual(reader.list("a.md"), null, "a file listed as a directory");
+  // Any other error is thrown, never read as absent (portable stand-in for EACCES / EPERM / EBUSY).
+  assert.throws(() => reader.file("bad\u0000name"), { code: "ERR_INVALID_ARG_VALUE" });
+  assert.throws(() => reader.list("bad\u0000name"), { code: "ERR_INVALID_ARG_VALUE" });
+});
+
+test("validate-structure: a file that exists but cannot be read FAILS, named once, instead of reading as absent", () => {
+  // A forbidden artifact (§6) and a scanned doc (§7, also read by the command inventory) that the reader
+  // lists but cannot read: read as absent, both checks would pass silently.
+  const denied = ["cressetide/package.json", "docs/command-reference.md"];
+  const { read, files } = overlay({ "cressetide/package.json": '{"name":"leak"}' });
+  const reader = {
+    file(rel) {
+      if (denied.includes(rel)) throw Object.assign(new Error(`EACCES: permission denied, open '${rel}'`), { code: "EACCES" });
+      return read.file(rel);
+    },
+    list: (rel) => read.list(rel),
+  };
+  assert.ok(reader.list("cressetide").some((e) => e.name === "package.json"), "fixture sanity: the reader lists the unreadable artifact");
+  assert.ok(files.scan.includes("docs/command-reference.md"), "fixture sanity: the unreadable doc is scanned");
+  const errors = validate({ root, read: reader, files });
+  for (const rel of denied) {
+    assert.deepStrictEqual(errors.filter((e) => e.startsWith(`cannot read ${rel}:`)), [`cannot read ${rel}: EACCES`],
+      `exactly one failure names the unreadable ${rel}:\n${errors.join("\n")}`);
+  }
 });
 
 test("validate-structure: gitFiles lists tracked + untracked-not-ignored files and is null outside a work-tree top", () => {
@@ -211,6 +274,17 @@ test("validate-structure: README parity FAILS when a translated README is delete
   const { code, out } = runOverlay({ "README.ja.md": null });
   assert.notStrictEqual(code, 0, "deleting a translated README must fail the build");
   assert.match(out, /README\.ja\.md is missing/, "the failure must name the missing translated README");
+});
+
+test("validate-structure: README raw ## count FAILS on a fenced ## line in one README only (the fence-skipping section count still passes)", () => {
+  const rawCount = (rel) => (base.file(rel).toString("utf8").match(/^##\s+/gm) || []).length;
+  const n = rawCount("README.md");
+  assert.deepStrictEqual([rawCount("README.zh-TW.md"), rawCount("README.ja.md")], [n, n], "fixture sanity: the clean READMEs agree");
+  const errors = check({ "README.zh-TW.md": (s) => s + "\n```\n## fenced\n```\n" });
+  assert.strictEqual(errors.length, 1, `only the raw count fails; the fence-skipping section count passes:\n${errors.join("\n")}`);
+  const counts = /^README raw ## count differs \(code fences included\): README\.md (\d+), README\.zh-TW\.md (\d+), README\.ja\.md (\d+) /.exec(errors[0]);
+  assert.ok(counts, `the failure names the raw-count check: ${errors[0]}`);
+  assert.deepStrictEqual(counts.slice(1).map(Number), [n, n + 1, n], "the failure gives every README's count");
 });
 
 test("validate-structure: a version mismatch across manifests FAILS", () => {
@@ -858,6 +932,16 @@ test("validate-structure: scratch-file and text-integrity scans cover tracked + 
     "zz-run.log": "log\n",
     "docs/zz-ignored-capture.md": "mojibake " + String.fromCharCode(0xFFFD) + " here\n",
   }, { ignored }), [], "git-ignored files must not be scanned");
+});
+
+test("validate-structure: a tracked file deleted from the working tree stays in git's lists and fails nothing", () => {
+  // `git ls-files -co` keeps listing it, so the text-integrity scan reaches a path with no content and must
+  // skip it (not report it as invalid UTF-8).
+  const rel = "test/regression-delta.test.mjs";
+  const { files } = overlay({ [rel]: null });
+  assert.ok(files.scan.includes(rel), "a deleted tracked path stays in the scan list, as in git");
+  assert.ok(files.tracked.includes(rel), "a deleted tracked path stays in the index list");
+  assert.deepStrictEqual(check({ [rel]: null }), []);
 });
 
 test("validate-structure: an unparsable or missing manifest FAILS naming the file (merged JSON guard)", () => {

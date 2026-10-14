@@ -24,14 +24,18 @@ export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const currentTest = new AsyncLocalStorage();
 
 // node:test's test(), with the running test's context available to tempDir() inside the body. node:test
-// treats a body that declares two or more parameters as callback style (t, done), so the wrapper keeps the
-// body's arity; the (name, options, fn) overloads pass through unchanged.
+// treats a body that declares exactly two parameters as callback style (t, done), so the wrapper declares
+// two exactly then, and carries the body's name (a nameless test is named after its body); the
+// (name, options, fn) overloads pass through unchanged.
 export function test(...args) {
   return nodeTest(...args.map((arg) => (typeof arg === "function" ? withTestContext(arg) : arg)));
 }
 function withTestContext(fn) {
-  if (fn.length >= 2) return function (t, done) { return currentTest.run(t, () => fn.call(this, t, done)); };
-  return function (t) { return currentTest.run(t, () => fn.call(this, t)); };
+  const wrapper = fn.length === 2
+    ? function (t, done) { return currentTest.run(t, () => fn.call(this, t, done)); }
+    : function (t) { return currentTest.run(t, () => fn.call(this, t)); };
+  Object.defineProperty(wrapper, "name", { value: fn.name });
+  return wrapper;
 }
 
 // Directories made outside any test body. This after() is registered when a test file imports this
@@ -68,11 +72,17 @@ export function tempEnv(prefix = "ctide-test-") {
 // Never created: git reads a missing global config file as empty, and cannot create this one (its
 // directory is missing too), so a stray `git config --global` in a fixture fails instead of writing.
 const NO_GLOBAL_GITCONFIG = path.join(os.tmpdir(), `ctide-no-gitconfig-${process.pid}-${crypto.randomUUID()}`, "config");
+// Never created either: fixture git runs no hooks, whichever config level (system included) names a hooks
+// directory.
+const NO_GIT_HOOKS = path.join(os.tmpdir(), `ctide-no-githooks-${process.pid}-${crypto.randomUUID()}`).replaceAll(path.sep, "/");
 // Inherited from a caller that is itself running inside git (a hook, `git rebase --exec`), these would
-// point fixture commands at another repository or index.
+// point fixture commands at another repository, index, config file or namespace, or stamp fixture commits
+// with the caller's identity and dates.
 const INHERITED_GIT_ENV = [
   "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
-  "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_CONFIG_PARAMETERS",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG", "GIT_NAMESPACE",
+  "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
+  "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
 ];
 // Command-line scope: beats the system and repo-local config; an explicit `-S` on the command still wins.
 const PINNED_GIT_CONFIG = [
@@ -82,10 +92,12 @@ const PINNED_GIT_CONFIG = [
   ["merge.verifySignatures", "false"],
   ["gc.auto", "0"],
   ["maintenance.auto", "false"],
+  ["core.hooksPath", NO_GIT_HOOKS],
 ];
 
 // For fixture git only. The system config stays (Git for Windows keeps core.autocrlf, core.symlinks and
-// init.defaultBranch there), so this is not GIT_CONFIG_NOSYSTEM.
+// init.defaultBranch there), so this is not GIT_CONFIG_NOSYSTEM. `extra` is applied last, so a caller's own
+// GIT_AUTHOR_DATE / GIT_COMMITTER_DATE still win.
 export function gitEnv(extra = {}) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
@@ -127,6 +139,9 @@ export function makeRepo({
   git(dir, ["init", "-q", `--initial-branch=${branch}`]);
   git(dir, ["config", "user.name", name]);
   git(dir, ["config", "user.email", email]);
+  // Production code runs git inside the fixture with the developer's environment, where a global core.abbrev
+  // would lengthen its %h past the fixture's --short; 7 is git's own minimum for a small repository.
+  git(dir, ["config", "core.abbrev", "7"]);
   hardenGitSigning(dir);
   if (files) {
     for (const [rel, content] of Object.entries(files)) write(path.join(dir, rel), content);
