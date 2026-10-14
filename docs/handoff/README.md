@@ -30,8 +30,10 @@
 | P3 validator 合併、overlay 負向測試、測試共用工具（含使用者追加項目） | 完成 | `53b2e18` |
 | P3 中途 review（intent / test / code + arbiter） | **FIX REQUIRED**（無 blocker，3 個 major） | — |
 | P3 修復 P3-R1～R8 | 完成；六個結案條件逐條核對成立 → **P3 READY**（見 [p3-redgreen.md](p3-redgreen.md)） | 本段 commit |
-| P4 共用 `cressetide/lib/`、7 支 script 與 ship／publish-release 改用 lib、刪 publish-release-core 與 9d d4/d5（含使用者決定 Q1–Q5） | 完成，**待中途 review**（intent / test / code / security + arbiter）；證據見 [p4-evidence.md](p4-evidence.md) | 本段 commit |
-| P5 → P13 | 未開始 | — |
+| P4 共用 `cressetide/lib/`、7 支 script 與 ship／publish-release 改用 lib、刪 publish-release-core 與 9d d4/d5（含使用者決定 Q1–Q5） | 完成；證據見 [p4-evidence.md](p4-evidence.md) | `19db2bc` |
+| P4 中途 review（intent / test / code / security + arbiter） | **FIX REQUIRED**（無 blocker；1 個真 bug + 5 個測試缺口，皆為 major） | — |
+| P4 修復 P4-R1～R7 | 完成；七個結案條件逐條核對成立 → **P4 READY**（見 [p4-evidence.md](p4-evidence.md) 最後一節） | 本段 commit |
+| P5 → P13 | 未開始；**下一步是 P5** | — |
 
 逐步紀錄在 [progress.md](progress.md)，第 1 輪 review 的完整內容在 [review-round1.md](review-round1.md)，實機探測結果在 [probes.md](probes.md)。
 
@@ -84,7 +86,13 @@
    - **validator 只掃追蹤中、未被忽略的檔案**（使用者 2026-10-14 核准）：scratch 檔與文字完整性檢查改用 `git ls-files -co --exclude-standard`，本機 gitignored 的 `.ctide/collaboration/` dogfood 資料才不會讓 `npm run validate` 失敗。最終報告列為核准的順手修正。
    - **測試用的 git 要密封**（複審 2）：fixture 裡的 git 不受開發者全域設定影響，例如 `merge.verifySignatures=true` 會讓 `ship.test.mjs` 的 merge fixture 假紅（新舊測試都有）。用一個集中的 fixture-git helper 處理，不要逐個測試補旗標。
    - **SSH 簽章測試的 skip 要看能力**（複審 2）：除了 `ssh-keygen` 能不能啟動，git < 2.34 或 OpenSSH < 8.1 也要說明原因後 skip，不能直接紅燈。
-4. **P4**：建立共用模組 `cressetide/lib/`，刪掉 publish-release-core。期限在這一階段的待辦：
+4. **P4 已結案（READY，2026-10-15）**：實作在 `19db2bc`，修復 P4-R1～R7 已完成並逐條核對七個結案條件。**下一步是 P5。** 以下保留中途 review 的判決、修復內容與條件，供對照：
+   - **R1**：contract-check 明確給 `--base` 時，`git diff` 失敗會被當成 `scope: clean`（工作樹裡有個以 SHA 命名的檔案就能觸發，已重現）；revision 後面加 `--`，明確 `--base` 時 diff 失敗回報 `unverified`，`--base ""` 也算明確；`changedFiles` 一併加 `--`。
+   - **R2～R4**：補上五個「程式碼正確但沒有測試釘住」的缺口（ship 不寫 index 的 CHANGELOG 未變更情境、changelogTouched 的 pathspec、headState 對 orphan branch 的規則、Q3 只把解析後的 SHA 交給 git、遮蔽規則先遮再截斷）；遮蔽規則也改成沒有結尾的私鑰區塊不會漏出內容。
+   - **R5**：ship 讀 git 時 revision 後面也加 `--`。**R6**：修正註解與 7 個還寫著 `isInvokedDirectly` 的測試標題。**R7**：ship-contract.md:85 與 ARCHITECTURE.md 的目錄樹（使用者核准 O-3、O-4）。
+   - **只憑證據結案的七個條件**（全部成立才算，否則請 code + test reviewer 窄範圍複審）：(1) 每個指定 mutant 都以「只還原那一行」各自打紅；(2) 全新 TEMP 全套 exit 0、0 失敗、skip 仍 6、0 殘留；(3) validate 0、plugin validate --strict 0；(4) 新的 S0 錄製對 `p4c-exit` 0 列變動、對基準 compare exit 0；(5) 擴充版敵意設定（含失敗的 `post-index-change` hook）下所有 git 與 lib 測試 0 失敗；(6) AC-9 單一副本 grep 不變，`isInvokedDirectly` 只剩 lib-binding、eval 與 CHANGELOG，arbiter 的 S-M1 重現改為回報 `forbidden-path hits`；(7) 只動 R1～R7 指定的檔案。
+
+   原本列在這一階段的待辦（都已完成）：
    - `git()` 的 1 MiB maxBuffer。
    - contract-check 移除 flag 的 CLI 測試。
    - Doctor node 列的綁定測試。
@@ -97,11 +105,20 @@
    - failure memory 的 `--log` usage 檔要寫進狀態模型。
    - **D-4 的硬性要求**：plan-gate 的 4 個 F1 計時測試（sed / perl / git apply / dd）改成 in-process 量 classifier 時間（例如 `< 250 ms`），並在 scratch 副本拿掉 `{0,200}` 上限時錄到紅燈；做不到紅燈就不算完成。
    - **helper 整理**（P3 review m-7）：`execHook` 和 `runHook` 名字太像、行為不同，改名（例如 `hookStdout`），改用 `process.execPath`；只在模組內用到的 `hardenGitSigning`、`gitEnv` 不再匯出，或寫明用途。
+   - **P4 review 排過來的項目**（期限 P5 結束）：
+     - ship 的兩個已知殘留（使用者接受到 P5，D-6）：HEAD 和 tag 之間缺 commit 時 `git tag --merged` 印錯誤卻 exit 0、被當成 `no-release-tag`；`refs/tags/` 裡有損壞的 tag 時 tagReady 判成「沒有這個 tag」。修法：stderr 非空就當讀取失敗，同時在 lib 的 `gitEnvironment()` 清掉 `GIT_TRACE*`（開 tracing 時健康的查詢也會寫 stderr）；不可比對在地化的錯誤訊息；各補一個故障測試。
+     - lib/git 的 `encoding: null` 目前會被當成 utf8：改成視同 `"buffer"`，或對其他值丟 TypeError。
+     - lib-binding 的「有用到」檢查會被字串、樣板字串、regex、`i++ /` 這類寫法騙過：每種寫法補一列單元測試；簽章檢查改成禁止 lib 以外 import `node:child_process`（列出明確例外）。
+     - NEUTRAL_CONFIG 加 `core.fsmonitor=false`（含釘住測試）。
+     - read-capped 的短讀迴圈與 fstat 沒有測試：用 patch `fs` 的方式補（一次讀 1 byte；`statSync` 丟錯時仍正常）。
+     - **failure-retrieve 的用法錯誤**（使用者 O-6 A）：維持嚴格解析，但輸出改成明確的「指令列無法解析，沒有搜尋」訊息，不再跟「沒找到」一樣；以 `-` 開頭的查詢值要用 `--query=` 寫法。
    - **validator 負向測試補齊，期限在第 2 輪 review 的 packet 之前**（P3 review m-12、m-13）：擴充檢查裡沒被測到的子條件（identity 的 `pkg.name`／`plugin.name`、各 README 的 `/ctide:*` token、`map` 的 manual-only 旗標、hook 語法檢查的 ESM 分支、`.yml`／`.lycheeignore` 文字類型、U+FF82、`~` 結尾的 scratch 檔），以及 25 個從來沒有負向測試的核心檢查。優先順序：5g HSO accept-set；5f／5j／5k／9f 的檔案不存在保護；5e cannot-locate；plugin.json 欄位與 semver；frontmatter；hooks.json 引用不存在的 hook、README 的 hook 名稱與連結。9d 相關的不補（AC-9 會整個拿掉 9d）。
 6. **P6**：SubagentStop 紀錄器加上新的 Stop；要包含一個 ship session 的回歸案例。這個案例的 commit subject 要含 `READY`、`major`、`minor`，報告裡也要有否定句「never means 'safe to ship'」，新的 Stop 都必須保持安靜（第 1 輪複審 F-k）。
 7. **P7 → P13**：照計畫做。
    - **P8 第一次改 prose 之前**，要先把被刪掉的 fast-lane 和 test-reviewer QA 輸出的 prose 守衛補回來（拿掉 TP 的部分）。同一個期限內，還要替低／中風險 run 定義實作階段可引用的 edge 來源（第 1 輪複審 F-l）。
-   - **P11** 改 README 時：`ship.test.mjs` 的 README 測試只讀每個標題下的第一行，段落重新換行時要一起檢查。P11 第一次跑 CI 時，量 Windows 全套測試時間離 20 分鐘上限還剩多少（P3 review c-1）。
+   - **P7**（P4 review 排過來，期限 P7 結束）：contract-check 改用 `changedFiles` 之前先決定 submodule 的語意（D-6）；AC-10 的測試要斷言 index 位元組不變、沒有任何 hook 被執行（現在的 `git diff <rev>` 會改寫 index 並觸發 `post-index-change`）；map 在沒裝 git 時的 TypeError（檢查 `result.error`）；lib/git 匯出 `resolveCommit(root, rev)`，P7 結束時 lib 以外不得再有 `[a-f0-9]{40,64}` 的 regex 副本；contract-check 和 ship 的用法錯誤回顯限制在約 200 字；`changedFiles` 有了呼叫端後補一個 staged `git mv` 的 `--no-renames` 測試。
+   - **P8**：ship 對 orphan branch 的說明改成「HEAD does not resolve to a commit (an orphan branch with no commits yet, or a broken or dangling HEAD) — commits since the last release tag are unknown」（使用者 O-2 A）；子目錄 `--cwd` 沒有自己的 CHANGELOG.md 時，evidence 改成「no CHANGELOG.md in the --cwd directory」；ship-contract.md:56 引用的 range diff 指令補上程式現在用的結尾 `--`（P4-R5 之後文件與程式差一個分隔符）。
+   - **P11** 改 README 時：`ship.test.mjs` 的 README 測試只讀每個標題下的第一行，段落重新換行時要一起檢查。P11 第一次跑 CI 時，量 Windows 全套測試時間離 20 分鐘上限還剩多少（P3 review c-1），並記下 Node 22 在 ubuntu／macOS／windows 的實際結果。另外（P4 review）：不帶 tag 的 `--archive` 會把未追蹤的檔案打包進去，改成只用 `git ls-files --cached`（或有未追蹤檔就拒絕），`.gitignore` 的規則改成 `**/.claude/settings.local.json`；補 publish-release 30 秒逾時的釘住測試，以及帶 tag 的封存檔也包含 `lib/` 的斷言。
    - **多餘的手動清理區塊**（P3 review m-6）：`tempDir` 已經會自動清理，下列檔案裡的 `try/finally fs.rmSync` 是重複的，哪個階段碰到該檔就順手刪掉：P4 的 release-publisher（40 個，檔案會刪）、release-cli（14）；P5 的 failure-consolidate、failure-retrieve（共 5）；P6 的 orchestration-check（5）；P7 的 map、doctor-project、regression-delta（共 9）；P10 的 model-provenance（3，檔案會刪）。**P13 收尾時 grep 要歸零**，只保留清理非 `tempDir` 目錄的區塊（例如 `globalDir`）和 orchestration-check 刻意提早釋放的那幾個。
 
 每個階段的共同要求：`npm run validate`、`npm test`、`npx --yes @anthropic-ai/claude-code@2.1.272 plugin validate --strict ./cressetide` 三項都要綠，用 `git grep` 確認該清的東西零命中，然後 commit。只有 D-2 剩下的兩個、D-4 那四個計時測試例外。P3 之後 validator 只掃追蹤中、未被忽略的檔案，主 checkout 可以直接驗證，不必再用乾淨的 worktree。測試的暫存殘留用「把 TEMP／TMP／TMPDIR 指到全新目錄、跑完數 `ctide-*`」來量。每個階段結束時，順手清掉多餘的檔案（scratch 副本、用完的 worktree、測試漏掉的 `ctide-*` 暫存目錄）。
@@ -132,8 +149,12 @@
   - **Q2 ship 子目錄 `--cwd` 的 changelogTouched**：以 `<cwd>/CHANGELOG.md` 為準，diff 判斷也用同一份。
   - **Q3 `contract-check --base` 參數注入**（已重現：`--base --output=x` 會讓 git 寫檔）：P4 就修，開頭是 `-` 的 base 一律拒收，先解析成 SHA 才交給 git。
   - **Q4 五項順手修正**：lib/git 設 `GIT_OPTIONAL_LOCKS=0`（ship 的 `git status` 不再改寫 `.git/index`）；failure-retrieve 的 `--log` 吞參數提前在 P4 修好（P5 的對應待辦改為已完成）；map 改用共用的 `headState`，HEAD 指向的物件不存在時改成報錯；read-capped 改用 fd 和 `fstat`；publish-release 的 git 呼叫加 30 秒逾時。
-  - **Q5 ship-contract.md 6 項改動**：核准，commit 前把英文定稿給使用者看。
+  - **Q5 ship-contract.md 改動**：原本的 6 項核准，commit 前把英文定稿給使用者看；定稿時又追加 2 項（changelogTouched 的讀法、用法錯誤的行為），8 項全部核准。
   - **P4 之後加中途 review**：intent、test、code、security 加 arbiter，允許依條件只憑證據結案修復；列為偏離計畫。
+  - **D-6**（2026-10-15，P4 review 後使用者選 O-1 A）：`diff.ignoreSubmodules=none` 維持不變。實測 git 2.55 的內建預設在不同指令不一致：`git status` 本來就會回報 submodule 裡的未追蹤內容（等同 `none`），`git diff` 則會隱藏（等同 `untracked`），沒有單一值能同時對齊；`none` 只會多報、不會漏報。代價是使用者沒改任何設定時，contract-check 也會把含未追蹤檔的 submodule 列為變更。沒選的方案：改成 `untracked`（tagReady 的 `git status` 會比 git 預設寬鬆，是回歸）；只對 contract-check 的 diff 加 `--ignore-submodules=untracked`（會蓋掉專案 `.gitmodules`，而且 P7 會換掉這個讀法）。P7 把 contract-check 改用 `changedFiles` 之前決定完整的 submodule 語意。另外接受兩個殘留到 P5 結束：HEAD 和 tag 之間缺 commit、`refs/tags/` 裡有損壞的 tag（都需要損壞的 repo，下游也都安全失敗）。
+  - **D-7**（2026-10-15，P4 review arbiter 提出、使用者核准）：「測試缺口」只有同時符合四個條件才算 major：(1) 該行為是這個階段新增或改寫的，或這個階段寫的測試聲稱有釘住它；(2) 該行為是明文的約定（使用者決定、排過來的待辦、合約文件，或程式自己的說明）；(3) 一個合理的單點修改 mutant 會造成看得到的有害結果（假的通過／乾淨、破壞「不寫入」、假的來源紀錄、密鑰外洩）；(4) 在該 mutant 下相關的整套測試仍然全綠。任何一條不符合就是 minor 並排到後面。之後所有 review 都照這個規則。
+  - **O-2**（使用者選 A）：在已有 commit 的 repo 裡切到 orphan branch 時，ship 維持回報 `unverified`，P8 改說明措辭。
+  - **O-6**（使用者選 A）：failure-retrieve 維持嚴格解析，P5 把用法錯誤的輸出改成明確訊息。
   - navigator 的設計假設照採用：eval 的 `KNOWN_FLAGS` 留到 P10；`changedFiles` 在 P4 建好並測試、P7 才接到 contract-check；validator 改 import `cressetide/lib/git.mjs`；`core.abbrev` 不中和；重複的旗標取最後一個值；會以 exit 1 表示失敗的 script，用法錯誤也用 exit 1；lib 檔名不可用 `_` 開頭（`.gitignore` 會忽略 `_*.mjs`）。
 - **依實機探測定的設計**（見 [probes.md](probes.md)）：
   - hooks.json 用 shell 形式：`node "${CLAUDE_PLUGIN_ROOT}/hooks/<x>.mjs"`
@@ -156,6 +177,14 @@
 5. **reconcile 掃到 1 個候選（94f1a31 對 1afe708），判定為 survived**；因為 D3，沒有寫入 close。
 6. **第 1 輪之後多了兩次窄範圍複審與修復（R2、R3），P3 之後再加一輪中途 review。** 計畫原本只排 P2、P6、P13 三輪；前者是 arbiter 判 FIX REQUIRED 的修復迴圈，後者是使用者 2026-10-14 核准的追加。
 7. **D-2 的 structure 計時測試在 P3 提早退役**：validator 改成 in-process 呼叫後，這個測試不再計時（`53b2e18`）。
+8. **P4 帶來的、使用者看得到的行為改變**（P11 寫 CHANGELOG 用；使用者 O-5 核准）：
+   - 八支 script 改成嚴格解析指令列：不認得的旗標是用法錯誤，`--flag=value` 寫法有效，重複的旗標取最後一個值。
+   - contract-check：明確給的 `--base` 無法解析或是空值時回報 `scope: unverified`；以 `-` 開頭的 base 是用法錯誤。
+   - map：`--root X` 沒給模式時執行 `create`；HEAD 指向不存在的物件時改成報錯。
+   - publish-release：模式和 `--tag` 不限順序；用法錯誤 exit 1。
+   - ship：用法錯誤時不跑任何檢查；orphan branch 回報 `unverified`；staged 之後又在工作樹還原的 CHANGELOG 算作有改；子目錄 `--cwd` 用該目錄自己的 CHANGELOG。
+   - failure-retrieve：`--log` 是布林旗標；以 `-` 開頭的查詢值要用 `--query=` 寫法。
+   - submodule 裡有未追蹤的內容時會被列為變更（D-6）。
 
 ## 已知注意事項
 
@@ -180,23 +209,26 @@
 ## 提議的 failure memory 條目（尚未寫入，交給使用者決定）
 
 1. **在 Windows Git Bash 用 `node -e '…'` 或 heredoc 帶入 JS 時，會少一層反斜線跳脫。** `\\n` 變成真的換行，`\\(` 變成 `(`，含 regex 的測試被改壞，卻沒有任何錯誤。
-   - 預防：含反斜線的改動用 Write/Edit 工具做，或寫成獨立 script 檔再執行；每次用 script 改完都讀回檢查。
-   - tags: windows, git-bash, escaping, scripted-edits
+   - 預防：含反斜線的改動用 Write/Edit 工具做，或寫成獨立 script 檔再執行；每次用 script 改完都讀回檢查。但 Write 工具也會把 `\uXXXX` 寫成實際字元：validator 不收的字元用 `String.fromCodePoint` 組，寫完做 byte 掃描。Git Bash 裡沒有 heredoc 的 `cat > file` 會等 stdin 卡到逾時；探測指令加 `< /dev/null`。
+   - tags: windows, git-bash, escaping, scripted-edits, tool-write, text-integrity
 2. **否定句裡的判決 token 仍然是那個 token。** ship 規定要逐字附上的免責聲明「no READY verdict is implied」裡有 `READY`，plugin 自己的 Stop hook 把它當成宣稱 READY，每個 ship session 都會跳出假警告。對應的測試拿模組自己匯出的常數比對，還在掃描前先把聲明切掉，等於自己驗自己。
    - 預防：要求模型逐字轉述的文字裡，不放機器解析的 token；測試用文件上的字面值，掃描整份輸出不切任何區段；另寫一個端到端測試，把真實的最後訊息餵給真的 hook，並加一個對照組證明 hook 確實會觸發。改寫機器解析 token 的措辭時，要 grep 所有文件、所有語言裡的轉述（例如 README×3），不只逐字引用的那幾處。
    - tags: machine-token, verbatim-disclaimer, hook-false-positive, tautological-oracle
 3. **解析 porcelain 指令的輸出時，使用者的 git 設定會改變輸出形狀。** `column.ui=always` 讓 `git tag` 把所有 tag 印成一行，`log.showSignature=true` 在 `git log --format` 前面多印簽章結果，`tag.sort` 改變同版號 tag 的先後。修 M2 時改用 `git tag --merged HEAD`，在預設設定下全綠，卻在這些設定下把原本 `ok` 的結果變成 `no-release-tag`。
-   - 預防：程式要解析的 git 輸出，一律明確關掉會改形狀的設定（`--no-column`、`--sort=<key>`、`--no-show-signature`），或改用 plumbing（`for-each-ref`）；測試裡要有一個在敵意設定（`column.ui=always`、`tag.sort=-refname`、`log.showSignature=true`）下跑的案例。會改變輸出「內容」的設定也一樣（`i18n.logOutputEncoding`、`status.showUntrackedFiles`、`diff.ignoreSubmodules`）；在 git 包裝層用明確的 `-c key=value` 集中中和，不要整個隔離使用者設定（會丟掉 `safe.directory`）。反過來也成立：fixture git 密封了，production 卻仍讀使用者設定時，fixture 算出的期望值會對不上（全域 `core.abbrev=12`：`%h` 是 12 碼，`rev-parse --short` 是 7 碼）。會改輸出的設定在 fixture repo 用 repo-local 釘住，敵意設定組要包含 `core.abbrev`。
+   - 預防：程式要解析的 git 輸出，一律明確關掉會改形狀的設定（`--no-column`、`--sort=<key>`、`--no-show-signature`），或改用 plumbing（`for-each-ref`）；測試裡要有一個在敵意設定（`column.ui=always`、`tag.sort=-refname`、`log.showSignature=true`）下跑的案例。會改變輸出「內容」的設定也一樣（`i18n.logOutputEncoding`、`status.showUntrackedFiles`、`diff.ignoreSubmodules`）；在 git 包裝層用明確的 `-c key=value` 集中中和，不要整個隔離使用者設定（會丟掉 `safe.directory`）。反過來也成立：fixture git 密封了，production 卻仍讀使用者設定時，fixture 算出的期望值會對不上（全域 `core.abbrev=12`：`%h` 是 12 碼，`rev-parse --short` 是 7 碼）。會改輸出的設定在 fixture repo 用 repo-local 釘住，敵意設定組要包含 `core.abbrev`。git 包裝層刻意把查詢旗標留給呼叫端時，測試也要帶呼叫端的旗標（例如 `--sort=refname`），否則敵意設定下紅的是測試本身。
    - tags: git-porcelain, user-config, output-parsing, regression-from-fix, hermetic-fixture
 4. **「其他一律算未知」的規則，每一種「其他」都要各自有測試；情境檢查不能擋在權威探測前面。** R2-3 的三態 shallow 探測只測了四種非答案中的兩種（回顯旗標、逾時）；把「非零結束」或「空輸出」改回「不是 shallow」的 mutant 93/93 全綠，卻產生 R2-3 要消除的假 `tagReady: pass`。同一次修正為了不在非 git 目錄印出「可能被截斷」，先問 `--is-inside-work-tree` 再問探測，結果 bare shallow clone 和 `<clone>/.git` 裡探測明明答 `true`，「history truncated」也被吃掉（從 2306078 退步）。
-   - 預防：規格列舉的每一種輸入（含每一種非答案）各一個測試，斷言使用者看得到的結果，每個分支各跑一個 mutant、分開記錄；先問權威探測，只有它沒答案時才用情境檢查來分類。用 regex 比對整串失敗訊息的負向測試也一樣：新增的訊息可能剛好符合舊 regex，讓舊測試失去鑑別力（P3a 實際發生過）；每個負向測試都要用「停用對應的檢查點」證明會紅。
-   - tags: tri-state, unknown-branch, mutation-survivor, guard-ordering, regression-from-fix, oracle-collision
+   - 預防：規格列舉的每一種輸入（含每一種非答案）各一個測試，斷言使用者看得到的結果，每個分支各跑一個 mutant、分開記錄；先問權威探測，只有它沒答案時才用情境檢查來分類。用 regex 比對整串失敗訊息的負向測試也一樣：新增的訊息可能剛好符合舊 regex，讓舊測試失去鑑別力（P3a 實際發生過）；每個負向測試都要用「停用對應的檢查點」證明會紅。每個修正各自做「只還原這一行」的打紅，並在促成修正的那個條件下跑；整檔還原只要任何一個測試紅就算成立，會高估覆蓋（P4 的 ship.mjs 整檔還原有 18 個測試紅，五個逐行 mutant 卻全綠）。
+   - tags: tri-state, unknown-branch, mutation-survivor, guard-ordering, regression-from-fix, oracle-collision, per-fix-revert
 5. **把 CI 關卡重構成「讀取器＋回傳清單」時，失敗路徑在兩層都可能悄悄變成通過。** P3 的 `diskReader` 把所有讀取錯誤都當成「不存在」，讀不到的檔案讓 §6／§7 直接放行（舊版會 exit 1）；負向測試全改成 in-process 呼叫之後，把 CLI 改成永遠 exit 0 的 mutant 仍然 77/77 全綠。
    - 預防：只有 `ENOENT`／`ENOTDIR` 算不存在，其他錯誤回報成失敗，測試放一個會丟錯的 reader；薄包裝的每個結束路徑至少留一個端到端測試，用改 exit code 的 mutant 證明會紅。
    - tags: ci-gate, fail-open, error-classification, refactor-regression, exit-path-coverage
 6. **`execFileSync` 的 stdin 設成 `"ignore"` 時，`input` 會被丟掉。** P3b 把 ship 的 fast-import fixture 改走共用的 `git()` 之後，fast-import 讀到空的 stdin、exit 0、什麼都沒匯入，沒有任何錯誤。
    - 預防：有 `input` 就用 `"pipe"`；fixture 要斷言結果（例如匯入後的 commit 數），不能只看 exit code。
    - tags: node, child_process, test-fixture, silent-no-op
+7. **把 revision 交給會接受 pathspec 的 git 指令時沒加 `--`，工作樹裡同名的檔案會讓指令失敗；呼叫端把失敗當成「沒有變更」，就變成假的通過。** P4 把 `--base` 解析成 SHA 之後，工作樹裡一個以該 SHA 命名的檔案讓 contract-check 印出 `scope: clean`（e0e3dcb 在同一棵樹會正確回報禁止路徑被改動）。
+   - 預防：`diff`／`log`／`rev-list` 的 revision 後面一律加 `--`，`rev-parse` 用 `--verify`；使用者明確給的輸入讀取失敗時回報 unverified，不套用預設模式的 fail-open；測試放一個與 revision 同名的檔案（SHA、`HEAD`、tag、`a..b`）。
+   - tags: git, argv, pathspec-ambiguity, fail-open, security-fix-incomplete
 
 ## 這個資料夾的檔案
 

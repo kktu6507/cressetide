@@ -951,3 +951,242 @@ My `mktemp -d` work directory (scratch repo copy, red/green runner, lexer valida
 hooks, per-run TEMPs, logs, the pre-change snapshot) was deleted by exact path. Probe repositories made during the work
 were created inside it and deleted with it. Kept on purpose: `.ctide/output/p4-s0/p4c-exit-{normal,hostile}.json` and
 the edited `record.mjs`. Nothing else under `.ctide/` was touched.
+
+---
+
+## P4 修復（P4-R1～R7）與結案
+
+> 協調者在 commit 前獨立核對七個結案條件（2026-10-15）：全新 TEMP 全套 1122/1116/0/6、0 殘留；validate 0；plugin validate --strict@2.1.272 0；自己重錄 S0（`p4r-own`）對 `p4c-exit` 300 列 0 變動、對基準 exit 0；擴充敵意設定（31 個設定 + 失敗的 pre-commit／commit-msg／post-index-change hooks）下 contract-check、ship、map、lib-*、release-cli、doctor-project 共 387 個測試 0 失敗、0 殘留；AC-9 單一副本 grep 不變，`isInvokedDirectly` 只剩 lib-binding、eval、CHANGELOG 與交接文件；親自重現 S-M1：舊版（e4518f5）印 `scope: clean`，修復後印 `forbidden-path hits: secret.txt`；抽查 headState orphan mutant（`=== 0` → `!== null`）→ lib-git＋map 5 個測試紅，含兩個新的 orphan 測試。→ **P4 READY**。
+
+# P4-R evidence — the P4 repair list P4-R1…P4-R7 (on top of e4518f5; nothing committed)
+
+Environment: Windows 11, git 2.55.0.windows.5, Node v24.19.0. Every test run, harness run and mutant run below
+had TEMP/TMP/TMPDIR pointed at its own `mktemp -d` directory under the session scratchpad. That scratch tree,
+with every clone in it, was deleted afterwards by its exact path. No file under docs/handoff/** was touched.
+
+## Files changed
+
+| File | Item | Purpose |
+|---|---|---|
+| `cressetide/skills/vigil/scripts/contract-check.mjs` | R1 | `git diff --name-only <rev> --`. An explicit `--base` (`values.base !== undefined`, the empty string included) whose diff fails → `{ unverified: "git diff against the resolved --base failed" }`. Without `--base` it still fails open to `{ paths: [] }`. Comment rewritten |
+| `cressetide/lib/git.mjs` | R1, R6 | `changedFiles`' `diff --cached … <commit> --` (and its doc line); the diff.ignoreSubmodules comment (O-1 A wording); the git() result docstring (`error` first; undefined/null stdout) |
+| `cressetide/lib/redact.mjs` | R4 | one private-key regex with an unterminated-block alternative; comment step 1 mentions it |
+| `cressetide/skills/ship/scripts/ship.mjs` | R5 | `--` after the revision at :144, :232, :233, :237; :478 → `rev-parse -q --verify HEAD^{commit}` |
+| `cressetide/skills/map/scripts/map.mjs` | R6 | :212 comment now points at `lib/read-capped.mjs` |
+| `cressetide/skills/ship/references/ship-contract.md` | R7 (O-3) | :85-86 the usage-error exception (lines 99 / 30 chars) |
+| `ARCHITECTURE.md` | R7 (O-4) | `│   ├── lib/` tree line + the shipped-lib paragraph (wrapped to the file's ~76 columns) |
+| `test/contract-check.test.mjs` | R1 | 5 tests (1)–(5) + an argv-spy/fault preload |
+| `test/lib-git.test.mjs` | R1, R3 | test (6) SHA-named file; headState orphan row |
+| `test/map.test.mjs` | R3, R6 | orphan → exit 1, no map; 2 F7 comment/title lines |
+| `test/ship.test.mjs` | R2, R3, R5 | 6 new tests + 2 assertions added to existing tests (the lead-4 note; tagReady under the inherited GIT_INDEX_FILE) |
+| `test/lib-redact.test.mjs` | R4 | a key and a token that straddle the limit; an unterminated PEM |
+| `test/doctor-project.test.mjs`, `test/release-cli.test.mjs` | R6 (F7) | title/comment/message renames only |
+
+Tests added: 16 (contract-check 5, lib-git 2, map 1, ship 6, lib-redact 2).
+
+## 1. Red records (condition 1)
+
+Method: `git clone --no-local D:/github/cressetide <scratch>/cN` (HEAD e4518f5), with the 14 working files above
+overlaid, nine clones run in parallel. One mutant per run. Each mutant is a line-level edit (`runner.mjs`: the
+`from` text must occur exactly once on the named line). The mutated file is restored byte-for-byte afterwards, and
+every clone was checked identical to the working tree after the runs. Command for each row:
+`node --test --test-reporter=tap <file>` (cwd = clone). Counts are tests/pass/fail; no run left files in its TEMP.
+
+| Item | Mutant (line-level) | File run | Exit | t/p/f | Red test(s) |
+|---|---|---|---|---|---|
+| R1 | fixed tree | contract-check.test | 0 | 32/32/0 | — |
+| R1 | M1a: contract-check:125 drop `"--"` (both modes) | contract-check.test | 1 | 32/29/3 | (1) "--base: a working-tree file named the resolved commit id does not hide a modified forbidden file"; (2) "no --base: a working-tree file named HEAD …"; (4) "--base: only the resolved commit id reaches git diff, immediately followed by "--" …" |
+| R1 | M1b: :125 `"--"` only with an explicit base (default mode loses it) | contract-check.test | 1 | 32/31/1 | (2) "no --base: a working-tree file named HEAD does not hide a modified forbidden file" |
+| R1 | M1c: :125 `"--"` only without a base | contract-check.test | 1 | 32/30/2 | (1), (4) |
+| R1 | M1d: :127 → `return { paths: [] };` | contract-check.test | 1 | 32/31/1 | (3) "--base: a git diff against the resolved base that fails (ENOBUFS, a corrupt index) is unverified, never "scope: clean"; …" |
+| R1 (R6b) | M1e: :123 `revision = base;` (raw base reaches git) | contract-check.test | 1 | 32/31/1 | (4) |
+| R1 (F6) | M1f1: :115 `explicitBase = Boolean(base)` (19db2bc's `if (base)`) | contract-check.test | 1 | 32/31/1 | (5) "an empty --base (`--base=`, `--base ""` …) is unverified, never a silent fall-back to HEAD" |
+| R1 (F6) | M1f2: :165 `changedPathsFromGit(values.base \|\| "")` | contract-check.test | 1 | 32/27/5 | (2), (3) and 3 existing no-`--base` tests (":228 valid --base … no --base diffs against HEAD", ":267 inherited GIT_DIR", ":279 non-ASCII"). (5) stays green, see deviation 5 |
+| R1 | fixed tree | lib-git.test | 0 | 36/36/0 | — |
+| R1 (C-6) | M1g: lib/git:164 drop `"--"` | lib-git.test | 1 | 36/35/1 | (6) "changedFiles(): a working-tree file named the base commit id does not fail the read" |
+| R2 | fixed tree | ship.test | 0 | 113/113/0 | — |
+| R2 (T-1, R1) | M2a: ship:347 `diff --cached` → `diff` (working tree vs commit `-- CHANGELOG.md`) | ship.test | 1 | 113/112/1 | "changelogTouched: CHANGELOG.md unchanged since the tag, with stale stat data, is `fail`, and a full run leaves .git/index's bytes and mtime unchanged" |
+| R2 (T-3, R1c) | M2b: ship:348 status read without `-- CHANGELOG.md` | ship.test | 1 | 113/112/1 | "changelogTouched: an unrelated dirty tracked file, with CHANGELOG.md unchanged since the tag, is `fail`" |
+| R2 | M2c: ship:347 staged read without `-- CHANGELOG.md` | ship.test | 1 | 113/109/4 | "changelogTouched: an unrelated staged change, or a commit after the tag that leaves CHANGELOG.md alone, is `fail`" + the stale test + 2 existing |
+| R2 | M2d: ship:353 drop the staged read (`const touched = false && …`) | ship.test | 1 | 113/110/3 | existing only: "CHANGELOG.md changed since the marker -> pass", the subdirectory `--cwd` test (committed/staged rows), ":1532 never writes .git/index". The staged-then-reverted test stays green (deviation 4) |
+| R2 (dev. 4) | M2e: e0e3dcb semantics, 2 lines (ship:347 working tree vs commit; ship:354 status term `false &&`) | ship.test | 1 | 113/111/2 | "changelogTouched: a CHANGELOG.md change staged and then reverted in the working tree counts as changed — `pass`" + the stale test |
+| R2 (lead 4, R5b) | M2f: ship:218 `if (false) {` (headState branch removed) | ship.test | 1 | 113/112/1 | "pending view: a broken or dangling HEAD in a repository that has commits is unverified, never no-release-tag" (the new note assertion) |
+| R2 (L2) | M2g: lib/git:37 `GIT_INDEX_FILE` not stripped | ship.test | 1 | 113/112/1 | "CLI: an inherited absolute GIT_DIR and GIT_INDEX_FILE naming another repository do not change the repository --cwd reads" (tagReady) |
+| R3 (L8) | M3a: lib/git:110 `=== 0` → `!== null` | lib-git / map / ship | 1 / 1 / 1 | 36/35/1 · 57/56/1 · 113/112/1 | "headState(): an orphan branch in a repository that has commits is unknown, not unborn" · "Map lib/git headState binding: an orphan branch … never "Verified at commit: UNBORN"" · "pending view: an orphan branch in a repository that has commits is unverified, never no-release-tag" |
+| R3 | M3b: lib/git:110 `=== 0` → `>= 0` | lib-git / map / ship | 1 / 1 / 1 | 36/35/1 · 57/56/1 · 113/112/1 | the same three |
+| R3 | fixed tree | map.test | 0 | 57/57/0 | — |
+| R4 | fixed tree | lib-redact.test | 0 | 26/26/0 | — |
+| R4 (L7) | M4a: redact:24 `.slice(0, limit)` before the chain | lib-redact.test | 1 | 26/25/1 | "redactDiagnostic(): a private key or a token straddling the 2000-character limit leaves no fragment". Failing assertion: the token half (`'yyyyyyyyyy ghp_A1b2C'` leaked), see deviation 6 |
+| R4 | M4b: redact:25 = HEAD's line 25 (no second alternative) | lib-redact.test | 1 | 26/25/1 | "redactDiagnostic(): a private key with no END line is redacted through to the end" |
+| R5 :144 | M5a: drop `"--"` after the tag in `log -1` | ship.test | 1 | 113/112/1 | "working-tree files named HEAD, v1.0.0 and v1.0.0..HEAD change nothing ship reports: …" |
+| R5 :232 | M5b: drop `"--"` in `rev-list --count` | ship.test | 1 | 113/112/1 | same test |
+| R5 :233 | M5c: drop `"--"` in `log --max-count … <range>` | ship.test | 1 | 113/112/1 | same test. Failing assertion: the recorded argv (`… '--format=%h%x09%s', 'v1.0.0..HEAD'` without `'--'`), see deviation 2 |
+| R5 :237 | M5d: drop `"--"` in `diff --name-only … <range>` | ship.test | 1 | 113/112/1 | same test |
+| R5 :478 | M5e: back to `["rev-parse", "HEAD"]` | ship.test | 1 | 113/112/1 | same test. Failing assertion: the unborn repository with a file named HEAD gives `stale: true`, "SYSTEM_MAP.md is stale (recorded commit UNBORN, current HEAD)", instead of `stale: null`, see deviation 3 |
+
+The sequential first attempt was stopped during its fixed-tree ship run, before any mutation was applied. Its
+contract-check and lib-git rows were identical to the table above. The remaining mutants were re-run in the
+nine parallel clones.
+
+## 2. Full suite, validate, plugin validate (condition 2)
+
+- `npm test`, fresh TEMP: **exit 0, 1122 tests / 1116 pass / 0 fail / 6 skipped** (1106 + 16 added; the 6
+  skips are the existing Windows ones), 114 s. TEMP afterwards holds only `node-compile-cache`, **0 `ctide-*`**.
+- `npm run validate`: **exit 0**, "Plugin structure validation passed."
+- `npx --yes @anthropic-ai/claude-code@2.1.272 plugin validate --strict ./cressetide`: **exit 0**,
+  "✔ Validation passed".
+
+## 3. S0 harness (condition 3; run from `.ctide/output/p4-s0`)
+
+- `node record.mjs record --out p4r-exit --env both`: exit 0, normal 150 rows, hostile 150 rows
+  (new files `p4r-exit-normal.json` / `p4r-exit-hostile.json`).
+- `node record.mjs compare p4r-exit --baseline p4c-exit`: **exit 0, "300 rows compared, 0 changed"**, so 0
+  changed rows in normal and 0 in hostile.
+- `node record.mjs compare p4r-exit` (e0e3dcb baseline): **exit 0**, "300 rows compared, 129 changed, 0 outside
+  the allowed P4-exit classes" (normal 60, hostile 69). This is the same 129 the reviewers recorded at 19db2bc.
+- The harness was not edited.
+
+## 4. Extended hostile run (condition 4)
+
+`GIT_CONFIG_GLOBAL` held 31 keys: the 20 documented ones and the 11 extras. The 20:
+
+- `merge.verifySignatures`, `commit.gpgSign`, `tag.gpgSign`, `tag.forceSignAnnotated` = true
+- `gpg.program` = a missing exe
+- `core.hooksPath` = a directory whose hooks all print and `exit 1`: pre-commit, commit-msg, prepare-commit-msg,
+  post-commit, pre-merge-commit, post-checkout, post-merge, post-rewrite, reference-transaction, pre-push,
+  post-index-change
+- `core.safecrlf=true`, `init.defaultBranch=trunk`, `core.abbrev=12`, `column.ui=always`, `tag.sort=-refname`
+- `log.showSignature=true`, `i18n.logOutputEncoding=ISO-8859-1`, `diff.relative=true`, `core.quotePath=true`
+- `status.showUntrackedFiles=no`, `diff.ignoreSubmodules=all`, `color.ui=always`, `log.decorate=full`,
+  `format.pretty=fuller`
+
+The 11 extras: `diff.renames=copies`, `diff.noprefix=true`, `diff.mnemonicPrefix=true`, `status.short=true`,
+`status.branch=true`, `status.relativePaths=false`, `column.status=always`, `core.untrackedCache=true`,
+`feature.manyFiles=true`, `log.abbrevCommit=true`, `log.showRoot=true`.
+
+A sanity probe under this set in a throwaway repository behaved as expected:
+
+- `git init` failed on the reference-transaction hook; with the hooks bypassed the branch was `trunk`.
+- `core.abbrev` read back 12.
+- `git add` of an LF file stopped with "LF would be replaced by CRLF".
+- A commit hit the missing gpg first and then the pre-commit hook.
+
+Files: ship, map, contract-check, release-cli, release-doctor, validate-structure, helpers, doctor-project,
+doctor-security, failure-retrieve, failure-consolidate, pack-review-diff, regression-delta, and lib-binding,
+lib-cli, lib-git, lib-map-trust, lib-read-capped, lib-redact (19 files).
+
+**Result: exit 0, 630 tests / 628 pass / 0 fail / 2 skipped.** Both skips are existing Windows skips in
+doctor-project ("POSIX permission bits do not apply on win32"; "cannot create a file symlink here: EPERM").
+TEMP was empty afterwards.
+
+## 5. AC-9 single-copy greps (condition 5, working tree)
+
+For each pattern, the file set matches `git grep … HEAD` (diffed: same).
+
+- `realpathSync(process.argv[1])`: only `cressetide/lib/cli.mjs` in product code. Also in `eval/` (P10) and
+  CHANGELOG prose.
+- `(spawnSync|execFileSync)\("git"`: only `cressetide/lib/git.mjs` under cressetide/ and .github/. Outside
+  them: test/helpers(.test) and docs/handoff prose.
+- The private-key literal `-----BEGIN [^-\r\n]*PRIVATE KEY-----`: only `cressetide/lib/redact.mjs`, once.
+  docs/handoff/p4-evidence.md quotes it in prose.
+- `CTIDE:TRUST:(verified`: only `cressetide/lib/map-trust.mjs` (and docs/handoff prose).
+- `KNOWN_FLAGS` in cressetide/ and .github/: 0.
+
+## 6. S-M1 reproduction (condition 6)
+
+The fixture: a repository with three commits (`secret.txt` committed in the first) and contract
+`{"allowedPaths":["*.txt"],"forbiddenPaths":["secret.txt"]}`. `secret.txt` was then modified, followed by
+`touch $(git rev-parse HEAD~2)` and `contract-check.mjs --base HEAD~2`:
+
+- e4518f5 (from `git archive HEAD`): `scope: clean (all changed files within allowedPaths)`, exit 0.
+- Working tree: `forbidden-path hits: secret.txt`, then `scope: clean (all changed files within allowedPaths)`,
+  exit 0.
+- Control: `git diff --name-only <that sha>` → "fatal: ambiguous argument '<sha>': both revision and filename".
+
+## 7. `git diff --stat` (condition 7)
+
+The 14 files listed under "Files changed", plus `docs/handoff/README.md` and `docs/handoff/progress.md`. Those
+two are the orchestrator's own uncommitted edits; P4-R did not touch them.
+
+## Notes
+
+- Redaction timing on 1 MiB inputs (NOTE, not an assertion; one run of each, measured while the sequential
+  mutation runner was also running, so compare only within a row):
+
+  | Input | e4518f5 | P4-R |
+  |---|---|---|
+  | `-----BEGIN PRIVATE KEY-----\n` repeated, no END | 6431.6 ms | 0.8 ms |
+  | one BEGIN + 1 MiB body, no END | 6.7 ms (the 2000-char output was the BEGIN line and key body, not redacted) | 0.4 ms (`[redacted private key]`) |
+  | plain `x` × 1 MiB | 0.7 ms | 0.7 ms |
+
+- Every touched file was byte-scanned. All are UTF-8 that round-trips, LF only, with no control characters and
+  no U+FFFD/U+FEFF. The 318 added lines have no tabs. Their only non-ASCII characters are U+2014 and the
+  ARCHITECTURE tree glyphs U+2502 / U+251C / U+2500.
+
+## Deviations
+
+1. **R6 git.mjs :50-53**: the arbiter's sentence is used verbatim. It is followed by the existing parenthetical
+   "(any other encoding value means "utf8")", which is still true and documents C-5. It can be dropped if the
+   exact text is wanted.
+2. **R5 :233 (`git log … <range>`) cannot be killed by working-tree files.** git checks `log`'s `A..B` range
+   against the work tree only for ambiguity. `revision.c` hands `revarg_opt` (REVARG_COMMITTISH for log) to
+   `handle_dotdot` as `cant_be_filename`, so the check is skipped. Verified on 2.55: with a file named
+   `v1.0.0..HEAD`, `git log v1.0.0..HEAD` exits 0 while `rev-list --count`/`diff` exit 128. The R5 test
+   therefore also records git's argv in-process (patching `child_process.spawnSync`, which lib/git calls at call
+   time). It pins that the pending `git log` ends with `<range>, "--"`. This is the one argv pin in that test;
+   the other four sites are killed by behaviour.
+3. **R5 :478 is not about files named like a revision when HEAD resolves.** `rev-parse HEAD` never reports an
+   ambiguity. The motivating case is a file named `HEAD` when HEAD has no commit: plain `rev-parse HEAD` then
+   prints `HEAD` and exits 0, giving a false definite "stale". The R5 test includes an unborn repository with a
+   working-tree file named `HEAD` for this site.
+4. **R2 "staged-then-reverted → pass" does not kill "drop the staged read" (M2d).** The index-vs-worktree read
+   still flags the file, because Y=M (index ≠ working tree). M2d is killed by three existing tests (committed
+   and staged CHANGELOG cases). The staged-then-reverted test kills the e0e3dcb semantics instead: one
+   working-tree-vs-commit read and nothing else (M2e, a two-line mutant). That is what disclosed deviation (4)
+   departs from.
+5. **R1 test (5) and `|| ""`.** With `base !== undefined` as the explicit test, the `|| ""` revert in main (M1f2)
+   still makes `--base ""` unverified. Test (5) therefore stays green, while every run without `--base` turns
+   unverified: test (2), test (3) and 3 existing tests go red. The 19db2bc truthiness check `if (base)` (M1f1)
+   is what test (5) kills.
+6. **R4 straddling PEM vs L7.** With the new regex, slicing first leaves an unterminated BEGIN, which the
+   second alternative redacts. The straddling-PEM half therefore passes under L7, and the token half
+   (`ghp_A1b2C` leaked) is what makes the test red, as the arbiter's "(kills L7)" on the token case says.
+7. **R2(a) sanity command.** It uses the arbiter's form `git diff --name-only <commit> -- CHANGELOG.md`, with
+   `GIT_OPTIONAL_LOCKS=0`, verified to rewrite the index here. e0e3dcb's own changelogTouched ran
+   `git diff --name-only <commit>` with no pathspec.
+8. **F7 `-U0` check.** doctor-project.test and release-cli.test show only title/comment/message lines. map.test
+   shows its 2 renamed lines plus the R3 orphan test, an added test (R3's map pin lives with the other map
+   headState tests).
+9. **contract-check test (3) also pins the must-not-change.** Without `--base`, the corrupt-index run still
+   prints `scope: clean (all changed files within allowedPaths)` (fail-open). P7 (AC-10) will need to update
+   that assertion.
+10. Also changed in the named files: the `changedFiles` doc line (`<base> --`) and redact.mjs step 1 of its
+    order comment.
+
+## Found but not changed
+
+- `ship-contract.md:56` still quotes `git diff --name-only --no-renames -z <tag>..HEAD` without the trailing
+  `--`. R7 said to change nothing else there.
+- `ship.mjs:231` `rev-parse --short <tag>^{commit}` has no `--`. rev-parse never checks a revision against the
+  work tree, and `git rev-parse <rev> --` echoes `--` on stdout, so adding it would corrupt `tagCommit`.
+- `git grep -n isInvokedDirectly` still hits docs/handoff/** (README, contract, p4-evidence, plan, progress), in
+  addition to test/lib-binding.test.mjs (guard literal), eval/ and CHANGELOG.md. docs/handoff is off-limits
+  here.
+- C-5 (`encoding: null` treated as utf8) is unchanged. The lib comment still states the behaviour.
+
+## Failure memory
+
+No `.ctide/memory/FAILURE_MEMORY.md`, `ai/FAILURE_MEMORY.md` or `~/.claude/FAILURE_MEMORY.md` exists here.
+Proposed entry, for the arbiter:
+
+```
+### 2026-10-15 — a revision passed to git without "--" becomes ambiguous when a file has its name
+- **Root cause**: `git diff <rev>`, `git log -1 <rev>`, `git rev-list <A..B>` die "ambiguous argument … both
+  revision and filename" when a working-tree file is named like the revision (HEAD, a tag, a commit id); a
+  caller that maps a non-zero exit to "no paths" turns that into a false "scope: clean".
+- **Prevention rule**: every git read that takes a revision ends its revisions with "--"; `rev-parse` takes
+  `-q --verify <rev>^{commit}` instead (it never reports ambiguity, and a plain `rev-parse HEAD` with no commit
+  prints the file name "HEAD" and exits 0); `git log <A..B>` skips the check entirely, so pin its "--" on the
+  argument list.
+- **Tags**: node / git / argv / fail-open.
+```
