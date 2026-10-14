@@ -27,7 +27,8 @@
 | 第 1 輪修復 R2-1～R2-5（含使用者核准的兩項順手修正） | 完成 | `ec91bf6` |
 | 第 1 輪複審 2（intent / test / code + arbiter） | **FIX REQUIRED**（無 blocker；2 個 major，都在 ship 的淺層偵測） | — |
 | 第 1 輪修復 R3-1～R3-5 | 完成；四個結案條件逐條核對成立 → **第 1 輪 READY** | `64c2564` |
-| P3 → P13 | 未開始 | — |
+| P3 validator 合併、overlay 負向測試、測試共用工具（含使用者追加項目） | 完成，**待中途 review** | `53b2e18` |
+| P4 → P13 | 未開始 | — |
 
 逐步紀錄在 [progress.md](progress.md)，第 1 輪 review 的完整內容在 [review-round1.md](review-round1.md)，實機探測結果在 [probes.md](probes.md)。
 
@@ -103,6 +104,10 @@
 - **D-4**（2026-10-14）：plan-gate 的 4 個 F1 計時測試（sed / perl / git apply / dd）和 D-2 同一類（計時區間 9 成以上是啟動 node），在 P5 改成 in-process 計時之前當作已揭露的例外。門檻不改。
 - **簽章**（2026-10-14，新機器）：這台機器用本機的 GPG 金鑰 `C446A14B5ED9EB97` 簽章（只設在這個 repo：`commit.gpgsign`、`tag.gpgSign`）。`2306078` 以前的 commit 是原機器的 `…1DDE4E2631D2F19D` 簽的。
 - **validator 掃描範圍**（2026-10-14）：併進 P3，只掃追蹤中、未被忽略的檔案。
+- **P3 範圍追加**（2026-10-14，navigator 盤點後使用者決定）：
+  - 效率實驗測試（P10 會刪）漏出的約 237 個 `ctide-eff*` 暫存目錄，P3 就修到 0（對 eval/efficiency 的 driver 注入 tmpdir）。
+  - validator 的擴充檢查從來沒有負向測試保護（舊測試在複製出來的 repo 裡跑 CLI，擴充檢查卻驗證真正的 repo），P3 每個擴充檢查至少補一個 overlay 負向案例。
+  - P3 結束後加一輪中途 review（intent / test / code + arbiter），列為偏離計畫。
 - **依實機探測定的設計**（見 [probes.md](probes.md)）：
   - hooks.json 用 shell 形式：`node "${CLAUDE_PLUGIN_ROOT}/hooks/<x>.mjs"`
   - 刪掉 `agents[]`，改靠 auto-discovery
@@ -122,6 +127,8 @@
 3. **`archive/v0.7.2-full` 被 `tag.gpgSign` 自動簽章。** 計畫寫的是「不打簽章 tag」；對封存用途沒有影響。
 4. **ship 拿掉了「人工挑選 ledger 項目」這一步**，這是 D3 的直接結果；pending 的 JSON 型別從陣列變成物件，屬於 breaking change，P11 要寫進 CHANGELOG。
 5. **reconcile 掃到 1 個候選（94f1a31 對 1afe708），判定為 survived**；因為 D3，沒有寫入 close。
+6. **第 1 輪之後多了兩次窄範圍複審與修復（R2、R3），P3 之後再加一輪中途 review。** 計畫原本只排 P2、P6、P13 三輪；前者是 arbiter 判 FIX REQUIRED 的修復迴圈，後者是使用者 2026-10-14 核准的追加。
+7. **D-2 的 structure 計時測試在 P3 提早退役**：validator 改成 in-process 呼叫後，這個測試不再計時（`53b2e18`）。
 
 ## 已知注意事項
 
