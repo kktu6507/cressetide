@@ -6,13 +6,12 @@
 // verbatim from Node v24 on this machine; jest / pytest -v / go test -v reproduce those tools' documented
 // reporter line formats faithfully (those toolchains are not installed here, so they cannot be live-captured —
 // the line shapes are the real ones, disclosed here rather than paraphrased). Deterministic, no model.
-import { test } from "node:test";
 import assert from "node:assert";
 import cp from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { tempDir, test } from "./helpers.mjs";
 import {
   detectRunner, extractResults, computeRegressions, formatReport,
 } from "../cressetide/skills/vigil/scripts/regression-delta.mjs";
@@ -369,7 +368,7 @@ test("formatReport: no-claim / no-regression / named-regression renderings", () 
 // ---------------------------------------------------------------------------------------------------------
 // CLI: the script reads two files, ALWAYS exits 0, and never throws to its caller.
 function withTempCaptures(before, after, fn) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-regdelta-"));
+  const dir = tempDir("ctide-regdelta-");
   try {
     const bp = path.join(dir, "before.txt");
     const ap = path.join(dir, "after.txt");

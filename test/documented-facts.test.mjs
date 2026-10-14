@@ -24,8 +24,7 @@ import path from "node:path";
 import test, { before, after } from "node:test";
 import { diagnose } from "../cressetide/skills/doctor/scripts/doctor.mjs";
 import { versionConsistencyCheck } from "../cressetide/skills/ship/scripts/ship.mjs";
-import { root, temporary, write } from "./helpers.mjs";
-import { HOOKS, isolatedHome, mkTranscript } from "./support.mjs";
+import { HOOKS, isolatedHome, mkTranscript, root, tempDir, write } from "./helpers.mjs";
 
 const DOCS = {
   runtime: path.join(root, "docs", "runtime-contract.md"),
@@ -83,9 +82,9 @@ function classifyStop(value, transcript, dir) {
   assert.fail(`${label}: unexpected Stop-hook output ${show(r.stdout)}`);
 }
 
-function classifyDebug(value, parent) {
+function classifyDebug(value) {
   const label = `CTIDE_HOOK_DEBUG=${show(value)}`;
-  const dir = fs.mkdtempSync(path.join(parent, "debug-"));
+  const dir = tempDir("ctide-facts-debug-");
   const env = isolatedEnv(dir);
   if (value !== undefined) env.CTIDE_HOOK_DEBUG = value;
   // A default-mode Write with no target path: plan-gate allows it silently and never touches the
@@ -295,7 +294,6 @@ let homeDir;
 let previousHome;
 let previousUserProfile;
 let scratch;
-let transcriptDir;
 let observations;
 let docs;
 
@@ -309,28 +307,26 @@ before(async () => {
   process.env.USERPROFILE = homeDir;
   assert.notStrictEqual(os.homedir(), REAL_HOME, "HOME isolation must be in effect before any observation runs");
 
-  scratch = temporary("ctide-facts-");
+  scratch = tempDir("ctide-facts-");
   const transcript = mkTranscript(STOP_TRANSCRIPT);
-  transcriptDir = path.dirname(transcript);
 
   const stopAccepted = new Set(STOP_UNIVERSE.filter((value) => classifyStop(value, transcript, scratch)));
   const stopVariants = new Map();
   for (const value of STOP_UNIVERSE) {
     for (const variant of caseVariants(value)) stopVariants.set(variant, { base: value, accepted: classifyStop(variant, transcript, scratch) });
   }
-  const debugEnabled = DEBUG_UNIVERSE.map((value) => [value, classifyDebug(value, scratch)]);
+  const debugEnabled = DEBUG_UNIVERSE.map((value) => [value, classifyDebug(value)]);
   const doctorAdded = await observeDoctor(scratch);
   const { excluded: shipExcluded, boundary: shipBoundary } = observeShip(scratch);
   observations = { stopAccepted, stopVariants, debugEnabled, doctorAdded, shipExcluded, shipBoundary };
   docs = Object.fromEntries(Object.entries(DOCS).map(([key, file]) => [key, fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n")]));
 });
 
+// The scratch, transcript and home directories are tempDir()s made outside any test body, so helpers.mjs
+// removes them when this file's tests end; only the env restoration lives here.
 after(() => {
   if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
   if (previousUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousUserProfile;
-  for (const dir of [scratch, transcriptDir, homeDir]) {
-    try { if (dir) fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {}
-  }
 });
 
 // --- tests -------------------------------------------------------------------------------------------

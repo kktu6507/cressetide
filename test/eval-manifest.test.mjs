@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert";
 import fs from "node:fs";
 import path from "node:path";
-import { root } from "./support.mjs";
+import { root } from "./helpers.mjs";
 
 const MANIFEST = path.join(root, "eval", "manifest.yaml");
 const FIXTURES_DIR = path.join(root, "eval", "fixtures");

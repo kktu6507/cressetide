@@ -3,12 +3,12 @@
 // contract; (2) the committed eval (eval/failure-memory/) — for each seeded lesson a task signature must
 // rank it #1 and unrelated/retired lessons must not surface. This is the evidence that the mechanism
 // actually surfaces the right lesson, runnable in CI (`npm test`) with no model. See eval/failure-memory/README.md.
-import { test } from "node:test";
 import assert from "node:assert";
 import cp from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { tempDir, test } from "./helpers.mjs";
 import {
   tokenize, parseEntries, scoreEntry, retrieve, formatRetrieval, buildLedgerLines, ledgerKey, KNOWN_FLAGS,
 } from "../cressetide/skills/vigil/scripts/failure-retrieve.mjs";
@@ -209,11 +209,10 @@ test("eval/failure-memory: every seeded case surfaces the expected lesson (recal
 });
 
 // --- .ctide discovery: resolveMemoryFile (current → compatibility → global) + ledger siblinghood ---
-import os from "node:os";
 import { resolveMemoryFile, defaultLedgerPath } from "../cressetide/skills/vigil/scripts/failure-retrieve.mjs";
 
 function mkMemTree({ newMem, legacyMem } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-fr-"));
+  const dir = tempDir("ctide-fr-");
   if (newMem != null) {
     fs.mkdirSync(path.join(dir, ".ctide", "memory"), { recursive: true });
     fs.writeFileSync(path.join(dir, ".ctide", "memory", "FAILURE_MEMORY.md"), newMem, "utf8");
@@ -267,7 +266,7 @@ test("failure-retrieve: for EVERY value-bearing flag in KNOWN_FLAGS, a value slo
   for (const F of VALUE_FLAGS) {
     for (const G of KNOWN_FLAGS) {
       if (G === F) continue;
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-frtest-"));
+      const dir = tempDir("ctide-frtest-");
       try {
         fs.mkdirSync(path.join(dir, ".ctide", "memory"), { recursive: true });
         const memFile = path.join(dir, ".ctide", "memory", "FAILURE_MEMORY.md");

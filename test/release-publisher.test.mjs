@@ -1,11 +1,8 @@
 // Behavioral tests for the release publisher (.github/scripts/publish-release.mjs): deterministic
 // tag-bound archive bytes and the publish / verify / repair / draft / create release paths.
 // Release-publisher tests split from the hook behavior suite.
-import { test } from "node:test";
 import assert from "node:assert";
-import cp from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import {
@@ -15,22 +12,19 @@ import {
   normalizeGzipOsByte,
   runRelease,
 } from "../.github/scripts/publish-release.mjs";
-import { fakeArchiveWriter, makeReleaseRoot, makeReleaseRunner, parseTar, root, sha256File } from "./support.mjs";
-import { hardenGitSigning } from "./helpers.mjs";
+import {
+  fakeArchiveWriter, git, makeReleaseRoot, makeReleaseRunner, makeRepo, parseTar, root, sha256File, tempDir, test,
+} from "./helpers.mjs";
 function makeCommittedArchiveRoot() {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-root-"));
+  const repo = makeRepo({ prefix: "ctide-release-root-", name: "Test", email: "test@example.invalid" });
   fs.cpSync(path.join(root, "cressetide"), path.join(repo, "cressetide"), { recursive: true });
-  cp.execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
-  cp.execFileSync("git", ["config", "user.name", "Test"], { cwd: repo });
-  cp.execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd: repo });
-  hardenGitSigning(repo);
-  cp.execFileSync("git", ["add", "cressetide"], { cwd: repo });
-  cp.execFileSync("git", ["commit", "-m", "fixture"], { cwd: repo, stdio: "ignore" });
+  git(repo, ["add", "cressetide"]);
+  git(repo, ["commit", "-m", "fixture"]);
   return repo;
 }
 
 test("release publisher: deterministic archive bytes are stable for the same tag tree", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-archive-"));
+  const dir = tempDir("ctide-release-archive-");
   const repo = makeCommittedArchiveRoot();
   try {
     const a = path.join(dir, "a.tar.gz");
@@ -68,7 +62,7 @@ test("release publisher: normalizeGzipOsByte refuses to patch a non-plain gzip h
 });
 
 test("release publisher: deterministic archive contains expected paths, modes, and bytes", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-archive-"));
+  const dir = tempDir("ctide-release-archive-");
   const repo = makeCommittedArchiveRoot();
   try {
     const archive = path.join(dir, "semantic.tar.gz");
@@ -80,25 +74,20 @@ test("release publisher: deterministic archive contains expected paths, modes, a
     assert.ok(hook, "archive must include hook files under the shipped plugin root");
     assert.strictEqual(hook.type, "0");
     assert.strictEqual(hook.mode, 0o644);
-    const expected = cp.execFileSync("git", ["cat-file", "blob", "HEAD:cressetide/hooks/plan-gate.js"], { cwd: repo });
+    const expected = git(repo, ["cat-file", "blob", "HEAD:cressetide/hooks/plan-gate.js"], { encoding: "buffer" });
     assert.deepStrictEqual(hook.body, expected, "archive file bytes must come from the tag-bound ctide tree");
   } finally { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(repo, { recursive: true, force: true }); }
 });
 
 test("release publisher: archive reads the tag tree even when the working tree is dirty", () => {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-git-"));
-  const out = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-archive-"));
+  const repo = makeRepo({ prefix: "ctide-release-git-", name: "Test", email: "test@example.invalid" });
+  const out = tempDir("ctide-release-archive-");
   try {
     fs.mkdirSync(path.join(repo, "cressetide", ".claude-plugin"), { recursive: true });
     fs.writeFileSync(path.join(repo, "cressetide", ".claude-plugin", "plugin.json"), '{"version":"tagged"}\n', "utf8");
-    cp.execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
-    cp.execFileSync("git", ["config", "user.name", "Test"], { cwd: repo });
-    cp.execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd: repo });
-    cp.execFileSync("git", ["config", "commit.gpgsign", "false"], { cwd: repo });
-    cp.execFileSync("git", ["config", "tag.gpgSign", "false"], { cwd: repo });
-    cp.execFileSync("git", ["add", "cressetide/.claude-plugin/plugin.json"], { cwd: repo });
-    cp.execFileSync("git", ["commit", "-m", "tagged"], { cwd: repo, stdio: "ignore" });
-    cp.execFileSync("git", ["tag", "-a", "v1.2.3", "-m", "v1.2.3"], { cwd: repo });
+    git(repo, ["add", "cressetide/.claude-plugin/plugin.json"]);
+    git(repo, ["commit", "-m", "tagged"]);
+    git(repo, ["tag", "-a", "v1.2.3", "-m", "v1.2.3"]);
     fs.writeFileSync(path.join(repo, "cressetide", ".claude-plugin", "plugin.json"), '{"version":"dirty"}\n', "utf8");
     const archive = path.join(out, "dirty.tar.gz");
     createDeterministicPluginArchive({ tag: "v1.2.3", cwd: repo, assetPath: archive });
@@ -128,7 +117,7 @@ test("release publisher: default runners include subprocess stderr in thrown err
 
 test("release publisher: published release verifies matching assets without clobber", () => {
   const tree = makeReleaseRoot();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-tmp-"));
+  const tmp = tempDir("ctide-release-tmp-");
   try {
     const { runner, calls } = makeReleaseRunner({ state: "false" });
     const result = runRelease({ root: tree, tmpDir: tmp, runner, archiveWriter: fakeArchiveWriter, log: () => {} });
@@ -144,7 +133,7 @@ test("release publisher: published release verifies matching assets without clob
 
 test("release publisher: published release rejects checksum files naming the wrong asset", () => {
   const tree = makeReleaseRoot();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-tmp-"));
+  const tmp = tempDir("ctide-release-tmp-");
   try {
     const { runner, calls } = makeReleaseRunner({ state: "false", remoteChecksumName: "WRONG-NAME.tar.gz" });
     assert.throws(() => runRelease({ root: tree, tmpDir: tmp, runner, archiveWriter: fakeArchiveWriter, log: () => {} }),
@@ -158,7 +147,7 @@ test("release publisher: published release rejects checksum files naming the wro
 
 test("release publisher: published release repairs checksum files naming the wrong asset only with repair flag", () => {
   const tree = makeReleaseRoot();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-tmp-"));
+  const tmp = tempDir("ctide-release-tmp-");
   try {
     const { runner, calls } = makeReleaseRunner({ state: "false", remoteChecksumName: "WRONG-NAME.tar.gz" });
     const result = runRelease({
@@ -180,7 +169,7 @@ test("release publisher: published release repairs checksum files naming the wro
 
 test("release publisher: published release rejects malformed multiline checksum files", () => {
   const tree = makeReleaseRoot();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-tmp-"));
+  const tmp = tempDir("ctide-release-tmp-");
   try {
     const { runner, calls } = makeReleaseRunner({
       state: "false",
@@ -197,7 +186,7 @@ test("release publisher: published release rejects malformed multiline checksum 
 
 test("release publisher: published release repairs malformed checksum files only with repair flag", () => {
   const tree = makeReleaseRoot();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-tmp-"));
+  const tmp = tempDir("ctide-release-tmp-");
   try {
     const { runner, calls } = makeReleaseRunner({
       state: "false",
@@ -222,7 +211,7 @@ test("release publisher: published release repairs malformed checksum files only
 
 test("release publisher: published release mismatch fails closed without repair flag", () => {
   const tree = makeReleaseRoot();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-tmp-"));
+  const tmp = tempDir("ctide-release-tmp-");
   try {
     const { runner, calls } = makeReleaseRunner({ state: "false", remoteAssetContent: "old asset" });
     assert.throws(() => runRelease({ root: tree, tmpDir: tmp, runner, archiveWriter: fakeArchiveWriter, log: () => {} }),
@@ -236,7 +225,7 @@ test("release publisher: published release mismatch fails closed without repair 
 
 test("release publisher: published release missing assets fail closed without repair flag", () => {
   const tree = makeReleaseRoot();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-tmp-"));
+  const tmp = tempDir("ctide-release-tmp-");
   try {
     const { runner, calls } = makeReleaseRunner({ state: "false", downloadFailures: ["ctide-v1.2.3-plugin.tar.gz"] });
     assert.throws(() => runRelease({ root: tree, tmpDir: tmp, runner, archiveWriter: fakeArchiveWriter, log: () => {} }),
@@ -250,7 +239,7 @@ test("release publisher: published release missing assets fail closed without re
 
 test("release publisher: published release missing assets repair only with explicit flag", () => {
   const tree = makeReleaseRoot();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-tmp-"));
+  const tmp = tempDir("ctide-release-tmp-");
   try {
     const { runner, calls } = makeReleaseRunner({ state: "false", downloadFailures: ["ctide-v1.2.3-plugin.tar.gz"] });
     const result = runRelease({
@@ -272,7 +261,7 @@ test("release publisher: published release missing assets repair only with expli
 
 test("release publisher: published release download infrastructure failures fail closed even with repair flag", () => {
   const tree = makeReleaseRoot();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-tmp-"));
+  const tmp = tempDir("ctide-release-tmp-");
   const asset = "ctide-v1.2.3-plugin.tar.gz";
   try {
     const { runner, calls } = makeReleaseRunner({
@@ -298,7 +287,7 @@ test("release publisher: published release download infrastructure failures fail
 
 test("release publisher: published release mismatch repairs only with explicit flag", () => {
   const tree = makeReleaseRoot();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-tmp-"));
+  const tmp = tempDir("ctide-release-tmp-");
   try {
     const { runner, calls } = makeReleaseRunner({ state: "false", remoteAssetContent: "old asset" });
     const result = runRelease({ root: tree, tmpDir: tmp, runner, archiveWriter: fakeArchiveWriter, env: { CTIDE_REPAIR_PUBLISHED_RELEASE_ASSETS: "true" }, log: () => {} });
@@ -313,7 +302,7 @@ test("release publisher: published release mismatch repairs only with explicit f
 
 test("release publisher: draft release uploads assets then promotes", () => {
   const tree = makeReleaseRoot();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-tmp-"));
+  const tmp = tempDir("ctide-release-tmp-");
   try {
     const { runner, calls } = makeReleaseRunner({ state: "true" });
     const result = runRelease({ root: tree, tmpDir: tmp, runner, archiveWriter: fakeArchiveWriter, log: () => {} });
@@ -330,7 +319,7 @@ test("release publisher: draft release uploads assets then promotes", () => {
 
 test("release publisher: missing release creates tag and release", () => {
   const tree = makeReleaseRoot();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-tmp-"));
+  const tmp = tempDir("ctide-release-tmp-");
   try {
     const { runner, calls } = makeReleaseRunner({ state: null, tagExists: false });
     const result = runRelease({ root: tree, tmpDir: tmp, runner, archiveWriter: fakeArchiveWriter, log: () => {} });
@@ -346,7 +335,7 @@ test("release publisher: missing release creates tag and release", () => {
 
 test("release publisher: signed tag success does not fall back to unsigned tag", () => {
   const tree = makeReleaseRoot();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-tmp-"));
+  const tmp = tempDir("ctide-release-tmp-");
   try {
     const { runner, calls } = makeReleaseRunner({ state: null, tagExists: false, signedTagSucceeds: true });
     const result = runRelease({ root: tree, tmpDir: tmp, runner, archiveWriter: fakeArchiveWriter, env: { HAS_GPG: "true" }, log: () => {} });
@@ -361,7 +350,7 @@ test("release publisher: signed tag success does not fall back to unsigned tag",
 
 test("release publisher: signing failure falls back to unsigned tag with bot identity", () => {
   const tree = makeReleaseRoot();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-tmp-"));
+  const tmp = tempDir("ctide-release-tmp-");
   try {
     const { runner, calls } = makeReleaseRunner({ state: null, tagExists: false, signedTagFails: true, requireIdentityForAnnotatedTag: true });
     const result = runRelease({ root: tree, tmpDir: tmp, runner, archiveWriter: fakeArchiveWriter, env: { HAS_GPG: "true" }, log: () => {} });
@@ -377,7 +366,7 @@ test("release publisher: signing failure falls back to unsigned tag with bot ide
 
 test("release publisher: tag mismatch fails before draft/new publication", () => {
   const tree = makeReleaseRoot();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-tmp-"));
+  const tmp = tempDir("ctide-release-tmp-");
   try {
     const { runner, calls } = makeReleaseRunner({ state: "true", tagCommit: "old" });
     assert.throws(() => runRelease({ root: tree, tmpDir: tmp, runner, archiveWriter: fakeArchiveWriter, log: () => {} }),
@@ -391,7 +380,7 @@ test("release publisher: tag mismatch fails before draft/new publication", () =>
 
 test("release publisher: release discovery errors fail closed unless they are not-found", () => {
   const tree = makeReleaseRoot();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-tmp-"));
+  const tmp = tempDir("ctide-release-tmp-");
   try {
     const { runner, calls } = makeReleaseRunner({ fatalReleaseView: true });
     assert.throws(() => runRelease({ root: tree, tmpDir: tmp, runner, archiveWriter: fakeArchiveWriter, log: () => {} }),
@@ -410,7 +399,7 @@ test("release publisher: release discovery errors fail closed unless they are no
 
 // A release root whose CHANGELOG uses the dated keep-a-changelog heading form (the real repo's form).
 function makeDatedReleaseRoot() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-root-"));
+  const dir = tempDir("ctide-release-root-");
   fs.mkdirSync(path.join(dir, "cressetide", ".claude-plugin"), { recursive: true });
   fs.writeFileSync(path.join(dir, "cressetide", ".claude-plugin", "plugin.json"), JSON.stringify({ version: "1.2.3" }), "utf8");
   fs.writeFileSync(path.join(dir, "CHANGELOG.md"),
@@ -420,7 +409,7 @@ function makeDatedReleaseRoot() {
 
 test("release publisher: dated CHANGELOG headings yield the real section body as release notes", () => {
   const tree = makeDatedReleaseRoot();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-tmp-"));
+  const tmp = tempDir("ctide-release-tmp-");
   try {
     const { runner } = makeReleaseRunner({ state: null, tagExists: false });
     const result = runRelease({ root: tree, tmpDir: tmp, runner, archiveWriter: fakeArchiveWriter, log: () => {} });
@@ -439,7 +428,7 @@ test("release publisher: dated CHANGELOG headings yield the real section body as
 
 test("release publisher: a genuinely missing CHANGELOG heading still falls back to the see-CHANGELOG note", () => {
   const tree = makeDatedReleaseRoot();
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-release-tmp-"));
+  const tmp = tempDir("ctide-release-tmp-");
   try {
     // No heading for 1.2.3 at all (dated or undated) -> the fallback must remain intact.
     fs.writeFileSync(path.join(tree, "CHANGELOG.md"),

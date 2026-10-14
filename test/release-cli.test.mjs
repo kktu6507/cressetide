@@ -17,7 +17,6 @@ import cp from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import test from "node:test";
 import { pathToFileURL } from "node:url";
 import zlib from "node:zlib";
 import {
@@ -32,8 +31,7 @@ import {
   verifyDownloaded,
   verifyOrRepairPublished,
 } from "../.github/scripts/publish-release.mjs";
-import { parseTar, root } from "./support.mjs";
-import { hardenGitSigning, temporary } from "./helpers.mjs";
+import { git, makeRepo, parseTar, root, tempDir, test } from "./helpers.mjs";
 
 const TEST_VERSION = "9.9.9";
 const TEST_TAG = `v${TEST_VERSION}`;
@@ -48,12 +46,9 @@ const CHECKSUM_NAME = `${ASSET_NAME}.sha256`;
 // real repo, so a spawned or dynamically-imported copy's own root-self-location logic (two
 // directories up from its own file) resolves to the scratch root, not the real repo. package.json and
 // the nested plugin.json are pinned to a FIXED test version/name (not the real repo's current
-// version), so this suite does not rot when the real version changes. `dir`, when given, places the
-// scratch root at a caller-chosen path (used by the symlink test so the real copy and its link share
-// one parent temp dir, matching test/doctor-project.test.mjs's established single-cleanup pattern).
-function releaseCliScratchRoot({ tag = false, dir } = {}) {
-  const scratchRoot = dir || temporary("ctide-release-cli-");
-  fs.mkdirSync(scratchRoot, { recursive: true });
+// version), so this suite does not rot when the real version changes.
+function releaseCliScratchRoot({ tag = false } = {}) {
+  const scratchRoot = makeRepo({ prefix: "ctide-release-cli-", name: "Test", email: "test@example.invalid" });
   fs.cpSync(path.join(root, "cressetide"), path.join(scratchRoot, "cressetide"), { recursive: true });
   fs.writeFileSync(path.join(scratchRoot, "package.json"),
     JSON.stringify({ name: "ctide", private: true, version: TEST_VERSION }, null, 2), "utf8");
@@ -65,13 +60,9 @@ function releaseCliScratchRoot({ tag = false, dir } = {}) {
   fs.mkdirSync(path.join(scratchRoot, ".github", "scripts"), { recursive: true });
   fs.cpSync(path.join(root, ".github", "scripts", "publish-release.mjs"), path.join(scratchRoot, ".github", "scripts", "publish-release.mjs"));
   fs.cpSync(path.join(root, ".github", "scripts", "publish-release-core.mjs"), path.join(scratchRoot, ".github", "scripts", "publish-release-core.mjs"));
-  cp.execFileSync("git", ["init"], { cwd: scratchRoot, stdio: "ignore" });
-  cp.execFileSync("git", ["config", "user.name", "Test"], { cwd: scratchRoot });
-  cp.execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd: scratchRoot });
-  hardenGitSigning(scratchRoot);
-  cp.execFileSync("git", ["add", "-A"], { cwd: scratchRoot });
-  cp.execFileSync("git", ["commit", "-m", "fixture"], { cwd: scratchRoot, stdio: "ignore" });
-  if (tag) cp.execFileSync("git", ["tag", "-a", TEST_TAG, "-m", TEST_TAG], { cwd: scratchRoot });
+  git(scratchRoot, ["add", "-A"]);
+  git(scratchRoot, ["commit", "-m", "fixture"]);
+  if (tag) git(scratchRoot, ["tag", "-a", TEST_TAG, "-m", TEST_TAG]);
   return scratchRoot;
 }
 
@@ -151,9 +142,9 @@ test("release CLI: `publish-release.mjs --archive` spawned as a real subprocess 
 });
 
 test("release CLI: `publish-release.mjs --archive` invoked via a real symlinked/junctioned ancestor directory is still recognized as directly-invoked, running its full CLI body (isInvokedDirectly()'s fs.realpathSync check)", (t) => {
-  const parentDir = temporary("ctide-release-cli-symlink-entrypoint-");
+  const parentDir = tempDir("ctide-release-cli-symlink-entrypoint-");
   try {
-    const scratchRoot = releaseCliScratchRoot({ dir: path.join(parentDir, "scratch-root") });
+    const scratchRoot = releaseCliScratchRoot();
     const linkedRoot = path.join(parentDir, "scratch-root-link");
     try {
       fs.symlinkSync(scratchRoot, linkedRoot, process.platform === "win32" ? "junction" : "dir");
@@ -201,7 +192,7 @@ test("release CLI: validatePublishedAssetInventory rejects a duplicated asset na
 });
 
 test("release CLI: verifyDownloaded returns false when either downloaded file is missing", () => {
-  const dir = temporary("ctide-release-cli-verifydl-");
+  const dir = tempDir("ctide-release-cli-verifydl-");
   try {
     assert.strictEqual(verifyDownloaded(dir, fakeBuilt()), false);
     fs.writeFileSync(path.join(dir, ASSET_NAME), "x", "utf8");
@@ -211,7 +202,7 @@ test("release CLI: verifyDownloaded returns false when either downloaded file is
   }
 });
 test("release CLI: verifyDownloaded returns true only when both sha256 bytes and the exact checksum line match", () => {
-  const dir = temporary("ctide-release-cli-verifydl-");
+  const dir = tempDir("ctide-release-cli-verifydl-");
   try {
     const built = fakeBuilt();
     writeMatchingDownload(dir, built);
@@ -221,7 +212,7 @@ test("release CLI: verifyDownloaded returns true only when both sha256 bytes and
   }
 });
 test("release CLI: verifyDownloaded returns false when the checksum file names the wrong asset even though the sha256 matches", () => {
-  const dir = temporary("ctide-release-cli-verifydl-");
+  const dir = tempDir("ctide-release-cli-verifydl-");
   try {
     const built = fakeBuilt();
     fs.writeFileSync(path.join(dir, built.assetName), "fake asset bytes", "utf8");
@@ -452,18 +443,14 @@ test("release CLI: releaseIdentityFromTag rejects a tag whose tagged version par
   // parity): the tag itself must genuinely exist (an absent tag fails earlier, at git rev-parse, with
   // an unrelated "Needed a single revision" error -- not the parity check this test targets), but its
   // tagged root package.json and nested plugin.json carry deliberately MISMATCHED versions.
-  const scratchRoot = temporary("ctide-release-cli-parity-");
+  const scratchRoot = makeRepo({ prefix: "ctide-release-cli-parity-", name: "Test", email: "test@example.invalid" });
   try {
     fs.mkdirSync(path.join(scratchRoot, "cressetide", ".claude-plugin"), { recursive: true });
     fs.writeFileSync(path.join(scratchRoot, "package.json"), JSON.stringify({ name: "ctide", version: TEST_VERSION }), "utf8");
     fs.writeFileSync(path.join(scratchRoot, "cressetide", ".claude-plugin", "plugin.json"), JSON.stringify({ name: "ctide", version: "1.0.0" }), "utf8");
-    cp.execFileSync("git", ["init"], { cwd: scratchRoot, stdio: "ignore" });
-    cp.execFileSync("git", ["config", "user.name", "Test"], { cwd: scratchRoot });
-    cp.execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd: scratchRoot });
-    hardenGitSigning(scratchRoot);
-    cp.execFileSync("git", ["add", "-A"], { cwd: scratchRoot });
-    cp.execFileSync("git", ["commit", "-m", "mismatched versions"], { cwd: scratchRoot, stdio: "ignore" });
-    cp.execFileSync("git", ["tag", "-a", TEST_TAG, "-m", TEST_TAG], { cwd: scratchRoot });
+    git(scratchRoot, ["add", "-A"]);
+    git(scratchRoot, ["commit", "-m", "mismatched versions"]);
+    git(scratchRoot, ["tag", "-a", TEST_TAG, "-m", TEST_TAG]);
     assert.throws(() => releaseIdentityFromTag(scratchRoot, TEST_TAG), /version parity failed/);
   } finally {
     fs.rmSync(scratchRoot, { recursive: true, force: true });
@@ -484,16 +471,12 @@ test("release CLI: entriesFromTag reads file contents from the tagged tree, not 
   }
 });
 test("release CLI: entriesFromTag rejects a tag with no plugin files under the prefix", () => {
-  const scratchRoot = temporary("ctide-release-cli-no-plugin-");
+  const scratchRoot = makeRepo({ prefix: "ctide-release-cli-no-plugin-", name: "Test", email: "test@example.invalid" });
   try {
     fs.writeFileSync(path.join(scratchRoot, "README.md"), "placeholder\n", "utf8");
-    cp.execFileSync("git", ["init"], { cwd: scratchRoot, stdio: "ignore" });
-    cp.execFileSync("git", ["config", "user.name", "Test"], { cwd: scratchRoot });
-    cp.execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd: scratchRoot });
-    hardenGitSigning(scratchRoot);
-    cp.execFileSync("git", ["add", "-A"], { cwd: scratchRoot });
-    cp.execFileSync("git", ["commit", "-m", "no plugin"], { cwd: scratchRoot, stdio: "ignore" });
-    cp.execFileSync("git", ["tag", "-a", TEST_TAG, "-m", TEST_TAG], { cwd: scratchRoot });
+    git(scratchRoot, ["add", "-A"]);
+    git(scratchRoot, ["commit", "-m", "no plugin"]);
+    git(scratchRoot, ["tag", "-a", TEST_TAG, "-m", TEST_TAG]);
     assert.throws(() => entriesFromTag(scratchRoot, TEST_TAG), /contains no plugin files under cressetide/);
   } finally {
     fs.rmSync(scratchRoot, { recursive: true, force: true });
@@ -517,8 +500,8 @@ test("release CLI: validateTaggedReleaseState rejects a tag that does not point 
   try {
     const identity = releaseIdentityFromTag(scratchRoot, TEST_TAG);
     fs.writeFileSync(path.join(scratchRoot, "README.md"), "advance HEAD past the tag\n", "utf8");
-    cp.execFileSync("git", ["add", "-A"], { cwd: scratchRoot });
-    cp.execFileSync("git", ["commit", "-m", "advance"], { cwd: scratchRoot, stdio: "ignore" });
+    git(scratchRoot, ["add", "-A"]);
+    git(scratchRoot, ["commit", "-m", "advance"]);
     assert.throws(() => validateTaggedReleaseState(scratchRoot, identity), /must already exist at current HEAD/);
   } finally {
     fs.rmSync(scratchRoot, { recursive: true, force: true });

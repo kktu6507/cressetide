@@ -2,13 +2,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { gunzipSync } from "node:zlib";
 import { inspect } from "node:util";
-import test from "node:test";
 import * as releasePublisher from "../.github/scripts/publish-release.mjs";
 import { diagnose, nodeVersionMeetsFloor, probeFailureDetail } from "../cressetide/skills/doctor/scripts/doctor.mjs";
-import { root, temporary } from "./helpers.mjs";
+import { git, makeRepo, root, tempDir, test } from "./helpers.mjs";
 
 const {
   createArchive,
@@ -27,27 +25,17 @@ const {
 } = releasePublisher;
 
 function taggedReleaseFixture(versions = {}, options = {}) {
-  const repository = temporary("ctide-release-identity-");
-  const git = (...args) => execFileSync("git", ["-C", repository, ...args], {
-    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-  }).trim();
-  git("init", "--initial-branch=main");
-  git("config", "user.email", "release@example.invalid");
-  git("config", "user.name", "Release Test");
-  git("config", "commit.gpgsign", "false");
-  git("config", "tag.gpgSign", "false");
-  fs.mkdirSync(path.join(repository, "cressetide", ".claude-plugin"), { recursive: true });
-  fs.writeFileSync(path.join(repository, "package.json"), JSON.stringify({
-    name: "ctide", version: versions.packageVersion || "0.1.0",
-  }), "utf8");
-  fs.writeFileSync(path.join(repository, "cressetide", ".claude-plugin", "plugin.json"), JSON.stringify({
-    name: "ctide", version: versions.pluginVersion || "0.1.0",
-  }), "utf8");
-  fs.writeFileSync(path.join(repository, "cressetide", "payload.txt"), "tagged payload\n", "utf8");
-  git("add", ".");
-  git("commit", "-m", "tagged fixture");
-  if (options.createTag !== false) git("tag", "v0.1.0");
-  return { repository, git };
+  const repository = makeRepo({
+    prefix: "ctide-release-identity-", name: "Release Test", email: "release@example.invalid",
+    files: {
+      "package.json": JSON.stringify({ name: "ctide", version: versions.packageVersion || "0.1.0" }),
+      "cressetide/.claude-plugin/plugin.json": JSON.stringify({ name: "ctide", version: versions.pluginVersion || "0.1.0" }),
+      "cressetide/payload.txt": "tagged payload\n",
+    },
+    message: "tagged fixture",
+  });
+  if (options.createTag !== false) git(repository, ["tag", "v0.1.0"]);
+  return { repository };
 }
 
 function tarNames(gzip) {
@@ -82,8 +70,8 @@ function tarContents(gzip) {
 }
 
 test("release archive is deterministic, checksummed, and contains only the plugin tree", () => {
-  const first = createArchive(temporary("ctide-release-a-"));
-  const second = createArchive(temporary("ctide-release-b-"));
+  const first = createArchive(tempDir("ctide-release-a-"));
+  const second = createArchive(tempDir("ctide-release-b-"));
   const one = fs.readFileSync(first.assetPath);
   const two = fs.readFileSync(second.assetPath);
   assert.deepEqual(one, two);
@@ -99,34 +87,27 @@ test("release archive is deterministic, checksummed, and contains only the plugi
 });
 
 test("release archive excludes ignored bytes that are not part of the tagged product", () => {
-  const { repository, git } = taggedReleaseFixture();
+  const { repository } = taggedReleaseFixture();
   fs.writeFileSync(path.join(repository, ".gitignore"), "cressetide/archive-secret.tmp\n", "utf8");
-  git("add", ".gitignore");
-  git("commit", "-m", "ignore release scratch");
+  git(repository, ["add", ".gitignore"]);
+  git(repository, ["commit", "-m", "ignore release scratch"]);
   const ignored = path.join(repository, "cressetide", "archive-secret.tmp");
   fs.writeFileSync(ignored, "must not ship\n", "utf8");
-  const built = createArchive(temporary("ctide-release-ignored-"), { repositoryRoot: repository });
+  const built = createArchive(tempDir("ctide-release-ignored-"), { repositoryRoot: repository });
   assert.equal(tarNames(fs.readFileSync(built.assetPath)).includes("cressetide/archive-secret.tmp"), false);
 });
 
 test("tag-bound archive reads immutable Git blobs even when index flags hide working-tree drift", () => {
-  const repository = temporary("ctide-release-tagged-");
-  const git = (...args) => execFileSync("git", ["-C", repository, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-  git("init", "--initial-branch=main");
-  git("config", "user.email", "release@example.invalid");
-  git("config", "user.name", "Release Test");
-  git("config", "commit.gpgsign", "false");
-  git("config", "tag.gpgSign", "false");
+  const repository = makeRepo({
+    prefix: "ctide-release-tagged-", name: "Release Test", email: "release@example.invalid",
+    files: { "cressetide/file.txt": "tagged bytes\n" }, message: "tagged fixture",
+  });
   const file = path.join(repository, "cressetide", "file.txt");
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, "tagged bytes\n", "utf8");
-  git("add", ".");
-  git("commit", "-m", "tagged fixture");
-  git("tag", "v0.1.0");
-  git("update-index", "--skip-worktree", "cressetide/file.txt");
+  git(repository, ["tag", "v0.1.0"]);
+  git(repository, ["update-index", "--skip-worktree", "cressetide/file.txt"]);
   fs.writeFileSync(file, "working tree drift\n", "utf8");
-  assert.equal(git("status", "--porcelain", "--", "cressetide"), "");
-  const built = createArchive(temporary("ctide-release-tagged-output-"), { entries: entriesFromTag(repository, "v0.1.0") });
+  assert.equal(git(repository, ["status", "--porcelain", "--", "cressetide"]), "");
+  const built = createArchive(tempDir("ctide-release-tagged-output-"), { entries: entriesFromTag(repository, "v0.1.0") });
   assert.equal(tarContents(fs.readFileSync(built.assetPath)).get("cressetide/file.txt").toString("utf8"), "tagged bytes\n");
 });
 
@@ -139,8 +120,8 @@ test("tag release identity rejects manifest version mismatch", () => {
 });
 
 test("release identity rejects a version-shaped branch when the tag is absent", () => {
-  const { repository, git } = taggedReleaseFixture({}, { createTag: false });
-  git("branch", "v0.1.0");
+  const { repository } = taggedReleaseFixture({}, { createTag: false });
+  git(repository, ["branch", "v0.1.0"]);
   assert.throws(() => releaseIdentityFromTag(repository, "v0.1.0"), /explicit tag|refs\/tags|unknown revision|invalid object/i);
   assert.throws(() => entriesFromTag(repository, "v0.1.0"), /refs\/tags|unknown revision|invalid object/i);
 });
@@ -153,7 +134,7 @@ test("tag release identity and archive bytes come from tag blobs while relevant 
   const identity = releaseIdentityFromTag(repository, "v0.1.0");
   assert.equal(identity.version, "0.1.0");
   assert.equal(identity.assetName, "ctide-v0.1.0-plugin.tar.gz");
-  const built = createArchive(temporary("ctide-release-tag-identity-"), { repositoryRoot: repository, tag: "v0.1.0" });
+  const built = createArchive(tempDir("ctide-release-tag-identity-"), { repositoryRoot: repository, tag: "v0.1.0" });
   assert.equal(built.assetName, identity.assetName);
   assert.equal(tarContents(fs.readFileSync(built.assetPath)).get("cressetide/payload.txt").toString("utf8"), "tagged payload\n");
   let dirtyError;
@@ -172,21 +153,21 @@ test("release identity rejects version, HEAD, and dirty-tree mismatches", () => 
 });
 
 test("published archive verification detects byte and checksum drift", () => {
-  const directory = temporary("ctide-release-verify-");
+  const directory = tempDir("ctide-release-verify-");
   const built = createArchive(directory);
   assert.equal(verifyDownloaded(directory, built), true);
   fs.appendFileSync(built.assetPath, "drift");
   assert.equal(verifyDownloaded(directory, built), false);
-  const checksumOnly = createArchive(temporary("ctide-release-checksum-drift-"));
+  const checksumOnly = createArchive(tempDir("ctide-release-checksum-drift-"));
   fs.writeFileSync(checksumOnly.checksumPath, `${"0".repeat(64)}  ${checksumOnly.assetName}\n`, "utf8");
   assert.equal(verifyDownloaded(path.dirname(checksumOnly.assetPath), checksumOnly), false);
-  const trailing = createArchive(temporary("ctide-release-checksum-trailing-"));
+  const trailing = createArchive(tempDir("ctide-release-checksum-trailing-"));
   fs.appendFileSync(trailing.checksumPath, "UNEXPECTED\n", "utf8");
   assert.equal(verifyDownloaded(path.dirname(trailing.assetPath), trailing), false);
 });
 
 test("published asset inventory rejects extra and duplicate assets", () => {
-  const built = createArchive(temporary("ctide-release-inventory-"));
+  const built = createArchive(tempDir("ctide-release-inventory-"));
   assert.throws(() => validatePublishedAssetInventory([
     { name: built.assetName },
     { name: built.checksumName },
@@ -265,7 +246,7 @@ test("release inventory helper never echoes malformed stdout and classifies raw 
 });
 
 test("checksum-only published inventory is rejected without clobber repair", () => {
-  const built = createArchive(temporary("ctide-release-checksum-only-"));
+  const built = createArchive(tempDir("ctide-release-checksum-only-"));
   const commands = [];
   assert.throws(() => verifyOrRepairPublished("v0.1.0", built, {
     inspect: () => ({ outcome: "found", assets: [{ name: built.checksumName }] }),
@@ -277,7 +258,7 @@ test("checksum-only published inventory is rejected without clobber repair", () 
 });
 
 test("transport failure preserves stderr and never enters clobber repair", () => {
-  const built = createArchive(temporary("ctide-release-transport-"));
+  const built = createArchive(tempDir("ctide-release-transport-"));
   const commands = [];
   let failure;
   assert.throws(() => {
@@ -304,7 +285,7 @@ test("transport failure preserves stderr and never enters clobber repair", () =>
 });
 
 test("release inspection failure redacts the exported helper error", () => {
-  const built = createArchive(temporary("ctide-release-inspect-redaction-"));
+  const built = createArchive(tempDir("ctide-release-inspect-redaction-"));
   let failure;
   assert.throws(() => {
     try {
@@ -323,7 +304,7 @@ test("release inspection failure redacts the exported helper error", () => {
 
 test("published download retries transient failures with a bound and retains every stderr", () => {
   let attempts = 0;
-  const result = downloadPublished("v0.1.0", temporary("ctide-release-download-"), {
+  const result = downloadPublished("v0.1.0", tempDir("ctide-release-download-"), {
     execute: () => {
       attempts += 1;
       return { status: 1, stdout: "", stderr: `network timeout ${attempts}` };
@@ -343,7 +324,7 @@ test("published download retries transient failures with a bound and retains eve
 test("published download helper redacts stderr on both success and failure results", () => {
   const diagnostic = `{"token":"CTIDE_DOWNLOAD_DIRECT_SECRET"}; `
     + `ghp_1234567890abcdefghijklmnopqrstuv; ${path.join(os.tmpdir(), "download")}; ${path.join(os.homedir(), "home")}`;
-  const invoke = status => downloadPublished("v0.1.0", temporary("ctide-release-direct-redaction-"), {
+  const invoke = status => downloadPublished("v0.1.0", tempDir("ctide-release-direct-redaction-"), {
     execute: () => ({ status, stdout: "", stderr: diagnostic }),
     sleep: () => undefined,
     maxAttempts: 1,
@@ -361,7 +342,7 @@ test("published download helper redacts stderr on both success and failure resul
 
 test("published download retries with clobber so partial prior files cannot poison recovery", () => {
   const calls = [];
-  const result = downloadPublished("v0.1.0", temporary("ctide-release-clobber-"), {
+  const result = downloadPublished("v0.1.0", tempDir("ctide-release-clobber-"), {
     execute: (command, args) => {
       calls.push([command, ...args]);
       return calls.length === 1
@@ -386,7 +367,7 @@ test("authentication fails once and rate limits retry only to the configured bou
   ];
   for (const item of cases) {
     let attempts = 0;
-    const result = downloadPublished("v0.1.0", temporary("ctide-release-transport-kind-"), {
+    const result = downloadPublished("v0.1.0", tempDir("ctide-release-transport-kind-"), {
       execute: () => { attempts += 1; return { status: 1, stdout: "", stderr: item.stderr }; },
       sleep: () => undefined,
       maxAttempts: 3,
@@ -402,7 +383,7 @@ test("authentication fails once and rate limits retry only to the configured bou
 
 test("download classification uses raw context while returned diagnostics stay redacted", () => {
   let attempts = 0;
-  const result = downloadPublished("v0.1.0", temporary("ctide-release-raw-classification-"), {
+  const result = downloadPublished("v0.1.0", tempDir("ctide-release-raw-classification-"), {
     execute: () => {
       attempts += 1;
       return {
@@ -467,7 +448,7 @@ test("release diagnostic redaction hides GitHub tokens and shortens temp/home pa
 });
 
 test("release repair upload timeout retains the upload action and tag context", () => {
-  const built = createArchive(temporary("ctide-release-upload-timeout-"));
+  const built = createArchive(tempDir("ctide-release-upload-timeout-"));
   const inventory = () => ({ outcome: "found", assets: [{ name: built.assetName }, { name: built.checksumName }] });
   const download = (tag, directory) => {
     fs.copyFileSync(built.assetPath, path.join(directory, built.assetName));
@@ -502,7 +483,7 @@ test("release repair upload timeout retains the upload action and tag context", 
 });
 
 test("published asset policy verifies, refuses drift, repairs explicitly, and rechecks", () => {
-  const built = createArchive(temporary("ctide-release-policy-source-"));
+  const built = createArchive(tempDir("ctide-release-policy-source-"));
   const populate = (directory, valid) => {
     fs.copyFileSync(built.assetPath, path.join(directory, built.assetName));
     fs.copyFileSync(built.checksumPath, path.join(directory, built.checksumName));
@@ -571,7 +552,7 @@ test("Doctor runs the complete local fail-open boundary probe", async () => {
 });
 
 test("Doctor rejects extra hook registrations instead of substring-matching the expected six", async () => {
-  const copy = path.join(temporary("ctide-doctor-extra-"), "cressetide");
+  const copy = path.join(tempDir("ctide-doctor-extra-"), "cressetide");
   fs.cpSync(path.join(root, "cressetide"), copy, { recursive: true });
   const manifestPath = path.join(copy, "hooks", "hooks.json");
   const hooks = JSON.parse(fs.readFileSync(manifestPath, "utf8"));

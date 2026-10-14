@@ -6,7 +6,6 @@
 // no process is started, no network is touched, and nothing simulates model behaviour. The canned
 // transcripts are accounting fixtures for the refusal and integrity logic, never semantic evidence.
 // Every literal is embedded here, so the suite runs in a clean verification checkout.
-import { test } from "node:test";
 import assert from "node:assert";
 import fs from "node:fs";
 import os from "node:os";
@@ -14,7 +13,7 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
-import { root as repoRoot } from "./support.mjs";
+import { root as repoRoot, tempDir, test } from "./helpers.mjs";
 import * as protocol from "../eval/efficiency/protocol.mjs";
 import * as driver from "../eval/efficiency/l1b-driver.mjs";
 
@@ -264,10 +263,10 @@ test("seal: canonical JSON ignores key order but not values", () => {
 
 test("root: only a direct ctide-eff-* child of the real temp dir is accepted", () => {
   const tmpdir = () => os.tmpdir();
-  const good = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), driver.ROOT_PREFIX));
+  const good = tempDir(driver.ROOT_PREFIX);
   assert.deepStrictEqual(driver.rootFaults(good, { workspaceRoot: repoRoot, tmpdir }), []);
 
-  const wrongPrefix = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "ctide-not-eff-"));
+  const wrongPrefix = tempDir("ctide-not-eff-");
   assert.ok(driver.rootFaults(wrongPrefix, { workspaceRoot: repoRoot, tmpdir }).includes("root-prefix"));
 
   const nested = path.join(good, "inner");
@@ -288,7 +287,7 @@ test("isWithin treats an identical path as contained and a sibling as not", () =
 
 function makeCli() {
   // Deliberately NOT the ctide-eff- prefix: a CLI stand-in must not look like an experiment root.
-  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "ctide-efftest-cli-"));
+  const dir = fs.realpathSync(tempDir("ctide-efftest-cli-"));
   const command = path.join(dir, "claude.js");
   fs.writeFileSync(command, "// stand-in for the pinned CLI executable\n", "utf8");
   return { dir, command };
@@ -347,12 +346,15 @@ function makeFake() {
 }
 
 function makeDeps(fake, overrides = {}) {
+  // The driver makes its experiment root and work dirs under deps.tmpdir(); a tempDir() per harness is
+  // removed, with all of them, when the test ends.
+  const tmp = tempDir("ctide-efftest-tmp-");
   return {
     spawn: fake.spawnFn,
     spawnSync: fake.spawnSyncFn,
     uuid: randomUUID,
     now: () => new Date().toISOString(),
-    tmpdir: () => os.tmpdir(),
+    tmpdir: () => tmp,
     workspaceRoot: repoRoot,
     log: () => {},
     ...overrides,
@@ -451,7 +453,7 @@ test("dispatch: the first step writes exclusive markers, a fresh work dir and a 
 
   const fixture = manifest.fixtures[0];
   assert.ok(path.basename(start.workDir).startsWith(driver.WORK_PREFIX));
-  assert.strictEqual(path.dirname(fs.realpathSync(start.workDir)), fs.realpathSync(os.tmpdir()));
+  assert.strictEqual(path.dirname(fs.realpathSync(start.workDir)), fs.realpathSync(deps.tmpdir()));
   assert.deepStrictEqual(fs.readdirSync(start.workDir), [fixture.snippetName]);
   assert.strictEqual(
     fs.readFileSync(path.join(start.workDir, fixture.snippetName), "utf8"),

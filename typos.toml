@@ -1,6 +1,6 @@
 # typos (crate-ci/typos) configuration — consumed by .github/workflows/typos.yml.
 # NOTE the filename: typos also reads `_typos.toml`, but this repo's validate-structure §6
-# scanScratch guard treats leading-underscore files as uncommittable scratch, so the equally
+# scratch-file scan treats leading-underscore files as uncommittable scratch, so the equally
 # supported `typos.toml` name is used instead.
 
 [files]

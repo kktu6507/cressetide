@@ -2,13 +2,11 @@
 // verify-sentinel / evidence-nudge advisories, provenance binding, machine sentinels, and the opt-in
 // CTIDE_ENFORCE_STOP block. Split from test/hooks.test.mjs with test bodies preserved; the
 // non-exemptible trio is one table-driven test).
-import { test } from "node:test";
 import assert from "node:assert";
 import cp from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { HOOKS, ORCH, mkTranscript, orch, orchEnv } from "./support.mjs";
+import { HOOKS, ORCH, mkTranscript, orch, orchEnv, tempDir, test } from "./helpers.mjs";
 
 test("hooks.json wires the Stop hook to orchestration-check.js", () => {
   const hj = JSON.parse(fs.readFileSync(path.join(HOOKS, "hooks.json"), "utf8"));
@@ -37,7 +35,7 @@ test("orchestration-check: oversized stdin fails open (no advisory, no crash)", 
 });
 
 test("orchestration-check fails open (silent) on an over-cap transcript (>32MB)", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-bigtx-"));
+  const dir = tempDir("ctide-bigtx-");
   const p = path.join(dir, "transcript.jsonl");
   const pad = JSON.stringify({ role: "user", content: "x".repeat(1024 * 1024) }) + "\n"; // ~1MB/line
   const fd = fs.openSync(p, "w");
@@ -57,7 +55,7 @@ test("orchestration-check still evaluates a just-under-cap transcript — warns,
   // evaluated normally (here READY with no panel -> the panel-missing advisory fires). Guards against
   // a flipped '>' or a lowered cap that would wrongly skip real, in-range sessions (a silent regression
   // the over-cap "big -> silent" test cannot catch on its own).
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-bigtx-"));
+  const dir = tempDir("ctide-bigtx-");
   const p = path.join(dir, "transcript.jsonl");
   const pad = JSON.stringify({ role: "user", content: "x".repeat(1024 * 1024) }) + "\n"; // ~1MB/line
   const fd = fs.openSync(p, "w");
@@ -78,7 +76,7 @@ test("orchestration-check evaluates a transcript exactly at the cap (locks '>' n
   // At exactly 32 MB the guard must NOT bail (size > cap is false), so the hook still evaluates and
   // warns. With a '>=' the file would be skipped and this would fail — pinning the boundary operator.
   const CAP = 32 * 1024 * 1024;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-capeq-"));
+  const dir = tempDir("ctide-capeq-");
   const p = path.join(dir, "transcript.jsonl");
   const pad = JSON.stringify({ role: "user", content: "x".repeat(1024 * 1024) }) + "\n"; // ASCII -> 1 byte/char
   const padBytes = Buffer.byteLength(pad);
@@ -105,7 +103,7 @@ test("orchestration-check evaluates a transcript exactly at the cap (locks '>' n
 test("orchestration-check fails open (silent) when the transcript path is a directory", () => {
   // A non-file path must not crash the hook: statSync succeeds, readFileSync throws EISDIR, the outer
   // catch swallows it, and nothing is emitted (fail-open). Exercises the guard's robustness on odd paths.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-dirtx-"));
+  const dir = tempDir("ctide-dirtx-");
   try {
     assert.strictEqual(orch({ transcript_path: dir }), null, "a directory transcript path must fail open (silent)");
   } finally {
@@ -116,7 +114,7 @@ test("orchestration-check fails open (silent) when the transcript path is a dire
 test("orchestration-check fails open (silent) on a non-existent transcript path", () => {
   // With the existsSync guard dropped, a missing transcript path must still fail open (silent) — statSync
   // throws ENOENT and the hook exits 0 with no output (the surrounding try/catch swallows it).
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-nope-"));
+  const dir = tempDir("ctide-nope-");
   const p = path.join(dir, "missing.jsonl"); // never created -> guaranteed absent
   try {
     assert.strictEqual(orch({ transcript_path: p }), null, "a non-existent transcript path must fail open (silent)");

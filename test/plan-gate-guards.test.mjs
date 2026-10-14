@@ -3,7 +3,6 @@
 // Split from test/hooks.test.mjs with test bodies preserved; the per-hook opt-out suites are
 // table-driven). Hooks are CLI scripts that read a JSON event on stdin; we spawn them the same way
 // Claude Code does.
-import { test } from "node:test";
 import assert from "node:assert";
 import cp from "node:child_process";
 import fs from "node:fs";
@@ -11,9 +10,9 @@ import os from "node:os";
 import path from "node:path";
 import {
   CGUARD, DGUARD, GATE, HOOKS,
-  cguard, contractMd, contractPath, dguard, gate, gateInProject, isolatedHome,
-  mkCGuardProject, mkProjectWithSettings, runHook, writeContract,
-} from "./support.mjs";
+  cguard, contractMd, contractPath, dguard, execHook, gate, gateInProject, isolatedHome,
+  mkCGuardProject, mkProjectWithSettings, tempDir, test, writeContract,
+} from "./helpers.mjs";
 
 // --- plan-gate: anchoring + tool coverage ---
 
@@ -22,9 +21,8 @@ test("B3: repo-local .claude/plans path is NOT exempt (denied in plan mode)", ()
   assert.strictEqual(gate({ tool_name: "Write", permission_mode: "plan", tool_input: { file_path: repoPlan } }), "DENY");
 });
 
-test("home ~/.claude/plans path IS exempt (isolated home)", (t) => {
+test("home ~/.claude/plans path IS exempt (isolated home)", () => {
   const { home, env } = isolatedHome();
-  t.after(() => { try { fs.rmSync(home, { recursive: true, force: true }); } catch (e) {} });
   const homePlan = path.join(home, ".claude", "plans", "plan-x.md");
   assert.strictEqual(gate({ tool_name: "Write", permission_mode: "plan", tool_input: { file_path: homePlan } }, env), "ALLOW");
 });
@@ -34,12 +32,11 @@ test("plan-gate: a junction under ~/.claude/plans whose target escapes is NOT ex
   // a write outside the exemption. Uses a junction (no admin needed on Windows); EPERM-skip.
   // Isolated home so it never creates/writes the developer's real ~/.claude/plans.
   const { home, env } = isolatedHome();
-  t.after(() => { try { fs.rmSync(home, { recursive: true, force: true }); } catch (e) {} });
   const plansDir = path.join(home, ".claude", "plans");
   let link;
   try {
     fs.mkdirSync(plansDir, { recursive: true });
-    const target = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-escape-"));
+    const target = tempDir("ctide-escape-");
     link = path.join(plansDir, "ctide-test-junction");
     fs.symlinkSync(target, link, "junction");
   } catch (e) {
@@ -59,13 +56,9 @@ test("plan-gate: a symlinked HOME still exempts ~/.claude/plans (realpath BOTH s
   // any symlinked home), the root must be resolved too or the legitimate plan write is wrongly denied.
   // Fails on every platform if only the target is realpath-resolved. Skip where a dir symlink can't be
   // created (Windows without privilege).
-  const realHome = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-realhome-"));
-  const linkParent = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-linkhome-"));
+  const realHome = tempDir("ctide-realhome-");
+  const linkParent = tempDir("ctide-linkhome-");
   const linkHome = path.join(linkParent, "home-link");
-  t.after(() => {
-    try { fs.rmSync(realHome, { recursive: true, force: true }); } catch (e) {}
-    try { fs.rmSync(linkParent, { recursive: true, force: true }); } catch (e) {}
-  });
   try {
     fs.mkdirSync(path.join(realHome, ".claude", "plans"), { recursive: true });
     fs.symlinkSync(realHome, linkHome, "dir");
@@ -87,7 +80,6 @@ test("plan-gate: on a case-sensitive FS, an uppercase ~/.claude/PLANS path is NO
   // real directory literally named PLANS must not inherit the lowercase 'plans' exemption.
   if (process.platform === "win32" || process.platform === "darwin") return t.skip("case-insensitive FS");
   const { home, env } = isolatedHome();
-  t.after(() => { try { fs.rmSync(home, { recursive: true, force: true }); } catch (e) {} });
   const upper = path.join(home, ".claude", "PLANS", "x.md");
   assert.strictEqual(gate({ tool_name: "Write", permission_mode: "plan", tool_input: { file_path: upper } }, env), "DENY",
     "uppercase PLANS must not be exempt on a case-sensitive FS");
@@ -98,7 +90,6 @@ test("plan-gate: on a case-insensitive FS, an uppercase ~/.claude/PLANS path IS 
   // case-insensitive volume (Windows/macOS), so a home-dir plan file under either casing is exempt.
   if (process.platform !== "win32" && process.platform !== "darwin") return t.skip("case-sensitive FS");
   const { home, env } = isolatedHome();
-  t.after(() => { try { fs.rmSync(home, { recursive: true, force: true }); } catch (e) {} });
   fs.mkdirSync(path.join(home, ".claude", "plans"), { recursive: true }); // the probe samples this subtree
   const upper = path.join(home, ".claude", "PLANS", "plan-x.md");
   assert.strictEqual(gate({ tool_name: "Write", permission_mode: "plan", tool_input: { file_path: upper } }, env), "ALLOW",
@@ -221,7 +212,7 @@ test("Bash tripwire: a quoted redirection target is a literal, not a real write"
 });
 
 test("Bash tripwire: the deny reason names the heuristic and the escape hatch", () => {
-  const out = runHook(GATE, { tool_name: "Bash", permission_mode: "plan", tool_input: { command: "sed -i 's/a/b/' app.ts" } });
+  const out = execHook(GATE, { tool_name: "Bash", permission_mode: "plan", tool_input: { command: "sed -i 's/a/b/' app.ts" } });
   assert.match(out, /"deny"/);
   assert.match(out, /best-effort|ExitPlanMode/, "bash deny reason should be actionable");
 });
@@ -495,7 +486,7 @@ test("destructive-guard: the ASK reason warns an AI agent against self-authoring
   // "do not ask for confirmation" phrasing; destructive-guard's ASK carries the identical opt-out mention,
   // so it needs the same warning. Hermetic env (no ambient CLAUDE_PROJECT_DIR opt-out) so the command reliably ASKs.
   const env = { ...process.env }; delete env.CLAUDE_PROJECT_DIR;
-  const out = runHook(DGUARD, { tool_name: "Bash", permission_mode: "default", tool_input: { command: "git reset --hard" } }, env);
+  const out = execHook(DGUARD, { tool_name: "Bash", permission_mode: "default", tool_input: { command: "git reset --hard" } }, env);
   const j = JSON.parse(out);
   const reason = (j.hookSpecificOutput && j.hookSpecificOutput.permissionDecisionReason) || "";
   assert.match(reason, /AI agent/i, "the ASK reason must address an AI agent reading it");
@@ -512,7 +503,7 @@ test("destructive-guard: the ASK reason names settings.local.json alongside sett
   // project with..." sentence named only settings.json; it must also name settings.local.json so a
   // reader knows both files control this decision. Hermetic env so the command reliably ASKs.
   const env = { ...process.env }; delete env.CLAUDE_PROJECT_DIR;
-  const out = runHook(DGUARD, { tool_name: "Bash", permission_mode: "default", tool_input: { command: "git reset --hard" } }, env);
+  const out = execHook(DGUARD, { tool_name: "Bash", permission_mode: "default", tool_input: { command: "git reset --hard" } }, env);
   const j = JSON.parse(out);
   const reason = (j.hookSpecificOutput && j.hookSpecificOutput.permissionDecisionReason) || "";
   assert.match(reason, /settings\.local\.json/, "the ASK reason must name settings.local.json alongside settings.json");
@@ -757,7 +748,7 @@ test("destructive-guard: tool_name:\"PowerShell\" + destructive command ASKS lik
     assert.strictEqual(dguard({ tool_name: "PowerShell", permission_mode: "default", tool_input: { command } }), "ASK", `should ask: ${command}`);
   }
   const env = { ...process.env }; delete env.CLAUDE_PROJECT_DIR;
-  const out = runHook(DGUARD, { tool_name: "PowerShell", permission_mode: "default", tool_input: { command: "Remove-Item -Recurse -Force build" } }, env);
+  const out = execHook(DGUARD, { tool_name: "PowerShell", permission_mode: "default", tool_input: { command: "Remove-Item -Recurse -Force build" } }, env);
   const reason = JSON.parse(out).hookSpecificOutput.permissionDecisionReason;
   assert.match(reason, /this PowerShell command/i, "the ASK reason must describe the actual triggering tool, not hard-coded \"Bash\"");
 });
@@ -781,7 +772,7 @@ test("plan-gate: tool_name:\"PowerShell\" write-looking commands are DENIED and 
   ]) {
     assert.strictEqual(gate({ tool_name: "PowerShell", permission_mode: "plan", tool_input: { command } }), "DENY", `should block: ${command}`);
   }
-  const out = runHook(GATE, { tool_name: "PowerShell", permission_mode: "plan", tool_input: { command: "echo x > out.txt" } });
+  const out = execHook(GATE, { tool_name: "PowerShell", permission_mode: "plan", tool_input: { command: "echo x > out.txt" } });
   assert.match(out, /"deny"/);
   assert.match(out, /this PowerShell command/i, "the deny reason must describe the actual triggering tool, not hard-coded \"Bash\"");
 });
@@ -804,13 +795,13 @@ test("destructive-guard: the existing Bash-tool PowerShell-syntax path still ASK
 
 test("destructive-guard: tool_name:\"Bash\" ASK reason uses the live tool value", () => {
   const env = { ...process.env }; delete env.CLAUDE_PROJECT_DIR;
-  const out = runHook(DGUARD, { tool_name: "Bash", permission_mode: "default", tool_input: { command: "git reset --hard" } }, env);
+  const out = execHook(DGUARD, { tool_name: "Bash", permission_mode: "default", tool_input: { command: "git reset --hard" } }, env);
   const reason = JSON.parse(out).hookSpecificOutput.permissionDecisionReason;
   assert.match(reason, /this Bash command/i, "the ASK reason must still read \"this Bash command\" for tool_name:\"Bash\"");
 });
 
 test("plan-gate: tool_name:\"Bash\" deny reason uses the live tool value", () => {
-  const out = runHook(GATE, { tool_name: "Bash", permission_mode: "plan", tool_input: { command: "echo x > out.txt" } });
+  const out = execHook(GATE, { tool_name: "Bash", permission_mode: "plan", tool_input: { command: "echo x > out.txt" } });
   assert.match(out, /"deny"/);
   assert.match(out, /this Bash command/i, "the deny reason must still read \"this Bash command\" for tool_name:\"Bash\"");
 });

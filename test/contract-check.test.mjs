@@ -1,5 +1,5 @@
-import { test } from "node:test";
 import assert from "node:assert";
+import { makeRepo, tempDir, test } from "./helpers.mjs";
 import {
   extractContractJson, matchesGlob, scopeDiff,
 } from "../cressetide/skills/vigil/scripts/contract-check.mjs";
@@ -114,11 +114,9 @@ test("acCoverage names an uncovered, id-less criterion '(unnamed)'", () => {
 // --- .ctide discovery: default contract path (current → compatibility; explicit --contract wins) ---
 import cp from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveContractPath, KNOWN_FLAGS } from "../cressetide/skills/vigil/scripts/contract-check.mjs";
-import { hardenGitSigning } from "./helpers.mjs";
 
 const SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..",
   "cressetide", "skills", "vigil", "scripts", "contract-check.mjs");
@@ -128,7 +126,7 @@ function contractWithUncoveredAc(id) {
   return "# C\n\n```json\n" + JSON.stringify({ ctideContract: 1, acceptanceCriteria: [{ id, behaviorChanging: true, verification: "" }] }) + "\n```\n";
 }
 function mkContractTree({ newMd, legacyMd } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-cc-"));
+  const dir = tempDir("ctide-cc-");
   if (newMd != null) {
     fs.mkdirSync(path.join(dir, ".ctide", "output"), { recursive: true });
     fs.writeFileSync(path.join(dir, ".ctide", "output", "contract.md"), newMd, "utf8");
@@ -176,16 +174,12 @@ test("contract-check CLI: an explicit --contract arg keeps precedence over the .
 // file's own KNOWN_FLAGS -- the same shared-mechanism fix failure-retrieve.mjs / failure-consolidate.mjs apply
 // over their own flag sets) ---
 
-function git(cwd, ...args) {
-  return cp.execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-}
-
 // A repo with one committed file plus a real UNCOMMITTED modification to it (so `git diff --name-only HEAD`
 // -- the correct --base fallback -- shows something non-trivial), and a contract at the DEFAULT
 // .ctide/output/contract.md discovery path (so a correctly-falling-back --contract finds it) whose
 // allowedPaths excludes that file (so a correctly-resolved --base reports it as out-of-scope).
 test("contract-check: a git failure (non-git cwd) stays fail-open with a clean caller stderr -- the child's raw stderr text must never leak through execFileSync's default-inherited stdio", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-cc-nongit-"));
+  const dir = tempDir("ctide-cc-nongit-");
   const result = cp.spawnSync("node", [SCRIPT, "--base", "HEAD"], { cwd: dir, encoding: "utf8" });
   assert.strictEqual(result.status, 0, "must still exit 0 (fail-open) outside a git repo");
   assert.strictEqual(result.stderr, "", "caller's own stderr must be clean -- git's raw 'fatal: not a git repository' text must not leak through");
@@ -193,14 +187,10 @@ test("contract-check: a git failure (non-git cwd) stays fail-open with a clean c
 });
 
 function repoForSwallowTest() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-cc-swallow-"));
-  git(dir, "init", "-q", "--initial-branch=main");
-  git(dir, "config", "user.email", "cc@example.invalid");
-  git(dir, "config", "user.name", "Contract Check Swallow Test");
-  hardenGitSigning(dir);
-  fs.writeFileSync(path.join(dir, "tracked.ts"), "original\n", "utf8");
-  git(dir, "add", ".");
-  git(dir, "commit", "-q", "-m", "initial");
+  const dir = makeRepo({
+    prefix: "ctide-cc-swallow-", name: "Contract Check Swallow Test", email: "cc@example.invalid",
+    files: { "tracked.ts": "original\n" }, message: "initial",
+  });
   fs.writeFileSync(path.join(dir, "tracked.ts"), "changed\n", "utf8"); // uncommitted -> shows in `git diff HEAD`
   fs.mkdirSync(path.join(dir, ".ctide", "output"), { recursive: true });
   fs.writeFileSync(

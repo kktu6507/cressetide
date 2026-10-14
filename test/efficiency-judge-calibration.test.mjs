@@ -2,14 +2,13 @@
 // Four fixed cases, no model call, no network: the CLI is a stand-in file and the child process is
 // an injected fake whose transcripts are accounting fixtures for the refusal and integrity logic,
 // never semantic evidence. The read-only Codex-authored cases file is checked, never modified.
-import { test } from "node:test";
 import assert from "node:assert";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { root as repoRoot } from "./support.mjs";
+import { root as repoRoot, tempDir, test } from "./helpers.mjs";
 import * as protocol from "../eval/efficiency/protocol.mjs";
 import * as cal from "../eval/efficiency/judge-calibration.mjs";
 
@@ -66,7 +65,7 @@ test("cases: a reordered, relabelled or regraded case list is refused", () => {
 });
 
 test("cases: a digest change is refused without reading the mutated content as authoritative", () => {
-  const scratch = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "ctide-efftest-cases-"));
+  const scratch = fs.realpathSync(tempDir("ctide-efftest-cases-"));
   fs.mkdirSync(path.join(scratch, "eval", "efficiency"), { recursive: true });
   fs.writeFileSync(path.join(scratch, cal.CASES_RELATIVE_PATH), JSON.stringify(CASES), "utf8");
   const loaded = cal.loadCases(scratch);
@@ -115,7 +114,7 @@ test("cost: the tighter 0.25 per-call rule is enforced by the wrapper, not by th
 // ----------------------------------------------------------------------------- driver harness
 
 function makeCli() {
-  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "ctide-efftest-calcli-"));
+  const dir = fs.realpathSync(tempDir("ctide-efftest-calcli-"));
   const command = path.join(dir, "claude.js");
   fs.writeFileSync(command, "// stand-in for the pinned CLI executable\n", "utf8");
   return { dir, command };
@@ -167,12 +166,15 @@ function makeFake() {
 }
 
 function makeDeps(fake, overrides = {}) {
+  // The probe makes its calibration root and work dirs under deps.tmpdir(); a tempDir() per harness is
+  // removed, with all of them, when the test ends.
+  const tmp = tempDir("ctide-efftest-tmp-");
   return {
     spawn: fake.spawnFn,
     spawnSync: fake.spawnSyncFn,
     uuid: randomUUID,
     now: () => new Date().toISOString(),
-    tmpdir: () => os.tmpdir(),
+    tmpdir: () => tmp,
     workspaceRoot: repoRoot,
     log: () => {},
     ...overrides,
@@ -210,9 +212,9 @@ async function runAll(root, fake, deps, grades = EXPECTED_GRADES) {
 
 test("prepare: freezes four sealed steps in a ctide-eff-cal root outside the workspace", () => {
   const fake = makeFake();
-  const { root, manifest } = prepareRoot(fake);
+  const { root, manifest, deps } = prepareRoot(fake);
   assert.ok(path.basename(root).startsWith(cal.CAL_ROOT_PREFIX));
-  assert.strictEqual(path.dirname(fs.realpathSync(root)), fs.realpathSync(os.tmpdir()));
+  assert.strictEqual(path.dirname(fs.realpathSync(root)), fs.realpathSync(deps.tmpdir()));
   assert.strictEqual(manifest.steps.length, 4);
   assert.strictEqual(manifest.casesSha256, cal.CASES_SHA256);
   assert.strictEqual(manifest.perCallUsd, 0.25);

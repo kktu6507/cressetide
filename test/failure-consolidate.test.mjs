@@ -3,13 +3,12 @@
 // advisory (retired = delete; dated + old + never-matched = expire candidate). The honesty guards — no
 // usage data => no staleness claim, insufficient history => no claim, undated/too-new never flagged — are
 // the load-bearing behavior, so they are pinned hardest. All deterministic, no model.
-import { test } from "node:test";
 import assert from "node:assert";
 import cp from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { tempDir, test } from "./helpers.mjs";
 import { buildLedgerLines, retrieve, defaultLedgerPath, ledgerKey } from "../cressetide/skills/vigil/scripts/failure-retrieve.mjs";
 import { readLedger, consolidationReport, formatReport, tagRecurrenceCandidates, KNOWN_FLAGS } from "../cressetide/skills/vigil/scripts/failure-consolidate.mjs";
 
@@ -324,7 +323,7 @@ test("formatReport includes the tag-recurrence block: 'none' when empty, one ful
 // --- end-to-end: retrieve --log writes the ledger, consolidate reads it ---
 
 test("round-trip: retrieve --log appends the sibling ledger; the memory file is never modified", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-fc-"));
+  const dir = tempDir("ctide-fc-");
   try {
     const memDir = path.join(dir, "ai");
     fs.mkdirSync(memDir);
@@ -349,7 +348,7 @@ test("round-trip: retrieve --log appends the sibling ledger; the memory file is 
 });
 
 test("a bare retrieve (no --log) writes NO ledger (pure read by default)", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-fc2-"));
+  const dir = tempDir("ctide-fc2-");
   try {
     const memFile = path.join(dir, "FAILURE_MEMORY.md");
     fs.writeFileSync(memFile, MEM, "utf8");
@@ -380,7 +379,7 @@ test("CLI e2e: a spawned failure-consolidate process actually prints the tag-rec
 - **Prevention rule**: r.
 - **Tags**: node / ci / docs.
 `;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-fc-tagcli-"));
+  const dir = tempDir("ctide-fc-tagcli-");
   try {
     const memFile = path.join(dir, "FAILURE_MEMORY.md");
     fs.writeFileSync(memFile, pairMem, "utf8");
@@ -405,7 +404,7 @@ test("failure-consolidate: for EVERY flag in KNOWN_FLAGS, a value slot occupied 
   for (const F of KNOWN_FLAGS) {
     for (const G of KNOWN_FLAGS) {
       if (G === F) continue;
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-fc-swallow-"));
+      const dir = tempDir("ctide-fc-swallow-");
       try {
         fs.mkdirSync(path.join(dir, ".ctide", "memory"), { recursive: true });
         const memFile = path.join(dir, ".ctide", "memory", "FAILURE_MEMORY.md");

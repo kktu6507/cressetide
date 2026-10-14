@@ -2,15 +2,14 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
 import { diagnose, runtimeProbePassed } from "../cressetide/skills/doctor/scripts/doctor.mjs";
-import { root, run, temporary, write } from "./helpers.mjs";
+import { root, run, tempDir, test, write } from "./helpers.mjs";
 
 const pluginRoot = path.join(root, "cressetide");
 const doctorScript = path.join(pluginRoot, "skills", "doctor", "scripts", "doctor.mjs");
 
 function copyPlugin(prefix) {
-  const copy = path.join(temporary(prefix), "cressetide");
+  const copy = path.join(tempDir(prefix), "cressetide");
   fs.cpSync(pluginRoot, copy, { recursive: true });
   return copy;
 }
@@ -54,7 +53,7 @@ test("Doctor requires exact manifest agent paths to match the exact filesystem i
 
 test("Doctor statically inspects an arbitrary --plugin-root without executing its hook code", () => {
   const copy = copyPlugin("ctide-doctor-untrusted-");
-  const marker = path.join(temporary("ctide-doctor-marker-"), "executed.txt");
+  const marker = path.join(tempDir("ctide-doctor-marker-"), "executed.txt");
   fs.writeFileSync(
     path.join(copy, "hooks", "plan-gate.js"),
     'require("fs").appendFileSync(process.env.DOCTOR_TEST_MARKER, "executed\\n");\n',
@@ -118,7 +117,7 @@ test("Doctor probes harmless valid events as well as malformed fail-open events"
 });
 
 test("Doctor runtime probes override a hostile ambient project root", async () => {
-  const hostileRoot = temporary("ctide-doctor-hostile-project-");
+  const hostileRoot = tempDir("ctide-doctor-hostile-project-");
   fs.mkdirSync(path.join(hostileRoot, ".ctide", "memory"), { recursive: true });
   fs.writeFileSync(path.join(hostileRoot, ".ctide", "memory", "FAILURE_MEMORY.md"), "CTIDE_HOSTILE_AMBIENT_SENTINEL\n", "utf8");
   const previous = process.env.CLAUDE_PROJECT_DIR;

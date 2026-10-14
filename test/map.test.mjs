@@ -1,30 +1,25 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync, spawnSync } from "node:child_process";
-import test from "node:test";
-import { root, temporary, write, hardenGitSigning } from "./helpers.mjs";
+import { spawnSync } from "node:child_process";
+import { git, makeRepo, root, tempDir, test, write } from "./helpers.mjs";
 import { verifyMap, writeMap } from "../cressetide/skills/map/scripts/map.mjs";
 
 const mapScriptPath = path.join(root, "cressetide", "skills", "map", "scripts", "map.mjs");
 
-function git(root, ...args) {
-  return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+function mapRepo(prefix) {
+  return makeRepo({ prefix, name: "Map Test", email: "map@example.invalid" });
 }
 
 function repository() {
-  const root = temporary("ctide-map-");
-  git(root, "init", "--initial-branch=main");
-  git(root, "config", "user.email", "map@example.invalid");
-  git(root, "config", "user.name", "Map Test");
-  hardenGitSigning(root);
+  const root = mapRepo("ctide-map-");
   write(path.join(root, "package.json"), JSON.stringify({ name: "neutral-map-fixture", scripts: { test: "node --test", start: "node src/index.js" }, dependencies: { "fixture-client": "1.0.0" } }));
   write(path.join(root, "src", "index.js"), "export function start() { return 'ok'; }\n");
   write(path.join(root, "src", "api-client.js"), "export const endpoint = 'https://example.invalid';\n");
   write(path.join(root, "src", "schema.sql"), "create table fixture(id integer);\n");
   write(path.join(root, "test", "index.test.js"), "// neutral fixture\n");
-  git(root, "add", ".");
-  git(root, "commit", "-m", "fixture");
+  git(root, ["add", "."]);
+  git(root, ["commit", "-m", "fixture"]);
   return root;
 }
 
@@ -165,8 +160,7 @@ test("Map verify detects dirty working-tree source drift without a new commit", 
 });
 
 test("Map verify detects source drift in an unborn repository", () => {
-  const root = temporary("ctide-map-unborn-drift-");
-  git(root, "init", "--initial-branch=main");
+  const root = makeRepo({ prefix: "ctide-map-unborn-drift-" });
   write(path.join(root, "package.json"), JSON.stringify({ name: "unborn-map-fixture" }));
   const target = writeMap(root);
   write(path.join(root, "package.json"), JSON.stringify({ name: "changed-unborn-map-fixture" }));
@@ -254,8 +248,8 @@ test("Map verify reports commit staleness", () => {
   const root = repository();
   writeMap(root);
   write(path.join(root, "src", "new.js"), "export const value = 1;\n");
-  git(root, "add", ".");
-  git(root, "commit", "-m", "change");
+  git(root, ["add", "."]);
+  git(root, ["commit", "-m", "change"]);
   const report = verifyMap(root);
   assert.equal(report.ok, false);
   assert.ok(report.findings.some(finding => finding.includes("stale")));
@@ -269,8 +263,8 @@ test("Map refresh replaces stale deleted paths and verifies the current commit",
   const beforeFingerprint = before.match(/^Working tree fingerprint:\s*(.+)$/m)?.[1];
   fs.rmSync(path.join(root, "package.json"));
   write(path.join(root, "pyproject.toml"), "[project]\nname='neutral-map-fixture'\n");
-  git(root, "add", "-A");
-  git(root, "commit", "-m", "replace package metadata");
+  git(root, ["add", "-A"]);
+  git(root, ["commit", "-m", "replace package metadata"]);
   writeMap(root, { overwrite: true });
   const refreshed = fs.readFileSync(target, "utf8");
   assert.doesNotMatch(refreshed, /package\.json:1/);
@@ -922,7 +916,7 @@ test("Map refresh regenerates the Ops Profile block to its heuristic baseline li
 
 test("Map refuses a junction that would redirect output outside the repository", () => {
   const root = repository();
-  const outside = temporary("ctide-map-outside-");
+  const outside = tempDir("ctide-map-outside-");
   fs.mkdirSync(path.join(root, ".ctide"), { recursive: true });
   fs.symlinkSync(outside, path.join(root, ".ctide", "map"), "junction");
   assert.throws(() => writeMap(root), /outside|symbolic|reparse|junction/i);
@@ -957,14 +951,10 @@ test("Map refresh preserves the explicit human-verified operational boundary", (
 });
 
 test("Map verify reports sections whose repository facts remain unverified", () => {
-  const root = temporary("ctide-map-incomplete-");
-  git(root, "init", "--initial-branch=main");
-  git(root, "config", "user.email", "map@example.invalid");
-  git(root, "config", "user.name", "Map Test");
-  hardenGitSigning(root);
+  const root = mapRepo("ctide-map-incomplete-");
   write(path.join(root, "README.md"), "# Empty fixture\n");
-  git(root, "add", ".");
-  git(root, "commit", "-m", "incomplete fixture");
+  git(root, ["add", "."]);
+  git(root, ["commit", "-m", "incomplete fixture"]);
   writeMap(root);
   const report = verifyMap(root);
   assert.equal(report.ok, false);
@@ -982,11 +972,10 @@ test("Map verify rejects an unresolved body marker under derived confidence", ()
 });
 
 test("Map distinguishes an unborn repository from unreadable Git state", () => {
-  const nonGit = temporary("ctide-map-no-git-");
+  const nonGit = tempDir("ctide-map-no-git-");
   assert.throws(() => writeMap(nonGit), /requires a readable Git repository/);
 
-  const unborn = temporary("ctide-map-unborn-");
-  git(unborn, "init", "--initial-branch=main");
+  const unborn = makeRepo({ prefix: "ctide-map-unborn-" });
   const target = writeMap(unborn);
   assert.match(fs.readFileSync(target, "utf8"), /Verified at commit: UNBORN/);
 });
@@ -997,17 +986,13 @@ test("Map candidate entry points include shebang scripts and package.json bin pa
   // dedup check -- two signals on one file must still surface exactly one candidate), plus a
   // shebang-only file whose name matches none of main/index/app/program/server, plus an ordinary
   // file matching neither signal (negative control).
-  const stringBinRoot = temporary("ctide-map-entrypoints-string-bin-");
-  git(stringBinRoot, "init", "--initial-branch=main");
-  git(stringBinRoot, "config", "user.email", "map@example.invalid");
-  git(stringBinRoot, "config", "user.name", "Map Test");
-  hardenGitSigning(stringBinRoot);
+  const stringBinRoot = mapRepo("ctide-map-entrypoints-string-bin-");
   write(path.join(stringBinRoot, "package.json"), JSON.stringify({ name: "string-bin-fixture", bin: "scripts/cli.mjs" }));
   write(path.join(stringBinRoot, "scripts", "cli.mjs"), "#!/usr/bin/env node\nconsole.log('cli');\n");
   write(path.join(stringBinRoot, "scripts", "launcher.mjs"), "#!/usr/bin/env node\nconsole.log('launcher');\n");
   write(path.join(stringBinRoot, "src", "util.js"), "export function util() { return 1; }\n");
-  git(stringBinRoot, "add", ".");
-  git(stringBinRoot, "commit", "-m", "fixture");
+  git(stringBinRoot, ["add", "."]);
+  git(stringBinRoot, ["commit", "-m", "fixture"]);
   const stringBinTarget = writeMap(stringBinRoot);
   const stringBinText = fs.readFileSync(stringBinTarget, "utf8");
   const stringBinCandidateLine = stringBinText.match(/^- Candidate entry points:\s*(.+)$/m)?.[1] || "";
@@ -1021,18 +1006,14 @@ test("Map candidate entry points include shebang scripts and package.json bin pa
   // (included -- proves Object.values() considers every entry, not just the first), the other
   // pointing at a path with no corresponding tracked file (must be excluded -- the entries subseteq
   // files invariant every other candidate list in this file already depends on).
-  const objectBinRoot = temporary("ctide-map-entrypoints-object-bin-");
-  git(objectBinRoot, "init", "--initial-branch=main");
-  git(objectBinRoot, "config", "user.email", "map@example.invalid");
-  git(objectBinRoot, "config", "user.name", "Map Test");
-  hardenGitSigning(objectBinRoot);
+  const objectBinRoot = mapRepo("ctide-map-entrypoints-object-bin-");
   write(path.join(objectBinRoot, "package.json"), JSON.stringify({
     name: "object-bin-fixture",
     bin: { "tool-a": "bin/tool-a.mjs", "tool-b": "bin/does-not-exist.mjs" },
   }));
   write(path.join(objectBinRoot, "bin", "tool-a.mjs"), "console.log('tool-a');\n");
-  git(objectBinRoot, "add", ".");
-  git(objectBinRoot, "commit", "-m", "fixture");
+  git(objectBinRoot, ["add", "."]);
+  git(objectBinRoot, ["commit", "-m", "fixture"]);
   const objectBinTarget = writeMap(objectBinRoot);
   const objectBinText = fs.readFileSync(objectBinTarget, "utf8");
   const objectBinCandidateLine = objectBinText.match(/^- Candidate entry points:\s*(.+)$/m)?.[1] || "";
@@ -1050,16 +1031,12 @@ test("Map candidate entry points surface a file reachable only via string bin, r
   // concatenated FIRST in map.mjs's union (filename matches, then shebang matches, then bin
   // matches, before the trailing .sort()) -- also proves sort actually runs: without it,
   // "server.js" would render before "a-cli.mjs" despite alphabetically following it.
-  const root = temporary("ctide-map-entrypoints-string-bin-only-");
-  git(root, "init", "--initial-branch=main");
-  git(root, "config", "user.email", "map@example.invalid");
-  git(root, "config", "user.name", "Map Test");
-  hardenGitSigning(root);
+  const root = mapRepo("ctide-map-entrypoints-string-bin-only-");
   write(path.join(root, "package.json"), JSON.stringify({ name: "string-bin-only-fixture", bin: "a-cli.mjs" }));
   write(path.join(root, "a-cli.mjs"), "export function run() { return 'a-cli'; }\n");
   write(path.join(root, "server.js"), "export function run() { return 'server'; }\n");
-  git(root, "add", ".");
-  git(root, "commit", "-m", "fixture");
+  git(root, ["add", "."]);
+  git(root, ["commit", "-m", "fixture"]);
   const target = writeMap(root);
   const text = fs.readFileSync(target, "utf8");
   const candidateLine = text.match(/^- Candidate entry points:\s*(.+)$/m)?.[1] || "";
@@ -1078,15 +1055,11 @@ test("Map candidate entry points dedup a file that matches the filename conventi
   // 2 of the 3 -- "cli" does not match main/index/app/program/server -- so this closes the
   // remaining gap with a single file that matches the filename convention, carries a shebang, AND
   // is the bin target simultaneously.
-  const root = temporary("ctide-map-entrypoints-triple-signal-");
-  git(root, "init", "--initial-branch=main");
-  git(root, "config", "user.email", "map@example.invalid");
-  git(root, "config", "user.name", "Map Test");
-  hardenGitSigning(root);
+  const root = mapRepo("ctide-map-entrypoints-triple-signal-");
   write(path.join(root, "package.json"), JSON.stringify({ name: "triple-signal-fixture", bin: "index.mjs" }));
   write(path.join(root, "index.mjs"), "#!/usr/bin/env node\nconsole.log('index');\n");
-  git(root, "add", ".");
-  git(root, "commit", "-m", "fixture");
+  git(root, ["add", "."]);
+  git(root, ["commit", "-m", "fixture"]);
   const target = writeMap(root);
   const text = fs.readFileSync(target, "utf8");
   const candidateLine = text.match(/^- Candidate entry points:\s*(.+)$/m)?.[1] || "";
@@ -1101,15 +1074,11 @@ test("Map candidate entry points normalize a backslash-separated, dot-slash-pref
   // assertion whether or not normalization actually ran. "tools/util-cli.mjs" carries no shebang
   // and its name matches no filename convention, so its only path into the candidate list is a bin
   // value that must survive both normalization steps to match the tracked file.
-  const root = temporary("ctide-map-entrypoints-path-normalization-");
-  git(root, "init", "--initial-branch=main");
-  git(root, "config", "user.email", "map@example.invalid");
-  git(root, "config", "user.name", "Map Test");
-  hardenGitSigning(root);
+  const root = mapRepo("ctide-map-entrypoints-path-normalization-");
   write(path.join(root, "package.json"), JSON.stringify({ name: "path-normalization-fixture", bin: ".\\tools\\util-cli.mjs" }));
   write(path.join(root, "tools", "util-cli.mjs"), "export function run() { return 'util-cli'; }\n");
-  git(root, "add", ".");
-  git(root, "commit", "-m", "fixture");
+  git(root, ["add", "."]);
+  git(root, ["commit", "-m", "fixture"]);
   const target = writeMap(root);
   const text = fs.readFileSync(target, "utf8");
   const candidateLine = text.match(/^- Candidate entry points:\s*(.+)$/m)?.[1] || "";
@@ -1126,17 +1095,13 @@ test("Map candidate entry points ignore a malformed array-shaped package.json bi
   // surface them as false candidates instead of silently contributing nothing. An uncaught
   // exception from a malformed bin field would fail this test the same way any unexpected throw
   // fails any other test in this file -- there is no separate "does not crash" assertion needed.
-  const root = temporary("ctide-map-entrypoints-malformed-bin-");
-  git(root, "init", "--initial-branch=main");
-  git(root, "config", "user.email", "map@example.invalid");
-  git(root, "config", "user.name", "Map Test");
-  hardenGitSigning(root);
+  const root = mapRepo("ctide-map-entrypoints-malformed-bin-");
   write(path.join(root, "package.json"), JSON.stringify({ name: "malformed-bin-fixture", bin: ["a.mjs", "b.mjs"] }));
   write(path.join(root, "a.mjs"), "export function run() { return 'a'; }\n");
   write(path.join(root, "b.mjs"), "export function run() { return 'b'; }\n");
   write(path.join(root, "main.js"), "export function run() { return 'main'; }\n");
-  git(root, "add", ".");
-  git(root, "commit", "-m", "fixture");
+  git(root, ["add", "."]);
+  git(root, ["commit", "-m", "fixture"]);
   const target = writeMap(root);
   const text = fs.readFileSync(target, "utf8");
   const candidateLine = text.match(/^- Candidate entry points:\s*(.+)$/m)?.[1] || "";
@@ -1152,16 +1117,12 @@ test("Map create does not crash on 0-byte and 1-byte files during hasShebang's b
   // matches the filename convention, or is listed in bin, so neither may become a candidate, and
   // writeMap must complete without raising -- an uncaught exception here would fail this test the
   // same way any unexpected throw fails any other test in this file.
-  const root = temporary("ctide-map-entrypoints-shebang-boundary-");
-  git(root, "init", "--initial-branch=main");
-  git(root, "config", "user.email", "map@example.invalid");
-  git(root, "config", "user.name", "Map Test");
-  hardenGitSigning(root);
+  const root = mapRepo("ctide-map-entrypoints-shebang-boundary-");
   write(path.join(root, "package.json"), JSON.stringify({ name: "shebang-boundary-fixture" }));
   write(path.join(root, "empty-file.mjs"), "");
   write(path.join(root, "hash-only.mjs"), "#");
-  git(root, "add", ".");
-  git(root, "commit", "-m", "fixture");
+  git(root, ["add", "."]);
+  git(root, ["commit", "-m", "fixture"]);
   const target = writeMap(root);
   const text = fs.readFileSync(target, "utf8");
   const candidateLine = text.match(/^- Candidate entry points:\s*(.+)$/m)?.[1] || "";
@@ -1181,15 +1142,11 @@ test("Map candidate entry points ignore a null package.json bin field without cr
   // "does not crash" assertion needed. "main.js" is a real tracked file matching the filename
   // convention and is the ONLY candidate expected, so a null bin field contributing anything at all
   // would also fail the exact-count assertion below.
-  const root = temporary("ctide-map-entrypoints-null-bin-");
-  git(root, "init", "--initial-branch=main");
-  git(root, "config", "user.email", "map@example.invalid");
-  git(root, "config", "user.name", "Map Test");
-  hardenGitSigning(root);
+  const root = mapRepo("ctide-map-entrypoints-null-bin-");
   write(path.join(root, "package.json"), JSON.stringify({ name: "null-bin-fixture", bin: null }));
   write(path.join(root, "main.js"), "export function run() { return 'main'; }\n");
-  git(root, "add", ".");
-  git(root, "commit", "-m", "fixture");
+  git(root, ["add", "."]);
+  git(root, ["commit", "-m", "fixture"]);
   const target = writeMap(root);
   const text = fs.readFileSync(target, "utf8");
   const candidateLine = text.match(/^- Candidate entry points:\s*(.+)$/m)?.[1] || "";
@@ -1252,7 +1209,7 @@ test("Map CLI: explicit `map` mode aliases to `create` via a real spawned subpro
 });
 
 test("Map CLI: invoked via a real symlinked/junctioned ancestor directory is still recognized as directly-invoked, running its full CLI body (isInvokedDirectly()'s fs.realpathSync check)", (t) => {
-  const parentDir = temporary("ctide-map-symlink-entrypoint-");
+  const parentDir = tempDir("ctide-map-symlink-entrypoint-");
   const projectRoot = repository();
   try {
     const scratchPlugin = path.join(parentDir, "cressetide");

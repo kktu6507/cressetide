@@ -2,16 +2,14 @@
 // hardening, realpath containment, retired-entry skip) and compact-fidelity (post-compaction
 // preservation block, incl. the PreCompact-absence regression pins). Split from
 // test/hooks.test.mjs (test bodies preserved; the opt-out suite is table-driven).
-import { test } from "node:test";
 import assert from "node:assert";
 import cp from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import {
   COMPACTFIDELITY, HOOKS, MEM, TWO_ENTRIES_PLUS_PLACEHOLDER,
-  compactFidelity, digestOf, hasGlobalMemory, isolatedHome, mkProject, mkProjectWithSettings,
-} from "./support.mjs";
+  compactFidelity, digestOf, hasGlobalMemory, isolatedHome, mkProject, mkProjectWithSettings, tempDir, test,
+} from "./helpers.mjs";
 
 // --- load-failure-memory: digest correctness ---
 
@@ -176,14 +174,9 @@ test("hooks.json SessionStart matcher includes compact", () => {
 // --- load-failure-memory realpath containment (symlink/junction escapes are not injected) ---
 
 test("load-failure-memory F1: a junction at ai/ escaping the project is not read/injected (containment)", (t) => {
-  const { home, env } = isolatedHome(); // no global ~/.claude/FAILURE_MEMORY.md -> no fallback to mask the result
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-f1proj-"));
-  const external = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-f1ext-"));
-  t.after(() => {
-    try { fs.rmSync(home, { recursive: true, force: true }); } catch (e) {}
-    try { fs.rmSync(proj, { recursive: true, force: true }); } catch (e) {}
-    try { fs.rmSync(external, { recursive: true, force: true }); } catch (e) {}
-  });
+  const { env } = isolatedHome(); // no global ~/.claude/FAILURE_MEMORY.md -> no fallback to mask the result
+  const proj = tempDir("ctide-f1proj-");
+  const external = tempDir("ctide-f1ext-");
   fs.writeFileSync(path.join(external, "FAILURE_MEMORY.md"), "# FM\n\n### 2026-06-23 — EXTERNAL-LEAK-MARKER\n- **Tags**: x.\n", "utf8");
   try {
     fs.symlinkSync(external, path.join(proj, "ai"), "junction"); // junction on Windows; dir symlink elsewhere
@@ -196,14 +189,9 @@ test("load-failure-memory F1: a junction at ai/ escaping the project is not read
 });
 
 test("load-failure-memory F1: ai/FAILURE_MEMORY.md symlinked to an out-of-project file is not injected", (t) => {
-  const { home, env } = isolatedHome();
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-f1bproj-"));
-  const external = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-f1bext-"));
-  t.after(() => {
-    try { fs.rmSync(home, { recursive: true, force: true }); } catch (e) {}
-    try { fs.rmSync(proj, { recursive: true, force: true }); } catch (e) {}
-    try { fs.rmSync(external, { recursive: true, force: true }); } catch (e) {}
-  });
+  const { env } = isolatedHome();
+  const proj = tempDir("ctide-f1bproj-");
+  const external = tempDir("ctide-f1bext-");
   const secret = path.join(external, "secret.md");
   fs.writeFileSync(secret, "EXTERNAL-FILE-MARKER contents\n", "utf8");
   fs.mkdirSync(path.join(proj, "ai"));
@@ -222,11 +210,10 @@ test("load-failure-memory F1: a normal in-tree ai/FAILURE_MEMORY.md still inject
   assert.ok(ctx.includes("in-tree entry"), "a regular in-tree memory file must still be read after the containment change");
 });
 
-test("load-failure-memory F1: a normal ~/.claude/FAILURE_MEMORY.md still injects through the global containment guard", (t) => {
+test("load-failure-memory F1: a normal ~/.claude/FAILURE_MEMORY.md still injects through the global containment guard", () => {
   // Exercises the SECOND call site, containedRegularFile(globalPath, globalRoot): a regular global file
   // must still inject through the new guard (regression guard for the global call site / its rootDir arg).
   const { home, env } = isolatedHome();
-  t.after(() => { try { fs.rmSync(home, { recursive: true, force: true }); } catch (e) {} });
   fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
   fs.writeFileSync(path.join(home, ".claude", "FAILURE_MEMORY.md"), "# FM\n\n### 2026-06-23 — global entry\n- **Tags**: x.\n", "utf8");
   const ctx = digestOf({ cwd: mkProject(null) }, env); // project has no ai/ -> falls back to the global file
@@ -235,11 +222,7 @@ test("load-failure-memory F1: a normal ~/.claude/FAILURE_MEMORY.md still injects
 
 test("load-failure-memory F1: a ~/.claude/FAILURE_MEMORY.md symlinked outside ~/.claude is not injected", (t) => {
   const { home, env } = isolatedHome();
-  const external = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-gext-"));
-  t.after(() => {
-    try { fs.rmSync(home, { recursive: true, force: true }); } catch (e) {}
-    try { fs.rmSync(external, { recursive: true, force: true }); } catch (e) {}
-  });
+  const external = tempDir("ctide-gext-");
   fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
   const secret = path.join(external, "secret.md");
   fs.writeFileSync(secret, "GLOBAL-ESCAPE-MARKER\n", "utf8");
@@ -345,7 +328,7 @@ test("load-failure-memory: a pathological (superseded ...) title with no closing
 // mkProject() writes the LEGACY layout, so this local helper writes either/both tiers.
 
 function mkProject3(newMem, legacyMem) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-mem3-"));
+  const dir = tempDir("ctide-mem3-");
   if (newMem != null) {
     fs.mkdirSync(path.join(dir, ".ctide", "memory"), { recursive: true });
     fs.writeFileSync(path.join(dir, ".ctide", "memory", "FAILURE_MEMORY.md"), newMem, "utf8");
@@ -359,11 +342,10 @@ function mkProject3(newMem, legacyMem) {
 const NEW_MEM = "# FM\n\n### 2026-07-11 — NEW-LAYOUT-ENTRY\n- **Prevention rule**: r.\n- **Tags**: x.\n";
 const LEGACY_MEM = "# FM\n\n### 2026-07-01 — LEGACY-LAYOUT-ENTRY\n- **Prevention rule**: r.\n- **Tags**: y.\n";
 
-test("load-failure-memory 3-tier: .ctide/memory alone is read and disclosed (new first tier)", (t) => {
+test("load-failure-memory 3-tier: .ctide/memory alone is read and disclosed (new first tier)", () => {
   // Discriminating: under a compatibility-first resolver (ai/ then global) this project has NO readable file
   // in the isolated home, so the digest would be empty — both assertions go red without the change.
-  const { home, env } = isolatedHome(); // no global fallback to mask the result
-  t.after(() => { try { fs.rmSync(home, { recursive: true, force: true }); } catch (e) {} });
+  const { env } = isolatedHome(); // no global fallback to mask the result
   const ctx = digestOf({ cwd: mkProject3(NEW_MEM, null) }, env);
   assert.ok(ctx.includes("NEW-LAYOUT-ENTRY"), "the digest must come from .ctide/memory/FAILURE_MEMORY.md");
   assert.match(ctx, /.ctide[\\/]memory[\\/]FAILURE_MEMORY\.md/, "the digest header must disclose the new-layout source path");
@@ -382,9 +364,8 @@ test("load-failure-memory 3-tier: legacy-only still injects (read-only fallback 
   assert.ok(ctx.includes("LEGACY-LAYOUT-ENTRY"), "a not-yet-migrated project must keep injecting from ai/");
 });
 
-test("load-failure-memory 3-tier: neither project tier -> the global file is the last tier (regression control)", (t) => {
+test("load-failure-memory 3-tier: neither project tier -> the global file is the last tier (regression control)", () => {
   const { home, env } = isolatedHome();
-  t.after(() => { try { fs.rmSync(home, { recursive: true, force: true }); } catch (e) {} });
   fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
   fs.writeFileSync(path.join(home, ".claude", "FAILURE_MEMORY.md"), "# FM\n\n### 2026-07-02 — GLOBAL-TIER-ENTRY\n- **Tags**: g.\n", "utf8");
   const ctx = digestOf({ cwd: mkProject3(null, null) }, env);
@@ -392,14 +373,9 @@ test("load-failure-memory 3-tier: neither project tier -> the global file is the
 });
 
 test("load-failure-memory 3-tier: a junction at .ctide/memory escaping the project is not read (containment covers the new first tier)", (t) => {
-  const { home, env } = isolatedHome();
-  const proj = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-m3proj-"));
-  const external = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-m3ext-"));
-  t.after(() => {
-    try { fs.rmSync(home, { recursive: true, force: true }); } catch (e) {}
-    try { fs.rmSync(proj, { recursive: true, force: true }); } catch (e) {}
-    try { fs.rmSync(external, { recursive: true, force: true }); } catch (e) {}
-  });
+  const { env } = isolatedHome();
+  const proj = tempDir("ctide-m3proj-");
+  const external = tempDir("ctide-m3ext-");
   fs.writeFileSync(path.join(external, "FAILURE_MEMORY.md"), "# FM\n\n### 2026-07-03 — NEWPATH-ESCAPE-MARKER\n- **Tags**: x.\n", "utf8");
   fs.mkdirSync(path.join(proj, ".ctide"), { recursive: true });
   try {

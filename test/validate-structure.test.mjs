@@ -1,199 +1,269 @@
-// Negative-path tests for the CI structure validator (.github/scripts/validate-structure.mjs): each
-// guard must FAIL on an injected defect in a temp copy of the repo, plus a clean-copy control.
-// Structural-validator tests split from the hook behavior suite.
-import { test } from "node:test";
+// Negative-path tests for the CI structure validator (.github/scripts/validate-structure-core.mjs): each
+// guard must FAIL on an injected defect, plus clean controls. Defects are injected IN MEMORY: validate()
+// reads every file through `read`, and its scratch-file / text-integrity / tracked-.ctide scans read the
+// `files` lists, so an overlay of both over the real checkout is exactly the tree the validator would see
+// on disk — no repository copies.
 import assert from "node:assert";
 import cp from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { copyRepoTree, runValidator } from "./support.mjs";
+import { diskReader, gitFiles, validate } from "../.github/scripts/validate-structure-core.mjs";
+import { git, makeRepo, root, tempDir, test } from "./helpers.mjs";
 
-function runExtensionValidator(tree) {
-  const result = cp.spawnSync("node", [path.join(tree, ".github", "scripts", "validate-cressetide-extensions.mjs")], {
-    cwd: tree,
-    encoding: "utf8",
-  });
-  return { code: result.status, out: (result.stdout || "") + (result.stderr || "") };
+const CLI = path.join(root, ".github", "scripts", "validate-structure.mjs");
+
+// --- Overlay harness ---
+// The real checkout, read once per process and shared by every overlay.
+const disk = diskReader(root);
+const fileMemo = new Map();
+const listMemo = new Map();
+const base = {
+  file(rel) {
+    if (!fileMemo.has(rel)) fileMemo.set(rel, disk.file(rel));
+    return fileMemo.get(rel);
+  },
+  list(rel) {
+    if (!listMemo.has(rel)) listMemo.set(rel, disk.list(rel));
+    return listMemo.get(rel);
+  },
+};
+let baseFilesMemo;
+function baseFiles() {
+  if (baseFilesMemo === undefined) {
+    baseFilesMemo = gitFiles(root);
+    if (baseFilesMemo === null) {
+      // Not a git work tree (e.g. an unpacked archive): treat every file the validator's own fallback walk
+      // would see as tracked, so overlays still have a `files` view to edit.
+      const walk = (dir) => (base.list(dir) || []).flatMap((e) => {
+        if ([".git", "node_modules", ".ctide", "_release"].includes(e.name)) return [];
+        const rel = dir ? `${dir}/${e.name}` : e.name;
+        return e.dir ? walk(rel) : [rel];
+      });
+      const all = walk("");
+      baseFilesMemo = { scan: all, tracked: all };
+    }
+  }
+  return baseFilesMemo;
 }
+
+// overlay(edits, { tracked, ignored }) -> { read, files } over the real checkout.
+//   edits:   { "posix/rel/path": string | Buffer | null (delete) | (originalText) => string }
+//   tracked: extra paths to report as tracked by git (the index)
+//   ignored: added paths git would ignore (kept out of files.scan)
+function overlay(edits = {}, { tracked = [], ignored = [] } = {}) {
+  const content = new Map();
+  for (const [rel, edit] of Object.entries(edits)) {
+    let next = edit;
+    if (typeof edit === "function") {
+      const original = base.file(rel);
+      assert.ok(original !== null, `overlay: cannot transform ${rel}, it does not exist in the checkout`);
+      next = edit(original.toString("utf8"));
+    }
+    content.set(rel, next === null ? null : Buffer.isBuffer(next) ? next : Buffer.from(next, "utf8"));
+  }
+  const added = [...content].filter(([rel, value]) => value !== null && base.file(rel) === null).map(([rel]) => rel);
+  const removed = [...content].filter(([, value]) => value === null).map(([rel]) => rel);
+  const read = {
+    file: (rel) => (content.has(rel) ? content.get(rel) : base.file(rel)),
+    list(rel) {
+      const prefix = rel === "" ? "" : `${rel}/`;
+      const baseEntries = base.list(rel);
+      const entries = new Map((baseEntries || []).map((e) => [e.name, e]));
+      for (const r of removed) {
+        if (r.startsWith(prefix) && !r.slice(prefix.length).includes("/")) entries.delete(r.slice(prefix.length));
+      }
+      let implied = false;
+      for (const a of added) {
+        if (!a.startsWith(prefix)) continue;
+        const [name, ...rest] = a.slice(prefix.length).split("/");
+        implied = true;
+        if (!entries.has(name)) entries.set(name, { name, dir: rest.length > 0 });
+      }
+      return baseEntries === null && !implied ? null : [...entries.values()];
+    },
+  };
+  const { scan, tracked: baseTracked } = baseFiles();
+  const hidden = new Set([...removed, ...ignored]);
+  return {
+    read,
+    files: {
+      scan: [...new Set([...scan, ...added])].filter((rel) => !hidden.has(rel)),
+      tracked: [...baseTracked, ...tracked],
+    },
+  };
+}
+const check = (edits, opts) => validate({ root, ...overlay(edits, opts) });
+// Same shape the CLI-based tests used, so every ported assertion stays verbatim.
+function runOverlay(edits, opts) {
+  const errors = check(edits, opts);
+  return { code: errors.length ? 1 : 0, out: errors.join("\n") };
+}
+const editJSON = (mutate) => (text) => {
+  const obj = JSON.parse(text);
+  mutate(obj);
+  return JSON.stringify(obj, null, 2) + "\n";
+};
 
 // --- validate-structure CI guards: negative-path coverage ---
 // The text-integrity (U+FFFD) and multilingual-README-parity checks are fail-only guards; lock in that they
-// actually FAIL on a violation (not merely pass on the clean tree) by running the real validator against a
-// temp copy of the repo with one injected defect. A future edit that silently disables a guard breaks these.
+// actually FAIL on a violation (not merely pass on the clean tree) by running the real validator against an
+// overlay of the repo with one injected defect. A future edit that silently disables a guard breaks these.
 
 test("validate-structure: passes on a clean copy of the repo (control)", () => {
-  const tree = copyRepoTree();
-  try {
-    assert.ok(!fs.existsSync(path.join(tree, "output")), "copyRepoTree must not drag run-scratch output/ into the temp tree");
-    assert.ok(!fs.existsSync(path.join(tree, ".claude")), "copyRepoTree must not drag machine-private .claude/ into the temp tree");
-    assert.strictEqual(runValidator(tree).code, 0, "the validator must pass on an unmodified copy");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  assert.deepStrictEqual(check({}), [], "the validator must pass on the unmodified tree");
 });
 
-test("validate-structure: copied extension validator passes on a clean tree", () => {
-  const tree = copyRepoTree();
-  try {
-    const { code, out } = runExtensionValidator(tree);
-    assert.strictEqual(code, 0, `the copied extension validator must have a clean baseline: ${out}`);
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+test("structure validator passes the complete repository", () => {
+  // In-process, straight from disk and git (no overlay, no timer): the default reader and file lists.
+  assert.deepStrictEqual(validate({ root }), []);
+});
+
+test("validate-structure: the CLI passes from a foreign cwd (root resolves from the script, not the cwd)", () => {
+  const cwd = tempDir("ctide-validate-cwd-");
+  const r = cp.spawnSync(process.execPath, [CLI], { cwd, encoding: "utf8" });
+  assert.strictEqual(r.status, 0, `the CLI must validate its own repository from any cwd: ${r.stdout}${r.stderr}`);
+  assert.match(r.stdout, /Plugin structure validation passed\./);
+});
+
+test("validate-structure: validate() requires an explicit root (never the process cwd)", () => {
+  assert.throws(() => validate({}), TypeError);
+  assert.throws(() => validate(), TypeError);
+});
+
+test("validate-structure: gitFiles lists tracked + untracked-not-ignored files and is null outside a work-tree top", () => {
+  const dir = tempDir("ctide-gitfiles-");
+  const repo = makeRepo({ prefix: "ctide-gitfiles-repo-" });
+  const plain = path.join(dir, "plain");
+  const write = (rel, text) => {
+    fs.mkdirSync(path.dirname(path.join(repo, rel)), { recursive: true });
+    fs.writeFileSync(path.join(repo, rel), text, "utf8");
+  };
+  fs.mkdirSync(plain);
+  // Hermetic ignore rules: a contributor's global excludes file must not decide what counts as ignored.
+  fs.writeFileSync(path.join(dir, "empty-excludes"), "", "utf8");
+  git(repo, ["config", "core.excludesFile", path.join(dir, "empty-excludes")]);
+  write(".gitignore", "ignored.md\n*.log\n/.ctide/\n.claude/settings.local.json\n");
+  write("keep.md", "tracked\n");
+  write("sub/nested.md", "tracked in a subdirectory\n");
+  write("ignored.md", "ignored, so out of scope\n");
+  write("_x.md", "untracked and not ignored, so scanned\n");
+  write("x.log", "ignored by *.log but force-added, so tracked\n");
+  // The two run-scratch locations the old repo copy had to filter out by hand: git's ignore rules now
+  // keep them out of the scan.
+  write(".ctide/output/run.md", "run scratch\n");
+  write(".claude/settings.local.json", "{}\n");
+  git(repo, ["add", ".gitignore", "keep.md", "sub/nested.md"]);
+  git(repo, ["add", "-f", "x.log"]);
+
+  const files = gitFiles(repo);
+  assert.ok(files, "the top of a git work tree must yield file lists");
+  assert.deepStrictEqual([...files.scan].sort(), [".gitignore", "_x.md", "keep.md", "sub/nested.md", "x.log"]);
+  assert.deepStrictEqual([...files.tracked].sort(), [".gitignore", "keep.md", "sub/nested.md", "x.log"]);
+  assert.ok(!files.scan.some((p) => p.startsWith(".ctide/")), "ignored run-scratch .ctide/ must not be scanned");
+  assert.ok(!files.scan.some((p) => p.startsWith(".claude/")), "machine-private .claude/ must not be scanned");
+  assert.strictEqual(gitFiles(path.join(repo, "sub")), null, "a subdirectory of a work tree is not a validation root");
+  assert.strictEqual(gitFiles(plain), null, "a plain directory has no git file lists");
 });
 
 test("validate-structure: text-integrity check FAILS on a planted U+FFFD", () => {
-  const tree = copyRepoTree();
-  try {
-    fs.appendFileSync(path.join(tree, "README.md"), "\nmojibake " + String.fromCharCode(0xFFFD) + " here\n");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "a tracked text file with U+FFFD must fail the build");
-    assert.match(out, /text integrity/, "the failure must name the text-integrity check");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({ "README.md": (s) => s + "\nmojibake " + String.fromCharCode(0xFFFD) + " here\n" });
+  assert.notStrictEqual(code, 0, "a tracked text file with U+FFFD must fail the build");
+  assert.match(out, /text integrity/, "the failure must name the text-integrity check");
 });
 
 test("validate-structure: text-integrity check FAILS on known mojibake markers", () => {
-  const tree = copyRepoTree();
-  try {
-    fs.appendFileSync(path.join(tree, "README.md"), "\nmojibake " + String.fromCodePoint(0x7AB6) + " marker\n", "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "a known mojibake marker must fail the build");
-    assert.match(out, /suspicious mojibake marker/, "the failure must name the mojibake marker guard");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({ "README.md": (s) => s + "\nmojibake " + String.fromCodePoint(0x7AB6) + " marker\n" });
+  assert.notStrictEqual(code, 0, "a known mojibake marker must fail the build");
+  assert.match(out, /suspicious mojibake marker/, "the failure must name the mojibake marker guard");
 });
 
 test("validate-structure: README parity FAILS on a top-level section-count mismatch", () => {
-  const tree = copyRepoTree();
-  try {
-    fs.appendFileSync(path.join(tree, "README.md"), "\n## An English-only extra section\n\nbody\n");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "an asymmetric ## section count must fail the build");
-    assert.match(out, /README parity/, "the failure must name README parity");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({ "README.md": (s) => s + "\n## An English-only extra section\n\nbody\n" });
+  assert.notStrictEqual(code, 0, "an asymmetric ## section count must fail the build");
+  assert.match(out, /README parity/, "the failure must name README parity");
 });
 
 test("validate-structure: README parity FAILS when the zh README omits a wired hook name", () => {
-  const tree = copyRepoTree();
-  try {
-    const zhPath = path.join(tree, "README.zh-TW.md");
-    fs.writeFileSync(zhPath, fs.readFileSync(zhPath, "utf8").split("plan-gate").join("PLANGATE_removed"), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "zh omitting a wired hook name must fail the build");
-    assert.match(out, /plan-gate/, "the failure must name the missing hook");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({ "README.zh-TW.md": (s) => s.split("plan-gate").join("PLANGATE_removed") });
+  assert.notStrictEqual(code, 0, "zh omitting a wired hook name must fail the build");
+  assert.match(out, /plan-gate/, "the failure must name the missing hook");
 });
 
 test("validate-structure: README parity FAILS when either README drops a required entry link", () => {
-  const tree = copyRepoTree();
-  try {
-    const zhPath = path.join(tree, "README.zh-TW.md");
-    fs.writeFileSync(zhPath, fs.readFileSync(zhPath, "utf8").replace("template=verified-run.yml", "template=removed.yml"), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "README entry links must stay present in both languages");
-    assert.match(out, /missing required entry link/, "the failure must name the missing README link");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({ "README.zh-TW.md": (s) => s.replace("template=verified-run.yml", "template=removed.yml") });
+  assert.notStrictEqual(code, 0, "README entry links must stay present in both languages");
+  assert.match(out, /missing required entry link/, "the failure must name the missing README link");
 });
 
 test("validate-structure: README parity FAILS when the ja README omits a wired hook name", () => {
-  const tree = copyRepoTree();
-  try {
-    const jaPath = path.join(tree, "README.ja.md");
-    fs.writeFileSync(jaPath, fs.readFileSync(jaPath, "utf8").split("plan-gate").join("PLANGATE_removed"), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "ja omitting a wired hook name must fail the build");
-    assert.match(out, /plan-gate/, "the failure must name the missing hook");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({ "README.ja.md": (s) => s.split("plan-gate").join("PLANGATE_removed") });
+  assert.notStrictEqual(code, 0, "ja omitting a wired hook name must fail the build");
+  assert.match(out, /plan-gate/, "the failure must name the missing hook");
 });
 
 test("validate-structure: README parity FAILS when the ja README drops a required entry link", () => {
-  const tree = copyRepoTree();
-  try {
-    const jaPath = path.join(tree, "README.ja.md");
-    fs.writeFileSync(jaPath, fs.readFileSync(jaPath, "utf8").replace("template=verified-run.yml", "template=removed.yml"), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "README entry links must stay present in every language");
-    assert.match(out, /missing required entry link/, "the failure must name the missing README link");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({ "README.ja.md": (s) => s.replace("template=verified-run.yml", "template=removed.yml") });
+  assert.notStrictEqual(code, 0, "README entry links must stay present in every language");
+  assert.match(out, /missing required entry link/, "the failure must name the missing README link");
 });
 
 test("validate-structure: README parity FAILS when a translated README is deleted", () => {
-  const tree = copyRepoTree();
-  try {
-    fs.rmSync(path.join(tree, "README.ja.md"));
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "deleting a translated README must fail the build");
-    assert.match(out, /README\.ja\.md is missing/, "the failure must name the missing translated README");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({ "README.ja.md": null });
+  assert.notStrictEqual(code, 0, "deleting a translated README must fail the build");
+  assert.match(out, /README\.ja\.md is missing/, "the failure must name the missing translated README");
 });
 
 test("validate-structure: a version mismatch across manifests FAILS", () => {
-  const tree = copyRepoTree();
-  try {
-    const pj = path.join(tree, "cressetide", ".claude-plugin", "plugin.json");
-    const obj = JSON.parse(fs.readFileSync(pj, "utf8"));
-    obj.version = "9.9.9"; // disagree with package.json / CHANGELOG
-    fs.writeFileSync(pj, JSON.stringify(obj, null, 2), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "a version that disagrees across manifests must fail the build");
-    assert.match(out, /version mismatch/, "the failure must name the version mismatch");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({
+    "cressetide/.claude-plugin/plugin.json": editJSON((obj) => { obj.version = "9.9.9"; }), // disagree with package.json / CHANGELOG
+  });
+  assert.notStrictEqual(code, 0, "a version that disagrees across manifests must fail the build");
+  assert.match(out, /version mismatch/, "the failure must name the version mismatch");
 });
 
 test("validate-structure: §5j FAILS CLOSED when task-contract.md drops a guarded machine field", () => {
-  const tree = copyRepoTree();
-  try {
-    const tc = path.join(tree, "cressetide", "skills", "vigil", "references", "task-contract.md");
-    // Strip every occurrence of a field contract-check.mjs reads; the §5j guard must bite so a prose
-    // edit can't silently gut the deterministic inputs while CI stays green (mirrors the 5d/5e guards).
-    fs.writeFileSync(tc, fs.readFileSync(tc, "utf8").split("forbiddenPaths").join("XXX"), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "dropping a guarded contract field must fail the build");
-    assert.match(out, /no longer documents the machine field "forbiddenPaths"/, "the failure must name the dropped field");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  // Strip every occurrence of a field contract-check.mjs reads; the §5j guard must bite so a prose
+  // edit can't silently gut the deterministic inputs while CI stays green (mirrors the 5d/5e guards).
+  const { code, out } = runOverlay({
+    "cressetide/skills/vigil/references/task-contract.md": (s) => s.split("forbiddenPaths").join("XXX"),
+  });
+  assert.notStrictEqual(code, 0, "dropping a guarded contract field must fail the build");
+  assert.match(out, /no longer documents the machine field "forbiddenPaths"/, "the failure must name the dropped field");
 });
 
 test("validate-structure: §5j FAILS CLOSED when review-packet.md drops a required template field", () => {
-  const tree = copyRepoTree();
-  try {
-    const pk = path.join(tree, "cressetide", "skills", "vigil", "references", "review-packet.md");
-    fs.writeFileSync(pk, fs.readFileSync(pk, "utf8").split("Verification evidence").join("XXX"), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "dropping a packet template field must fail the build");
-    assert.match(out, /review-packet\.md template is missing the required field/, "the failure must name the missing packet field");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({
+    "cressetide/skills/vigil/references/review-packet.md": (s) => s.split("Verification evidence").join("XXX"),
+  });
+  assert.notStrictEqual(code, 0, "dropping a packet template field must fail the build");
+  assert.match(out, /review-packet\.md template is missing the required field/, "the failure must name the missing packet field");
 });
 
 test("validate-structure: §5j FAILS CLOSED when review-packet.md drops the Migration status field", () => {
-  const tree = copyRepoTree();
-  try {
-    const pk = path.join(tree, "cressetide", "skills", "vigil", "references", "review-packet.md");
-    fs.writeFileSync(pk, fs.readFileSync(pk, "utf8").split("Migration status").join("XXX"), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "dropping the Migration status packet field must fail the build");
-    assert.match(out, /review-packet\.md template is missing the required field/, "the failure must name the missing packet field");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({
+    "cressetide/skills/vigil/references/review-packet.md": (s) => s.split("Migration status").join("XXX"),
+  });
+  assert.notStrictEqual(code, 0, "dropping the Migration status packet field must fail the build");
+  assert.match(out, /review-packet\.md template is missing the required field/, "the failure must name the missing packet field");
 });
 
 test("validate-structure: a missing SKILL-linked reference FAILS", () => {
-  const tree = copyRepoTree();
-  try {
-    // SKILL.md links references/review-packet.md; deleting it must be caught by the broken-ref check.
-    fs.rmSync(path.join(tree, "cressetide", "skills", "vigil", "references", "review-packet.md"));
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "a reference linked from SKILL.md but missing on disk must fail the build");
-    assert.match(out, /missing reference/, "the failure must name the missing reference");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  // SKILL.md links references/review-packet.md; deleting it must be caught by the broken-ref check.
+  const { code, out } = runOverlay({ "cressetide/skills/vigil/references/review-packet.md": null });
+  assert.notStrictEqual(code, 0, "a reference linked from SKILL.md but missing on disk must fail the build");
+  assert.match(out, /missing reference/, "the failure must name the missing reference");
 });
 
 test("validate-structure: §5b FAILS on a dangling reference planted in a non-vigil skill's SKILL.md (widened coverage)", () => {
-  const tree = copyRepoTree();
-  try {
-    // §5b's reference-existence check was vigil-only before this generalization; a dangling
-    // `references/X.md` mention planted in doctor/SKILL.md — a name that exists nowhere in the plugin —
-    // must now be caught too, proving the widened per-skill-with-fallback-search model actually reaches
-    // doctor/, not just vigil/.
-    const doctorSkill = path.join(tree, "cressetide", "skills", "doctor", "SKILL.md");
-    fs.appendFileSync(doctorSkill, "\nSee also `references/zz-doctor-dangling.md` (does not exist anywhere in the plugin).\n", "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "a dangling reference in a non-vigil skill's SKILL.md must fail the build");
-    assert.match(out, /doctor\/SKILL\.md links a missing reference: references\/zz-doctor-dangling\.md/, "the failure must name the offending SKILL.md and the missing reference");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  // §5b's reference-existence check was vigil-only before this generalization; a dangling
+  // `references/X.md` mention planted in doctor/SKILL.md — a name that exists nowhere in the plugin —
+  // must now be caught too, proving the widened per-skill-with-fallback-search model actually reaches
+  // doctor/, not just vigil/.
+  const { code, out } = runOverlay({
+    "cressetide/skills/doctor/SKILL.md": (s) => s + "\nSee also `references/zz-doctor-dangling.md` (does not exist anywhere in the plugin).\n",
+  });
+  assert.notStrictEqual(code, 0, "a dangling reference in a non-vigil skill's SKILL.md must fail the build");
+  assert.match(out, /doctor\/SKILL\.md links a missing reference: references\/zz-doctor-dangling\.md/, "the failure must name the offending SKILL.md and the missing reference");
 });
 
 test("validate-structure: §5b does NOT flag the three known cross-skill references as missing (real repo tree)", () => {
@@ -204,125 +274,92 @@ test("validate-structure: §5b does NOT flag the three known cross-skill referen
   // skill's own directory only" generalization would newly false-fail CI on all three the moment §5b
   // starts running per-skill; this is the test that would have caught that false-positive risk (mirrors
   // why the analogous garden 9a cross-skill test mattered).
-  const tree = copyRepoTree();
-  try {
-    const { code, out } = runValidator(tree);
-    assert.strictEqual(code, 0, `the generalized §5b must not false-flag real cross-skill references: ${out}`);
-    assert.doesNotMatch(out, /links a missing reference: references\/vigil-map-overlay\.md/, "vigil -> map/vigil-map-overlay.md must not be flagged");
-    assert.doesNotMatch(out, /links a missing reference: references\/operational-readiness\.md/, "salvage -> map/operational-readiness.md must not be flagged");
-    assert.doesNotMatch(out, /links a missing reference: references\/external-capabilities\.md/, "salvage -> vigil/external-capabilities.md must not be flagged");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({});
+  assert.strictEqual(code, 0, `the generalized §5b must not false-flag real cross-skill references: ${out}`);
+  assert.doesNotMatch(out, /links a missing reference: references\/vigil-map-overlay\.md/, "vigil -> map/vigil-map-overlay.md must not be flagged");
+  assert.doesNotMatch(out, /links a missing reference: references\/operational-readiness\.md/, "salvage -> map/operational-readiness.md must not be flagged");
+  assert.doesNotMatch(out, /links a missing reference: references\/external-capabilities\.md/, "salvage -> vigil/external-capabilities.md must not be flagged");
 });
 
 test("validate-structure: dropping a sentinel from the compact final-report template FAILS (5d guard)", () => {
-  const tree = copyRepoTree();
-  try {
-    // The realistic single-edit regression: remove the verify sentinel from the compact (Default)
-    // template fence. The 5d guard must bite — and must NOT be masked by the intro-prose copy of the
-    // same literals. .replace() hits the FIRST occurrence, which is the compact fence (before the
-    // --report full fence), so this deletes it from the default rendering specifically.
-    const fr = path.join(tree, "cressetide", "skills", "vigil", "references", "final-report.md");
-    fs.writeFileSync(fr, fs.readFileSync(fr, "utf8").replace("ctide:verify=<pass|fail|unrun|na>", "verify status omitted"), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "dropping a sentinel from the compact template fence must fail the build");
-    assert.match(out, /compact template is missing the machine-contract literal/, "the failure must name the 5d sentinel guard");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  // The realistic single-edit regression: remove the verify sentinel from the compact (Default)
+  // template fence. The 5d guard must bite — and must NOT be masked by the intro-prose copy of the
+  // same literals. .replace() hits the FIRST occurrence, which is the compact fence (before the
+  // --report full fence), so this deletes it from the default rendering specifically.
+  const { code, out } = runOverlay({
+    "cressetide/skills/vigil/references/final-report.md": (s) => s.replace("ctide:verify=<pass|fail|unrun|na>", "verify status omitted"),
+  });
+  assert.notStrictEqual(code, 0, "dropping a sentinel from the compact template fence must fail the build");
+  assert.match(out, /compact template is missing the machine-contract literal/, "the failure must name the 5d sentinel guard");
 });
 
 test("validate-structure: a mangled compact final-report fence fails CLOSED (5d guard)", () => {
-  const tree = copyRepoTree();
-  try {
-    // Mangle the compact fence opener (first ~~~markdown = the compact fence). The region is bounded to
-    // the compact section, so the guard must fail CLOSED — not fall through to the --report full fence
-    // (which also holds the literals) and pass green.
-    const fr = path.join(tree, "cressetide", "skills", "vigil", "references", "final-report.md");
-    fs.writeFileSync(fr, fs.readFileSync(fr, "utf8").replace("~~~markdown", "```markdown"), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "a mangled compact fence must fail closed, not fall through to the full fence");
-    assert.match(out, /cannot locate the compact \(Default\)/, "the failure must name the fail-closed fence guard");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  // Mangle the compact fence opener (first ~~~markdown = the compact fence). The region is bounded to
+  // the compact section, so the guard must fail CLOSED — not fall through to the --report full fence
+  // (which also holds the literals) and pass green.
+  const { code, out } = runOverlay({
+    "cressetide/skills/vigil/references/final-report.md": (s) => s.replace("~~~markdown", "```markdown"),
+  });
+  assert.notStrictEqual(code, 0, "a mangled compact fence must fail closed, not fall through to the full fence");
+  assert.match(out, /cannot locate the compact \(Default\)/, "the failure must name the fail-closed fence guard");
 });
 
 test("validate-structure: reverting the --report full cost table to a single Tokens column FAILS (5e guard)", () => {
-  const tree = copyRepoTree();
-  try {
-    // Revert the billable-component header (Input/Output/Cache-write/Cache-read) back to the old
-    // single-`Tokens` column in the --report full cost table; the 5e guard must bite (AC2 contract).
-    const fr = path.join(tree, "cressetide", "skills", "vigil", "references", "final-report.md");
-    fs.writeFileSync(fr, fs.readFileSync(fr, "utf8").replace(
+  // Revert the billable-component header (Input/Output/Cache-write/Cache-read) back to the old
+  // single-`Tokens` column in the --report full cost table; the 5e guard must bite (AC2 contract).
+  const { code, out } = runOverlay({
+    "cressetide/skills/vigil/references/final-report.md": (s) => s.replace(
       "| Agent / phase | Input | Output | Cache-write | Cache-read | New | Share | Source | ~Cost |",
-      "| Agent / phase | Tokens | Share | Source | ~Cost |"), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "dropping the billable-component columns must fail the build");
-    assert.match(out, /billable-component column/, "the failure must name the 5e cost-column guard");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+      "| Agent / phase | Tokens | Share | Source | ~Cost |"),
+  });
+  assert.notStrictEqual(code, 0, "dropping the billable-component columns must fail the build");
+  assert.match(out, /billable-component column/, "the failure must name the 5e cost-column guard");
 });
 
 test("validate-structure: A6 dropping a guarded Fix-Class phrase from arbiter.agent.md FAILS (5f guard)", () => {
-  const tree = copyRepoTree();
-  try {
-    // A6: the arbiter's Fix-Class safety rule (Extended-Safe / Residual; a Residual fix is "never
-    // auto-applied") is a load-bearing contract. Removing the "never auto-applied" phrase must trip the
-    // §5f contract-invariant guard so a prose edit can't silently gut the never-auto-ship rule.
-    const gk = path.join(tree, "cressetide", "agents", "arbiter.agent.md");
-    fs.writeFileSync(gk, fs.readFileSync(gk, "utf8").split("never auto-applied").join("XXX"), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "dropping a guarded Fix-Class phrase must fail the build");
-    assert.match(out, /never auto-applied/, "the failure must name the dropped Fix-Class literal");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  // A6: the arbiter's Fix-Class safety rule (Extended-Safe / Residual; a Residual fix is "never
+  // auto-applied") is a load-bearing contract. Removing the "never auto-applied" phrase must trip the
+  // §5f contract-invariant guard so a prose edit can't silently gut the never-auto-ship rule.
+  const { code, out } = runOverlay({
+    "cressetide/agents/arbiter.agent.md": (s) => s.split("never auto-applied").join("XXX"),
+  });
+  assert.notStrictEqual(code, 0, "dropping a guarded Fix-Class phrase must fail the build");
+  assert.match(out, /never auto-applied/, "the failure must name the dropped Fix-Class literal");
 });
 
 test("validate-structure: missing validation workflow FAILS (release asset guard)", () => {
-  const tree = copyRepoTree();
-  try {
-    fs.rmSync(path.join(tree, ".github", "workflows", "validate.yml"));
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "missing validation workflow must fail closed");
-    assert.match(out, /missing validation workflow/, "the failure must name the validation workflow guard");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({ ".github/workflows/validate.yml": null });
+  assert.notStrictEqual(code, 0, "missing validation workflow must fail closed");
+  assert.match(out, /missing validation workflow/, "the failure must name the validation workflow guard");
 });
 
 test("validate-structure: missing release workflow FAILS (release asset guard)", () => {
-  const tree = copyRepoTree();
-  try {
-    fs.rmSync(path.join(tree, ".github", "workflows", "release.yml"));
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "missing release workflow must fail closed");
-    assert.match(out, /missing release workflow/, "the failure must name the release workflow guard");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({ ".github/workflows/release.yml": null });
+  assert.notStrictEqual(code, 0, "missing release workflow must fail closed");
+  assert.match(out, /missing release workflow/, "the failure must name the release workflow guard");
 });
 
 test("validate-structure: missing release publisher script FAILS (release asset guard)", () => {
-  const tree = copyRepoTree();
-  try {
-    fs.rmSync(path.join(tree, ".github", "scripts", "publish-release.mjs"));
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "missing release publisher script must fail closed");
-    assert.match(out, /missing release publisher script/, "the failure must name the publisher script guard");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({ ".github/scripts/publish-release.mjs": null });
+  assert.notStrictEqual(code, 0, "missing release publisher script must fail closed");
+  assert.match(out, /missing release publisher script/, "the failure must name the publisher script guard");
 });
 
 test("validate-structure: validation workflow must syntax-check the publisher script", () => {
-  const tree = copyRepoTree();
-  try {
-    const p = path.join(tree, ".github", "workflows", "validate.yml");
-    fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace(
+  const { code, out } = runOverlay({
+    ".github/workflows/validate.yml": (s) => s.replace(
       "run: node --check .github/scripts/publish-release.mjs",
-      "run: echo skipped-publisher-syntax-check"), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "removing the publisher syntax check must fail closed");
-    assert.match(out, /syntax-check/, "the failure must name the missing syntax-check contract");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+      "run: echo skipped-publisher-syntax-check"),
+  });
+  assert.notStrictEqual(code, 0, "removing the publisher syntax check must fail closed");
+  assert.match(out, /syntax-check/, "the failure must name the missing syntax-check contract");
 });
 
 test("validate-structure: a disabled decoy cannot satisfy the named syntax-check step", () => {
-  const tree = copyRepoTree();
-  try {
-    const p = path.join(tree, ".github", "workflows", "validate.yml");
-    let workflow = fs.readFileSync(p, "utf8").replace(
+  const { code, out } = runOverlay({
+    ".github/workflows/validate.yml": (s) => s.replace(
       "run: node --check .github/scripts/publish-release.mjs",
-      "run: echo skipped-publisher-syntax-check");
-    workflow += [
+      "run: echo skipped-publisher-syntax-check") + [
       "",
       "  disabled-decoy:",
       "    if: false # intentionally disabled",
@@ -331,12 +368,10 @@ test("validate-structure: a disabled decoy cannot satisfy the named syntax-check
       "      - name: Syntax-check release publisher",
       "        run: node --check .github/scripts/publish-release.mjs",
       "",
-    ].join("\n");
-    fs.writeFileSync(p, workflow, "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "a disabled decoy job must not satisfy the validation workflow guard");
-    assert.match(out, /validation job must syntax-check/, "the failure must name the scoped syntax-check contract");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+    ].join("\n"),
+  });
+  assert.notStrictEqual(code, 0, "a disabled decoy job must not satisfy the validation workflow guard");
+  assert.match(out, /validation job must syntax-check/, "the failure must name the scoped syntax-check contract");
 });
 
 test("validate-structure: the named publisher syntax check cannot be conditional or alter its shell semantics", () => {
@@ -361,51 +396,35 @@ test("validate-structure: the named publisher syntax check cannot be conditional
       "  validate:\n",
       "  validate:\n    defaults:\n      run:\n        working-directory: tools/release-noop\n"),
   ]) {
-    const tree = copyRepoTree();
-    try {
-      const p = path.join(tree, ".github", "workflows", "validate.yml");
-      fs.writeFileSync(p, mutate(fs.readFileSync(p, "utf8")), "utf8");
-      const { code, out } = runValidator(tree);
-      assert.notStrictEqual(code, 0, "the named publisher syntax check must execute unconditionally in the default shell");
-      assert.match(out, /validation job must syntax-check/, "the failure must name the fail-closed syntax-check contract");
-    } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+    const { code, out } = runOverlay({ ".github/workflows/validate.yml": mutate });
+    assert.notStrictEqual(code, 0, "the named publisher syntax check must execute unconditionally in the default shell");
+    assert.match(out, /validation job must syntax-check/, "the failure must name the fail-closed syntax-check contract");
   }
 });
 
 test("validate-structure: release workflow must delegate to the package publisher with an explicit tag", () => {
-  const tree = copyRepoTree();
-  try {
-    const p = path.join(tree, ".github", "workflows", "release.yml");
-    fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace(
+  const { code, out } = runOverlay({
+    ".github/workflows/release.yml": (s) => s.replace(
       "run: npm run release:publish -- --tag \"$RELEASE_TAG\"",
-      "run: echo skipped-publisher"), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "commented-out publisher command must fail closed");
-    assert.match(out, /publish job must call/, "the failure must name the release delegation contract");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+      "run: echo skipped-publisher"),
+  });
+  assert.notStrictEqual(code, 0, "commented-out publisher command must fail closed");
+  assert.match(out, /publish job must call/, "the failure must name the release delegation contract");
 });
 
 test("validate-structure: package release script must delegate to the publisher in publish mode", () => {
-  const tree = copyRepoTree();
-  try {
-    const p = path.join(tree, "package.json");
-    const pkg = JSON.parse(fs.readFileSync(p, "utf8"));
-    pkg.scripts["release:publish"] = "node .github/scripts/publish-release.mjs --archive";
-    fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + "\n", "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "package release delegation drift must fail closed");
-    assert.match(out, /package\.json: release:publish/, "the failure must name the package release delegation contract");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({
+    "package.json": editJSON((pkg) => { pkg.scripts["release:publish"] = "node .github/scripts/publish-release.mjs --archive"; }),
+  });
+  assert.notStrictEqual(code, 0, "package release delegation drift must fail closed");
+  assert.match(out, /package\.json: release:publish/, "the failure must name the package release delegation contract");
 });
 
 test("validate-structure: a disabled duplicate cannot replace the named publish step", () => {
-  const tree = copyRepoTree();
-  try {
-    const p = path.join(tree, ".github", "workflows", "release.yml");
-    let workflow = fs.readFileSync(p, "utf8").replace(
+  const { code, out } = runOverlay({
+    ".github/workflows/release.yml": (s) => s.replace(
       "run: npm run release:publish -- --tag \"$RELEASE_TAG\"",
-      "run: echo skipped-publisher");
-    workflow = workflow.replace("\n  attest:\n", [
+      "run: echo skipped-publisher").replace("\n  attest:\n", [
       "",
       "      - name: Disabled duplicate publisher command",
       "        if: false",
@@ -413,12 +432,10 @@ test("validate-structure: a disabled duplicate cannot replace the named publish 
       "",
       "  attest:",
       "",
-    ].join("\n"));
-    fs.writeFileSync(p, workflow, "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "a disabled duplicate must not satisfy the named publish-step guard");
-    assert.match(out, /publish job must call/, "the failure must name the scoped release delegation contract");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+    ].join("\n")),
+  });
+  assert.notStrictEqual(code, 0, "a disabled duplicate must not satisfy the named publish-step guard");
+  assert.match(out, /publish job must call/, "the failure must name the scoped release delegation contract");
 });
 
 test("validate-structure: the publish job and named publisher step must be unconditional", () => {
@@ -447,26 +464,18 @@ test("validate-structure: the publish job and named publisher step must be uncon
       "  publish:\n",
       "  publish:\n    defaults:\n      run:\n        working-directory: tools/release-noop\n"),
   ]) {
-    const tree = copyRepoTree();
-    try {
-      const p = path.join(tree, ".github", "workflows", "release.yml");
-      fs.writeFileSync(p, mutate(fs.readFileSync(p, "utf8")), "utf8");
-      const { code, out } = runValidator(tree);
-      assert.notStrictEqual(code, 0, "a conditional publish job or named publisher step must fail closed");
-      assert.match(out, /publish job must call/, "the failure must name the unconditional release contract");
-    } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+    const { code, out } = runOverlay({ ".github/workflows/release.yml": mutate });
+    assert.notStrictEqual(code, 0, "a conditional publish job or named publisher step must fail closed");
+    assert.match(out, /publish job must call/, "the failure must name the unconditional release contract");
   }
 });
 
 test("validate-structure: NOT READY example must stay marked non-evidence", () => {
-  const tree = copyRepoTree();
-  try {
-    const p = path.join(tree, "examples", "not-ready-run.md");
-    fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("not counted as evidence", "evidence claim removed"), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "illustrative NOT READY example must not lose its non-evidence marker");
-    assert.match(out, /required provenance marker/, "the failure must name the provenance guard");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({
+    "examples/not-ready-run.md": (s) => s.replace("not counted as evidence", "evidence claim removed"),
+  });
+  assert.notStrictEqual(code, 0, "illustrative NOT READY example must not lose its non-evidence marker");
+  assert.match(out, /required provenance marker/, "the failure must name the provenance guard");
 });
 
 test("validate-structure: illustrative packet/report examples must keep their disclaimers", () => {
@@ -475,93 +484,59 @@ test("validate-structure: illustrative packet/report examples must keep their di
     ["examples/final-report-compact.md", "Values in angle brackets must be replaced"],
     ["examples/final-report-full.md", "not a historical run or evidence record"],
   ]) {
-    const tree = copyRepoTree();
-    try {
-      const p = path.join(tree, rel);
-      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace(marker, "claim removed"), "utf8");
-      const { code, out } = runValidator(tree);
-      assert.notStrictEqual(code, 0, `${rel} must not lose its illustrative/provenance marker`);
-      assert.match(out, /required provenance marker/, "the failure must name the provenance guard");
-    } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+    const { code, out } = runOverlay({ [rel]: (s) => s.replace(marker, "claim removed") });
+    assert.notStrictEqual(code, 0, `${rel} must not lose its illustrative/provenance marker`);
+    assert.match(out, /required provenance marker/, "the failure must name the provenance guard");
   }
 });
 
 test("validate-structure: a shipped forbidden artifact FAILS (distribution hygiene)", () => {
-  const tree = copyRepoTree();
-  try {
-    // A package.json inside the shipped plugin subdir is a dev artifact that must never ship.
-    fs.writeFileSync(path.join(tree, "cressetide", "package.json"), '{"name":"leak"}', "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "a runtime/dev artifact in the shipped tree must fail the build");
-    assert.match(out, /distribution hygiene/, "the failure must name the distribution-hygiene check");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  // A package.json inside the shipped plugin subdir is a dev artifact that must never ship.
+  const { code, out } = runOverlay({ "cressetide/package.json": '{"name":"leak"}' });
+  assert.notStrictEqual(code, 0, "a runtime/dev artifact in the shipped tree must fail the build");
+  assert.match(out, /distribution hygiene/, "the failure must name the distribution-hygiene check");
 });
 
 test("validate-structure: a missing CHANGELOG entry for the current version FAILS", () => {
-  const tree = copyRepoTree();
-  try {
-    const ver = JSON.parse(fs.readFileSync(path.join(tree, "cressetide", ".claude-plugin", "plugin.json"), "utf8")).version;
-    const cl = path.join(tree, "CHANGELOG.md");
-    // Mangle the heading for the current version so the "## [<version>]" check can't find it.
-    fs.writeFileSync(cl, fs.readFileSync(cl, "utf8").replace(`## [${ver}]`, "## [_removed_for_test_]"), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "a missing CHANGELOG entry for the manifest version must fail the build");
-    assert.match(out, /CHANGELOG\.md has no/, "the failure must name the missing CHANGELOG entry");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const ver = JSON.parse(base.file("cressetide/.claude-plugin/plugin.json").toString("utf8")).version;
+  // Mangle the heading for the current version so the "## [<version>]" check can't find it.
+  const { code, out } = runOverlay({ "CHANGELOG.md": (s) => s.replace(`## [${ver}]`, "## [_removed_for_test_]") });
+  assert.notStrictEqual(code, 0, "a missing CHANGELOG entry for the manifest version must fail the build");
+  assert.match(out, /CHANGELOG\.md has no/, "the failure must name the missing CHANGELOG entry");
 });
 
 test("validate-structure: a hook dropped from its event FAILS (wiring gate)", () => {
-  const tree = copyRepoTree();
-  try {
-    const hjPath = path.join(tree, "cressetide", "hooks", "hooks.json");
-    const hj = JSON.parse(fs.readFileSync(hjPath, "utf8"));
-    delete hj.hooks.Stop; // orchestration-check.js no longer wired to any event
-    fs.writeFileSync(hjPath, JSON.stringify(hj, null, 2), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "dropping a hook from its event must fail the build");
-    assert.match(out, /Stop does not wire orchestration-check\.js/, "the failure must name the unwired hook");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({
+    "cressetide/hooks/hooks.json": editJSON((hj) => { delete hj.hooks.Stop; }), // orchestration-check.js no longer wired to any event
+  });
+  assert.notStrictEqual(code, 0, "dropping a hook from its event must fail the build");
+  assert.match(out, /Stop does not wire orchestration-check\.js/, "the failure must name the unwired hook");
 });
 
 test("validate-structure: a PreToolUse matcher that stops covering a gated tool FAILS (wiring gate)", () => {
-  const tree = copyRepoTree();
-  try {
-    const hjPath = path.join(tree, "cressetide", "hooks", "hooks.json");
-    const hj = JSON.parse(fs.readFileSync(hjPath, "utf8"));
-    hj.hooks.PreToolUse[0].matcher = "Write|Edit"; // drops MultiEdit / NotebookEdit / Bash
-    fs.writeFileSync(hjPath, JSON.stringify(hj, null, 2), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "narrowing the matcher below the gated tools must fail the build");
-    assert.match(out, /PreToolUse matcher does not cover "Bash"/, "the failure must name the uncovered tool");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({
+    "cressetide/hooks/hooks.json": editJSON((hj) => { hj.hooks.PreToolUse[0].matcher = "Write|Edit"; }), // drops MultiEdit / NotebookEdit / Bash
+  });
+  assert.notStrictEqual(code, 0, "narrowing the matcher below the gated tools must fail the build");
+  assert.match(out, /PreToolUse matcher does not cover "Bash"/, "the failure must name the uncovered tool");
 });
 
 // --- The PowerShell wiring token is CI-locked (a regression to Bash-only must fail the build) ---
 
 test("validate-structure: a plan-gate.js matcher that drops PowerShell coverage FAILS", () => {
-  const tree = copyRepoTree();
-  try {
-    const hjPath = path.join(tree, "cressetide", "hooks", "hooks.json");
-    const hj = JSON.parse(fs.readFileSync(hjPath, "utf8"));
-    hj.hooks.PreToolUse[0].matcher = "Write|Edit|MultiEdit|NotebookEdit|Bash"; // plan-gate entry: PowerShell dropped
-    fs.writeFileSync(hjPath, JSON.stringify(hj, null, 2), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "narrowing the plan-gate matcher to drop PowerShell must fail the build");
-    assert.match(out, /PreToolUse matcher does not cover "PowerShell"/, "the failure must name the uncovered PowerShell token");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({
+    "cressetide/hooks/hooks.json": editJSON((hj) => { hj.hooks.PreToolUse[0].matcher = "Write|Edit|MultiEdit|NotebookEdit|Bash"; }), // plan-gate entry: PowerShell dropped
+  });
+  assert.notStrictEqual(code, 0, "narrowing the plan-gate matcher to drop PowerShell must fail the build");
+  assert.match(out, /PreToolUse matcher does not cover "PowerShell"/, "the failure must name the uncovered PowerShell token");
 });
 
 test("validate-structure: a destructive-guard.js matcher that drops PowerShell coverage FAILS", () => {
-  const tree = copyRepoTree();
-  try {
-    const hjPath = path.join(tree, "cressetide", "hooks", "hooks.json");
-    const hj = JSON.parse(fs.readFileSync(hjPath, "utf8"));
-    hj.hooks.PreToolUse[1].matcher = "Bash"; // destructive-guard entry: PowerShell dropped
-    fs.writeFileSync(hjPath, JSON.stringify(hj, null, 2), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "narrowing the destructive-guard matcher to drop PowerShell must fail the build");
-    assert.match(out, /PreToolUse matcher does not cover "PowerShell"/, "the failure must name the uncovered PowerShell token");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({
+    "cressetide/hooks/hooks.json": editJSON((hj) => { hj.hooks.PreToolUse[1].matcher = "Bash"; }), // destructive-guard entry: PowerShell dropped
+  });
+  assert.notStrictEqual(code, 0, "narrowing the destructive-guard matcher to drop PowerShell must fail the build");
+  assert.match(out, /PreToolUse matcher does not cover "PowerShell"/, "the failure must name the uncovered PowerShell token");
 });
 
 // --- Matcher coverage is bound to the hook's own entry (cross-entry merge gap) ---
@@ -571,32 +546,26 @@ test("validate-structure: a second event entry can no longer cover another hook'
   // existing, README-named hook and whose matcher DOES cover MultiEdit. Under the old merged `.some()`
   // logic the gate passed (some entry covered MultiEdit); the scoped check must now fail because
   // plan-gate's own entry does not cover it.
-  const tree = copyRepoTree();
-  try {
-    const hjPath = path.join(tree, "cressetide", "hooks", "hooks.json");
-    const hj = JSON.parse(fs.readFileSync(hjPath, "utf8"));
-    const pre = hj.hooks.PreToolUse;
-    pre[0].matcher = "Write|Edit|NotebookEdit|Bash"; // plan-gate entry: MultiEdit dropped
-    pre.push({ matcher: "MultiEdit", hooks: [{ type: "command", command: pre[0].hooks[0].command.replace("plan-gate.js", "load-failure-memory.js") }] });
-    fs.writeFileSync(hjPath, JSON.stringify(hj, null, 2), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "a different entry's matcher must not satisfy plan-gate's own coverage");
-    assert.match(out, /matcher does not cover "MultiEdit"/, "the failure must name the token plan-gate's own entry omits");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({
+    "cressetide/hooks/hooks.json": editJSON((hj) => {
+      const pre = hj.hooks.PreToolUse;
+      pre[0].matcher = "Write|Edit|NotebookEdit|Bash"; // plan-gate entry: MultiEdit dropped
+      pre.push({ matcher: "MultiEdit", hooks: [{ type: "command", command: pre[0].hooks[0].command.replace("plan-gate.js", "load-failure-memory.js") }] });
+    }),
+  });
+  assert.notStrictEqual(code, 0, "a different entry's matcher must not satisfy plan-gate's own coverage");
+  assert.match(out, /matcher does not cover "MultiEdit"/, "the failure must name the token plan-gate's own entry omits");
 });
 
 // --- Section 9 "garden" guards: one injected-defect negative test per check (a–e) ---
 
 test("validate-structure: garden 9a FAILS on an orphan reference file not mentioned in any SKILL.md or agent doc", () => {
-  const tree = copyRepoTree();
-  try {
-    // A reference file nothing links: no SKILL.md's Reference Loading list and no agent doc names it.
-    fs.writeFileSync(path.join(tree, "cressetide", "skills", "vigil", "references", "zz-orphan.md"),
-      "# Orphan reference\n\nDead weight the workflow can never load.\n", "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "an orphan reference must fail the build");
-    assert.match(out, /garden 9a: .*zz-orphan\.md is not mentioned by filename in any skills\/\*\/SKILL\.md or agents\/\*\.agent\.md/, "the failure must name the orphan reference");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  // A reference file nothing links: no SKILL.md's Reference Loading list and no agent doc names it.
+  const { code, out } = runOverlay({
+    "cressetide/skills/vigil/references/zz-orphan.md": "# Orphan reference\n\nDead weight the workflow can never load.\n",
+  });
+  assert.notStrictEqual(code, 0, "an orphan reference must fail the build");
+  assert.match(out, /garden 9a: .*zz-orphan\.md is not mentioned by filename in any skills\/\*\/SKILL\.md or agents\/\*\.agent\.md/, "the failure must name the orphan reference");
 });
 
 test("validate-structure: garden 9a does NOT flag vigil-map-overlay.md or navigator-map-overlay.md as orphans (global reachability, real repo tree)", () => {
@@ -605,217 +574,153 @@ test("validate-structure: garden 9a does NOT flag vigil-map-overlay.md or naviga
   // by vigil/SKILL.md, navigator-map-overlay.md only by agents/navigator.agent.md. A naive
   // per-skill-directory 9a would false-fail CI on this real, unmodified tree; this test is the guard
   // against that regression (the test that would have caught the risk this planning pass found).
-  const tree = copyRepoTree();
-  try {
-    const { code, out } = runValidator(tree);
-    assert.strictEqual(code, 0, `the widened garden 9a must not false-flag legitimate cross-skill/agent-referenced files: ${out}`);
-    assert.doesNotMatch(out, /garden 9a: .*vigil-map-overlay\.md/, "vigil-map-overlay.md is reachable via vigil/SKILL.md, not map/SKILL.md — must not be flagged");
-    assert.doesNotMatch(out, /garden 9a: .*navigator-map-overlay\.md/, "navigator-map-overlay.md is reachable via agents/navigator.agent.md, not map/SKILL.md — must not be flagged");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({});
+  assert.strictEqual(code, 0, `the widened garden 9a must not false-flag legitimate cross-skill/agent-referenced files: ${out}`);
+  assert.doesNotMatch(out, /garden 9a: .*vigil-map-overlay\.md/, "vigil-map-overlay.md is reachable via vigil/SKILL.md, not map/SKILL.md — must not be flagged");
+  assert.doesNotMatch(out, /garden 9a: .*navigator-map-overlay\.md/, "navigator-map-overlay.md is reachable via agents/navigator.agent.md, not map/SKILL.md — must not be flagged");
 });
 
 test("validate-structure: garden 9a FAILS on a genuine orphan in a non-vigil skill (proves coverage now extends beyond vigil/)", () => {
-  const tree = copyRepoTree();
-  try {
-    // doctor/ was never scanned by the old vigil-only 9a; a nothing-links orphan planted here must now
-    // fail too, proving the widened scan actually reaches doctor/map/salvage/ship, not just vigil/.
-    fs.writeFileSync(path.join(tree, "cressetide", "skills", "doctor", "references", "zz-doctor-orphan.md"),
-      "# Orphan reference\n\nDead weight the workflow can never load.\n", "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "an orphan reference in a non-vigil skill must fail the build");
-    assert.match(out, /garden 9a: .*zz-doctor-orphan\.md is not mentioned by filename in any skills\/\*\/SKILL\.md or agents\/\*\.agent\.md/, "the failure must name the orphan reference and prove doctor/ is now covered");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  // doctor/ was never scanned by the old vigil-only 9a; a nothing-links orphan planted here must now
+  // fail too, proving the widened scan actually reaches doctor/map/salvage/ship, not just vigil/.
+  const { code, out } = runOverlay({
+    "cressetide/skills/doctor/references/zz-doctor-orphan.md": "# Orphan reference\n\nDead weight the workflow can never load.\n",
+  });
+  assert.notStrictEqual(code, 0, "an orphan reference in a non-vigil skill must fail the build");
+  assert.match(out, /garden 9a: .*zz-doctor-orphan\.md is not mentioned by filename in any skills\/\*\/SKILL\.md or agents\/\*\.agent\.md/, "the failure must name the orphan reference and prove doctor/ is now covered");
 });
 
 test("validate-structure: garden 9b FAILS in both agent-parity directions (unlisted on disk / ghost in manifest)", () => {
   // Direction 1: an agent file on disk that plugin.json agents[] does not list (it would never load).
-  let tree = copyRepoTree();
-  try {
-    fs.writeFileSync(path.join(tree, "cressetide", "agents", "zz-unlisted.agent.md"),
-      "---\nname: zz-unlisted\ndescription: parity-test agent not wired in the manifest\n---\n\nBody.\n", "utf8");
-    const { code, out } = runValidator(tree);
+  {
+    const { code, out } = runOverlay({
+      "cressetide/agents/zz-unlisted.agent.md": "---\nname: zz-unlisted\ndescription: parity-test agent not wired in the manifest\n---\n\nBody.\n",
+    });
     assert.notStrictEqual(code, 0, "an on-disk agent missing from plugin.json agents[] must fail the build");
     assert.match(out, /garden 9b: .*zz-unlisted\.agent\.md exists on disk but is not listed in plugin\.json/, "the failure must name the unlisted agent");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  }
   // Direction 2: a plugin.json agents[] entry whose file does not exist on disk.
-  tree = copyRepoTree();
-  try {
-    const pj = path.join(tree, "cressetide", ".claude-plugin", "plugin.json");
-    const obj = JSON.parse(fs.readFileSync(pj, "utf8"));
-    obj.agents.push("./agents/ghost.agent.md");
-    fs.writeFileSync(pj, JSON.stringify(obj, null, 2), "utf8");
-    const { code, out } = runValidator(tree);
+  {
+    const { code, out } = runOverlay({
+      "cressetide/.claude-plugin/plugin.json": editJSON((obj) => { obj.agents.push("./agents/ghost.agent.md"); }),
+    });
     assert.notStrictEqual(code, 0, "a manifest agent entry with no file on disk must fail the build");
     assert.match(out, /garden 9b: plugin\.json agents\[\] lists ".\/agents\/ghost\.agent\.md" but .* does not exist on disk/, "the failure must name the ghost manifest entry");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  }
 });
 
 test("validate-structure: garden 9c FAILS when SKILL.md grows past the agreed size cap", () => {
-  const tree = copyRepoTree();
-  try {
-    // Size-independent overshoot: 64 KB of growth exceeds the cap from ANY
-    // plausible base size or future cap raise, so a later SKILL.md compression pass can't
-    // silently defuse this negative.
-    const skill = path.join(tree, "cressetide", "skills", "vigil", "SKILL.md");
-    fs.appendFileSync(skill, "\n" + "x".repeat(65536) + "\n", "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "SKILL.md growing past the cap must fail the build");
-    assert.match(out, /garden 9c: .*SKILL\.md is \d+ bytes and grew past the agreed cap \(30000\)/, "the failure must name the cap and the actual size");
-    assert.match(out, /consciously raise the cap/, "the failure must state the conscious-override path");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  // Size-independent overshoot: 64 KB of growth exceeds the cap from ANY
+  // plausible base size or future cap raise, so a later SKILL.md compression pass can't
+  // silently defuse this negative.
+  const { code, out } = runOverlay({ "cressetide/skills/vigil/SKILL.md": (s) => s + "\n" + "x".repeat(65536) + "\n" });
+  assert.notStrictEqual(code, 0, "SKILL.md growing past the cap must fail the build");
+  assert.match(out, /garden 9c: .*SKILL\.md is \d+ bytes and grew past the agreed cap \(30000\)/, "the failure must name the cap and the actual size");
+  assert.match(out, /consciously raise the cap/, "the failure must state the conscious-override path");
 });
 
 test("validate-structure: garden 9d FAILS on drift in each guarded copy cluster (dd regex / debug body / packet anchor)", () => {
-  for (const [mutate, expected] of [
+  for (const [edits, expected] of [
     // d1: one character of destructive-guard's dd-of= regex changes -> the documented
     // character-identical pair with plan-gate.js is broken.
-    [(tree) => {
-      const p = path.join(tree, "cressetide", "hooks", "destructive-guard.js");
-      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("NUL\\b))/i,", "NULL\\b))/i,"), "utf8");
-    }, /garden 9d: the dd-of= regex drifted between plan-gate\.js and destructive-guard\.js/],
+    [{ "cressetide/hooks/destructive-guard.js": (s) => s.replace("NUL\\b))/i,", "NULL\\b))/i,") },
+      /garden 9d: the dd-of= regex drifted between plan-gate\.js and destructive-guard\.js/],
     // d2: one hook's debug() body drifts from the other five documented copies.
-    [(tree) => {
-      const p = path.join(tree, "cressetide", "hooks", "compact-fidelity.js");
-      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("ctide-hook.log", "ctide-hook2.log"), "utf8");
-    }, /garden 9d: debug\(\) drifted between .*compact-fidelity\.js/],
+    [{ "cressetide/hooks/compact-fidelity.js": (s) => s.replace("ctide-hook.log", "ctide-hook2.log") },
+      /garden 9d: debug\(\) drifted between .*compact-fidelity\.js/],
     // d3 (§5k extension): a packet-block rule drops out of review-packet.md while
     // reviewer-common.md still has it — a one-sided drift.
-    [(tree) => {
-      const p = path.join(tree, "cressetide", "skills", "vigil", "references", "review-packet.md");
-      fs.writeFileSync(p, fs.readFileSync(p, "utf8").split("materially underspecified").join("XXX"), "utf8");
-    }, /rigor-contract guard: .*review-packet\.md no longer contains the anchor "materially underspecified"/],
+    [{ "cressetide/skills/vigil/references/review-packet.md": (s) => s.split("materially underspecified").join("XXX") },
+      /rigor-contract guard: .*review-packet\.md no longer contains the anchor "materially underspecified"/],
     // d4 (§5k extension): the scratch/temp-copy anchor drops out of review-packet.md while
     // reviewer-common.md still has it — a one-sided drift.
-    [(tree) => {
-      const p = path.join(tree, "cressetide", "skills", "vigil", "references", "review-packet.md");
-      fs.writeFileSync(p, fs.readFileSync(p, "utf8").split("scratch/temp copy").join("XXX"), "utf8");
-    }, /rigor-contract guard: .*review-packet\.md no longer contains the anchor "scratch\/temp copy"/],
+    [{ "cressetide/skills/vigil/references/review-packet.md": (s) => s.split("scratch/temp copy").join("XXX") },
+      /rigor-contract guard: .*review-packet\.md no longer contains the anchor "scratch\/temp copy"/],
     // d2 (stdin cluster): a hook loses its stdin-reader sync stamp
     // (stamps must not point at a guard that would let them silently rot).
-    [(tree) => {
-      const p = path.join(tree, "cressetide", "hooks", "orchestration-check.js");
-      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("stdin reader kept in sync with", "stdin reader formerly synced with"), "utf8");
-    }, /garden 9d: .*orchestration-check\.js lost the stdin-reader sync marker/],
+    [{ "cressetide/hooks/orchestration-check.js": (s) => s.replace("stdin reader kept in sync with", "stdin reader formerly synced with") },
+      /garden 9d: .*orchestration-check\.js lost the stdin-reader sync marker/],
   ]) {
-    const tree = copyRepoTree();
-    try {
-      mutate(tree);
-      const { code, out } = runValidator(tree);
-      assert.notStrictEqual(code, 0, `a drifted documented copy must fail the build (${expected})`);
-      assert.match(out, expected, "the failure must name the drifted pair/anchor");
-    } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+    const { code, out } = runOverlay(edits);
+    assert.notStrictEqual(code, 0, `a drifted documented copy must fail the build (${expected})`);
+    assert.match(out, expected, "the failure must name the drifted pair/anchor");
   }
 });
 
 test("validate-structure: garden 9d FAILS on drift in the map.mjs/ship.mjs mirrored skill constructs", () => {
-  for (const [mutate, expected] of [
+  for (const [edits, expected] of [
     // git(): a single-token change inside the function body (well within the extracted
     // `function git(` .. column-0 `}` range) breaks the documented byte-identical copy.
-    [(tree) => {
-      const p = path.join(tree, "cressetide", "skills", "ship", "scripts", "ship.mjs");
-      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("timeout: 10000,", "timeout: 10001,"), "utf8");
-    }, /garden 9d: git drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
+    [{ "cressetide/skills/ship/scripts/ship.mjs": (s) => s.replace("timeout: 10000,", "timeout: 10001,") },
+      /garden 9d: git drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
     // OPS_TRUST_TAG_ATTEMPT: a single-character change inside the const's own regex-literal line.
-    [(tree) => {
-      const p = path.join(tree, "cressetide", "skills", "map", "scripts", "map.mjs");
-      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("[^>]*-->/g", "[^>]+-->/g"), "utf8");
-    }, /garden 9d: OPS_TRUST_TAG_ATTEMPT drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
+    [{ "cressetide/skills/map/scripts/map.mjs": (s) => s.replace("[^>]*-->/g", "[^>]+-->/g") },
+      /garden 9d: OPS_TRUST_TAG_ATTEMPT drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
     // OPS_TRUST_TAG_WELLFORMED: a single-character change inside the const's own regex-literal line.
-    [(tree) => {
-      const p = path.join(tree, "cressetide", "skills", "ship", "scripts", "ship.mjs");
-      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("(\\S+)", "(\\S*)"), "utf8");
-    }, /garden 9d: OPS_TRUST_TAG_WELLFORMED drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
+    [{ "cressetide/skills/ship/scripts/ship.mjs": (s) => s.replace("(\\S+)", "(\\S*)") },
+      /garden 9d: OPS_TRUST_TAG_WELLFORMED drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
     // opsTrustTagIsWellFormed(): a single-token change inside the function body.
-    [(tree) => {
-      const p = path.join(tree, "cressetide", "skills", "map", "scripts", "map.mjs");
-      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace('tier === "unverified"', 'tier === "UNVERIFIED"'), "utf8");
-    }, /garden 9d: opsTrustTagIsWellFormed drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
+    [{ "cressetide/skills/map/scripts/map.mjs": (s) => s.replace('tier === "unverified"', 'tier === "UNVERIFIED"') },
+      /garden 9d: opsTrustTagIsWellFormed drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
     // isValidIsoDate(): a single-token change inside the function body.
-    [(tree) => {
-      const p = path.join(tree, "cressetide", "skills", "ship", "scripts", "ship.mjs");
-      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace('hourText || "00"', 'hourText || "01"'), "utf8");
-    }, /garden 9d: isValidIsoDate drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
+    [{ "cressetide/skills/ship/scripts/ship.mjs": (s) => s.replace('hourText || "00"', 'hourText || "01"') },
+      /garden 9d: isValidIsoDate drifted between cressetide\/skills\/map\/scripts\/map\.mjs and cressetide\/skills\/ship\/scripts\/ship\.mjs/],
     // Extraction-failure path: renaming git()'s signature in ONE file makes it unlocatable there,
     // exercising the "cannot extract" branch rather than the drift branch.
-    [(tree) => {
-      const p = path.join(tree, "cressetide", "skills", "map", "scripts", "map.mjs");
-      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("function git(", "function gitHelper("), "utf8");
-    }, /garden 9d: cannot extract git from cressetide\/skills\/map\/scripts\/map\.mjs — the construct moved or lost its expected shape/],
+    [{ "cressetide/skills/map/scripts/map.mjs": (s) => s.replace("function git(", "function gitHelper(") },
+      /garden 9d: cannot extract git from cressetide\/skills\/map\/scripts\/map\.mjs — the construct moved or lost its expected shape/],
   ]) {
-    const tree = copyRepoTree();
-    try {
-      mutate(tree);
-      const { code, out } = runValidator(tree);
-      assert.notStrictEqual(code, 0, `a drifted/unextractable map.mjs↔ship.mjs mirrored construct must fail the build (${expected})`);
-      assert.match(out, expected, "the failure must name the drifted or unextractable construct");
-    } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+    const { code, out } = runOverlay(edits);
+    assert.notStrictEqual(code, 0, `a drifted/unextractable map.mjs↔ship.mjs mirrored construct must fail the build (${expected})`);
+    assert.match(out, expected, "the failure must name the drifted or unextractable construct");
   }
 });
 
 test("validate-structure: garden 9d FAILS on drift/extraction/marker-loss in the isInvokedDirectly() entry-point cluster (11 CLI scripts)", () => {
-  for (const [mutate, expected] of [
+  for (const [edits, expected] of [
     // Single-site body drift: one forward-direction file's isInvokedDirectly() body diverges from
     // the rest of the 10-file forward cluster. doctor.mjs is first in the file list and stays
     // unmutated, so it is the reference body every other site is compared against.
-    [(tree) => {
-      const p = path.join(tree, "cressetide", "skills", "vigil", "scripts", "contract-check.mjs");
-      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("!process.argv[1]", "!process.argv[2]"), "utf8");
-    }, /garden 9d: isInvokedDirectly\(\) drifted between cressetide\/skills\/doctor\/scripts\/doctor\.mjs and cressetide\/skills\/vigil\/scripts\/contract-check\.mjs/],
+    [{ "cressetide/skills/vigil/scripts/contract-check.mjs": (s) => s.replace("!process.argv[1]", "!process.argv[2]") },
+      /garden 9d: isInvokedDirectly\(\) drifted between cressetide\/skills\/doctor\/scripts\/doctor\.mjs and cressetide\/skills\/vigil\/scripts\/contract-check\.mjs/],
     // Unextractable: renaming the function's declaration in ONE file makes it unlocatable there,
     // exercising the "cannot extract" branch rather than the drift branch.
-    [(tree) => {
-      const p = path.join(tree, "cressetide", "skills", "vigil", "scripts", "pack-review-diff.mjs");
-      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("function isInvokedDirectly(", "function isInvokedDirectlyRenamed("), "utf8");
-    }, /garden 9d: cannot extract isInvokedDirectly\(\) from cressetide\/skills\/vigil\/scripts\/pack-review-diff\.mjs — the function moved or lost its column-0 shape/],
+    [{ "cressetide/skills/vigil/scripts/pack-review-diff.mjs": (s) => s.replace("function isInvokedDirectly(", "function isInvokedDirectlyRenamed(") },
+      /garden 9d: cannot extract isInvokedDirectly\(\) from cressetide\/skills\/vigil\/scripts\/pack-review-diff\.mjs — the function moved or lost its column-0 shape/],
     // Missing stamp: the sync-comment line is deleted but the function body is left byte-identical,
     // so only the marker-presence check (not the byte-identity check) must fire.
-    [(tree) => {
-      const p = path.join(tree, "eval", "check-model-provenance.mjs");
-      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace(
-        "// isInvokedDirectly() kept in sync with the other 10 CLI entry points (documented copy — see garden hash guard)\n", ""
-      ), "utf8");
-    }, /garden 9d: eval\/check-model-provenance\.mjs lost the isInvokedDirectly\(\) sync marker/],
+    [{ "eval/check-model-provenance.mjs": (s) => s.replace(
+      "// isInvokedDirectly() kept in sync with the other 10 CLI entry points (documented copy — see garden hash guard)\n", "") },
+      /garden 9d: eval\/check-model-provenance\.mjs lost the isInvokedDirectly\(\) sync marker/],
     // The one forward site outside cressetide/ (the release CLI): drifting its body must be caught
     // exactly like any plugin-script site, proving the list's non-plugin member is registered too.
-    [(tree) => {
-      const p = path.join(tree, ".github", "scripts", "publish-release.mjs");
-      fs.writeFileSync(p, fs.readFileSync(p, "utf8").replace("!process.argv[1]", "!process.argv[2]"), "utf8");
-    }, /garden 9d: isInvokedDirectly\(\) drifted between cressetide\/skills\/doctor\/scripts\/doctor\.mjs and \.github\/scripts\/publish-release\.mjs/],
+    [{ ".github/scripts/publish-release.mjs": (s) => s.replace("!process.argv[1]", "!process.argv[2]") },
+      /garden 9d: isInvokedDirectly\(\) drifted between cressetide\/skills\/doctor\/scripts\/doctor\.mjs and \.github\/scripts\/publish-release\.mjs/],
   ]) {
-    const tree = copyRepoTree();
-    try {
-      mutate(tree);
-      const { code, out } = runValidator(tree);
-      assert.notStrictEqual(code, 0, `a drifted/unextractable/unmarked isInvokedDirectly() copy must fail the build (${expected})`);
-      assert.match(out, expected, "the failure must name the drifted, unextractable, or unmarked entry-point site");
-    } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+    const { code, out } = runOverlay(edits);
+    assert.notStrictEqual(code, 0, `a drifted/unextractable/unmarked isInvokedDirectly() copy must fail the build (${expected})`);
+    assert.match(out, expected, "the failure must name the drifted, unextractable, or unmarked entry-point site");
   }
 });
 
 test("validate-structure: garden 9e FAILS on a bare plugin-script invocation missing ${CLAUDE_PLUGIN_ROOT}", () => {
-  const tree = copyRepoTree();
-  try {
-    // Strip the plugin-root prefix from a shipped invocation.
-    const vg = path.join(tree, "cressetide", "skills", "vigil", "references", "verification-gate.md");
-    fs.writeFileSync(vg, fs.readFileSync(vg, "utf8").replace(
+  // Strip the plugin-root prefix from a shipped invocation.
+  const { code, out } = runOverlay({
+    "cressetide/skills/vigil/references/verification-gate.md": (s) => s.replace(
       "node ${CLAUDE_PLUGIN_ROOT}/skills/vigil/scripts/failure-retrieve.mjs",
-      "node skills/vigil/scripts/failure-retrieve.mjs"), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "a bare plugin-script invocation in a shipped .md must fail the build");
-    assert.match(out, /garden 9e: .*verification-gate\.md:\d+ invokes a plugin script without the plugin root/, "the failure must name the file:line and the fix");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+      "node skills/vigil/scripts/failure-retrieve.mjs"),
+  });
+  assert.notStrictEqual(code, 0, "a bare plugin-script invocation in a shipped .md must fail the build");
+  assert.match(out, /garden 9e: .*verification-gate\.md:\d+ invokes a plugin script without the plugin root/, "the failure must name the file:line and the fix");
 });
 
 test("validate-structure: garden 9e FAILS on a bare plugin-script invocation in a non-vigil skill's reference doc", () => {
-  const tree = copyRepoTree();
-  try {
-    // Prove the widened §9e coverage: the defect lands in doctor's own reference doc, not vigil's.
-    const dc = path.join(tree, "cressetide", "skills", "doctor", "references", "diagnostic-contract.md");
-    fs.appendFileSync(dc, "\nSee also: node skills/doctor/scripts/doctor.mjs --json\n", "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "a bare plugin-script invocation in a non-vigil reference doc must fail the build");
-    assert.match(out, /garden 9e: .*diagnostic-contract\.md:\d+ invokes a plugin script without the plugin root/, "the failure must name the file:line and the fix, proving doctor/ is now covered");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  // Prove the widened §9e coverage: the defect lands in doctor's own reference doc, not vigil's.
+  const { code, out } = runOverlay({
+    "cressetide/skills/doctor/references/diagnostic-contract.md": (s) => s + "\nSee also: node skills/doctor/scripts/doctor.mjs --json\n",
+  });
+  assert.notStrictEqual(code, 0, "a bare plugin-script invocation in a non-vigil reference doc must fail the build");
+  assert.match(out, /garden 9e: .*diagnostic-contract\.md:\d+ invokes a plugin script without the plugin root/, "the failure must name the file:line and the fix, proving doctor/ is now covered");
 });
 
 test("validate-structure: garden 9f FAILS when any operational-readiness trust-marker enumeration site drops a tier", () => {
@@ -878,17 +783,13 @@ test("validate-structure: garden 9f FAILS when any operational-readiness trust-m
       expected: /garden 9f: .*operational-readiness\.md.*anchor "how to flip it" matched 0 line\(s\), expected 1/ },
   ];
   for (const { file, find, repl, expected } of cases) {
-    const tree = copyRepoTree();
-    try {
-      const p = path.join(tree, ...file);
-      const before = fs.readFileSync(p, "utf8");
-      const after = before.replace(find, repl);
-      assert.notStrictEqual(after, before, `fixture drift: find-string no longer matches in ${file.join("/")} (${expected})`);
-      fs.writeFileSync(p, after, "utf8");
-      const { code, out } = runValidator(tree);
-      assert.notStrictEqual(code, 0, `dropping a trust-marker tier must fail the build (${expected})`);
-      assert.match(out, expected, "the failure must name the site and the missing tier");
-    } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+    const rel = file.join("/");
+    const before = base.file(rel).toString("utf8");
+    const after = before.replace(find, repl);
+    assert.notStrictEqual(after, before, `fixture drift: find-string no longer matches in ${file.join("/")} (${expected})`);
+    const { code, out } = runOverlay({ [rel]: after });
+    assert.notStrictEqual(code, 0, `dropping a trust-marker tier must fail the build (${expected})`);
+    assert.match(out, expected, "the failure must name the site and the missing tier");
   }
 });
 
@@ -896,61 +797,245 @@ test("validate-structure: garden 9f FAILS when any operational-readiness trust-m
 
 test("validate-structure: 6b FAILS when .gitignore loses the /.ctide/ line", () => {
   // Discriminating: without the 6b check the validator passes this tree (nothing else reads .gitignore).
-  const tree = copyRepoTree();
-  try {
-    const gi = path.join(tree, ".gitignore");
-    fs.writeFileSync(gi, fs.readFileSync(gi, "utf8").split(/\r?\n/).filter((l) => l.trim() !== "/.ctide/").join("\n"), "utf8");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "dropping the /.ctide/ gitignore line must fail the build");
-    assert.match(out, /.ctide hygiene: \.gitignore has no "\/.ctide\/" line/, "the failure must name the missing gitignore line");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({
+    ".gitignore": (s) => s.split(/\r?\n/).filter((l) => l.trim() !== "/.ctide/").join("\n"),
+  });
+  assert.notStrictEqual(code, 0, "dropping the /.ctide/ gitignore line must fail the build");
+  assert.match(out, /.ctide hygiene: \.gitignore has no "\/.ctide\/" line/, "the failure must name the missing gitignore line");
 });
 
 test("validate-structure: 6b FAILS when the .gitignore FILE itself is missing", () => {
   // Sibling branch to the line-drop negative above: a tree with no .gitignore at all must hit 6b's
   // file-missing arm (not silently pass), since without the file the /.ctide/ line cannot exist either.
-  const tree = copyRepoTree();
-  try {
-    fs.rmSync(path.join(tree, ".gitignore"), { force: true });
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "a tree with no .gitignore must fail the build");
-    assert.match(out, /.ctide hygiene: \.gitignore is missing/, "the failure must name the missing .gitignore file");
-  } finally { fs.rmSync(tree, { recursive: true, force: true }); }
+  const { code, out } = runOverlay({ ".gitignore": null });
+  assert.notStrictEqual(code, 0, "a tree with no .gitignore must fail the build");
+  assert.match(out, /.ctide hygiene: \.gitignore is missing/, "the failure must name the missing .gitignore file");
 });
 
-test("validate-structure: 6b FAILS on tracked content under .ctide/ (git-index guard), naming the path", (t) => {
-  // The temp copy is not a git work tree (the guard skips silently there — that is the fail-open half),
-  // so make it one: git init + stage a planted runtime file, then the ls-files guard must bite.
-  const tree = copyRepoTree();
-  try {
-    const init = cp.spawnSync("git", ["init", "-q"], { cwd: tree, encoding: "utf8" });
-    if (init.error || init.status !== 0) return t.skip("git unavailable here: cannot exercise the ls-files guard");
-    fs.mkdirSync(path.join(tree, ".ctide", "memory"), { recursive: true });
-    fs.writeFileSync(path.join(tree, ".ctide", "memory", "FAILURE_MEMORY.md"), "# leaked runtime output\n", "utf8");
-    const add = cp.spawnSync("git", ["add", "-f", ".ctide/memory/FAILURE_MEMORY.md"], { cwd: tree, encoding: "utf8" });
-    if (add.error || add.status !== 0) return t.skip("git add failed here: cannot stage the planted leak");
-    const { code, out } = runValidator(tree);
-    assert.notStrictEqual(code, 0, "a tracked .ctide/ path must fail the build");
-    assert.match(out, /.ctide hygiene: tracked path\(s\) under .ctide\//, "the failure must name the tracked-content guard");
-    assert.match(out, /.ctide\/memory\/FAILURE_MEMORY\.md/, "the failure must name the offending path");
-  } finally {
-    // .git object files are read-only on Windows; never let cleanup failure mask the verdict.
-    try { fs.rmSync(tree, { recursive: true, force: true, maxRetries: 3 }); } catch (e) {}
-  }
+test("validate-structure: 6b FAILS on tracked content under .ctide/ (git-index guard), naming the path", () => {
+  // A planted runtime file that git reports as tracked (the index view): the guard must bite.
+  const { code, out } = runOverlay(
+    { ".ctide/memory/FAILURE_MEMORY.md": "# leaked runtime output\n" },
+    { tracked: [".ctide/memory/FAILURE_MEMORY.md"] },
+  );
+  assert.notStrictEqual(code, 0, "a tracked .ctide/ path must fail the build");
+  assert.match(out, /.ctide hygiene: tracked path\(s\) under .ctide\//, "the failure must name the tracked-content guard");
+  assert.match(out, /.ctide\/memory\/FAILURE_MEMORY\.md/, "the failure must name the offending path");
 });
 
-test("validate-structure: 6b control — an UNTRACKED .ctide/ tree in a git work tree still passes", (t) => {
+test("validate-structure: 6b control — an UNTRACKED .ctide/ tree in a git work tree still passes", () => {
   // The guard forbids TRACKED content only; a normal dogfood run's untracked .ctide/ output (plus the
   // /.ctide/ gitignore line) is the sanctioned state and must stay green.
-  const tree = copyRepoTree();
-  try {
-    const init = cp.spawnSync("git", ["init", "-q"], { cwd: tree, encoding: "utf8" });
-    if (init.error || init.status !== 0) return t.skip("git unavailable here: cannot exercise the ls-files guard");
-    fs.mkdirSync(path.join(tree, ".ctide", "output"), { recursive: true });
-    fs.writeFileSync(path.join(tree, ".ctide", "output", "contract.md"), "# run scratch\n", "utf8");
-    const { code, out } = runValidator(tree);
-    assert.strictEqual(code, 0, "untracked .ctide/ content must not fail the build: " + out);
-  } finally {
-    try { fs.rmSync(tree, { recursive: true, force: true, maxRetries: 3 }); } catch (e) {}
+  assert.deepStrictEqual(
+    check({ ".ctide/output/contract.md": "# run scratch\n" }, { ignored: [".ctide/output/contract.md"] }),
+    [],
+    "untracked .ctide/ content must not fail the build",
+  );
+});
+
+test("validate-structure: 6b FAILS CLOSED on a present .ctide/ when the tree is not a git work tree (files: null)", () => {
+  // Without git's file lists the tracked state of .ctide/ cannot be verified, so its mere presence fails.
+  const { read } = overlay({ ".ctide/output/contract.md": "# run scratch\n" });
+  const out = validate({ root, read, files: null }).join("\n");
+  assert.match(out, /\.ctide hygiene: runtime \.ctide state is present outside a verifiable Git checkout/, "the failure must name the unverifiable tracked-state guard");
+});
+
+test("validate-structure: without git file lists the scans walk the reader (fallback still catches a planted U+FFFD)", () => {
+  const { read } = overlay({ "docs/zz-fallback.md": "mojibake " + String.fromCharCode(0xFFFD) + " here\n" });
+  const out = validate({ root, read, files: null }).join("\n");
+  assert.match(out, /text integrity: docs\/zz-fallback\.md contains suspicious mojibake marker U\+FFFD/, "the fallback walk must still reach every file");
+});
+
+test("validate-structure: scratch-file and text-integrity scans cover tracked + untracked-not-ignored files only", () => {
+  // Untracked but not ignored: `git add -A` would commit it, so it is in scope.
+  const { code, out } = runOverlay({ "docs/_scratch-notes.md": "notes\n" });
+  assert.notStrictEqual(code, 0, "an untracked, not-ignored scratch file must fail the build");
+  assert.match(out, /scratch\/process file should not be committed: docs\/_scratch-notes\.md/, "the failure must name the scratch-file check and the file");
+  // Ignored local output (run logs, scratch, a mojibake capture) is out of scope for both scans.
+  const ignored = ["docs/_ignored-notes.md", "zz-run.log", "docs/zz-ignored-capture.md"];
+  assert.deepStrictEqual(check({
+    "docs/_ignored-notes.md": "notes\n",
+    "zz-run.log": "log\n",
+    "docs/zz-ignored-capture.md": "mojibake " + String.fromCharCode(0xFFFD) + " here\n",
+  }, { ignored }), [], "git-ignored files must not be scanned");
+});
+
+test("validate-structure: an unparsable or missing manifest FAILS naming the file (merged JSON guard)", () => {
+  for (const [edits, expected] of [
+    [{ "cressetide/.claude-plugin/plugin.json": "{ not json" }, /invalid JSON in cressetide\/\.claude-plugin\/plugin\.json/],
+    [{ "cressetide/hooks/hooks.json": "{ not json" }, /invalid JSON in cressetide\/hooks\/hooks\.json/],
+    [{ "package.json": null }, /missing file: package\.json/],
+    // A deleted hooks.json leaves nothing registered, so the exact registration inventory fails closed.
+    [{ "cressetide/hooks/hooks.json": null }, /hook registration inventory or event mapping mismatch/],
+  ]) {
+    const { code, out } = runOverlay(edits);
+    assert.notStrictEqual(code, 0, `a broken manifest must fail the build (${expected})`);
+    assert.match(out, expected, "the failure must name the manifest");
   }
+});
+
+test("validate-structure: a missing file that a check reads FAILS with a message instead of crashing the validator", () => {
+  // Each of these reads used to be unguarded (core §5i read an absent example right after reporting it;
+  // the extension validator read README/SKILL/CHANGELOG files unconditionally) and threw instead.
+  for (const [edits, expected] of [
+    [{ "examples/ready-run.md": null }, /examples\/ready-run\.md: missing example file/],
+    [{ "README.ja.md": null }, /README\.ja\.md: not found, so its Cressetide public tokens cannot be checked/],
+    [{ "cressetide/skills/vigil/SKILL.md": null }, /missing skill vigil[\s\S]*Vigil subagent roster mismatch/],
+    [{ "CHANGELOG.md": null }, /missing CHANGELOG\.md[\s\S]*CHANGELOG must remain Unreleased/],
+  ]) {
+    const { code, out } = runOverlay(edits);
+    assert.notStrictEqual(code, 0, `a missing file must fail the build (${expected})`);
+    assert.match(out, expected, "the failure must name the missing file's check");
+  }
+});
+
+// --- Cressetide identity and inventory guards (formerly the separate extension validator, whose checks
+// never had a working negative case: the old CLI test harness ran them against the real repo, not the copy) ---
+
+test("validate-structure: Cressetide identity check FAILS when plugin.json displayName drifts", () => {
+  const { code, out } = runOverlay({
+    "cressetide/.claude-plugin/plugin.json": editJSON((obj) => { obj.displayName = "Not Cressetide"; }),
+  });
+  assert.notStrictEqual(code, 0, "an identity drift must fail the build");
+  assert.match(out, /Cressetide package\/plugin identity mismatch/, "the failure must name the identity check");
+});
+
+test("validate-structure: Cressetide agent inventory FAILS on an extra agent file and on a drifted manifest agents[]", () => {
+  {
+    const { code, out } = runOverlay({
+      "cressetide/agents/zz-extra.agent.md": "---\nname: zz-extra\ndescription: inventory-test agent\n---\n\nBody.\n",
+      "cressetide/.claude-plugin/plugin.json": editJSON((obj) => { obj.agents.push("./agents/zz-extra.agent.md"); }),
+    });
+    assert.notStrictEqual(code, 0, "an agent outside the exact inventory must fail the build");
+    assert.match(out, /Cressetide agent file inventory mismatch/, "the failure must name the agent file inventory check");
+  }
+  {
+    // A duplicated manifest entry: every file still exists and is listed (9b stays green), only the
+    // exact agents[] inventory can catch it.
+    const { code, out } = runOverlay({
+      "cressetide/.claude-plugin/plugin.json": editJSON((obj) => { obj.agents.push("./agents/navigator.agent.md"); }),
+    });
+    assert.notStrictEqual(code, 0, "a manifest agents[] that drifts from the inventory must fail the build");
+    assert.match(out, /Cressetide plugin agents\[\] mismatch/, "the failure must name the manifest agents[] check");
+  }
+});
+
+test("validate-structure: Cressetide agents/ inventory FAILS on an entry that is not an .agent.md file", () => {
+  const { code, out } = runOverlay({
+    "cressetide/agents/notes.md": "---\nname: notes\ndescription: not an agent definition\n---\n\nBody.\n",
+  });
+  assert.notStrictEqual(code, 0, "a non-.agent.md entry in agents/ must fail the build");
+  assert.match(out, /Cressetide agents\/ entry is not an \.agent\.md file: cressetide\/agents\/notes\.md/, "the failure must name the offending entry");
+});
+
+test("validate-structure: Cressetide skill inventory FAILS on an extra skill, a missing SKILL.md, and a frontmatter name drift", () => {
+  for (const [edits, expected] of [
+    [{ "cressetide/skills/zz-extra/SKILL.md": "---\nname: zz-extra\ndescription: inventory-test skill\n---\n\nBody.\n" },
+      /public skill inventory mismatch/],
+    [{ "cressetide/skills/salvage/SKILL.md": null },
+      /missing skill salvage/],
+    [{ "cressetide/skills/doctor/SKILL.md": (s) => s.replace("name: doctor\n", "name: doctor-renamed\n") },
+      /doctor frontmatter mismatch/],
+  ]) {
+    const { code, out } = runOverlay(edits);
+    assert.notStrictEqual(code, 0, `a public skill inventory drift must fail the build (${expected})`);
+    assert.match(out, expected, "the failure must name the skill inventory check");
+  }
+});
+
+test("validate-structure: Cressetide manual-only skills FAIL when they lose disable-model-invocation or user-invocable", () => {
+  for (const [edits, expected] of [
+    [{ "cressetide/skills/doctor/SKILL.md": (s) => s.replace("disable-model-invocation: true", "disable-model-invocation: false") },
+      /doctor must remain manual-only/],
+    [{ "cressetide/skills/ship/SKILL.md": (s) => s.replace("user-invocable: true", "user-invocable: false") },
+      /ship must remain user-invocable/],
+  ]) {
+    const { code, out } = runOverlay(edits);
+    assert.notStrictEqual(code, 0, `a manual-only skill flag drift must fail the build (${expected})`);
+    assert.match(out, expected, "the failure must name the manual-only flag check");
+  }
+});
+
+test("validate-structure: Vigil subagent roster FAILS when the roster sentence drops an agent", () => {
+  const { code, out } = runOverlay({
+    "cressetide/skills/vigil/SKILL.md": (s) => s.replace(", `arbiter`, `cartographer`)", ", `arbiter`)"),
+  });
+  assert.notStrictEqual(code, 0, "a roster that drops an agent must fail the build");
+  assert.match(out, /Vigil subagent roster mismatch/, "the failure must name the roster check");
+});
+
+test("validate-structure: hook registration inventory FAILS when a matcher drifts, even to a broader one the wiring gate accepts", () => {
+  const { code, out } = runOverlay({
+    "cressetide/hooks/hooks.json": editJSON((hj) => { hj.hooks.SessionStart[1].matcher = "compact|clear"; }), // compact-fidelity entry
+  });
+  assert.notStrictEqual(code, 0, "a hook registration outside the exact inventory must fail the build");
+  assert.match(out, /hook registration inventory or event mapping mismatch/, "the failure must name the hook registration inventory");
+});
+
+test("validate-structure: hook script inventory FAILS on an unregistered hook script", () => {
+  const { code, out } = runOverlay({ "cressetide/hooks/zz-extra.js": "\"use strict\";\n" });
+  assert.notStrictEqual(code, 0, "a hook script outside the exact inventory must fail the build");
+  assert.match(out, /hook script inventory mismatch/, "the failure must name the hook script inventory");
+});
+
+test("validate-structure: hook syntax check FAILS on an overlaid hook with a syntax error", () => {
+  // The overlaid content (not the file on disk) is what gets syntax-checked.
+  const { code, out } = runOverlay({ "cressetide/hooks/compact-fidelity.js": (s) => s + "\nconst = ;\n" });
+  assert.notStrictEqual(code, 0, "a hook that does not parse must fail the build");
+  assert.match(out, /hook syntax check failed: compact-fidelity\.js/, "the failure must name the hook syntax check and the hook");
+});
+
+test("validate-structure: text-integrity check FAILS on invalid UTF-8, a NUL byte, and a marker in an extension-only file type", () => {
+  for (const [edits, expected] of [
+    [{ "docs/zz-invalid.md": Buffer.from([0x23, 0x20, 0xC3, 0x28, 0x0A]) },
+      /text integrity: docs\/zz-invalid\.md is not valid UTF-8/],
+    [{ "typos.toml": (s) => s + "\n# nul \u0000 byte\n" },
+      /text integrity: typos\.toml contains a NUL byte/],
+    [{ ".gitignore": (s) => s + "\n# marker " + String.fromCodePoint(0x5689) + "\n" },
+      /text integrity: \.gitignore contains suspicious mojibake marker U\+5689/],
+  ]) {
+    const { code, out } = runOverlay(edits);
+    assert.notStrictEqual(code, 0, `a text-integrity violation must fail the build (${expected})`);
+    assert.match(out, expected, "the failure must name the text-integrity check and the file");
+  }
+});
+
+test("validate-structure: Cressetide environment-variable inventory FAILS on an undeclared CTIDE_ variable", () => {
+  const { code, out } = runOverlay({
+    "cressetide/skills/vigil/scripts/zz-env.mjs": "export const value = process.env.CTIDE_ZZ_UNDECLARED;\n",
+  });
+  assert.notStrictEqual(code, 0, "an undeclared CTIDE_ variable must fail the build");
+  assert.match(out, /supported Cressetide environment-variable inventory mismatch/, "the failure must name the env-var inventory check");
+});
+
+test("validate-structure: public command inventory FAILS on an undeclared /ctide: command and on a missing command reference", () => {
+  for (const [edits, expected] of [
+    [{ "docs/command-reference.md": (s) => s + "\n## `/ctide:zz-extra`\n" },
+      /public command inventory mismatch/],
+    [{ "docs/command-reference.md": null },
+      /public command inventory: docs\/command-reference\.md not found/],
+  ]) {
+    const { code, out } = runOverlay(edits);
+    assert.notStrictEqual(code, 0, `a public command inventory drift must fail the build (${expected})`);
+    assert.match(out, expected, "the failure must name the public command inventory check");
+  }
+});
+
+test("validate-structure: README public tokens FAIL when a README drops ctide@kktu or .ctide/", () => {
+  for (const [edits, expected] of [
+    [{ "README.zh-TW.md": (s) => s.split("ctide@kktu").join("ctide@elsewhere") },
+      /README\.zh-TW\.md: missing Cressetide public token ctide@kktu/],
+    [{ "README.ja.md": (s) => s.split(".ctide/").join(".runtime/") },
+      /README\.ja\.md: missing Cressetide public token \.ctide\//],
+  ]) {
+    const { code, out } = runOverlay(edits);
+    assert.notStrictEqual(code, 0, `a README that drops a public token must fail the build (${expected})`);
+    assert.match(out, expected, "the failure must name the README token check, the README, and the token");
+  }
+});
+
+test("validate-structure: CHANGELOG FAILS when it loses its ## [Unreleased] section", () => {
+  const { code, out } = runOverlay({ "CHANGELOG.md": (s) => s.replace("## [Unreleased]", "## [Pending]") });
+  assert.notStrictEqual(code, 0, "a CHANGELOG without ## [Unreleased] must fail the build");
+  assert.match(out, /CHANGELOG must remain Unreleased/, "the failure must name the Unreleased check");
 });

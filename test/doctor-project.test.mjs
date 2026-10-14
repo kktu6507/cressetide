@@ -9,12 +9,11 @@ import cp from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test, { before, after } from "node:test";
+import { before, after } from "node:test";
 import { diagnose, summarizeMemoryHealth, KNOWN_FLAGS } from "../cressetide/skills/doctor/scripts/doctor.mjs";
 import { consolidationReport, tagRecurrenceCandidates } from "../cressetide/skills/vigil/scripts/failure-consolidate.mjs";
 import { parseEntries, defaultLedgerPath } from "../cressetide/skills/vigil/scripts/failure-retrieve.mjs";
-import { root, temporary, write } from "./helpers.mjs";
-import { isolatedHome } from "./support.mjs";
+import { isolatedHome, root, tempDir, test, write } from "./helpers.mjs";
 
 const pluginRoot = path.join(root, "cressetide");
 const doctorScript = path.join(pluginRoot, "skills", "doctor", "scripts", "doctor.mjs");
@@ -85,15 +84,10 @@ before(() => {
 });
 
 after(() => {
-  // Env restoration happens first, on these two lines, before the cleanup rmSync below is even attempted --
-  // so wrapping only that rmSync in try/catch cannot mask a failure to restore the real HOME/USERPROFILE.
+  // The isolated home itself is a tempDir() made outside any test body, so helpers.mjs removes it when
+  // this file's tests end; only the env restoration lives here.
   if (previousHomeEnv === undefined) delete process.env.HOME; else process.env.HOME = previousHomeEnv;
   if (previousUserProfileEnv === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousUserProfileEnv;
-  // try/catch matches the sibling convention in test/plan-gate-guards.test.mjs and
-  // test/session-memory-hooks.test.mjs: a transient Windows file lock, or isolatedHomeDir being left
-  // undefined (if isolatedHome() itself threw inside before()), would otherwise throw here and fail this
-  // whole file at the hook level even though env restoration already succeeded above.
-  try { fs.rmSync(isolatedHomeDir, { recursive: true, force: true }); } catch (e) {}
 });
 
 // Structural proof, not a grep: round 3's own "grep for homedir/node:os, no matches outside comments"
@@ -180,7 +174,7 @@ test("--project with nothing under cwd (no .ctide/ at all, and no global FAILURE
   // No per-call isolation wrapper needed here: the file-scope before()/after() hook above already isolates
   // HOME/USERPROFILE for every test in this file, and this test never seeds anything into that shared
   // isolated home -- it only needs the isolation to already be in effect (which it structurally is).
-  const dir = temporary("ctide-doctor-empty-");
+  const dir = tempDir("ctide-doctor-empty-");
   const report = await diagnose(pluginRoot, { project: true, cwd: dir });
   assert.deepStrictEqual(
     report.checks.filter((c) => BASELINE_CHECK_NAMES.includes(c.name)).map((c) => c.name),
@@ -224,7 +218,7 @@ test("--project --cwd <genuinely empty dir> reports failure-memory-health: unver
   fs.writeFileSync(path.join(globalDir, "FAILURE_MEMORY.md"),
     "# FM\n\n### 2026-06-01 — REAL-GLOBAL-SCOPE-LEAK-CANARY\n- **Prevention rule**: r.\n- **Tags**: x.\n", "utf8");
   try {
-    const dir = temporary("ctide-doctor-isolatedglobal-empty-");
+    const dir = tempDir("ctide-doctor-isolatedglobal-empty-");
     const report = await diagnose(pluginRoot, { project: true, cwd: dir });
     const memory = report.checks.find((c) => c.name === "failure-memory-health");
     assert.strictEqual(memory?.status, "unverified",
@@ -238,7 +232,7 @@ test("--project --cwd <genuinely empty dir> reports failure-memory-health: unver
 });
 
 test("--project with neither --cwd nor CLAUDE_PROJECT_DIR set falls back to process.cwd() (the child process's own working directory) without erroring", () => {
-  const dir = temporary("ctide-doctor-cwd-fallback-");
+  const dir = tempDir("ctide-doctor-cwd-fallback-");
   writeIncident(dir, "INCIDENT-20260601-cwdfallbackcanary.md", "# INCIDENT-20260601-cwdfallbackcanary\n\n- Status: open\n");
   const env = { ...process.env };
   delete env.CLAUDE_PROJECT_DIR;
@@ -251,7 +245,7 @@ test("--project with neither --cwd nor CLAUDE_PROJECT_DIR set falls back to proc
 });
 
 test("--project with a .ctide/incidents/ path that is a FILE, not a directory, degrades to unverified rather than crashing", async () => {
-  const dir = temporary("ctide-doctor-incidents-not-dir-");
+  const dir = tempDir("ctide-doctor-incidents-not-dir-");
   fs.mkdirSync(path.join(dir, ".ctide"), { recursive: true });
   fs.writeFileSync(path.join(dir, ".ctide", "incidents"), "not a directory", "utf8");
   const report = await diagnose(pluginRoot, { project: true, cwd: dir });
@@ -286,7 +280,7 @@ function mkMemoryProject(dir, memory, ledgerLines) {
 }
 
 test("--project against a FAILURE_MEMORY.md with a real expire candidate, a real tag-recurrence pair, and a retired entry reports pass with a detail line built from failure-consolidate.mjs's OWN consolidationReport()/tagRecurrenceCandidates() output", async () => {
-  const dir = temporary("ctide-doctor-memfixture-");
+  const dir = tempDir("ctide-doctor-memfixture-");
   // Seeds >=60d of ledger history (consolidationReport's own sufficientHistory gate) with zero hits for
   // the old entry, so it becomes a real expire candidate; the fresh entry is too young (5d old) to
   // qualify regardless of hits.
@@ -326,7 +320,7 @@ test("--project against a FAILURE_MEMORY.md with a real expire candidate, a real
 // retired entries" phrase at N>=2 -- the literal originally-reported symptom -- rather than just the bare,
 // non-composed "N entries" total-count phrase already covered elsewhere.
 test("--project against a FAILURE_MEMORY.md with TWO retired entries states the composed 'N retired entries' phrase correctly (N>=2 plural, not the naive '2 retired entrys')", async () => {
-  const dir = temporary("ctide-doctor-tworetired-");
+  const dir = tempDir("ctide-doctor-tworetired-");
   mkMemoryProject(dir, `# FM
 
 ### 2026-06-25 — first retired lesson (expired)
@@ -345,7 +339,7 @@ test("--project against a FAILURE_MEMORY.md with TWO retired entries states the 
 });
 
 test("--project against a FAILURE_MEMORY.md that parses to zero entries reports pass with the zero-entry count stated explicitly, never a bare 'clean'", async () => {
-  const dir = temporary("ctide-doctor-memempty-");
+  const dir = tempDir("ctide-doctor-memempty-");
   mkMemoryProject(dir, "# FM\n\nno entries here, just prose.\n");
   const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: NOW });
   const check = report.checks.find((c) => c.name === "failure-memory-health");
@@ -360,7 +354,7 @@ test("--project against a FAILURE_MEMORY.md that parses to zero entries reports 
 // with no .ctide/memory/ present at all (so a pass here cannot be explained by silently falling through to
 // the first tier instead).
 test("--project resolves and reports on the SECOND project-local tier (legacy ai/FAILURE_MEMORY.md) when no .ctide/memory/ file is present", async () => {
-  const dir = temporary("ctide-doctor-legacy-ai-tier-");
+  const dir = tempDir("ctide-doctor-legacy-ai-tier-");
   write(path.join(dir, "ai", "FAILURE_MEMORY.md"), "# FM\n\n### 2026-06-20 — solo legacy-tier entry\n- **Prevention rule**: r.\n- **Tags**: solo.\n");
   assert.strictEqual(fs.existsSync(path.join(dir, ".ctide", "memory", "FAILURE_MEMORY.md")), false,
     "fixture sanity: no first-tier file exists, so a pass here can only come from the second tier");
@@ -376,7 +370,7 @@ test("--project resolves and reports on the SECOND project-local tier (legacy ai
 // precedent established in test/plan-gate-guards.test.mjs and test/session-memory-hooks.test.mjs.
 test("--project against a FAILURE_MEMORY.md found but unreadable (permissions) reports fail with the read error named, distinct from the 0-entries case", async (t) => {
   if (process.platform === "win32") return t.skip("POSIX permission bits do not apply on win32");
-  const dir = temporary("ctide-doctor-memory-permdenied-");
+  const dir = tempDir("ctide-doctor-memory-permdenied-");
   const memFile = mkMemoryProject(dir, "# FM\n\n### 2026-06-20 — unreadable entry\n- **Prevention rule**: r.\n- **Tags**: x.\n");
   fs.chmodSync(memFile, 0o000);
   try {
@@ -399,7 +393,7 @@ test("--project against a FAILURE_MEMORY.md found but unreadable (permissions) r
 // --- item (c) + (d): mixed open/mitigated/closed/unknown-status incident journals ------------------------
 
 test("--project against a mix of open/mitigated/closed/missing-Status journals produces one incident:<slug> entry per NON-closed journal (correct age-in-days, correct case naming), and the closed journal produces no entry of its own", async () => {
-  const dir = temporary("ctide-doctor-incidents-mixed-");
+  const dir = tempDir("ctide-doctor-incidents-mixed-");
   writeIncident(dir, "INCIDENT-20260601-open-one.md", "# INCIDENT-20260601-open-one\n\n- Status: open\n- Severity: SEV2\n");
   writeIncident(dir, "INCIDENT-20260701-mitigated-one.md", "# INCIDENT-20260701-mitigated-one\n\n- Status: mitigated\n- Severity: SEV3\n");
   writeIncident(dir, "INCIDENT-20260101-closed-one.md", "# INCIDENT-20260101-closed-one\n\n- Status: closed\n- Severity: SEV3\n");
@@ -427,7 +421,7 @@ test("--project against a mix of open/mitigated/closed/missing-Status journals p
 });
 
 test("--project against an unparseable Status: value (present but not open/mitigated/closed) is reported as unknown, never guessed toward open or closed", async () => {
-  const dir = temporary("ctide-doctor-incidents-unparseable-");
+  const dir = tempDir("ctide-doctor-incidents-unparseable-");
   writeIncident(dir, "INCIDENT-20260601-garbled.md", "# INCIDENT-20260601-garbled\n\n- Status: open | mitigated | closed\n");
   const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: Date.UTC(2026, 6, 23) });
   const check = report.checks.find((c) => c.name === "incident:garbled");
@@ -436,7 +430,7 @@ test("--project against an unparseable Status: value (present but not open/mitig
 });
 
 test("--project against all-closed incident journals collapses to a single incident-journals: pass, 0 open summary instead of per-item noise", async () => {
-  const dir = temporary("ctide-doctor-incidents-allclosed-");
+  const dir = tempDir("ctide-doctor-incidents-allclosed-");
   writeIncident(dir, "INCIDENT-20260101-closed-one.md", "# INCIDENT-20260101-closed-one\n\n- Status: closed\n");
   writeIncident(dir, "INCIDENT-20260102-closed-two.md", "# INCIDENT-20260102-closed-two\n\n- Status: Closed\n");
   const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: Date.UTC(2026, 6, 23) });
@@ -447,7 +441,7 @@ test("--project against all-closed incident journals collapses to a single incid
 });
 
 test("--project against a journal whose filename does not match INCIDENT-<YYYYMMDD>-<slug>.md still gets classified (never dropped), with age reported as unknown", async () => {
-  const dir = temporary("ctide-doctor-incidents-badname-");
+  const dir = tempDir("ctide-doctor-incidents-badname-");
   writeIncident(dir, "random-notes.md", "# random notes\n\n- Status: open\n");
   const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: Date.UTC(2026, 6, 23) });
   const check = report.checks.find((c) => c.name === "incident:random-notes");
@@ -460,7 +454,7 @@ test("--project against a journal whose filename does not match INCIDENT-<YYYYMM
 // X), the idiom this whole file uses throughout) would silently see only the first. Both colliding
 // entries are renamed to their full filename stem, symmetrically (neither date looks like the "extra" one).
 test("--project with two same-slug, different-date incident journals disambiguates both check entries by filename stem instead of colliding on one incident:<slug> name", async () => {
-  const dir = temporary("ctide-doctor-incidents-slug-collision-");
+  const dir = tempDir("ctide-doctor-incidents-slug-collision-");
   writeIncident(dir, "INCIDENT-20260601-db-migration-failure.md", "# INCIDENT-20260601-db-migration-failure\n\n- Status: open\n");
   writeIncident(dir, "INCIDENT-20260701-db-migration-failure.md", "# INCIDENT-20260701-db-migration-failure\n\n- Status: open\n");
   const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: Date.UTC(2026, 6, 23) });
@@ -487,7 +481,7 @@ test("--project with two same-slug, different-date incident journals disambiguat
 // identical to A's disambiguated stem -- while D's own slug count is 1 (nothing else shares IT), so the
 // slug-count path alone would silently reuse A's already-emitted name.
 test("--project against a crafted filename whose own slug collides with another finding's disambiguated full-stem name still produces uniquely-named checks[] entries (residual collision beyond simple slug-count disambiguation)", async () => {
-  const dir = temporary("ctide-doctor-incidents-residual-collision-");
+  const dir = tempDir("ctide-doctor-incidents-residual-collision-");
   writeIncident(dir, "INCIDENT-20260601-foo.md", "# a\n\n- Status: open\n");
   writeIncident(dir, "INCIDENT-20260701-foo.md", "# b\n\n- Status: open\n");
   writeIncident(dir, "INCIDENT-20260610-INCIDENT-20260601-foo.md", "# d\n\n- Status: open\n");
@@ -506,7 +500,7 @@ test("--project against a crafted filename whose own slug collides with another 
 // test/session-memory-hooks.test.mjs (create in a try/catch, skip gracefully if this environment cannot
 // create symlinks, e.g. Windows without Developer Mode/admin).
 test("--project against an INCIDENT-*.md path that is a broken symlink reports incident:<slug> as unverified with the read failure named", async (t) => {
-  const dir = temporary("ctide-doctor-incidents-brokenlink-");
+  const dir = tempDir("ctide-doctor-incidents-brokenlink-");
   fs.mkdirSync(path.join(dir, ".ctide", "incidents"), { recursive: true });
   const target = path.join(dir, "nonexistent-target.md");
   const link = path.join(dir, ".ctide", "incidents", "INCIDENT-20260601-brokenlink.md");
@@ -524,7 +518,7 @@ test("--project against an INCIDENT-*.md path that is a broken symlink reports i
 // --- item (e): guidance lines present only when actionable, absent entirely on a clean --project run -----
 
 test("--project run with a clean memory file (no retired/expire/tag findings) and no incidents directory adds no new guidance lines", async () => {
-  const dir = temporary("ctide-doctor-clean-");
+  const dir = tempDir("ctide-doctor-clean-");
   mkMemoryProject(dir, "# FM\n\n### 2026-06-20 — solo unrelated entry\n- **Prevention rule**: r.\n- **Tags**: solo.\n");
   const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: NOW });
   const memory = report.checks.find((c) => c.name === "failure-memory-health");
@@ -538,7 +532,7 @@ test("--project run with a clean memory file (no retired/expire/tag findings) an
 });
 
 test("--project run with FAILURE_MEMORY.md findings AND a non-closed incident adds BOTH hand-off guidance lines, naming vigil and salvage respectively", async () => {
-  const dir = temporary("ctide-doctor-actionable-");
+  const dir = tempDir("ctide-doctor-actionable-");
   mkMemoryProject(dir, MEM_FIXTURE, [{ ts: NOW - 90 * DAY, key: "seed-old-history" }]);
   writeIncident(dir, "INCIDENT-20260601-open-one.md", "# INCIDENT-20260601-open-one\n\n- Status: open\n");
   const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: NOW });
@@ -549,7 +543,7 @@ test("--project run with FAILURE_MEMORY.md findings AND a non-closed incident ad
 });
 
 test("--project run with ONLY a non-closed incident (clean memory file) adds ONLY the salvage guidance line, not the vigil one", async () => {
-  const dir = temporary("ctide-doctor-incident-only-actionable-");
+  const dir = tempDir("ctide-doctor-incident-only-actionable-");
   mkMemoryProject(dir, "# FM\n\n### 2026-06-20 — solo unrelated entry\n- **Prevention rule**: r.\n- **Tags**: solo.\n");
   writeIncident(dir, "INCIDENT-20260601-open-one.md", "# INCIDENT-20260601-open-one\n\n- Status: open\n");
   const report = await diagnose(pluginRoot, { project: true, cwd: dir, now: NOW });
@@ -565,7 +559,7 @@ test("KNOWN_FLAGS is exactly the complete recognized-flag set: 2 value-bearing (
 });
 
 test("KNOWN_FLAGS guard, literal task example: --cwd --project treats --project as an omitted value for --cwd (not swallowed), falling back to CLAUDE_PROJECT_DIR", () => {
-  const dir = temporary("ctide-doctor-literal-swallow-");
+  const dir = tempDir("ctide-doctor-literal-swallow-");
   writeIncident(dir, "INCIDENT-20260601-literalcanary.md", "# INCIDENT-20260601-literalcanary\n\n- Status: open\n");
   const env = { ...process.env, CLAUDE_PROJECT_DIR: dir };
   const r = cp.spawnSync(process.execPath, [doctorScript, "--cwd", "--project", "--json"], { cwd: dir, encoding: "utf8", env });
@@ -589,7 +583,7 @@ test("doctor: for EVERY value-bearing flag in KNOWN_FLAGS, a value slot occupied
   for (const F of VALUE_FLAGS) {
     for (const G of KNOWN_FLAGS) {
       if (G === F) continue;
-      const dir = temporary("ctide-doctor-swallow-");
+      const dir = tempDir("ctide-doctor-swallow-");
       writeIncident(dir, "INCIDENT-20260601-sweepcanary.md", "# INCIDENT-20260601-sweepcanary\n\n- Status: open\n");
       const values = { "--plugin-root": pluginRoot, "--cwd": dir };
 
@@ -632,7 +626,7 @@ test("doctor: for EVERY value-bearing flag in KNOWN_FLAGS, a value slot occupied
 // --- and the pre-existing red->green/vigil-broken/Fix-8 tests further down, exercise only incidentally) ---
 
 test("doctor.mjs invoked via a path THROUGH a real symlinked/junctioned ancestor directory (fs.symlinkSync, not an incidental temp-dir symlink) is still recognized as directly-invoked and runs its full CLI body, producing the 14 baseline checks -- proves isInvokedDirectly()'s fs.realpathSync comparison directly", (t) => {
-  const scratchDir = temporary("ctide-doctor-symlink-entrypoint-");
+  const scratchDir = tempDir("ctide-doctor-symlink-entrypoint-");
   try {
     const scratchPlugin = path.join(scratchDir, "cressetide");
     fs.cpSync(pluginRoot, scratchPlugin, { recursive: true });
@@ -673,7 +667,7 @@ test("doctor.mjs invoked via a path THROUGH a real symlinked/junctioned ancestor
 // --- targets, not just a smoke test that happens to pass either way ---------------------------------------
 
 test("red->green proof: the literal --cwd --project swallow example fails against the pre-fix unguarded argument() and passes against the shipped guarded one", () => {
-  const scratchDir = temporary("ctide-doctor-redgreen-");
+  const scratchDir = tempDir("ctide-doctor-redgreen-");
   const scratchPlugin = path.join(scratchDir, "cressetide");
   fs.cpSync(pluginRoot, scratchPlugin, { recursive: true });
   const scratchDoctor = path.join(scratchPlugin, "skills", "doctor", "scripts", "doctor.mjs");
@@ -688,7 +682,7 @@ test("red->green proof: the literal --cwd --project swallow example fails agains
   assert.notStrictEqual(unguarded, source, "fixture sanity: the revert must actually change the source");
   writeFileSyncDurable(scratchDoctor, unguarded);
 
-  const dir = temporary("ctide-doctor-redgreen-project-");
+  const dir = tempDir("ctide-doctor-redgreen-project-");
   writeIncident(dir, "INCIDENT-20260601-redgreencanary.md", "# INCIDENT-20260601-redgreencanary\n\n- Status: open\n");
   const env = { ...process.env, CLAUDE_PROJECT_DIR: dir };
   const argv = [scratchDoctor, "--cwd", "--project", "--json"];
@@ -717,7 +711,7 @@ test("red->green proof: the literal --cwd --project swallow example fails agains
 // Reuses this file's own established scratch-copy pattern (the red->green proof test directly above): copy
 // the whole plugin root elsewhere and mutate ONLY the copy, never the real reviewed tree.
 test("--project degrades to a reported failure-memory-health: fail (never a process crash) when vigil's own consolidate module is missing from a scratch plugin copy, and a flagless run against that same broken copy is completely unaffected", () => {
-  const scratchDir = temporary("ctide-doctor-vigilbroken-");
+  const scratchDir = tempDir("ctide-doctor-vigilbroken-");
   try {
     const scratchPlugin = path.join(scratchDir, "cressetide");
     fs.cpSync(pluginRoot, scratchPlugin, { recursive: true });
@@ -746,7 +740,7 @@ test("--project degrades to a reported failure-memory-health: fail (never a proc
     // (b) --project against the SAME broken copy: the dynamic import fails, and that failure must surface as
     // this check's own reported `fail` (naming the module-load error), never an uncaught exception or empty
     // stdout.
-    const projectCwd = temporary("ctide-doctor-vigilbroken-project-");
+    const projectCwd = tempDir("ctide-doctor-vigilbroken-project-");
     const project = cp.spawnSync(process.execPath,
       [scratchDoctor, "--plugin-root", scratchPlugin, "--project", "--cwd", projectCwd, "--json"],
       { encoding: "utf8" });
@@ -768,7 +762,7 @@ test("--project degrades to a reported failure-memory-health: fail (never a proc
 // technique (same technique the red->green proof test above already uses) rather than resting on manual
 // verification alone.
 test("--project: an unexpected exception inside the project-health block is caught and reported as a project-health: fail check, never an uncaught crash", () => {
-  const scratchDir = temporary("ctide-doctor-fix8-");
+  const scratchDir = tempDir("ctide-doctor-fix8-");
   try {
     const scratchPlugin = path.join(scratchDir, "cressetide");
     fs.cpSync(pluginRoot, scratchPlugin, { recursive: true });
@@ -806,7 +800,7 @@ test("--project: an unexpected exception inside the project-health block is caug
     const redSource = withThrow.replace(wrappedBlock, unwrappedBlock);
     assert.notStrictEqual(redSource, withThrow, "fixture sanity: the unwrap revert must actually change the source");
     writeFileSyncDurable(scratchDoctor, redSource);
-    const projectCwd = temporary("ctide-doctor-fix8-project-");
+    const projectCwd = tempDir("ctide-doctor-fix8-project-");
     const red = cp.spawnSync(process.execPath,
       [scratchDoctor, "--plugin-root", scratchPlugin, "--project", "--cwd", projectCwd, "--json"],
       { encoding: "utf8" });

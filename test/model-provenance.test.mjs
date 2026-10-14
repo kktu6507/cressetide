@@ -3,13 +3,12 @@
 // project) that flags when the model in use differs from the model eval/baseline.md was last validated
 // against. The honesty guards (no recorded model / no --model given -> "unknown", never a guessed
 // match/mismatch) are the load-bearing behavior.
-import { test } from "node:test";
 import assert from "node:assert";
 import cp from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { tempDir, test } from "./helpers.mjs";
 import { extractProvenance, checkProvenance, formatReport, KNOWN_FLAGS } from "../eval/check-model-provenance.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -83,7 +82,7 @@ test("formatReport states it is advisory and never blocks", () => {
 // --- CLI: end-to-end, fail-open ---
 
 test("CLI: a real baseline file + matching --model reports MATCH and exits 0", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-prov-"));
+  const dir = tempDir("ctide-prov-");
   try {
     const f = path.join(dir, "baseline.md");
     fs.writeFileSync(f, REAL_BASELINE, "utf8");
@@ -101,7 +100,7 @@ test("CLI: a missing baseline file fails open (UNKNOWN, exit 0, no crash)", () =
 });
 
 test("CLI: no --model given reports UNKNOWN, not a false match/mismatch", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-prov2-"));
+  const dir = tempDir("ctide-prov2-");
   try {
     const f = path.join(dir, "baseline.md");
     fs.writeFileSync(f, REAL_BASELINE, "utf8");
@@ -121,7 +120,7 @@ test("check-model-provenance: for EVERY flag in KNOWN_FLAGS, a value slot occupi
   for (const F of KNOWN_FLAGS) {
     for (const G of KNOWN_FLAGS) {
       if (G === F) continue;
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-prov-swallow-"));
+      const dir = tempDir("ctide-prov-swallow-");
       try {
         fs.mkdirSync(path.join(dir, "eval"), { recursive: true });
         const baselinePath = path.join(dir, "eval", "baseline.md");
