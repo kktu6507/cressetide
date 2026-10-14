@@ -30,7 +30,8 @@
 | P3 validator 合併、overlay 負向測試、測試共用工具（含使用者追加項目） | 完成 | `53b2e18` |
 | P3 中途 review（intent / test / code + arbiter） | **FIX REQUIRED**（無 blocker，3 個 major） | — |
 | P3 修復 P3-R1～R8 | 完成；六個結案條件逐條核對成立 → **P3 READY**（見 [p3-redgreen.md](p3-redgreen.md)） | 本段 commit |
-| P4 → P13 | 未開始 | — |
+| P4 共用 `cressetide/lib/`、7 支 script 與 ship／publish-release 改用 lib、刪 publish-release-core 與 9d d4/d5（含使用者決定 Q1–Q5） | 完成，**待中途 review**（intent / test / code / security + arbiter）；證據見 [p4-evidence.md](p4-evidence.md) | 本段 commit |
+| P5 → P13 | 未開始 | — |
 
 逐步紀錄在 [progress.md](progress.md)，第 1 輪 review 的完整內容在 [review-round1.md](review-round1.md)，實機探測結果在 [probes.md](probes.md)。
 
@@ -126,6 +127,14 @@
   - P3 結束後加一輪中途 review（intent / test / code + arbiter），列為偏離計畫。
 - **D-5**（2026-10-14，P3 review arbiter 裁定、使用者核准）：temp 清理續用 `helpers.mjs` 的 `test` 包裝（AsyncLocalStorage 帶 `t`，`t.after` 收尾），接受測試報告的位置都顯示 `helpers.mjs`。沒選的方案：逐點傳 `t`（約 524 處，所有 builder 都要改簽名）；root 層 `beforeEach`／`afterEach` 堆疊（Node 24 實測循序與巢狀可行，但並行測試會刪錯目錄，Node 22 未驗）。改回的條件：P11 決定 CI 需要檔案位置標註，或 node:test 提供公開的位置覆寫；屆時成本是每個檔案改一行 import。
 - **README `##` 段落數比對**（2026-10-14，使用者決定）：validator §8 略過 code fence 的比對，和舊 `structure.test` 的原始計數比對兩者並存（P3-R8）。
+- **P4 計畫決定**（2026-10-14，navigator 盤點後使用者決定）：
+  - **Q1 `diff.ignoreSubmodules`**：lib/git 集中加 `-c diff.ignoreSubmodules=none`，只中和使用者個人設定；專案在 `.gitmodules` 宣告的 `ignore` 仍然有效。
+  - **Q2 ship 子目錄 `--cwd` 的 changelogTouched**：以 `<cwd>/CHANGELOG.md` 為準，diff 判斷也用同一份。
+  - **Q3 `contract-check --base` 參數注入**（已重現：`--base --output=x` 會讓 git 寫檔）：P4 就修，開頭是 `-` 的 base 一律拒收，先解析成 SHA 才交給 git。
+  - **Q4 五項順手修正**：lib/git 設 `GIT_OPTIONAL_LOCKS=0`（ship 的 `git status` 不再改寫 `.git/index`）；failure-retrieve 的 `--log` 吞參數提前在 P4 修好（P5 的對應待辦改為已完成）；map 改用共用的 `headState`，HEAD 指向的物件不存在時改成報錯；read-capped 改用 fd 和 `fstat`；publish-release 的 git 呼叫加 30 秒逾時。
+  - **Q5 ship-contract.md 6 項改動**：核准，commit 前把英文定稿給使用者看。
+  - **P4 之後加中途 review**：intent、test、code、security 加 arbiter，允許依條件只憑證據結案修復；列為偏離計畫。
+  - navigator 的設計假設照採用：eval 的 `KNOWN_FLAGS` 留到 P10；`changedFiles` 在 P4 建好並測試、P7 才接到 contract-check；validator 改 import `cressetide/lib/git.mjs`；`core.abbrev` 不中和；重複的旗標取最後一個值；會以 exit 1 表示失敗的 script，用法錯誤也用 exit 1；lib 檔名不可用 `_` 開頭（`.gitignore` 會忽略 `_*.mjs`）。
 - **依實機探測定的設計**（見 [probes.md](probes.md)）：
   - hooks.json 用 shell 形式：`node "${CLAUDE_PLUGIN_ROOT}/hooks/<x>.mjs"`
   - 刪掉 `agents[]`，改靠 auto-discovery
@@ -198,3 +207,4 @@
 - [review-round1.md](review-round1.md)：第 1 輪 review 的判決、packet、findings，以及第 1 輪複審（2026-10-14）
 - [r2-redgreen.md](r2-redgreen.md)：R2、R3 修復逐項的 red→green 與 mutant 紀錄
 - [p3-redgreen.md](p3-redgreen.md)：P3 修復（P3-R1～R8）的 red→green、mutant 與六個結案條件紀錄
+- [p4-evidence.md](p4-evidence.md)：P4（P4a／P4b／P4c）的實作證據：S0 基準比對、lib 打紅紀錄、綁定測試與還原打紅、ship／publish-release 的修正
