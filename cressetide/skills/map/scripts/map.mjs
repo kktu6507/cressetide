@@ -209,7 +209,7 @@ function workingTreeFingerprint(root, files = walk(root).sort()) {
 // through the same assertContainedPath containment check as every other per-file read in this file
 // (see workingTreeFingerprint above); a containment violation is a security-relevant condition and
 // propagates uncaught (fail-closed). The read itself is a bounded 2-byte prefix (open fd, fixed
-// offset, try/finally close -- mirroring failure-retrieve.mjs's readCapped) rather than a full-file
+// offset, try/finally close -- mirroring lib/read-capped.mjs's readCapped) rather than a full-file
 // read; any I/O failure at that stage (the file vanished or changed between walk() and this call, a
 // permission race, a 0-1 byte file) is an ordinary I/O race, not a security condition, so it fails
 // open to false rather than aborting Map generation.

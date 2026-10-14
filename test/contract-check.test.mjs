@@ -285,3 +285,103 @@ test("lib/git binding: a non-ASCII changed path is matched by its glob (core.quo
   assert.ok(r.stdout.includes(`  forbidden-path hits: ${name}\n`), `the forbidden non-ASCII path is reported unquoted: ${r.stdout}`);
   assert.ok(r.stdout.includes(`  out-of-scope changed files: ${name}\n`), r.stdout);
 });
+
+// --- P4 review S-M1 / F6: the revision reaches `git diff` followed by "--"; with an explicit --base (the
+// empty string included), a diff that fails is unverified ---
+
+// Serialized into a `node -r` preload (Function.prototype.toString), never called in this file — the way
+// test/ship.test.mjs injects git faults. It appends every git argument list to `options.record` (one JSON
+// line each) and, with `options.fail` "diff-enobufs", fails `git diff` the way output over maxBuffer does.
+function gitSpyPreload(options) {
+  const childProcess = require("node:child_process");
+  const fileSystem = require("node:fs");
+  const realSpawnSync = childProcess.spawnSync;
+  childProcess.spawnSync = function patchedSpawnSync(command, args) {
+    const list = command === "git" && Array.isArray(args) ? args.map(String) : null;
+    if (list && options.record) fileSystem.appendFileSync(options.record, JSON.stringify(list) + "\n");
+    if (list && options.fail === "diff-enobufs" && list.includes("diff")) {
+      const error = Object.assign(new Error("spawnSync git ENOBUFS"), { code: "ENOBUFS", syscall: "spawnSync git" });
+      return { pid: 0, output: null, stdout: "", stderr: "", status: null, signal: "SIGTERM", error };
+    }
+    return realSpawnSync.apply(this, arguments);
+  };
+  require("node:module").syncBuiltinESMExports();
+}
+
+function runCheckWithSpy(cwd, args, options) {
+  const preload = path.join(tempDir("ctide-cc-spy-"), "spy.cjs");
+  fs.writeFileSync(preload, `(${gitSpyPreload})(${JSON.stringify(options)});\n`, "utf8");
+  return cp.spawnSync(process.execPath, ["-r", preload, SCRIPT, ...args], { cwd, encoding: "utf8" });
+}
+
+const CC_DIFF_FAILED = [
+  "ctide contract-check (deterministic):",
+  "  scope: unverified (git diff against the resolved --base failed) — NO scope or forbidden-path claim",
+  "  AC coverage: every behavior-changing criterion maps to a verification entry",
+  "",
+].join("\n");
+
+test("--base: a working-tree file named the resolved commit id does not hide a modified forbidden file", () => {
+  const dir = repoWithOutOfScopeChange({ contract: { forbiddenPaths: ["tracked.ts"] } });
+  git(dir, ["commit", "-q", "--allow-empty", "-m", "second"]);
+  fs.writeFileSync(path.join(dir, git(dir, ["rev-parse", "HEAD~1"])), "a file named like the base commit\n", "utf8");
+  const r = runCheck(dir, ["--base", "HEAD~1"]);
+  assert.strictEqual(r.status, 0);
+  assert.strictEqual(r.stderr, "");
+  assert.ok(r.stdout.includes("  forbidden-path hits: tracked.ts\n"), r.stdout);
+});
+
+test("no --base: a working-tree file named HEAD does not hide a modified forbidden file", () => {
+  const dir = repoWithOutOfScopeChange({ contract: { forbiddenPaths: ["tracked.ts"] } });
+  fs.writeFileSync(path.join(dir, "HEAD"), "a file named HEAD\n", "utf8");
+  const r = runCheck(dir, []);
+  assert.strictEqual(r.status, 0);
+  assert.strictEqual(r.stderr, "");
+  assert.ok(r.stdout.includes("  forbidden-path hits: tracked.ts\n"), r.stdout);
+});
+
+test("--base: a git diff against the resolved base that fails (ENOBUFS, a corrupt index) is unverified, never \"scope: clean\"; without --base the same failure still fails open", () => {
+  const dir = repoWithOutOfScopeChange({ contract: { forbiddenPaths: ["tracked.ts"] } });
+  const enobufs = runCheckWithSpy(dir, ["--base", "HEAD"], { fail: "diff-enobufs" });
+  assert.strictEqual(enobufs.status, 0, enobufs.stderr);
+  assert.strictEqual(enobufs.stdout, CC_DIFF_FAILED, "ENOBUFS");
+  fs.writeFileSync(path.join(dir, ".git", "index"), "not an index\n", "utf8");
+  const corrupt = runCheck(dir, ["--base", "HEAD"]);
+  assert.strictEqual(corrupt.status, 0);
+  assert.strictEqual(corrupt.stderr, "");
+  assert.strictEqual(corrupt.stdout, CC_DIFF_FAILED, "corrupt index: --base HEAD still resolves, the diff fails");
+  // Must not change in this phase (P7 owns AC-10): without --base a failed diff is still an empty list.
+  const noBase = runCheck(dir, []);
+  assert.strictEqual(noBase.status, 0);
+  assert.ok(noBase.stdout.includes("  scope: clean (all changed files within allowedPaths)\n"), noBase.stdout);
+});
+
+test("--base: only the resolved commit id reaches git diff, immediately followed by \"--\" as the last argument", () => {
+  const dir = repoWithOutOfScopeChange();
+  git(dir, ["commit", "-q", "--allow-empty", "-m", "second"]);
+  const record = path.join(tempDir("ctide-cc-argv-"), "argv.jsonl");
+  const r = runCheckWithSpy(dir, ["--base", "HEAD~1"], { record });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.ok(r.stdout.includes("  out-of-scope changed files: tracked.ts\n"), r.stdout);
+  const diffs = fs.readFileSync(record, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))
+    .filter((argv) => argv.includes("diff"));
+  assert.strictEqual(diffs.length, 1, JSON.stringify(diffs));
+  const tail = diffs[0].slice(diffs[0].indexOf("diff"));
+  assert.match(tail[2] ?? "", /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/, `a full commit id, not the raw --base value: ${JSON.stringify(tail)}`);
+  assert.deepStrictEqual(tail, ["diff", "--name-only", git(dir, ["rev-parse", "HEAD~1"]), "--"]);
+});
+
+test("an empty --base (`--base=`, `--base \"\"` — e.g. an unset $BASE) is unverified, never a silent fall-back to HEAD", () => {
+  const dir = repoWithOutOfScopeChange({ contract: { forbiddenPaths: ["tracked.ts"] } });
+  for (const args of [["--base="], ["--base", ""]]) {
+    const r = runCheck(dir, args);
+    assert.strictEqual(r.status, 0, JSON.stringify(args));
+    assert.strictEqual(r.stderr, "", JSON.stringify(args));
+    assert.strictEqual(r.stdout, [
+      "ctide contract-check (deterministic):",
+      '  scope: unverified (--base "" does not resolve to a commit) — NO scope or forbidden-path claim',
+      "  AC coverage: every behavior-changing criterion maps to a verification entry",
+      "",
+    ].join("\n"), JSON.stringify(args));
+  }
+});

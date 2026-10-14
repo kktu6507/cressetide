@@ -14,12 +14,17 @@ independently.
 │   ├── .claude-plugin/plugin.json
 │   ├── agents/
 │   ├── hooks/
+│   ├── lib/
 │   └── skills/
 ├── docs/
 ├── eval/
 ├── examples/
 └── test/
 ```
+
+Scripts under `skills/` and the release publisher take their shared
+command-line parsing, git access, capped reads, redaction and trust-tag
+grammar from `cressetide/lib/`, which ships inside the plugin archive.
 
 The `kktu6507/plugins` marketplace exposes `ctide@kktu` from this
 repository's `cressetide/` directory. The plugin manifest owns the eleven

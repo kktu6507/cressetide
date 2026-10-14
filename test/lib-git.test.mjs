@@ -334,6 +334,15 @@ test("headState(): born, unborn, a dangling HEAD, and not a repository", (t) => 
   assert.equal(headState(repo), "unknown", "git missing");
 });
 
+// "unborn" needs a repository with no commits at all: an orphan branch (HEAD naming a branch that has no
+// commit yet) in a repository that has commits is "unknown".
+test("headState(): an orphan branch in a repository that has commits is unknown, not unborn", () => {
+  const repo = makeRepo({ files: { "a.txt": "a\n" } });
+  fixtureGit(repo, ["checkout", "-q", "--orphan", "x"]);
+  assert.equal(fixtureGit(repo, ["rev-list", "--all", "--count"]), "1", "fixture sanity: the repository has a commit");
+  assert.equal(headState(repo), "unknown");
+});
+
 // --- changedFiles ---
 
 // Base commit with every kind of path, then: an unstaged edit, a staged edit, an edit staged and then
@@ -403,6 +412,16 @@ test("changedFiles(): an older base also lists what the commits since it changed
   assert.deepEqual(changedFiles(repo, first), { state: "ok", base: first, files: ["a.txt", "b.txt"] });
   assert.deepEqual(changedFiles(repo, "HEAD~1"), { state: "ok", base: first, files: ["a.txt", "b.txt"] });
   assert.deepEqual(changedFiles(repo).files, ["a.txt"]);
+});
+
+// P4 review C-6: the base commit reaches `git diff --cached` followed by "--", so a working-tree file named
+// like it is not an ambiguous argument (which would fail the read).
+test("changedFiles(): a working-tree file named the base commit id does not fail the read", () => {
+  const repo = makeRepo({ files: { "a.txt": "1\n" } });
+  const head = fixtureGit(repo, ["rev-parse", "HEAD"]);
+  write(path.join(repo, "a.txt"), "2\n");
+  write(path.join(repo, head), "named like the base commit\n");
+  assert.deepEqual(changedFiles(repo), { state: "ok", base: head, files: [head, "a.txt"].sort() });
 });
 
 test("changedFiles(): a clean tree is ok with no files", () => {

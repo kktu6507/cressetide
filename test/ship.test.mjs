@@ -1509,9 +1509,23 @@ test("pending view: a broken or dangling HEAD in a repository that has commits i
   for (const [where, dir] of [["broken HEAD ref", broken], ["dangling HEAD", dangling]]) {
     const report = await buildShipReport(dir, {});
     assert.strictEqual(report.pending.state, "unverified", `${where}: pending state`);
+    assert.strictEqual(report.pending.note, "HEAD cannot be resolved to a readable commit — commits since the last release tag are unknown",
+      `${where}: the note names HEAD, not a later read that failed because of it`);
     assert.strictEqual(report.pending.commitCount, null, `${where}: no count is claimed`);
     assertFiveChecksRan(report);
   }
+});
+
+// An orphan branch (HEAD naming a branch with no commit yet) in a repository that has commits is not a
+// repository with no commits: headState says "unknown", so the pending view is unverified. Only the state is
+// pinned here; the note's wording for this case is owner decision O-2 (P8).
+test("pending view: an orphan branch in a repository that has commits is unverified, never no-release-tag", async () => {
+  const dir = bareRepository();
+  git(dir, ["tag", "v1.0.0"]);
+  git(dir, ["checkout", "-q", "--orphan", "x"]);
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.pending.state, "unverified");
+  assertFiveChecksRan(report);
 });
 
 // The HEAD check above now comes first, so "a failed read of the tags reachable from HEAD" (earlier in this
@@ -1556,6 +1570,67 @@ test("ship.mjs never writes .git/index either: on a working tree with stale stat
   assert.notStrictEqual(fs.statSync(index).mtimeMs, old.getTime(), "fixture sanity: the stat data was stale enough to make a plain git status rewrite the index");
 });
 
+// P4 review T-1: the case where reading CHANGELOG.md's change with `git diff <commit> -- CHANGELOG.md`
+// (working tree against the marker commit) rewrites the index — CHANGELOG.md unchanged since the tag, with
+// stale stat data — so a return to that read is caught.
+test("changelogTouched: CHANGELOG.md unchanged since the tag, with stale stat data, is `fail`, and a full run leaves .git/index's bytes and mtime unchanged", () => {
+  const dir = bareRepository();
+  commitFile(dir, "CHANGELOG.md", "# Changelog\n", "2026-01-02T00:00:00Z", "release 1.0.0");
+  git(dir, ["tag", "v1.0.0"]);
+  commitFile(dir, "b.txt", "b\n", "2026-01-03T00:00:00Z", "after the tag");
+  const index = path.join(dir, ".git", "index");
+  const old = new Date("2020-01-01T00:00:00Z");
+  fs.utimesSync(index, old, old);
+  fs.utimesSync(path.join(dir, "CHANGELOG.md"), new Date("2021-06-01T00:00:00Z"), new Date("2021-06-01T00:00:00Z"));
+  const before = fs.readFileSync(index);
+
+  const report = JSON.parse(runShip(dir, ["--cwd", ".", "--json"]));
+  runShip(dir, ["--cwd", "."]);
+  assert.strictEqual(report.checks.changelogTouched.status, "fail", report.checks.changelogTouched.evidence);
+  assert.strictEqual(fs.statSync(index).mtimeMs, old.getTime(), ".git/index was not rewritten");
+  assert.deepStrictEqual(fs.readFileSync(index), before, ".git/index is byte-identical");
+  git(dir, ["diff", "--name-only", git(dir, ["rev-parse", "v1.0.0^{commit}"]), "--", "CHANGELOG.md"], { env: { GIT_OPTIONAL_LOCKS: "0" } });
+  assert.notStrictEqual(fs.statSync(index).mtimeMs, old.getTime(),
+    "fixture sanity: `git diff <commit> -- CHANGELOG.md` rewrites this index even with GIT_OPTIONAL_LOCKS=0");
+});
+
+// changelogTouched reads only CHANGELOG.md: both reads carry the `-- CHANGELOG.md` pathspec (P4 review T-3).
+function changelogFixture() {
+  const dir = makeRepo({ prefix: "ctide-ship-changelog-", files: { "CHANGELOG.md": "# Changelog\n", "a.txt": "a\n" } });
+  git(dir, ["tag", "v1.0.0"]);
+  return dir;
+}
+const changelogStatus = (dir) => changelogTouchedCheck(dir, resolveMarker(dir)).status;
+
+test("changelogTouched: an unrelated dirty tracked file, with CHANGELOG.md unchanged since the tag, is `fail`", () => {
+  const dir = changelogFixture();
+  fs.writeFileSync(path.join(dir, "a.txt"), "changed\n", "utf8");
+  assert.strictEqual(changelogStatus(dir), "fail");
+  fs.appendFileSync(path.join(dir, "CHANGELOG.md"), "- entry\n");
+  assert.strictEqual(changelogStatus(dir), "pass", "control: an unstaged CHANGELOG.md edit is a change");
+});
+
+test("changelogTouched: an unrelated staged change, or a commit after the tag that leaves CHANGELOG.md alone, is `fail`", () => {
+  const staged = changelogFixture();
+  fs.writeFileSync(path.join(staged, "a.txt"), "changed\n", "utf8");
+  git(staged, ["add", "a.txt"]);
+  assert.strictEqual(changelogStatus(staged), "fail", "an unrelated staged change");
+  const committed = changelogFixture();
+  commitFile(committed, "b.txt", "b\n", "2026-01-02T00:00:00Z", "after the tag");
+  assert.strictEqual(changelogStatus(committed), "fail", "an unrelated commit after the tag");
+});
+
+// Disclosed deviation (4): CHANGELOG.md counts as changed when it differs between the marker commit and the
+// index or the working tree — so a change staged and then reverted in the working tree is a change.
+test("changelogTouched: a CHANGELOG.md change staged and then reverted in the working tree counts as changed — `pass`", () => {
+  const dir = changelogFixture();
+  fs.writeFileSync(path.join(dir, "CHANGELOG.md"), "# Changelog\n\n- staged\n", "utf8");
+  git(dir, ["add", "CHANGELOG.md"]);
+  fs.writeFileSync(path.join(dir, "CHANGELOG.md"), "# Changelog\n", "utf8");
+  assert.strictEqual(git(dir, ["diff", "--name-only", "v1.0.0", "--", "CHANGELOG.md"]), "", "fixture sanity: the working tree matches the tag");
+  assert.strictEqual(changelogStatus(dir), "pass");
+});
+
 // Round-1 code#5: Node's default spawnSync maxBuffer is 1 MiB; lib/git's is 64 MiB. The ~20,000 paths are
 // added to the index only (`update-index --index-info`, one blob), so the fixture stays fast.
 test("pending view: a changed-file list over 1 MiB (NUL-separated) is still listed — 'showing 500 of N', not unverified", async () => {
@@ -1592,8 +1667,11 @@ test("pending view: a non-ASCII commit subject is listed verbatim under i18n.log
 });
 
 // P3 review m-1: --cwd is the repository read, whatever GIT_DIR / GIT_INDEX_FILE the caller inherited.
+// The package.json version makes tagReady run `git status`, which reads the index: under the inherited
+// GIT_INDEX_FILE it would compare --cwd's tree with the other repository's index and find it dirty.
 test("CLI: an inherited absolute GIT_DIR and GIT_INDEX_FILE naming another repository do not change the repository --cwd reads", () => {
   const mine = bareRepository();
+  commitFile(mine, "package.json", JSON.stringify({ version: "1.1.0" }), "2026-01-01T12:00:00Z", "declare 1.1.0");
   git(mine, ["tag", "v1.0.0"]);
   commitFile(mine, "mine.txt", "m\n", "2026-01-02T00:00:00Z", "only in the --cwd repository");
   const other = bareRepository();
@@ -1608,6 +1686,45 @@ test("CLI: an inherited absolute GIT_DIR and GIT_INDEX_FILE naming another repos
   assert.strictEqual(report.pending.tag, "v1.0.0");
   assert.deepStrictEqual(sortedSubjects(report.pending), ["only in the --cwd repository"]);
   assert.deepStrictEqual(report.pending.files, ["mine.txt"]);
+  assert.strictEqual(report.checks.tagReady.status, "pass", report.checks.tagReady.evidence);
+});
+
+// P4-R5: a revision ship hands git is followed by "--", and the Map's current commit is read with
+// `rev-parse -q --verify HEAD^{commit}`, so working-tree files named like a revision change nothing — without
+// "--", git fails `log -1 v1.0.0`, `rev-list --count v1.0.0..HEAD` and `diff v1.0.0..HEAD` as ambiguous, and
+// a plain `rev-parse HEAD` with no commit to resolve prints the file name "HEAD" and exits 0. `git log
+// <range>` never checks a range against the working tree, so its "--" is pinned on the argument list.
+test("working-tree files named HEAD, v1.0.0 and v1.0.0..HEAD change nothing ship reports: marker, pending view and Map staleness are as without them", async () => {
+  const tagged = bareRepository();
+  git(tagged, ["tag", "v1.0.0"]);
+  commitFile(tagged, "b.txt", "b\n", "2026-01-02T00:00:00Z", "after the tag");
+  writeMapDoc(tagged, { commit: git(tagged, ["rev-parse", "HEAD"]), rollbackLines: ["- Exact steps: x <!-- CTIDE:TRUST:verified:2026-01-01 -->"] });
+  const unborn = makeRepo({ prefix: "ctide-ship-unborn-" });
+  writeMapDoc(unborn, { commit: "UNBORN", rollbackLines: ["- Exact steps: x <!-- CTIDE:TRUST:verified:2026-01-01 -->"] });
+  const viewOf = (report) => ({ marker: report.marker, pending: report.pending, migrationCompat: report.checks.migrationCompat });
+
+  const taggedBefore = viewOf(await buildShipReport(tagged, {}));
+  assert.strictEqual(taggedBefore.marker.found, true, "fixture sanity: the marker resolves");
+  assert.strictEqual(taggedBefore.pending.state, "ok", "fixture sanity: the pending view lists");
+  assert.strictEqual(taggedBefore.migrationCompat.stale, false, "fixture sanity: the Map is fresh");
+  const unbornBefore = viewOf(await buildShipReport(unborn, {}));
+  assert.strictEqual(unbornBefore.migrationCompat.stale, null, "fixture sanity: no commit, staleness undetermined");
+
+  for (const name of ["HEAD", "v1.0.0", "v1.0.0..HEAD"]) fs.writeFileSync(path.join(tagged, name), "named like a revision\n", "utf8");
+  fs.writeFileSync(path.join(unborn, "HEAD"), "named like a revision\n", "utf8");
+  const calls = [];
+  const realSpawnSync = cp.spawnSync;
+  cp.spawnSync = function recordingSpawnSync(command, args) {
+    if (command === "git") calls.push(args.map(String));
+    return realSpawnSync.apply(this, arguments);
+  };
+  let taggedAfter;
+  try { taggedAfter = viewOf(await buildShipReport(tagged, {})); } finally { cp.spawnSync = realSpawnSync; }
+  assert.deepStrictEqual(taggedAfter, taggedBefore);
+  assert.deepStrictEqual(viewOf(await buildShipReport(unborn, {})), unbornBefore);
+  const logged = calls.filter((argv) => argv.includes("log") && argv.some((arg) => arg.startsWith("--max-count=")));
+  assert.strictEqual(logged.length, 1, "fixture sanity: the pending view's git log ran once");
+  assert.deepStrictEqual(logged[0].slice(-2), ["v1.0.0..HEAD", "--"]);
 });
 
 // --- regression: the plugin's own Stop hook must not read a ship report as an asserted READY verdict ---

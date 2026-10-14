@@ -141,7 +141,7 @@ export function resolveMarker(root) {
   }
   // `git log` transparently dereferences an annotated tag to its underlying commit, so this resolves
   // correctly whether `winner` is a lightweight or an annotated/signed tag.
-  const info = git(root, ["log", "-1", "--format=%H", winner]);
+  const info = git(root, ["log", "-1", "--format=%H", winner, "--"]);
   const commitRaw = info.status === 0 ? String(info.stdout || "").trim() : "";
   if (!commitRaw) {
     return {
@@ -229,12 +229,12 @@ export function pendingChanges(root, markerTag = null) {
     : "";
   const range = `${tag}..HEAD`;
   const tagInfo = git(root, ["rev-parse", "--short", `${tag}^{commit}`]);
-  const counted = git(root, ["rev-list", "--count", range]);
-  const logged = git(root, ["log", `--max-count=${PENDING_COMMIT_CAP}`, "--format=%h%x09%s", range]);
+  const counted = git(root, ["rev-list", "--count", range, "--"]);
+  const logged = git(root, ["log", `--max-count=${PENDING_COMMIT_CAP}`, "--format=%h%x09%s", range, "--"]);
   // `--no-renames`: a renamed file is listed under both its old and its new path, so a reader matching
   // paths (e.g. Rollback relevance) still sees the old one. Paths stay repository-relative from a
   // subdirectory `--cwd` too: lib/git pins diff.relative=false.
-  const diffed = git(root, ["diff", "--name-only", "--no-renames", "-z", range]);
+  const diffed = git(root, ["diff", "--name-only", "--no-renames", "-z", range, "--"]);
   // parseCount: a count that is not plain digits (empty output included) is null, never 0.
   const commitCount = parseCount(counted.stdout);
   if ([tagInfo, counted, logged, diffed].some((read) => read.error || read.status !== 0) || commitCount === null) {
@@ -475,7 +475,7 @@ export function migrationCompatibilityCheck(root) {
   const firstSection = text.indexOf("\n## ");
   const header = firstSection < 0 ? text : text.slice(0, firstSection);
   const recordedCommit = header.match(/^Verified at commit:\s*(.+)$/m)?.[1]?.trim() || null;
-  const head = git(root, ["rev-parse", "HEAD"]);
+  const head = git(root, ["rev-parse", "-q", "--verify", "HEAD^{commit}"]);
   const currentCommit = head.status === 0 ? String(head.stdout || "").trim() || null : null;
   // null when staleness cannot be determined (missing recorded commit, or no resolvable git HEAD) —
   // kept distinct from a definite `false`, and disclosed rather than silently treated as fresh.

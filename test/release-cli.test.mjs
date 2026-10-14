@@ -131,7 +131,7 @@ test("release CLI: `publish-release.mjs --archive` spawned as a real subprocess 
     "archived file bytes must match the real source file");
 });
 
-test("release CLI: `publish-release.mjs --archive` invoked via a real symlinked/junctioned ancestor directory is still recognized as directly-invoked, running its full CLI body (isInvokedDirectly()'s fs.realpathSync check)", (t) => {
+test("release CLI: `publish-release.mjs --archive` invoked via a real symlinked/junctioned ancestor directory is still recognized as directly-invoked, running its full CLI body (the isMain entry check's fs.realpathSync check)", (t) => {
   const parentDir = tempDir("ctide-release-cli-symlink-entrypoint-");
   const scratchRoot = releaseCliScratchRoot();
   const linkedRoot = path.join(parentDir, "scratch-root-link");
@@ -143,7 +143,7 @@ test("release CLI: `publish-release.mjs --archive` invoked via a real symlinked/
   const scriptViaLink = path.join(linkedRoot, ".github", "scripts", "publish-release.mjs");
   const result = cp.spawnSync(process.execPath, [scriptViaLink, "--archive"], { encoding: "utf8" });
   assert.strictEqual(result.status, 0, `must recognize itself as directly-invoked through the symlink/junction and run its full CLI body, not silently no-op: ${result.stderr}`);
-  assert.ok(result.stdout && result.stdout.trim().length > 0, "must produce real JSON output, not empty stdout (the false-negative symptom the isInvokedDirectly() fix closes)");
+  assert.ok(result.stdout && result.stdout.trim().length > 0, "must produce real JSON output, not empty stdout (the false-negative symptom the isMain entry check closes)");
   const parsed = JSON.parse(result.stdout);
   assert.strictEqual(parsed.assetName, ASSET_NAME);
   assert.ok(fs.existsSync(path.join(scratchRoot, "_release", ASSET_NAME)),

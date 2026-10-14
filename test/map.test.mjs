@@ -1155,7 +1155,7 @@ test("Map candidate entry points ignore a null package.json bin field without cr
   assert.equal(candidates.length, 1, `a null bin field must contribute no candidates beyond the control file: ${candidateLine}`);
 });
 
-// --- CLI entry-point coverage: map.mjs's own `if (isInvokedDirectly())` block, exercised as a real ---
+// --- CLI entry-point coverage: the CLI body behind map.mjs's isMain entry check, exercised as a real ---
 // --- spawned subprocess (create/verify modes, bare-`map` aliasing, and --root), plus the symlink/ -----
 // --- junction entry-point regression proven directly (mirrors test/doctor-project.test.mjs's --------
 // --- established pattern). Fully local: no network, no gh. ---------------------------------------------
@@ -1207,7 +1207,7 @@ test("Map CLI: explicit `map` mode aliases to `create` via a real spawned subpro
   }
 });
 
-test("Map CLI: invoked via a real symlinked/junctioned ancestor directory is still recognized as directly-invoked, running its full CLI body (isInvokedDirectly()'s fs.realpathSync check)", (t) => {
+test("Map CLI: invoked via a real symlinked/junctioned ancestor directory is still recognized as directly-invoked, running its full CLI body (the isMain entry check's fs.realpathSync check)", (t) => {
   const parentDir = tempDir("ctide-map-symlink-entrypoint-");
   const projectRoot = repository();
   try {
@@ -1283,4 +1283,13 @@ test("Map lib/git headState binding: a HEAD naming a missing object is an error,
   assert.strictEqual(result.status, 1);
   assert.match(result.stderr, /Cannot establish repository commit provenance/);
   assert.strictEqual(fs.existsSync(mapTarget(projectRoot)), false);
+});
+
+test("Map lib/git headState binding: an orphan branch in a repository that has commits is an error, never \"Verified at commit: UNBORN\"", () => {
+  const projectRoot = repository();
+  git(projectRoot, ["checkout", "-q", "--orphan", "x"]);
+  const result = mapCli(["create", "--root", projectRoot]);
+  assert.strictEqual(result.status, 1, result.stdout);
+  assert.match(result.stderr, /Cannot establish repository commit provenance/);
+  assert.strictEqual(fs.existsSync(mapTarget(projectRoot)), false, "no map is written");
 });

@@ -17,8 +17,10 @@
 //     child_process.spawnSync for command "git" still intercepts it.
 import cp from "node:child_process";
 
-// diff.ignoreSubmodules=none neutralizes only the user's own setting: a project's per-submodule
-// `ignore` in .gitmodules (or submodule.<name>.ignore) still applies, unlike --ignore-submodules=none.
+// diff.ignoreSubmodules=none overrides the user's setting and git's own default as well: `git diff`
+// normally hides untracked files inside a submodule; here such a submodule counts as changed (`git status`
+// reports it either way). A project's per-submodule `ignore` in .gitmodules (or submodule.<name>.ignore)
+// still applies, unlike --ignore-submodules=none.
 export const NEUTRAL_CONFIG = Object.freeze({
   "core.quotePath": "false",
   "i18n.logOutputEncoding": "UTF-8",
@@ -49,8 +51,9 @@ function gitEnvironment() {
 
 // The raw spawnSync result — { status, signal, stdout, stderr, error, … } — and never a throw: a spawn
 // failure (git missing: error.code "ENOENT"; timeout: "ETIMEDOUT"; output over maxBuffer: "ENOBUFS") is in
-// `error`, a git failure in `status`. stdout/stderr are strings, or Buffers with encoding "buffer" (any
-// other encoding value means "utf8").
+// `error`, a git failure in `status`. Check `error` first: when git did not start, stdout/stderr may be
+// undefined (ENOENT) or null (an argument spawnSync rejects); otherwise strings, or Buffers with encoding
+// "buffer" (any other encoding value means "utf8").
 export function git(root, args, { input, encoding = "utf8", maxBuffer = 64 * 1024 * 1024, timeout = 10_000 } = {}) {
   try {
     return cp.spawnSync("git", ["-C", root, ...NEUTRAL_CONFIG_ARGS, ...args], {
@@ -127,7 +130,7 @@ function worktreeChangedPaths(stdout) {
 }
 
 // Every path that differs between `base` and the working tree, as seen by the index too: the union of
-//   base vs index            git diff --cached --name-only -z --no-renames <base>
+//   base vs index            git diff --cached --name-only -z --no-renames <base> --
 //   index vs working tree    git status --porcelain=v1 -z --no-renames --untracked-files=no
 //   untracked, not ignored   git ls-files -z --others --exclude-standard
 // run at the top level. (base vs index) ∪ (index vs worktree) is exactly (base vs index) ∪ (base vs
@@ -158,7 +161,7 @@ export function changedFiles(root, base = "HEAD") {
   const commit = String(resolved.stdout ?? "").trim();
   if (resolved.status !== 0 || !OBJECT_ID.test(commit)) return unverified("invalid-base");
   const reads = [
-    git(topLevel, ["diff", "--cached", "--name-only", "-z", "--no-renames", commit]),
+    git(topLevel, ["diff", "--cached", "--name-only", "-z", "--no-renames", commit, "--"]),
     git(topLevel, ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=no"]),
     git(topLevel, ["ls-files", "-z", "--others", "--exclude-standard"]),
   ];

@@ -12,7 +12,7 @@ function replaceSensitivePath(text, sensitivePath, replacement) {
 
 // `value` as a single redacted line of at most `limit` characters. The order matters and is fixed:
 //   1. a PEM private-key block is replaced whole — before newlines are collapsed, so the BEGIN/END pair
-//      is still matched across lines;
+//      is still matched across lines; a BEGIN line with no END after it is replaced through to the end;
 //   2. runs of CR/LF/TAB become one space and the ends are trimmed;
 //   3. authorization / api-key / private-key / gh-token / token / secret / password values after ":" or
 //      "=" (bare, or a whole quoted string), Bearer tokens, and GitHub token shapes become [redacted];
@@ -22,7 +22,7 @@ function replaceSensitivePath(text, sensitivePath, replacement) {
 // A non-string value is converted with String(); null and undefined become "".
 export function redactDiagnostic(value, limit = 2000) {
   let text = String(value ?? "")
-    .replace(/-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/gi, "[redacted private key]")
+    .replace(/-----BEGIN [^-\r\n]*PRIVATE KEY-----(?:[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----|[\s\S]*$)/gi, "[redacted private key]")
     .replace(/[\r\n\t]+/g, " ").trim()
     .replace(/(["']?\bauthorization\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^,;|]+)/gi, "$1[redacted]")
     .replace(/(["']?\b(?:api(?:[_-]|\s+)?key|private(?:[_-]|\s+)?key|gh(?:[_-]|\s+)?token|token|secret|password)\b["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^,;|]+)/gi, "$1[redacted]")

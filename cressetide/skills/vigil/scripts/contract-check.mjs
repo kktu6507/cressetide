@@ -99,18 +99,22 @@ export function formatReport({ contractFound, scope, coverage, scopeUnverified }
 
 const COMMIT_ID = /^[a-f0-9]{40,64}$/i;
 
-// Changed paths come from `git diff --name-only <commit>` run in the process's working directory, against
-// --base or else HEAD; called directly by main(). Returns { paths } or { unverified: reason }.
-//   - An explicit --base is first resolved with `rev-parse -q --verify <base>^{commit}`, and only the
-//     resulting commit id reaches `git diff`, so the value is never read as a git option (main() already
-//     refuses one that starts with "-"). A base that does not resolve gives { unverified } — never an empty
-//     list that would read as "scope: clean".
+// Changed paths come from `git diff --name-only <commit> --` run in the process's working directory, against
+// --base or else HEAD; called directly by main() with --base's value, or undefined when the flag was not
+// given. Returns { paths } or { unverified: reason }. The trailing "--" makes git take the revision as a
+// revision only, so a working-tree file named like it (HEAD, or the commit id) cannot make the diff fail.
+//   - An explicit --base (any value given, the empty string included) is first resolved with
+//     `rev-parse -q --verify <base>^{commit}`, and only the resulting commit id reaches `git diff`, so the
+//     value is never read as a git option (main() already refuses one that starts with "-"). A base that does
+//     not resolve, or a diff against it that fails (a spawn error, a timeout, output over the buffer, a
+//     non-zero exit), gives { unverified } — never an empty list that would read as "scope: clean".
 //   - Without --base, a git failure (not a repository, git missing) is swallowed to { paths: [] } as before,
 //     so the checker stays fail-open and never throws to its caller.
 function changedPathsFromGit(base) {
   const cwd = process.cwd();
+  const explicitBase = base !== undefined;
   let revision = "HEAD";
-  if (base) {
+  if (explicitBase) {
     const resolved = git(cwd, ["rev-parse", "-q", "--verify", `${base}^{commit}`]);
     const commit = String(resolved.stdout ?? "").trim();
     if (resolved.error || resolved.status !== 0 || !COMMIT_ID.test(commit)) {
@@ -118,8 +122,10 @@ function changedPathsFromGit(base) {
     }
     revision = commit;
   }
-  const diff = git(cwd, ["diff", "--name-only", revision]);
-  if (diff.error || diff.status !== 0) return { paths: [] };
+  const diff = git(cwd, ["diff", "--name-only", revision, "--"]);
+  if (diff.error || diff.status !== 0) {
+    return explicitBase ? { unverified: "git diff against the resolved --base failed" } : { paths: [] };
+  }
   return { paths: String(diff.stdout ?? "").split(/\r?\n/).filter(Boolean) };
 }
 
@@ -156,7 +162,7 @@ function main(args) {
   let markdown = "";
   try { markdown = fs.readFileSync(contractPath, "utf8"); } catch (e) { markdown = ""; }
   const contract = extractContractJson(markdown);
-  const changed = changedPathsFromGit(values.base || "");
+  const changed = changedPathsFromGit(values.base);
   process.stdout.write(formatReport({
     contractFound: contract != null,
     scope: scopeDiff(contract, changed.paths || []),

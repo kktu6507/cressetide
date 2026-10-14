@@ -82,7 +82,8 @@ Every state is disclosed by name, and only `ok` carries a list:
 
 Lists are capped — at most 200 commits (`pending.commitCount` keeps the uncapped total) and 500 files
 (`pending.fileCount`), with `commitsTruncated` / `filesTruncated` set and a "truncated: showing N of
-M" line in text mode. The five checks below always run, whatever the pending state or size.
+M" line in text mode. The five checks below always run, whatever the pending state or size — only a
+usage error (above) runs none.
 
 ## The five checks
 

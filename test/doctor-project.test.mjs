@@ -115,7 +115,7 @@ function writeIncident(dir, filename, body) {
 // process.argv[1] is left literal (never symlink-resolved) while import.meta.url IS resolved through
 // symlinks by Node's ESM loader, and macOS permanently symlinks /var -> /private/var (os.tmpdir() lives
 // under /var/folders/...), so the naive comparison silently mismatched and the CLI body was skipped
-// entirely -- nothing printed, exit 0. Fixed via isInvokedDirectly()'s fs.realpathSync() comparison,
+// entirely -- nothing printed, exit 0. Fixed via the isMain entry check's fs.realpathSync() comparison,
 // applied at doctor.mjs and 13 sibling call sites in this same commit (see there for the fix). Do not
 // "simplify" either helper back to a plain fs.writeFileSync/fs.cpSync call -- they remain sound, unrelated
 // hardening for the write-visibility race class; they were just never the fix for THIS bug.
@@ -640,11 +640,11 @@ test("CLI binding (readCapped): an over-cap incident journal is read from the he
 });
 
 // --- entry-point regression test: doctor.mjs invoked through a REAL symlinked/junctioned ancestor ---------
-// --- directory (isInvokedDirectly()'s fs.realpathSync fix), proven directly and cross-platform rather -----
+// --- directory (the isMain entry check's fs.realpathSync fix), proven directly and cross-platform rather --
 // --- than relying on macOS's incidental /var -> /private/var temp-dir symlinking (what the tests below, ---
 // --- and the pre-existing red->green/vigil-broken/Fix-8 tests further down, exercise only incidentally) ---
 
-test("doctor.mjs invoked via a path THROUGH a real symlinked/junctioned ancestor directory (fs.symlinkSync, not an incidental temp-dir symlink) is still recognized as directly-invoked and runs its full CLI body, producing the 14 baseline checks -- proves isInvokedDirectly()'s fs.realpathSync comparison directly", (t) => {
+test("doctor.mjs invoked via a path THROUGH a real symlinked/junctioned ancestor directory (fs.symlinkSync, not an incidental temp-dir symlink) is still recognized as directly-invoked and runs its full CLI body, producing the 14 baseline checks -- proves the isMain entry check's fs.realpathSync comparison directly", (t) => {
   const scratchDir = tempDir("ctide-doctor-symlink-entrypoint-");
   try {
     const scratchPlugin = path.join(scratchDir, "cressetide");

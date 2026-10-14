@@ -113,6 +113,32 @@ test("redactDiagnostic(): cut to the limit after redaction — 2000 by default",
   assert.equal(redactDiagnostic(`${"x".repeat(5)} Bearer ${SECRET}`, 12), "xxxxx Bearer");
 });
 
+// P4 review T-5: cutting first would keep the part of a secret before the limit, too short or too broken to
+// match any rule.
+test("redactDiagnostic(): a private key or a token straddling the 2000-character limit leaves no fragment", () => {
+  const body = ["MIIEvQIBADANBgkqhkiG9w0BAQEFAASC", "SECRETKEYMATERIAL0123456789abcdef", "moreKeyMaterialLinesHere"];
+  const pem = ["-----BEGIN RSA PRIVATE KEY-----", ...body, "-----END RSA PRIVATE KEY-----"].join("\n");
+  const prefix = "x".repeat(1940);
+  assert.ok(prefix.length + 1 + 31 < 2000 && prefix.length + 1 + pem.length > 2000, "fixture sanity: BEGIN fits under the limit, the key does not");
+  const keyed = redactDiagnostic(`${prefix} ${pem}`);
+  for (const line of body) assert.ok(!keyed.includes(line.slice(0, 8)), `no key material: ${line.slice(0, 8)}`);
+  assert.equal(keyed, `${prefix} [redacted private key]`);
+
+  const token = `ghp_${"A1b2C3d4E5".repeat(4)}`;
+  const tokenPrefix = "y".repeat(1990);
+  const tokened = redactDiagnostic(`${tokenPrefix} ${token} trailing text`);
+  assert.equal(tokened.length, 2000);
+  assert.ok(!tokened.includes("ghp_") && !tokened.includes("A1b2C3"), tokened.slice(1980));
+  assert.ok(`${tokenPrefix} [redacted] trailing text`.startsWith(tokened), tokened.slice(1980));
+});
+
+// P4 review: a BEGIN line with no END after it used to leave the key body in place.
+test("redactDiagnostic(): a private key with no END line is redacted through to the end", () => {
+  const unterminated = redactDiagnostic(`load failed: -----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg\n${SECRET}\nno end line`);
+  assert.equal(unterminated, "load failed: [redacted private key]");
+  assert.equal(redactDiagnostic(`-----BEGIN EC PRIVATE KEY-----\r\n${SECRET}`), "[redacted private key]");
+});
+
 // publish-release.mjs keeps exporting its old name for the release tests, as lib's function itself — one
 // copy, not a second implementation that merely agrees on these inputs.
 test("publish-release's exported redactReleaseDiagnostic is cressetide/lib/redact.mjs's redactDiagnostic itself", () => {
