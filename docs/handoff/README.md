@@ -27,7 +27,9 @@
 | 第 1 輪修復 R2-1～R2-5（含使用者核准的兩項順手修正） | 完成 | `ec91bf6` |
 | 第 1 輪複審 2（intent / test / code + arbiter） | **FIX REQUIRED**（無 blocker；2 個 major，都在 ship 的淺層偵測） | — |
 | 第 1 輪修復 R3-1～R3-5 | 完成；四個結案條件逐條核對成立 → **第 1 輪 READY** | `64c2564` |
-| P3 validator 合併、overlay 負向測試、測試共用工具（含使用者追加項目） | 完成，**待中途 review** | `53b2e18` |
+| P3 validator 合併、overlay 負向測試、測試共用工具（含使用者追加項目） | 完成 | `53b2e18` |
+| P3 中途 review（intent / test / code + arbiter） | **FIX REQUIRED**（無 blocker，3 個 major） | — |
+| P3 修復 P3-R1～R8 | 完成；六個結案條件逐條核對成立 → **P3 READY**（見 [p3-redgreen.md](p3-redgreen.md)） | 本段 commit |
 | P4 → P13 | 未開始 | — |
 
 逐步紀錄在 [progress.md](progress.md)，第 1 輪 review 的完整內容在 [review-round1.md](review-round1.md)，實機探測結果在 [probes.md](probes.md)。
@@ -67,27 +69,41 @@
 
 ## 下一步（依序）
 
-1. **第 1 輪已結案（READY，2026-10-14）**：複審 2 的 R3 修復在 `64c2564` 完成，arbiter 列的四個「只憑證據結案」條件都逐條核對成立，見 [review-round1.md](review-round1.md) 的「Round-1 closure」和 [r2-redgreen.md](r2-redgreen.md) 的 R3 一節。下一步是 P3。
-2. **P3**：validator 合併成 `validate({root, read})`，負向測試改用 overlay reader，不再複製整個 repo；`helpers.mjs` 和 `support.mjs` 合併，只留一個 `makeRepo`，temp 目錄要清掉。另外兩項要求：
+1. **第 1 輪已結案（READY，2026-10-14）**：複審 2 的 R3 修復在 `64c2564` 完成，arbiter 列的四個「只憑證據結案」條件都逐條核對成立，見 [review-round1.md](review-round1.md) 的「Round-1 closure」和 [r2-redgreen.md](r2-redgreen.md) 的 R3 一節。
+2. **P3 已結案（READY，2026-10-14）**：下面的修復 P3-R1～R8 已完成，六個結案條件都逐條核對成立（[p3-redgreen.md](p3-redgreen.md)）。**下一步是 P4。** 以下保留當時的判決與條件，供對照。P3 中途 review（範圍 `37ea5df..53b2e18`）判定 FIX REQUIRED，3 個 major：
+   - **MJ-1**：validator 把「存在但讀不到」的檔案當成不存在，§6／§7 默默通過（舊版會失敗）。
+   - **MJ-2**：CLI 的失敗路徑（exit code、`FAILED` 輸出）沒有任何測試了。
+   - **MJ-3**：開發者全域 `core.abbrev=12` 會讓 `ship.test.mjs:693` 變紅（fixture 算的短 SHA 跟 production 的 `%h` 長度不同）。
+
+   修復清單：R1 讀取錯誤只有 `ENOENT`／`ENOTDIR`／`EISDIR` 算不存在，其他回報 `cannot read <rel>: <code>`；R2 在 temp 目錄只複製兩支 validator 檔，測 CLI 失敗路徑；R3 `makeRepo` 釘住 repo-local `core.abbrev`；R4 `gitEnv` 多清 `GIT_CONFIG`、`GIT_AUTHOR_*`／`GIT_COMMITTER_*`、`GIT_NAMESPACE`，並釘住 `core.hooksPath`；R5 overlay 的刪除改成跟 `git ls-files -co` 一致，共用 `SKIP_DIRS`；R6 `validate({root, read})` 沒給 `files` 時丟 `TypeError`；R7 測試包裝只在 `fn.length === 2` 時用 callback 形式，保留函式名稱；R8（使用者 2026-10-14 決定）README 的 `##` 段落數恢復舊的原始計數比對，與 §8 略過 code fence 的比對並存。
+
+   **只憑證據結案的六個條件**（全部成立才算，否則跑 code + test 的窄範圍複審）：(1) diff 只動 `validate-structure-core.mjs`、`validate-structure.test.mjs`、`helpers.mjs`、`helpers.test.mjs`，既有斷言與 regex 不變（R5 的 overlay 函式與標頭註解除外）；(2) 每個 R 項目的測試對每個指定 mutant 各自變紅、修好後變綠，紀錄格式同 `r2-redgreen.md`；(3) 全新 TEMP 跑全套 exit 0、0 失敗、skip 仍是 6、0 個 `ctide-*` 殘留，`npm run validate` 0，`contract-check --base 53b2e18` 0（`cressetide/` 沒變才可沿用 plugin validate 結果）；(4) 7 個用到 git 的測試檔加 `helpers.test` 在 set H 加 `core.abbrev = 12` 下全過、0 殘留；(5) 在 Windows 用 icacls 拒讀重現 MJ-1，CLI 要 exit 1 並印出 `FAILED` 與兩行 `cannot read`；(6) `validate-structure.test` 和 `helpers.test` 在 Node 22 也過。
+3. **P3（已完成的內容與要求，供對照）**：validator 合併成 `validate({root, read})`，負向測試改用 overlay reader，不再複製整個 repo；`helpers.mjs` 和 `support.mjs` 合併，只留一個 `makeRepo`，temp 目錄要清掉。另外兩項要求：
    - **temp helper 要涵蓋所有沒清理的測試檔**：`ship.test.mjs`、`contract-check.test.mjs`、`support.mjs`、`helpers.mjs` 等所有 `mkdtempSync` 都改走同一個會自動清理的 helper（`t.after`），並用全套 `npm test` 前後的 `ctide-*` 目錄數量比對來證明（AC-20）。
    - **validator 只掃追蹤中、未被忽略的檔案**（使用者 2026-10-14 核准）：scratch 檔與文字完整性檢查改用 `git ls-files -co --exclude-standard`，本機 gitignored 的 `.ctide/collaboration/` dogfood 資料才不會讓 `npm run validate` 失敗。最終報告列為核准的順手修正。
    - **測試用的 git 要密封**（複審 2）：fixture 裡的 git 不受開發者全域設定影響，例如 `merge.verifySignatures=true` 會讓 `ship.test.mjs` 的 merge fixture 假紅（新舊測試都有）。用一個集中的 fixture-git helper 處理，不要逐個測試補旗標。
    - **SSH 簽章測試的 skip 要看能力**（複審 2）：除了 `ssh-keygen` 能不能啟動，git < 2.34 或 OpenSSH < 8.1 也要說明原因後 skip，不能直接紅燈。
-3. **P4**：建立共用模組 `cressetide/lib/`，刪掉 publish-release-core。期限在這一階段的待辦：
-   - `git()` 的 1 MiB maxBuffer
-   - contract-check 移除 flag 的 CLI 測試
-   - Doctor node 列的綁定測試
-4. **P5**：重寫 hooks、移除 Copilot、debug 遮蔽 secret、failure memory 支援 `##`／`###`。期限在這一階段的待辦：
+4. **P4**：建立共用模組 `cressetide/lib/`，刪掉 publish-release-core。期限在這一階段的待辦：
+   - `git()` 的 1 MiB maxBuffer。
+   - contract-check 移除 flag 的 CLI 測試。
+   - Doctor node 列的綁定測試。
+   - `counted.status` 的 fault-injection 測試，並把 `rev-list --count` 改成嚴格解析 `/^\d+$/`（第 1 輪 F-j）。
+   - ship 搬到 `lib/git` 時，逐一檢查 code-reviewer 留下的四條線索：resolveMarker 讀 tag 清單失敗、tagReady 的 rev-parse 失敗、子目錄 `--cwd` 的 changelogTouched、HEAD 損壞被標成 `no-release-tag`。
+   - **lib/git 集中中和使用者 git 設定**（複審 2）：用明確的 `-c key=value` 覆寫，包括 `i18n.logOutputEncoding`，並補一個非 ASCII commit 標題的測試。**不要**用 `GIT_CONFIG_GLOBAL`／`NOSYSTEM` 整個隔離，否則會丟掉 `safe.directory`，遇到「dubious ownership」的 repo 每次讀取都會失敗。
+   - **lib/git 也要丟掉繼承來的 git 環境變數**（P3 review m-1）：root 是明確給定的，所以忽略 `GIT_DIR`、`GIT_WORK_TREE`、`GIT_INDEX_FILE`、`GIT_COMMON_DIR`、`GIT_OBJECT_DIRECTORY`、`GIT_ALTERNATE_OBJECT_DIRECTORIES`；validator 的 `gitFiles` 改用同一套規則。補測試：在繼承絕對路徑 `GIT_DIR`／`GIT_INDEX_FILE` 的環境下跑 `gitFiles(fixture)` 和一條 production 路徑。
+   - **P4 計畫核准時請使用者決定**：要不要用 `--ignore-submodules=none` 覆寫 `diff.ignoreSubmodules`。不覆寫的話，submodule 被移動時 tagReady 可能誤判 `pass`，pending 也會漏列 gitlink；覆寫的話，連專案自己在 `.gitmodules` 設的 `ignore` 也會被蓋掉。
+5. **P5**：重寫 hooks、移除 Copilot、debug 遮蔽 secret、failure memory 支援 `##`／`###`。期限在這一階段的待辦：
    - failure memory 的 `--log` usage 檔要寫進狀態模型。
    - **D-4 的硬性要求**：plan-gate 的 4 個 F1 計時測試（sed / perl / git apply / dd）改成 in-process 量 classifier 時間（例如 `< 250 ms`），並在 scratch 副本拿掉 `{0,200}` 上限時錄到紅燈；做不到紅燈就不算完成。
-5. **P6**：SubagentStop 紀錄器加上新的 Stop；要包含一個 ship session 的回歸案例。這個案例的 commit subject 要含 `READY`、`major`、`minor`，報告裡也要有否定句「never means 'safe to ship'」，新的 Stop 都必須保持安靜（第 1 輪複審 F-k）。
-6. **P7 → P13**：照計畫做。注意 **P8 第一次改 prose 之前**，要先把被刪掉的 fast-lane 和 test-reviewer QA 輸出的 prose 守衛補回來（拿掉 TP 的部分）。同一個期限內，還要替低／中風險 run 定義實作階段可引用的 edge 來源（第 1 輪複審 F-l）。
-   - **P4** 另外要處理：`counted.status` 的 fault-injection 測試，並把 `rev-list --count` 改成嚴格解析 `/^\d+$/`（F-j）；ship 搬到 `lib/git` 時，逐一檢查 code-reviewer 留下的四條線索（resolveMarker 讀 tag 清單失敗、tagReady 的 rev-parse 失敗、子目錄 `--cwd` 的 changelogTouched、HEAD 損壞被標成 `no-release-tag`）。
-   - **P4 的 lib/git 要集中中和使用者 git 設定**（複審 2）：用明確的 `-c key=value` 覆寫，包括 `i18n.logOutputEncoding`，並補一個非 ASCII commit 標題的測試。**不要**用 `GIT_CONFIG_GLOBAL`／`NOSYSTEM` 整個隔離，否則會丟掉 `safe.directory`，遇到「dubious ownership」的 repo 每次讀取都會失敗。
-   - **P4 計畫核准時請使用者決定**：要不要用 `--ignore-submodules=none` 覆寫 `diff.ignoreSubmodules`。不覆寫的話，submodule 被移動時 tagReady 可能誤判 `pass`，pending 也會漏列 gitlink；覆寫的話，連專案自己在 `.gitmodules` 設的 `ignore` 也會被蓋掉。
-   - **P11** 改 README 時：`ship.test.mjs` 的 README 測試只讀每個標題下的第一行，段落重新換行時要一起檢查。
+   - **helper 整理**（P3 review m-7）：`execHook` 和 `runHook` 名字太像、行為不同，改名（例如 `hookStdout`），改用 `process.execPath`；只在模組內用到的 `hardenGitSigning`、`gitEnv` 不再匯出，或寫明用途。
+   - **validator 負向測試補齊，期限在第 2 輪 review 的 packet 之前**（P3 review m-12、m-13）：擴充檢查裡沒被測到的子條件（identity 的 `pkg.name`／`plugin.name`、各 README 的 `/ctide:*` token、`map` 的 manual-only 旗標、hook 語法檢查的 ESM 分支、`.yml`／`.lycheeignore` 文字類型、U+FF82、`~` 結尾的 scratch 檔），以及 25 個從來沒有負向測試的核心檢查。優先順序：5g HSO accept-set；5f／5j／5k／9f 的檔案不存在保護；5e cannot-locate；plugin.json 欄位與 semver；frontmatter；hooks.json 引用不存在的 hook、README 的 hook 名稱與連結。9d 相關的不補（AC-9 會整個拿掉 9d）。
+6. **P6**：SubagentStop 紀錄器加上新的 Stop；要包含一個 ship session 的回歸案例。這個案例的 commit subject 要含 `READY`、`major`、`minor`，報告裡也要有否定句「never means 'safe to ship'」，新的 Stop 都必須保持安靜（第 1 輪複審 F-k）。
+7. **P7 → P13**：照計畫做。
+   - **P8 第一次改 prose 之前**，要先把被刪掉的 fast-lane 和 test-reviewer QA 輸出的 prose 守衛補回來（拿掉 TP 的部分）。同一個期限內，還要替低／中風險 run 定義實作階段可引用的 edge 來源（第 1 輪複審 F-l）。
+   - **P11** 改 README 時：`ship.test.mjs` 的 README 測試只讀每個標題下的第一行，段落重新換行時要一起檢查。P11 第一次跑 CI 時，量 Windows 全套測試時間離 20 分鐘上限還剩多少（P3 review c-1）。
+   - **多餘的手動清理區塊**（P3 review m-6）：`tempDir` 已經會自動清理，下列檔案裡的 `try/finally fs.rmSync` 是重複的，哪個階段碰到該檔就順手刪掉：P4 的 release-publisher（40 個，檔案會刪）、release-cli（14）；P5 的 failure-consolidate、failure-retrieve（共 5）；P6 的 orchestration-check（5）；P7 的 map、doctor-project、regression-delta（共 9）；P10 的 model-provenance（3，檔案會刪）。**P13 收尾時 grep 要歸零**，只保留清理非 `tempDir` 目錄的區塊（例如 `globalDir`）和 orchestration-check 刻意提早釋放的那幾個。
 
-每個階段的共同要求：`npm run validate`、`npm test`、`npx --yes @anthropic-ai/claude-code@2.1.272 plugin validate --strict ./cressetide` 三項都要綠，用 `git grep` 確認該清的東西零命中，然後 commit。只有 D-2 那三個、D-4 那四個計時測試例外。在這台機器上，因為本機有 `.ctide/collaboration/` dogfood 資料，P3 修好 validator 之前，三項驗證都要在乾淨的 detached worktree 裡跑。每個階段結束時，順手清掉多餘的檔案（scratch 副本、用完的 worktree、測試漏掉的 `ctide-*` 暫存目錄）。
+每個階段的共同要求：`npm run validate`、`npm test`、`npx --yes @anthropic-ai/claude-code@2.1.272 plugin validate --strict ./cressetide` 三項都要綠，用 `git grep` 確認該清的東西零命中，然後 commit。只有 D-2 剩下的兩個、D-4 那四個計時測試例外。P3 之後 validator 只掃追蹤中、未被忽略的檔案，主 checkout 可以直接驗證，不必再用乾淨的 worktree。測試的暫存殘留用「把 TEMP／TMP／TMPDIR 指到全新目錄、跑完數 `ctide-*`」來量。每個階段結束時，順手清掉多餘的檔案（scratch 副本、用完的 worktree、測試漏掉的 `ctide-*` 暫存目錄）。
 
 ## 已確定的決定（不要重新討論）
 
@@ -108,6 +124,8 @@
   - 效率實驗測試（P10 會刪）漏出的約 237 個 `ctide-eff*` 暫存目錄，P3 就修到 0（對 eval/efficiency 的 driver 注入 tmpdir）。
   - validator 的擴充檢查從來沒有負向測試保護（舊測試在複製出來的 repo 裡跑 CLI，擴充檢查卻驗證真正的 repo），P3 每個擴充檢查至少補一個 overlay 負向案例。
   - P3 結束後加一輪中途 review（intent / test / code + arbiter），列為偏離計畫。
+- **D-5**（2026-10-14，P3 review arbiter 裁定、使用者核准）：temp 清理續用 `helpers.mjs` 的 `test` 包裝（AsyncLocalStorage 帶 `t`，`t.after` 收尾），接受測試報告的位置都顯示 `helpers.mjs`。沒選的方案：逐點傳 `t`（約 524 處，所有 builder 都要改簽名）；root 層 `beforeEach`／`afterEach` 堆疊（Node 24 實測循序與巢狀可行，但並行測試會刪錯目錄，Node 22 未驗）。改回的條件：P11 決定 CI 需要檔案位置標註，或 node:test 提供公開的位置覆寫；屆時成本是每個檔案改一行 import。
+- **README `##` 段落數比對**（2026-10-14，使用者決定）：validator §8 略過 code fence 的比對，和舊 `structure.test` 的原始計數比對兩者並存（P3-R8）。
 - **依實機探測定的設計**（見 [probes.md](probes.md)）：
   - hooks.json 用 shell 形式：`node "${CLAUDE_PLUGIN_ROOT}/hooks/<x>.mjs"`
   - 刪掉 `agents[]`，改靠 auto-discovery
@@ -159,11 +177,17 @@
    - 預防：要求模型逐字轉述的文字裡，不放機器解析的 token；測試用文件上的字面值，掃描整份輸出不切任何區段；另寫一個端到端測試，把真實的最後訊息餵給真的 hook，並加一個對照組證明 hook 確實會觸發。改寫機器解析 token 的措辭時，要 grep 所有文件、所有語言裡的轉述（例如 README×3），不只逐字引用的那幾處。
    - tags: machine-token, verbatim-disclaimer, hook-false-positive, tautological-oracle
 3. **解析 porcelain 指令的輸出時，使用者的 git 設定會改變輸出形狀。** `column.ui=always` 讓 `git tag` 把所有 tag 印成一行，`log.showSignature=true` 在 `git log --format` 前面多印簽章結果，`tag.sort` 改變同版號 tag 的先後。修 M2 時改用 `git tag --merged HEAD`，在預設設定下全綠，卻在這些設定下把原本 `ok` 的結果變成 `no-release-tag`。
-   - 預防：程式要解析的 git 輸出，一律明確關掉會改形狀的設定（`--no-column`、`--sort=<key>`、`--no-show-signature`），或改用 plumbing（`for-each-ref`）；測試裡要有一個在敵意設定（`column.ui=always`、`tag.sort=-refname`、`log.showSignature=true`）下跑的案例。會改變輸出「內容」的設定也一樣（`i18n.logOutputEncoding`、`status.showUntrackedFiles`、`diff.ignoreSubmodules`）；在 git 包裝層用明確的 `-c key=value` 集中中和，不要整個隔離使用者設定（會丟掉 `safe.directory`）。
-   - tags: git-porcelain, user-config, output-parsing, regression-from-fix
+   - 預防：程式要解析的 git 輸出，一律明確關掉會改形狀的設定（`--no-column`、`--sort=<key>`、`--no-show-signature`），或改用 plumbing（`for-each-ref`）；測試裡要有一個在敵意設定（`column.ui=always`、`tag.sort=-refname`、`log.showSignature=true`）下跑的案例。會改變輸出「內容」的設定也一樣（`i18n.logOutputEncoding`、`status.showUntrackedFiles`、`diff.ignoreSubmodules`）；在 git 包裝層用明確的 `-c key=value` 集中中和，不要整個隔離使用者設定（會丟掉 `safe.directory`）。反過來也成立：fixture git 密封了，production 卻仍讀使用者設定時，fixture 算出的期望值會對不上（全域 `core.abbrev=12`：`%h` 是 12 碼，`rev-parse --short` 是 7 碼）。會改輸出的設定在 fixture repo 用 repo-local 釘住，敵意設定組要包含 `core.abbrev`。
+   - tags: git-porcelain, user-config, output-parsing, regression-from-fix, hermetic-fixture
 4. **「其他一律算未知」的規則，每一種「其他」都要各自有測試；情境檢查不能擋在權威探測前面。** R2-3 的三態 shallow 探測只測了四種非答案中的兩種（回顯旗標、逾時）；把「非零結束」或「空輸出」改回「不是 shallow」的 mutant 93/93 全綠，卻產生 R2-3 要消除的假 `tagReady: pass`。同一次修正為了不在非 git 目錄印出「可能被截斷」，先問 `--is-inside-work-tree` 再問探測，結果 bare shallow clone 和 `<clone>/.git` 裡探測明明答 `true`，「history truncated」也被吃掉（從 2306078 退步）。
-   - 預防：規格列舉的每一種輸入（含每一種非答案）各一個測試，斷言使用者看得到的結果，每個分支各跑一個 mutant、分開記錄；先問權威探測，只有它沒答案時才用情境檢查來分類。
-   - tags: tri-state, unknown-branch, mutation-survivor, guard-ordering, regression-from-fix
+   - 預防：規格列舉的每一種輸入（含每一種非答案）各一個測試，斷言使用者看得到的結果，每個分支各跑一個 mutant、分開記錄；先問權威探測，只有它沒答案時才用情境檢查來分類。用 regex 比對整串失敗訊息的負向測試也一樣：新增的訊息可能剛好符合舊 regex，讓舊測試失去鑑別力（P3a 實際發生過）；每個負向測試都要用「停用對應的檢查點」證明會紅。
+   - tags: tri-state, unknown-branch, mutation-survivor, guard-ordering, regression-from-fix, oracle-collision
+5. **把 CI 關卡重構成「讀取器＋回傳清單」時，失敗路徑在兩層都可能悄悄變成通過。** P3 的 `diskReader` 把所有讀取錯誤都當成「不存在」，讀不到的檔案讓 §6／§7 直接放行（舊版會 exit 1）；負向測試全改成 in-process 呼叫之後，把 CLI 改成永遠 exit 0 的 mutant 仍然 77/77 全綠。
+   - 預防：只有 `ENOENT`／`ENOTDIR` 算不存在，其他錯誤回報成失敗，測試放一個會丟錯的 reader；薄包裝的每個結束路徑至少留一個端到端測試，用改 exit code 的 mutant 證明會紅。
+   - tags: ci-gate, fail-open, error-classification, refactor-regression, exit-path-coverage
+6. **`execFileSync` 的 stdin 設成 `"ignore"` 時，`input` 會被丟掉。** P3b 把 ship 的 fast-import fixture 改走共用的 `git()` 之後，fast-import 讀到空的 stdin、exit 0、什麼都沒匯入，沒有任何錯誤。
+   - 預防：有 `input` 就用 `"pipe"`；fixture 要斷言結果（例如匯入後的 commit 數），不能只看 exit code。
+   - tags: node, child_process, test-fixture, silent-no-op
 
 ## 這個資料夾的檔案
 
@@ -172,4 +196,5 @@
 - [progress.md](progress.md)：逐步進度
 - [probes.md](probes.md)：P0 實機探測紀錄
 - [review-round1.md](review-round1.md)：第 1 輪 review 的判決、packet、findings，以及第 1 輪複審（2026-10-14）
-- [r2-redgreen.md](r2-redgreen.md)：R2 修復逐項的 red→green 與 mutant 紀錄
+- [r2-redgreen.md](r2-redgreen.md)：R2、R3 修復逐項的 red→green 與 mutant 紀錄
+- [p3-redgreen.md](p3-redgreen.md)：P3 修復（P3-R1～R8）的 red→green、mutant 與六個結案條件紀錄
