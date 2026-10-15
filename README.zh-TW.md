@@ -41,7 +41,7 @@ Incident flow  警報 -> Triage -> 保全證據 -> 先止血（可回復的動�
 - **兩條 flow**：dev（[`vigil`](#開發流程vigil)）與 incident（[`salvage`](#事故應變流程salvage)）。事故的正式修復會以 `--lite` run 交回 dev flow，並以「事故的 reproduction 轉綠」作為主要 acceptance criterion。
 - **五個 skill**：`vigil` 與 `salvage` 會自行啟用（不是小修小補就會自動接手／聽到像事故的描述就會出動）；[`map`](#ops-地圖map)、[`doctor`](#健康檢查doctor) 與 [`ship`](#release-readiness-檢查ship) 手動啟動（`/ctide:map`、`/ctide:doctor`、`/ctide:ship`）。
 - **[11 個 subagent](#開發流程vigil)**：一位 navigator、一位 implementer、七位依風險挑選的 reviewer、一位 cartographer，以及判定就緒的 arbiter。
-- **[6 個 hook](#hooks-與安全模型)**：local-only、零依賴的 Node guardrails，包含 plan gate、破壞性指令 guard、contract guard、failure-memory 注入、compaction 提醒、delivery-claim 檢查。
+- **[3 個 hook 入口](#hooks-與安全模型)**：local-only、零依賴的 Node guardrails——同一個 PreToolUse 入口跑 plan gate、破壞性指令與 contract 三項檢查；同一個 SessionStart 入口負責 failure-memory 注入與 compaction 提醒；另有 delivery-claim 檢查。
 - **[學習迴圈](#學習迴圈)**：事故 postmortem 與 escaped 缺陷留下的教訓會寫進 committed 的 failure memory，下一次 plan 會讀它。
 
 ### 專案佈局
@@ -173,7 +173,7 @@ Verdicts 是 release-readiness decisions，不是絕對真理。請看 [`docs/ho
 | **— 重回正式環境** | 走平常的 deploy 路徑部署、驗證先前宣告的 fixed-check、守完觀察期，再一次一個地恢復先前的止血措施。 |
 | **7 · 收尾 + postmortem** | 收尾 checklist（止血措施全數恢復、資料修復完成、抽出的資料已刪除、journal 關閉），加上一份簡短、不咎責的 postmortem，內含餵入[學習迴圈](#學習迴圈)的 gate-gap 分析。 |
 
-- **Decision cards**：一次一張，內容是建議、成本／取捨、可回復性，以及核准後會執行的確切內容。破壞性或影響正式環境的動作永遠停在一張 card 上，絕不打包進先前核准過的 plan；`destructive-guard.js` hook 可能額外詢問，那是預期行為，絕不繞過。
+- **Decision cards**：一次一張，內容是建議、成本／取捨、可回復性，以及核准後會執行的確切內容。破壞性或影響正式環境的動作永遠停在一張 card 上，絕不打包進先前核准過的 plan；`pre-tool-use.mjs` 的破壞性指令檢查可能額外詢問，那是預期行為，絕不繞過。
 - **事故 journal**：每個階段都 append 到 `.ctide/incidents/INCIDENT-<date>-<slug>.md`，committed 的稽核軌跡（時間線、每個動作與核准者、證據、red→green 記錄）。先消毒再寫入：任何東西進 journal 前，PII 與 secrets 都先遮罩。
 - **正式資料安全閘門**：reproduction 需要真實資料時，只做最小抽取（只取證據指涉的紀錄，絕不 dump 整庫）、資料進入 AI context *之前*先遮罩、政策禁用正式資料時改用 synthetic data；抽出的資料是暫時性的，永不 commit、收尾時刪除。
 
@@ -213,15 +213,12 @@ run 與 run 之間，ctide 會把學到的東西接起來——輸的、贏的�
 
 ## Hooks 與安全模型
 
-只要 plugin 被啟用，六個零依賴 Node hooks 會在每個 session 執行。它們 local-only、fail-open，只使用 Node built-ins（`fs`、`os`、`path`、`crypto`）。
+只要 plugin 被啟用，三個零依賴的 Node hook 入口會在每個 session 執行。它們 local-only、fail-open，只使用 Node built-ins（`fs`、`os`、`path`、`crypto`）。
 
 | Hook 腳本 | 觸發事件 | 用途 |
 |---|---|---|
-| `plan-gate.js` | `PreToolUse` | 在 plan mode 中擋下 edit tools 與明顯 Bash/PowerShell writes。 |
-| `destructive-guard.js` | `PreToolUse` | 對 `rm -rf`、`git reset --hard`、`git push --force`、PowerShell `Remove-Item -Recurse`、`terraform destroy`、`kubectl delete namespace`、`docker volume rm/prune`、資料庫 drop 類 CLI（`dropdb`、`mysqladmin`、`redis-cli flushall`）等狹義不可復原 destructive commands 先詢問。 |
-| `contract-guard.js` | `PreToolUse` | 守著合約不被中途弱化：編輯若會刪掉或改寫驗收條件、移除 `mustNotChange`／範圍清單項目、調降風險（合約在 `.ctide/output/contract.md`，含舊版 `.ctide/legacy-output/`），或整段刪除 `design.md` 章節，先問過你才放行；對 `.claude/settings*.json` 的編輯若會把任何 ctide guard 開關從開翻成關（連新建一個 settings 檔來翻也算），同樣先問。 |
-| `load-failure-memory.js` | `SessionStart` | 讀取專案 `.ctide/memory/FAILURE_MEMORY.md`（舊版 `ai/FAILURE_MEMORY.md` 作為唯讀 fallback），否則讀全域 `~/.claude/FAILURE_MEMORY.md`，並注入 nonce-fenced、untrusted digest。 |
-| `compact-fidelity.js` | `SessionStart` · `compact` | context compaction 後重新注入精簡 workflow-continuity reminder。 |
+| `pre-tool-use.mjs` | `PreToolUse` | 依序跑三項檢查。plan gate：在 plan mode 中擋下 edit tools 與明顯 Bash/PowerShell writes。破壞性指令檢查：對 `rm -rf`、`git reset --hard`、`git push --force`、PowerShell `Remove-Item -Recurse`、`terraform destroy`、`kubectl delete namespace`、`docker volume rm/prune`、資料庫 drop 類 CLI（`dropdb`、`mysqladmin`、`redis-cli flushall`）等狹義不可復原 destructive commands 先詢問。contract 檢查守著合約不被中途弱化：編輯若會刪掉或改寫驗收條件、移除 `mustNotChange`／範圍清單項目、調降風險（合約在 `.ctide/output/contract.md`，含舊版 `.ctide/legacy-output/`），或整段刪除 `design.md` 章節，先問過你才放行；對 `.claude/settings*.json` 的編輯若會把任何 ctide guard 開關從開翻成關（連新建一個 settings 檔來翻也算），同樣先問。 |
+| `session-start.mjs` | `SessionStart` | 讀取專案 `.ctide/memory/FAILURE_MEMORY.md`（舊版 `ai/FAILURE_MEMORY.md` 作為唯讀 fallback），否則讀全域 `~/.claude/FAILURE_MEMORY.md`，注入 nonce-fenced、untrusted 的「標題＋tags」索引；檔案裡沒有 `##`／`###` entry 時只注入一行指向該檔的指標。`compact` 之後另外補上精簡的 workflow-continuity 提醒。 |
 | `orchestration-check.js` | `Stop` | delivery claim 與 missing panel、blocking verdict、failed/unrun verification、missing live-run evidence 矛盾時提示。 |
 
 這些 hooks 不會刪檔、不會改系統設定、不會改權限、不會開 subprocess、不會下載 code，也不會傳送 code/transcript。它們是 guardrails，不是 sandbox；詳見 [`SECURITY.md`](SECURITY.md) 與 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
@@ -236,12 +233,12 @@ hooks 也絕不遷移、寫入或刪除 ctide 的專案檔案；舊佈局的一�
 
 | Key | 停用的東西 |
 |---|---|
-| `planGate` | `plan-gate.js`：plan mode 期間強制的編輯攔阻 |
-| `destructiveGuard` | `destructive-guard.js`：執行狹義不可復原 destructive commands 前的詢問 |
-| `contractGuard` | `contract-guard.js`：contract／design 弱化前的詢問，含把這些 guard flag 關閉前的詢問 |
-| `preserveOnCompact` | `compact-fidelity.js`：context compaction 後的 workflow-continuity 提醒 |
+| `planGate` | `pre-tool-use.mjs` 的 plan gate：plan mode 期間強制的編輯攔阻 |
+| `destructiveGuard` | `pre-tool-use.mjs` 的破壞性指令檢查：執行狹義不可復原 destructive commands 前的詢問 |
+| `contractGuard` | `pre-tool-use.mjs` 的 contract 檢查：contract／design 弱化前的詢問，含把這些 guard flag 關閉前的詢問 |
+| `preserveOnCompact` | `session-start.mjs` 的 compaction 提醒：context compaction 後的 workflow-continuity 提醒 |
 
-設定檔格式錯誤或讀不到，會視為「未停用」（fail-safe：guard 照常運作）。範例——針對單一專案停用 `contract-guard.js`：
+設定檔格式錯誤或讀不到，會視為「未停用」（fail-safe：guard 照常運作）。範例——針對單一專案停用 contract 檢查：
 
 ```json
 // .claude/settings.json
@@ -255,7 +252,7 @@ hooks 也絕不遷移、寫入或刪除 ctide 的專案檔案；舊佈局的一�
 | 變數 | 設定後的效果 |
 |---|---|
 | `CTIDE_ENFORCE_STOP` | 設成 `1`、`true`、`yes` 或 `on`（不分大小寫），會讓 `orchestration-check.js` 這個 Stop hook 在 verdict/evidence 矛盾時直接硬擋 delivery，而不只是提示。其他值（包含 `0`）一律維持提示 |
-| `CTIDE_HOOK_DEBUG` | 設成任何非空值都會讓每個 hook 多印一行 debug trace；只有未設定或空值才停用（[`/ctide:doctor`](#健康檢查doctor) 與手動排除故障會用到） |
+| `CTIDE_HOOK_DEBUG` | 設成 `1`、`true`、`yes` 或 `on`（不分大小寫）時，PreToolUse 與 SessionStart hook 會多寫一行 debug trace 到 stderr 和暫存目錄的 `ctide-hook.log`，寫出前先遮蔽 secret；其他值（含 `0`）一律不寫（[`/ctide:doctor`](#健康檢查doctor) 與手動排除故障會用到） |
 
 每個變數確切接受哪些值，以及這些值如何對照 hook 的實際行為檢查，詳見 [`docs/runtime-contract.md`](docs/runtime-contract.md#machine-checked-facts)（英文）。
 
@@ -290,12 +287,11 @@ $env:CTIDE_ENFORCE_STOP = "1"; claude  # PowerShell
 
 ## 相容性
 
-ctide 以 Claude Code 為主要 runtime。GitHub Copilot CLI 屬於 **unverified**：目前沒有任何 Cressetide run 被記錄下來，因此不主張任何行為——最多只可能部分相容，Claude Code 專屬的 hook 輸出也可能完全送不到。
+ctide 只支援 Claude Code。
 
 Compatibility 與 conformance smoke 詳情請看 [`docs/compatibility.md`](docs/compatibility.md)（英文）。重點如下：
 
 - Claude Code 是主要 runtime。
-- GitHub Copilot CLI：目前沒有記錄任何 Cressetide 專屬的 live run，因此不主張 skills、subagents、`PreToolUse`、`SessionStart` 或 `Stop` 在該處的任何行為。視為 unverified。
 - Claude Code hook/agent contracts 是 moving target。[`RELEASING.md`](RELEASING.md) 定義的是 release **程序**；某次 release 實際記錄下來的證據放在 [`EVIDENCE.md`](EVIDENCE.md)。
 
 ## 信任與發佈

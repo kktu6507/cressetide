@@ -62,9 +62,9 @@ of a project consuming the plugin. Before sharing any artifact:
 3. preserve timestamps and source identity without exposing sensitive payloads;
 4. apply the organization's incident and evidence-retention policy.
 
-`CTIDE_HOOK_DEBUG=1` is intended for isolated diagnosis. Debug output uses the
-`[ctide ...]` prefix and `ctide-hook.log`, and must never contain raw settings
-values or environment contents.
+`CTIDE_HOOK_DEBUG` (`1`/`true`/`yes`/`on`) is intended for isolated diagnosis. Debug output uses
+the `[ctide ...]` prefix and `ctide-hook.log`, is redacted before it is written, and must never
+contain raw settings values or environment contents.
 
 ## Incident safety
 

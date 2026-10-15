@@ -35,10 +35,10 @@ const DOCS = {
 // --- fixed input universes (inputs only) -------------------------------------------------------------
 
 const STOP_UNIVERSE = ["1", "true", "yes", "on", "0", "false", "off", "2", " 1", "", "enabled"];
-const DEBUG_UNIVERSE = [undefined, "", "0", "false", "off", "1", " ", "x"]; // undefined = unset
+const DEBUG_UNIVERSE = [undefined, "", " ", "0", "false", "off", "1", "true", "yes", "on", " 1", "x", "enabled"]; // undefined = unset
 const SHIP_UNIVERSE = [".git", ".ctide", "node_modules", "dist", "build", "coverage", "vendor", "docs", "src", "packages"];
 
-// Upper-case and capitalized forms of each alphabetic STOP input, classified separately.
+// Upper-case and capitalized forms of each alphabetic STOP / DEBUG input, classified separately.
 function caseVariants(value) {
   if (!/[a-z]/.test(value)) return [];
   return [...new Set([value.toUpperCase(), value[0].toUpperCase() + value.slice(1)])].filter((v) => v !== value);
@@ -87,14 +87,15 @@ function classifyDebug(value) {
   const dir = tempDir("ctide-facts-debug-");
   const env = isolatedEnv(dir);
   if (value !== undefined) env.CTIDE_HOOK_DEBUG = value;
-  // A default-mode Write with no target path: plan-gate allows it silently and never touches the
-  // filesystem, so the only side effect left to classify is the debug trace itself.
-  const event = { hook_event_name: "PreToolUse", permission_mode: "default", tool_name: "Write", tool_input: {}, cwd: dir };
-  const r = spawnHook("plan-gate.js", event, env, dir, label);
-  assert.equal(r.stdout.trim(), "", `${label}: plan-gate must allow this event silently; saw ${show(r.stdout)}`);
-  const onStderr = r.stderr.includes("[ctide plan-gate]");
+  // A default-mode Bash command that is not destructive: the PreToolUse entry decides nothing and touches
+  // no file, but its destructive check writes one debug line when tracing is on — so the only side effect
+  // left to classify is the debug trace itself.
+  const event = { hook_event_name: "PreToolUse", permission_mode: "default", tool_name: "Bash", tool_input: { command: "echo ctide-facts" }, cwd: dir };
+  const r = spawnHook("pre-tool-use.mjs", event, env, dir, label);
+  assert.equal(r.stdout.trim(), "", `${label}: the PreToolUse entry must decide nothing on this event; saw ${show(r.stdout)}`);
+  const onStderr = r.stderr.includes("[ctide pre-tool-use]");
   const log = path.join(dir, "ctide-hook.log");
-  const inLog = fs.existsSync(log) && fs.readFileSync(log, "utf8").includes("[plan-gate]");
+  const inLog = fs.existsSync(log) && fs.readFileSync(log, "utf8").includes("[ctide pre-tool-use]");
   assert.equal(onStderr, inLog, `${label}: the stderr trace and the isolated ctide-hook.log disagree`);
   return onStderr;
 }
@@ -179,25 +180,26 @@ function compareSet(label, documented, observed, { universe, verb }) {
   return errors;
 }
 
+// A case rule ("insensitive" or "sensitive") against each case variant's observed acceptance.
+function caseErrors(name, [rule, ...rest], accepted, variants) {
+  if (rest.length || !["insensitive", "sensitive"].includes(rule)) return [`${name} case: must be exactly "insensitive" or "sensitive"`];
+  const errors = [];
+  for (const [variant, { base, accepted: variantAccepted }] of variants) {
+    const expected = rule === "insensitive" && accepted.has(base);
+    if (variantAccepted !== expected) errors.push(`${name} case: ${show(variant)} is ${variantAccepted ? "accepted" : "rejected"}, which contradicts case = ${rule}`);
+  }
+  return errors;
+}
+
 // Every key must have a comparator here; a key without one fails as unknown.
 const COMPARATORS = {
   "env.CTIDE_ENFORCE_STOP.accepts": (values, obs) =>
     compareSet("CTIDE_ENFORCE_STOP", values, obs.stopAccepted, { universe: STOP_UNIVERSE, verb: "accept" }),
-  "env.CTIDE_ENFORCE_STOP.case": ([rule, ...rest], obs) => {
-    if (rest.length || !["insensitive", "sensitive"].includes(rule)) return ['CTIDE_ENFORCE_STOP case: must be exactly "insensitive" or "sensitive"'];
-    const errors = [];
-    for (const [variant, { base, accepted }] of obs.stopVariants) {
-      const expected = rule === "insensitive" && obs.stopAccepted.has(base);
-      if (accepted !== expected) errors.push(`CTIDE_ENFORCE_STOP case: ${show(variant)} is ${accepted ? "accepted" : "rejected"}, which contradicts case = ${rule}`);
-    }
-    return errors;
-  },
-  "env.CTIDE_HOOK_DEBUG.enables": ([rule, ...rest], obs) => {
-    if (rest.length || rule !== "non-empty") return ['CTIDE_HOOK_DEBUG enables: must be exactly "non-empty"'];
-    return obs.debugEnabled
-      .filter(([value, enabled]) => enabled !== (value !== undefined && value !== ""))
-      .map(([value, enabled]) => `CTIDE_HOOK_DEBUG: ${show(value)} ${enabled ? "enables" : "does not enable"} the debug trace, which contradicts "non-empty"`);
-  },
+  "env.CTIDE_ENFORCE_STOP.case": (values, obs) => caseErrors("CTIDE_ENFORCE_STOP", values, obs.stopAccepted, obs.stopVariants),
+  // An unset CTIDE_HOOK_DEBUG is observed as "<unset>": no doc line can list it, so tracing while unset fails.
+  "env.CTIDE_HOOK_DEBUG.accepts": (values, obs) =>
+    compareSet("CTIDE_HOOK_DEBUG", values, obs.debugAccepted, { universe: DEBUG_UNIVERSE.filter((value) => value !== undefined), verb: "accept" }),
+  "env.CTIDE_HOOK_DEBUG.case": (values, obs) => caseErrors("CTIDE_HOOK_DEBUG", values, obs.debugAccepted, obs.debugVariants),
   "doctor.project.checks": (values, obs) => {
     const errors = compareSet("doctor --project", values, new Set(obs.doctorAdded), { verb: "add" });
     if (new Set(obs.doctorAdded).size !== obs.doctorAdded.length) errors.push(`doctor --project: a check name is reported more than once: ${obs.doctorAdded.join(", ")}`);
@@ -247,9 +249,15 @@ function proseErrors(facts, docs) {
   }
 
   const debugRow = tableRow(docs.runtime, "CTIDE_HOOK_DEBUG");
-  const [debugRule] = facts.get("env.CTIDE_HOOK_DEBUG.enables") || [];
   if (!debugRow) errors.push("runtime-contract: expected exactly one CTIDE_HOOK_DEBUG table row");
-  else if (debugRule && !debugRow.includes(debugRule)) errors.push(`runtime-contract CTIDE_HOOK_DEBUG row does not state "${debugRule}"`);
+  else {
+    const spans = codeSpans(debugRow);
+    for (const value of facts.get("env.CTIDE_HOOK_DEBUG.accepts") || []) {
+      if (!spans.has(value)) errors.push(`runtime-contract CTIDE_HOOK_DEBUG row does not name \`${value}\``);
+    }
+    const [rule] = facts.get("env.CTIDE_HOOK_DEBUG.case") || [];
+    if (rule && !new RegExp(`case-${rule}`, "i").test(debugRow)) errors.push(`runtime-contract CTIDE_HOOK_DEBUG row does not state case-${rule} matching`);
+  }
 
   // Bullet LEADS, compared exactly both ways: a name that survives only inside another bullet's
   // text must not count as that check still being documented.
@@ -315,10 +323,14 @@ before(async () => {
   for (const value of STOP_UNIVERSE) {
     for (const variant of caseVariants(value)) stopVariants.set(variant, { base: value, accepted: classifyStop(variant, transcript, scratch) });
   }
-  const debugEnabled = DEBUG_UNIVERSE.map((value) => [value, classifyDebug(value)]);
+  const debugAccepted = new Set(DEBUG_UNIVERSE.filter((value) => classifyDebug(value)).map((value) => (value === undefined ? "<unset>" : value)));
+  const debugVariants = new Map();
+  for (const value of DEBUG_UNIVERSE) {
+    for (const variant of caseVariants(value ?? "")) debugVariants.set(variant, { base: value, accepted: classifyDebug(variant) });
+  }
   const doctorAdded = await observeDoctor(scratch);
   const { excluded: shipExcluded, boundary: shipBoundary } = observeShip(scratch);
-  observations = { stopAccepted, stopVariants, debugEnabled, doctorAdded, shipExcluded, shipBoundary };
+  observations = { stopAccepted, stopVariants, debugAccepted, debugVariants, doctorAdded, shipExcluded, shipBoundary };
   docs = Object.fromEntries(Object.entries(DOCS).map(([key, file]) => [key, fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n")]));
 });
 
@@ -349,7 +361,9 @@ const MUST_FAIL = [
   ["list a rejected STOP value", inBlock((b) => b.replace("1, true, yes, on", "1, true, yes, on, enabled")), /the doc lists "enabled" but the runtime does not accept it/],
   ["list a value outside the universe", inBlock((b) => b.replace("1, true, yes, on", "1, true, yes, on, maybe")), /"maybe" is outside the test's input universe/],
   ["claim case-sensitive matching", inBlock((b) => b.replace("= insensitive", "= sensitive")), /contradicts case = sensitive/],
-  ["claim debug is enabled only by 1", inBlock((b) => b.replace("= non-empty", "= 1")), /must be exactly "non-empty"/],
+  ["drop an accepted DEBUG value", inBlock((b) => b.replace("HOOK_DEBUG.accepts   = 1, true, yes, on", "HOOK_DEBUG.accepts   = 1, true, yes")), /CTIDE_HOOK_DEBUG: the runtime accepts "on" but the doc omits it/],
+  ["claim debug is enabled by any non-empty value again", inBlock((b) => b.replace("HOOK_DEBUG.accepts   = 1, true, yes, on", "HOOK_DEBUG.accepts   = 1, true, yes, on, x, 0")), /CTIDE_HOOK_DEBUG: the doc lists "x" but the runtime does not accept it/],
+  ["claim DEBUG case-sensitive matching", inBlock((b) => b.replace("HOOK_DEBUG.case      = insensitive", "HOOK_DEBUG.case      = sensitive")), /CTIDE_HOOK_DEBUG case: .* contradicts case = sensitive/],
   ["rename a Doctor check", inBlock((b) => b.replace("incident-journals", "incident-status")), /the runtime adds "incident-journals" but the doc omits it/],
   ["drop a Doctor check", inBlock((b) => b.replace("failure-memory-health, ", "")), /the runtime adds "failure-memory-health" but the doc omits it/],
   ["list the project-health safety net as a check", inBlock((b) => b.replace("incident-journals", "incident-journals, project-health")), /the doc lists "project-health" but the runtime does not add it/],
@@ -371,7 +385,8 @@ const MUST_FAIL = [
   // owning prose vs block
   ["ENFORCE row drops `on`", inRow("CTIDE_ENFORCE_STOP", "`yes` and `on`", "`yes`"), /CTIDE_ENFORCE_STOP row does not name `on`/],
   ["ENFORCE row drops its case rule", inRow("CTIDE_ENFORCE_STOP", "matched case-insensitively", "matched as written"), /does not state case-insensitive matching/],
-  ["DEBUG row drops non-empty", inRow("CTIDE_HOOK_DEBUG", "any non-empty value", "any value"), /CTIDE_HOOK_DEBUG row does not state "non-empty"/],
+  ["DEBUG row drops `on`", inRow("CTIDE_HOOK_DEBUG", "`yes` and `on`", "`yes`"), /CTIDE_HOOK_DEBUG row does not name `on`/],
+  ["DEBUG row drops its case rule", inRow("CTIDE_HOOK_DEBUG", "matched case-insensitively", "matched as written"), /CTIDE_HOOK_DEBUG row does not state case-insensitive matching/],
   ["Ship check 1 drops `vendor`", inDoc("commands", " and `vendor`", ""), /check 1 does not name `vendor`/],
   ["command-reference drops the incident-journals bullet", inDoc("commands", /^- `incident-journals`.*\n/m, ""), /\/ctide:doctor section has no bullet for `incident-journals`/],
   // The masking case: the name still appears inside the bullet's own text, but no bullet leads with it.
@@ -391,7 +406,7 @@ const MUST_PASS = [
   ["reword the ENFORCE row, keeping its values", inRow("CTIDE_ENFORCE_STOP", "Upgrade the `orchestration-check.js` Stop hook from advisory to a hard block", "Turn the `orchestration-check.js` Stop hook's advisory into a hard block")],
   ["reorder values within a line", inBlock((b) => b.replace("1, true, yes, on", "on, yes, true, 1"))],
   ["add a comment and realign the block", inBlock((b) => `# restated from the prose above\n${b.replace(/ {2,}=/g, " =")}`)],
-  ["edit unrelated prose", inDoc("runtime", "The plugin wires exactly six fail-open hooks:", "The plugin wires six fail-open hooks:")],
+  ["edit unrelated prose", inDoc("runtime", "The plugin wires exactly three fail-open hook entry points:", "The plugin wires three fail-open hook entry points:")],
   ["reword a Doctor bullet, keeping its lead", inDoc("commands", "flags any `.ctide/incidents/*.md` not confirmed `closed`", "lists every incident journal not confirmed `closed`")],
 ];
 
@@ -406,7 +421,10 @@ test("harmless edits to the block and the owning prose stay green", () => {
 const RUNTIME_DRIFT = [
   ["the Stop hook starts accepting enabled", (o) => ({ ...o, stopAccepted: new Set([...o.stopAccepted, "enabled"]) }), /the runtime accepts "enabled" but the doc omits it/],
   ["the Stop hook becomes case-sensitive", (o) => ({ ...o, stopVariants: new Map([...o.stopVariants].map(([k, v]) => [k, { ...v, accepted: false }])) }), /contradicts case = insensitive/],
-  ["debug starts requiring 1", (o) => ({ ...o, debugEnabled: o.debugEnabled.map(([value]) => [value, value === "1"]) }), /contradicts "non-empty"/],
+  ["debug starts requiring 1", (o) => ({ ...o, debugAccepted: new Set(["1"]) }), /CTIDE_HOOK_DEBUG: the doc lists "true" but the runtime does not accept it/],
+  ["debug goes back to any non-empty value", (o) => ({ ...o, debugAccepted: new Set([...o.debugAccepted, "0", "x", " "]) }), /CTIDE_HOOK_DEBUG: the runtime accepts "x" but the doc omits it/],
+  ["debug traces while unset", (o) => ({ ...o, debugAccepted: new Set([...o.debugAccepted, "<unset>"]) }), /CTIDE_HOOK_DEBUG: the runtime accepts "<unset>" but the doc omits it/],
+  ["debug becomes case-sensitive", (o) => ({ ...o, debugVariants: new Map([...o.debugVariants].map(([k, v]) => [k, { ...v, accepted: false }])) }), /CTIDE_HOOK_DEBUG case: .* contradicts case = insensitive/],
   ["Doctor stops adding incident-journals", (o) => ({ ...o, doctorAdded: o.doctorAdded.filter((name) => name !== "incident-journals") }), /the doc lists "incident-journals" but the runtime does not add it/],
   ["the Ship scan stops skipping vendor", (o) => ({ ...o, shipExcluded: new Set([...o.shipExcluded].filter((dir) => dir !== "vendor")) }), /the doc lists "vendor" but the runtime does not exclude it/],
   ["the Ship scan skips vendor at one depth only", (o) => ({ ...o, shipBoundary: [...o.shipBoundary, "vendor"] }), /"vendor" is excluded at one depth but not the other/],

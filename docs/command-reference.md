@@ -84,7 +84,7 @@ Neither Vigil nor Salvage treats Map content as authority.
 ## `/ctide:doctor`
 
 Doctor is manual-only. It checks the plugin copy your session actually loaded —
-identity and version, the Node runtime, the six hooks' wiring, fail-open
+identity and version, the Node runtime, the hook entry points' wiring, fail-open
 behaviour and debug isolation, the two guard decisions, and the skill and agent
 inventory — and reports `pass`, `fail` or `unverified` per check, with no network
 access or telemetry. It never changes your project or user configuration; its

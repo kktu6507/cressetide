@@ -547,16 +547,19 @@ test("published asset policy verifies, refuses drift, repairs explicitly, and re
 test("Doctor runs the complete local fail-open boundary probe", async () => {
   const report = await diagnose(path.join(root, "cressetide"));
   assert.equal(report.status, "pass", JSON.stringify(report, null, 2));
-  assert.equal(report.checks.filter(check => check.name.startsWith("hook:")).length, 6);
+  assert.equal(report.checks.filter(check => check.name.startsWith("hook:")).length, 3);
+  for (const name of ["decision:plan-gate", "decision:destructive", "hook-debug"]) {
+    assert.equal(report.checks.find(check => check.name === name)?.status, "pass", name);
+  }
   assert.equal(report.checks.find(check => check.name === "telemetry").detail, "No network or telemetry probe performed");
 });
 
-test("Doctor rejects extra hook registrations instead of substring-matching the expected six", async () => {
+test("Doctor rejects extra hook registrations instead of substring-matching the expected three", async () => {
   const copy = path.join(tempDir("ctide-doctor-extra-"), "cressetide");
   fs.cpSync(path.join(root, "cressetide"), copy, { recursive: true });
   const manifestPath = path.join(copy, "hooks", "hooks.json");
   const hooks = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-  hooks.hooks.Stop[0].hooks.push({ type: "command", command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/hooks/plan-gate.js"] });
+  hooks.hooks.Stop[0].hooks.push({ type: "command", command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-use.mjs"] });
   fs.writeFileSync(manifestPath, JSON.stringify(hooks), "utf8");
   const report = await diagnose(copy);
   assert.equal(report.status, "fail");

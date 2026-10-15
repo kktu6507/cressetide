@@ -71,6 +71,25 @@ test("parseEntries on an unstructured/empty file yields no entries (fail-open)",
   assert.strictEqual(parseEntries(null).length, 0);
 });
 
+test("parseEntries reads ## entries too (the shared parser: ### when the file has real ### entries, else ##)", () => {
+  const entries = parseEntries("# FM\n\n## 2026-07-01 — two-level lesson\n- **Tags**: node / ci.\n\n## 2026-06-01 — old (expired)\n- **Tags**: x.\n");
+  assert.deepStrictEqual(entries.map((e) => [e.title, e.retired]), [["2026-07-01 — two-level lesson", false], ["2026-06-01 — old (expired)", true]]);
+  assert.ok(entries[0].tagTokens.has("node") && entries[0].titleTokens.has("lesson"), "the token sets are still precomputed");
+  assert.match(retrieve("## 2026-07-01 — two-level lesson\n- **Tags**: node / ci.\n", "node ci", { top: 5 })[0].entry.title, /two-level lesson/);
+});
+
+test("parseEntries: a 240 KB pathological (superseded … title with no closing paren is parsed quickly (bounded retirement marker, in-process, < 250 ms)", (t) => {
+  // The retirement check was unbounded here ([^)]*): 1.4 s on this title. It is now the shared, bounded one.
+  const memory = `# FM\n\n### 2026-01-01 — ${"(superseded ".repeat(20000)}\n- **Tags**: t.\n`;
+  const started = performance.now();
+  const entries = parseEntries(memory);
+  const elapsed = performance.now() - started;
+  t.diagnostic(`elapsed ${elapsed.toFixed(1)} ms`);
+  assert.ok(elapsed < 250, `bounded pattern must return quickly (linear); took ${Math.round(elapsed)}ms`);
+  assert.strictEqual(entries.length, 1);
+  assert.strictEqual(entries[0].retired, false, "with no closing paren the entry is not retired");
+});
+
 // --- unit: scoreEntry weighting ---
 
 test("scoreEntry weights a tag match above a title match above a body-only match", () => {
@@ -269,6 +288,11 @@ function runRetrieve(args, memory = CLI_MEM) {
   return { ...result, dir, memFile, ledger: defaultLedgerPath(memFile) };
 }
 const readLedgerLines = (file) => fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+// What a usage error prints on stdout (owner O-6 A): a no-claim that says nothing was searched — not the
+// no-match line, which would claim a search found nothing.
+const RETRIEVE_USAGE_NO_CLAIM = "ctide failure-retrieve: no claim — the command line could not be parsed, so nothing was searched " +
+  "(usage: failure-retrieve.mjs [--query <text> | <signature words...>] [--cwd DIR] [--file PATH] [--top N] [--log [--log-file PATH] [--session ID]]) " +
+  "— rely on the startup digest / a manual read.\n";
 
 test("CLI binding (parseCli): --log is a boolean — `--log src/a.ts node` keeps src/a.ts in the query (it surfaces the src/ts lesson and the ledger records the whole query)", () => {
   const r = runRetrieve(["--log", "src/a.ts", "node"]);
@@ -279,22 +303,27 @@ test("CLI binding (parseCli): --log is a boolean — `--log src/a.ts node` keeps
   assert.deepStrictEqual(records.map((record) => record.q), ["src/a.ts node"], "one hit, logged with the full positional query");
 });
 
-test("CLI (parseCli): an unknown flag is a usage error — stderr names it, stdout is the no-claim line, exit 0, and --log appends NO ledger line", () => {
+test("CLI (parseCli): an unknown flag is a usage error — stderr names it, stdout is the explicit 'nothing was searched' no-claim line (owner O-6 A), exit 0, and --log appends NO ledger line", () => {
   const r = runRetrieve(["--bogus", "--log", "--query", "qzxcanary8471"]);
   assert.strictEqual(r.status, 0, "must always exit 0");
   assert.match(r.stderr, /^failure-retrieve: .*--bogus.*\(usage: failure-retrieve\.mjs .*\)\n$/);
-  assert.strictEqual(r.stdout, formatRetrieval([], { file: "none" }) + "\n", "the no-match no-claim line, nothing retrieved");
+  assert.strictEqual(r.stdout, RETRIEVE_USAGE_NO_CLAIM, "a usage error says nothing was searched");
+  assert.notStrictEqual(r.stdout, formatRetrieval([], { file: "none" }) + "\n", "not the no-match line, which claims a search ran");
   assert.strictEqual(fs.existsSync(r.ledger), false, "a usage error records nothing");
 });
 
 test("CLI (parseCli): a value flag without its value (--query at the end, --file followed by --query) is a usage error with no ledger append", () => {
-  for (const args of [["--log", "--query"], ["--log", "--file", "--query", "qzxcanary8471"]]) {
+  for (const args of [["--log", "--query"], ["--log", "--file", "--query", "qzxcanary8471"], ["--query", "-dash"]]) {
     const r = runRetrieve(args);
     assert.strictEqual(r.status, 0, args.join(" "));
     assert.match(r.stderr, /^failure-retrieve: /, `${args.join(" ")}: one usage line on stderr`);
-    assert.match(r.stdout, /no matching failure-memory entries/);
+    assert.strictEqual(r.stdout, RETRIEVE_USAGE_NO_CLAIM, `${args.join(" ")}: the usage no-claim, not a no-match`);
+    assert.doesNotMatch(r.stdout, /no matching failure-memory entries/);
     assert.strictEqual(fs.existsSync(r.ledger), false, `${args.join(" ")}: nothing recorded`);
   }
+  const dashQuery = runRetrieve(["--query=-qzxcanary8471"]);
+  assert.strictEqual(dashQuery.stderr, "", "a query value that starts with '-' is given as --query=<value>");
+  assert.match(dashQuery.stdout, /qzxcanary8471 lesson/);
 });
 
 test("CLI (parseCli): the `=` form works for every value flag, and a repeated flag keeps its last value", () => {

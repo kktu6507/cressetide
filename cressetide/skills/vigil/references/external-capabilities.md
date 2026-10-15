@@ -29,7 +29,7 @@ The plan gate's read-only enforcement comes from the PreToolUse hook, which only
 2. **Use**: if already in plan mode, proceed. Else, if an entry exists, enter plan mode, then do requirement understanding and planning read-only and present via `ExitPlanMode`.
 3. **Else**: if no programmatic switch is available, proceed read-only by discipline and **disclose** that the hook is not enforcing read-only this session; recommend setting a default plan mode in `~/.claude/settings.json` (or the project `.claude/settings.json`) for a hard guarantee.
 
-Never hard-depend on a plan-mode entry tool and never claim "always enforces read-only" when running in branch 3. Keep the `~/.claude/plans/` exemption in `plan-gate.js` so entering plan mode can still write its own plan file. The hook catches only *obvious* `Bash` writes (a narrow tripwire); do not rely on it — do not modify the working tree via Bash during planning.
+Never hard-depend on a plan-mode entry tool and never claim "always enforces read-only" when running in branch 3. Keep the `~/.claude/plans/` exemption in the plan-gate check (`cressetide/lib/guards/plan-gate.mjs`) so entering plan mode can still write its own plan file. The hook catches only *obvious* `Bash` writes (a narrow tripwire); do not rely on it — do not modify the working tree via Bash during planning.
 
 ## MCP per reviewer (opt-in, read-only)
 

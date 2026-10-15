@@ -13,19 +13,17 @@ network call.
 
 **This file is the single owner** of Doctor's diagnostic steps, evidence rules and report format;
 `SKILL.md` only names the entry points. **Read all of it before running the helper** — the
-helper's rows are interpreted by the rules below, and step 5 covers checks the helper does not run.
+helper's rows are interpreted by the rules below, and step 6 covers what the helper cannot verify.
 
 Be concise; this is a diagnostic, not a workflow. Nothing here modifies your project or your user
-configuration: the helper's own temporary probe directory is created and removed inside the helper,
-and the step-5 probes write nothing. If a step cannot run, name the exact command, the blocker and
-the remaining uncertainty, and continue.
+configuration: the helper's own temporary probe directory is created and removed inside the helper.
+If a step cannot run, name the exact command, the blocker and the remaining uncertainty, and continue.
 
 **Stay inside this run.** A passing helper row is the evidence for its check — do not re-verify it.
-In particular, do not list or search machine-wide locations such as the system temporary directory:
-any additional cleanup or existence check you run yourself is confined to this invocation's exact
-step-5 `$P` paths, which you may confirm absent before and after. This limits only such extra
-checks; the steps below that are yours to run — resolving the root, reading this file, the step-5
-probes, enablement and PATH — are unaffected. Leftovers or activity from other processes are not
+In particular, do not list or search machine-wide locations such as the system temporary directory,
+and run no cleanup or existence check of your own there. This limits only such extra checks; the
+steps below that are yours to run — resolving the root, reading this file, enablement and PATH — are
+unaffected. Leftovers or activity from other processes are not
 evidence about this plugin, so do not investigate or report them. Go further only when the user
 asks, or when a specific check failed and its evidence points further, and tie anything you report
 to this run.
@@ -41,40 +39,37 @@ to this run.
       is **not** set in an ad-hoc shell subprocess — a `Bash` call's environment says nothing about
       how this session located the plugin. (Substitution reference:
       <https://code.claude.com/docs/en/skills#available-string-substitutions>.)
-   2. Otherwise `$CLAUDE_PLUGIN_ROOT`, else `$COPILOT_PLUGIN_ROOT`, else `$PLUGIN_ROOT`.
+   2. Otherwise `$CLAUDE_PLUGIN_ROOT`.
 
    **Record which source supplied the root**, and treat "unset in a subshell" and "unresolvable for
-   this session" as different findings. If neither a canonical invocation path nor one of the three
-   variables supplies a root, report that hooks can't be located from here and stop with that
-   finding.
+   this session" as different findings. If neither a canonical invocation path nor the variable
+   supplies a root, report that hooks can't be located from here and stop with that finding.
 
    Do **not** fall back to searching the filesystem for ctide installations, and do **not** pass an
    arbitrary `--plugin-root` you chose yourself: a copy found by search or guessed (an old
-   marketplace cache, another runtime's install such as `~/.copilot/…`) is not the copy this session
-   runs, and diagnosing it produces a false health report — worse than no report. A live search can
-   cause a stale copy to be reported as "DEGRADED".
+   marketplace cache) is not the copy this session runs, and diagnosing it produces a false health
+   report — worse than no report. A live search can cause a stale copy to be reported as "DEGRADED".
 
 2. **Run the helper** from that root — the default command in `SKILL.md`, plus `--project` only
    when the user asked for project health. The later steps name the helper rows that are their
-   evidence. **Do not re-run a probe the helper already ran**; hand-run only what steps 5 and 6
-   require.
+   evidence. **Do not re-run a probe the helper already ran**; hand-run only what step 6
+   requires.
 
 3. **Identity and Node.** Row `manifest`: `.claude-plugin/plugin.json` names `ctide` at a valid
    semantic version. Row `node`: the executable and version running the helper; **Node 22.12 or
    newer is required**, compared as a full major.minor.patch version (22.11 fails). If `node` is
    **absent** from the PATH the editor or agent launched with, that is the single most common
-   silent failure — **all six hooks no-op** (fail-open by design) — so report it as the top
+   silent failure — **every hook no-ops** (fail-open by design) — so report it as the top
    finding. Step 6 is how you check that PATH.
 
 4. **Hook wiring, fail-open and debug isolation.** Reuse these helper rows:
 
-   - `hook-wiring` — exactly the six documented hooks (`plan-gate.js`, `destructive-guard.js`,
-     `contract-guard.js`, `load-failure-memory.js`, `compact-fidelity.js`,
-     `orchestration-check.js`) exist and are wired through `${CLAUDE_PLUGIN_ROOT}` on their
-     documented events, with no extra hook script.
+   - `hook-wiring` — exactly the three documented hook entry points (`pre-tool-use.mjs`,
+     `session-start.mjs`, `orchestration-check.js`) exist and are wired through
+     `${CLAUDE_PLUGIN_ROOT}` on their documented events, with no extra hook script.
    - `hook:<name>`, one per hook — a syntax check, then a harmless bounded event **and** a malformed
      input, both of which must exit 0 (the fail-open invariant), plus a `[ctide <hook>]` debug line
-     showing the hook actually processed the event. The two SessionStart hooks must also return
+     showing the hook actually processed the event. `session-start.mjs` must also return
      `hookSpecificOutput.additionalContext`.
    - `hook-debug` — with `CTIDE_HOOK_DEBUG=1` in an isolated temporary directory, the `[ctide …]`
      prefix appears and `ctide-hook.log` is written there, without exposing environment values.
@@ -85,44 +80,10 @@ to this run.
    each `hook:<name>` row is syntax-only (`runtime=skipped`) and `runtime-probes` is `unverified`
    with the reason. Report that as unverified runtime evidence, never as healthy.
 
-5. **Guard decisions — always run; the helper does not cover them.** The helper's hook events are
-   deliberately harmless (a default-mode write, an `echo`), so they prove fail-open, not that a
-   guard actually decides. Run both probes on every Doctor run, against the root `$R` from step 1:
-
-   | Hook | Synthetic stdin | Required evidence |
-   | --- | --- | --- |
-   | `plan-gate.js` | `{"hook_event_name":"PreToolUse","permission_mode":"plan","tool_name":"Write","tool_input":{}}` | exit 0 **and** stdout JSON whose `hookSpecificOutput.permissionDecision` is `"deny"` |
-   | `destructive-guard.js` | `{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git reset --hard"}}` | exit 0 **and** stdout JSON whose `hookSpecificOutput.permissionDecision` is `"ask"` |
-
-   Isolation is part of the check:
-
-   - **Project context.** Both hooks read per-project opt-outs from `CLAUDE_PROJECT_DIR`, else the
-     event's `cwd`, via `.claude/settings.json` / `.claude/settings.local.json`. For each probe, set
-     `CLAUDE_PROJECT_DIR` to a fresh path `$P` under the system temporary directory that **does not
-     exist** — or to an empty temporary directory you create for the probe and remove afterwards.
-     If you add a `cwd` to the event, it must be `$P` too. Otherwise a project that opted out makes
-     a healthy install look broken.
-   - **No debug output.** Remove `CTIDE_HOOK_DEBUG` from the probe's environment. The decision on
-     stdout is the evidence, an inherited value would append to the real temporary
-     `ctide-hook.log`, and debug behaviour is already covered by `hook-debug`.
-   - **Nothing executes.** The input is synthetic JSON on stdin only. `git reset --hard` exists only
-     as the string in `tool_input.command`, which the hook reads and decides on — **never run it**.
-
-   Record each probe's exit code and decision. A non-zero exit, empty or non-JSON stdout, or any
-   other decision is `FAIL` for that probe. Illustrative forms, bash then PowerShell:
-
-   ```text
-   printf '%s' '<stdin JSON>' | env -u CTIDE_HOOK_DEBUG CLAUDE_PROJECT_DIR="$P" node "$R/hooks/plan-gate.js"; echo "exit=$?"
-   ```
-
-   ```text
-   Remove-Item Env:CTIDE_HOOK_DEBUG -ErrorAction SilentlyContinue; $env:CLAUDE_PROJECT_DIR = $P
-   '<stdin JSON>' | node "$R\hooks\plan-gate.js"; "exit=$LASTEXITCODE"
-   ```
-
-   The PowerShell assignments persist for that shell session: run the helper (step 2) first,
-   because `--project` falls back to `CLAUDE_PROJECT_DIR`, and restore both variables' previous
-   values afterwards.
+5. **Guard decisions.** Rows `decision:plan-gate` (a plan-mode Write is denied) and
+   `decision:destructive` (`git reset --hard` asks): the helper sends synthetic stdin to
+   `hooks/pre-tool-use.mjs` with an isolated project directory and no debug; nothing executes;
+   `unverified` when runtime probes are not trusted.
 
 6. **Enablement and the editor's PATH — not helper-verifiable.** Hooks only run when the plugin is
    **enabled** (`/plugin` → Installed → ctide on). If the user reports nothing happening in real
@@ -131,7 +92,7 @@ to this run.
    `guidance` lines carry the commands — and never change user configuration yourself.
 
 7. **Inventory.** Row `skills`: the five public skill directories exist. Row `agents`: the eleven
-   agent manifests, exact in both `plugin.json` and the `agents/` directory.
+   `*.agent.md` files in `agents/`, each with a matching frontmatter `name`.
 
 8. **No telemetry.** Row `telemetry`: no telemetry or network probe was performed.
 
@@ -156,9 +117,9 @@ When `--project` finds something actionable, the report's `guidance` array appen
 Print a compact table with one row per hook, taken from the helper: `OK` (the row passed — fired,
 exit 0, processed) / `no-op` (exit 0 but `processed=0` — the hook ran but never handled the
 event) / `FAIL` (non-zero exit, or wrong output shape) / `unverified` (`runtime=skipped`).
-Add the two step-5 probes with their exit code and decision, the Node status, and **which source
-supplied the plugin root**: the host-expanded invocation, `CLAUDE_PLUGIN_ROOT`,
-`COPILOT_PLUGIN_ROOT`, `PLUGIN_ROOT`, or `none — not diagnosable from here`. Name the source, never
+Add the two decision rows (`decision:plan-gate`, `decision:destructive`) with their status, the Node
+status, and **which source supplied the plugin root**: the host-expanded invocation,
+`CLAUDE_PLUGIN_ROOT`, or `none — not diagnosable from here`. Name the source, never
 its value; the helper itself reports the root only as `<bundled-plugin-root>` or `<plugin-root>`,
 by design. With `--project`, add its rows and any `guidance` pointers.
 

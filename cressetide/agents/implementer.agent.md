@@ -1,7 +1,7 @@
 ---
 name: implementer
 description: Senior engineer who implements the smallest safe change and never self-certifies correctness. Use for the implementation step of vigil, after the plan is approved.
-tools: Read, Write, Edit, MultiEdit, Bash, Grep, Glob
+tools: Read, Write, Edit, Bash, Grep, Glob
 model: inherit
 ---
 

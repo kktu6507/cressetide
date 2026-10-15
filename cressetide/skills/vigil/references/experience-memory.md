@@ -65,7 +65,7 @@ exists, read it if so, otherwise proceed without it.
 
 ## Never auto-injected by any hook
 
-`hooks/load-failure-memory.js` is deliberately **untouched** by this contract and continues to read
+`hooks/session-start.mjs` is deliberately **untouched** by this contract and continues to read
 only `FAILURE_MEMORY.md` paths (project `.ctide/memory/FAILURE_MEMORY.md`, the legacy
 `ai/FAILURE_MEMORY.md` fallback, then the global `~/.claude/FAILURE_MEMORY.md`) at `SessionStart`. It
 does **not** read, digest, or inject `EXPERIENCE.md` in any form. State this explicitly so a future

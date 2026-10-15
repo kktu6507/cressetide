@@ -1,12 +1,10 @@
-// Claude Code roster-preservation oracle for explicit agent manifest wiring.
-// The agent files were renamed `<name>.md` -> `<name>.agent.md` and explicitly wired via the
-// plugin.json `agents` array (so the panel loads under Copilot CLI as well as Claude Code). The
-// HARD constraint is that Claude Code's roster is functionally identical: identity is the
-// frontmatter `name:`, and exactly the expected roster must load. These tests lock that in:
-//   (i)   the manifest `agents[]` set == the *.agent.md files on disk (no extras, none missing),
+// Claude Code roster-preservation oracle. Claude Code discovers agents/*.agent.md on its own (probe P0-4:
+// with no `agents` list in plugin.json every file loads as `ctide:<name>`), so the roster is the files on
+// disk and their frontmatter `name:`. The HARD constraint is that the roster Claude Code sees is exactly
+// the expected one. These tests lock that in:
+//   (i)   plugin.json has no `agents` key (a second, hand-kept roster that could drift from the files),
 //   (ii)  every *.agent.md has valid YAML frontmatter with a `name:`,
-//   (iii) the set of frontmatter names is EXACTLY the expected roster (order-independent) — a guard
-//         that the roster Claude Code sees did not change under the rename.
+//   (iii) the set of frontmatter names is EXACTLY the expected roster (order-independent).
 import { test } from "node:test";
 import assert from "node:assert";
 import fs from "node:fs";
@@ -45,15 +43,8 @@ function frontmatterName(text) {
 
 const diskAgentFiles = fs.readdirSync(AGENTS_DIR).filter((f) => f.endsWith(".agent.md"));
 
-test("(i) plugin.json agents[] basenames == the *.agent.md files on disk", () => {
-  assert.ok(Array.isArray(plugin.agents), "plugin.json must declare an agents[] array");
-  const manifestSet = new Set(plugin.agents.map((p) => path.basename(p)));
-  const diskSet = new Set(diskAgentFiles);
-  assert.deepStrictEqual(
-    [...manifestSet].sort(),
-    [...diskSet].sort(),
-    "the manifest agents[] set must equal the *.agent.md files on disk (no extras, none missing)"
-  );
+test("(i) plugin.json has no agents key (Claude Code discovers agents/*.agent.md)", () => {
+  assert.ok(!("agents" in plugin), "plugin.json must not list agents: the files on disk are the roster");
 });
 
 test("(ii) every *.agent.md has valid frontmatter with a name:", () => {
@@ -82,12 +73,14 @@ test("(iv) no two agents share a frontmatter name (no silent shadowing)", () => 
   assert.strictEqual(names.length, new Set(names).size, "duplicate agent frontmatter name(s) found: " + names.sort().join(", "));
 });
 
-// (v) Every plugin.json agents[] path must resolve to an existing file — a wrong directory with a
-// correct basename would pass (i) (basename set still equal) yet fail to load.
-test("(v) every plugin.json agents[] path resolves to a file on disk", () => {
-  assert.ok(Array.isArray(plugin.agents), "plugin.json must declare an agents[] array");
-  for (const p of plugin.agents) {
-    assert.ok(fs.existsSync(path.join(PLUGIN, p)), `plugin.json agents[] path does not resolve: ${p}`);
+// (v) The filesystem roster: agents/ holds exactly the expected <name>.agent.md files and nothing else,
+// and each file's frontmatter name is its own stem (Claude Code names the agent by the frontmatter, the
+// workflow spawns it by the file's name).
+test("(v) agents/ holds exactly the expected <name>.agent.md files, each declaring its stem as name", () => {
+  assert.deepStrictEqual(fs.readdirSync(AGENTS_DIR).sort(), EXPECTED_NAMES.map((n) => `${n}.agent.md`).sort(),
+    "agents/ must hold exactly the expected agent files (no extras, none missing, nothing else)");
+  for (const f of diskAgentFiles) {
+    assert.strictEqual(frontmatterName(fs.readFileSync(path.join(AGENTS_DIR, f), "utf8")), f.slice(0, -".agent.md".length), `${f}: frontmatter name must equal the file stem`);
   }
 });
 
@@ -99,7 +92,7 @@ test("(vi) plugin.json declares no hooks field (would double-load the hooks in C
 });
 
 // (vi-b) plugin.json must declare NO `skills` field — skills load via the default skills/<name>/SKILL.md
-// layout (which Copilot also discovers); an explicit `skills` path is additive-to-default and unneeded.
+// layout; an explicit `skills` path is additive-to-default and unneeded.
 test("(vi-b) plugin.json declares no skills field (default skills/<name>/SKILL.md layout is used)", () => {
   assert.ok(!("skills" in plugin), "plugin.json must not declare a `skills` field (skills load via the default skills/<name>/SKILL.md layout)");
 });

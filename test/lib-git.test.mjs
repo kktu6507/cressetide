@@ -123,9 +123,29 @@ test("git(): encoding \"buffer\" returns stdout as the exact bytes", () => {
   assert.deepEqual(result.stdout, bytes);
 });
 
+// P4 review C-5: any encoding but "utf8" or "buffer" used to be decoded as UTF-8 without a word — Node's
+// `encoding: null` raw-bytes idiom included. It is a TypeError now, thrown before git runs, from git() and
+// from gitOrThrow(); the two supported values and the omitted default still read normally.
+test("git(): an encoding other than \"utf8\" or \"buffer\" (Node's null idiom included) is a TypeError, thrown before git runs", () => {
+  const repo = makeRepo({ files: { "a.txt": "a\n" } });
+  const target = path.join(tempDir("ctide-lib-git-encoding-"), "never-initialized");
+  for (const encoding of [null, "latin1", "utf-8", "hex", 0]) {
+    const label = encoding === null ? "null" : JSON.stringify(encoding);
+    assert.throws(() => git(repo, ["cat-file", "blob", "HEAD:a.txt"], { encoding }), TypeError, `git() ${label}`);
+    assert.throws(() => gitOrThrow(repo, ["cat-file", "blob", "HEAD:a.txt"], { encoding }), TypeError, `gitOrThrow() ${label}`);
+    assert.throws(() => git(repo, ["init", "-q", target], { encoding }), TypeError, `git() ${label}, a writing command`);
+  }
+  assert.equal(fs.existsSync(target), false, "git never ran: the init target was not created");
+  assert.equal(git(repo, ["cat-file", "blob", "HEAD:a.txt"]).stdout, "a\n", "omitted: utf8");
+  assert.equal(git(repo, ["cat-file", "blob", "HEAD:a.txt"], { encoding: undefined }).stdout, "a\n", "undefined: the utf8 default");
+  assert.equal(git(repo, ["cat-file", "blob", "HEAD:a.txt"], { encoding: "utf8" }).stdout, "a\n", "utf8");
+  assert.deepEqual(git(repo, ["cat-file", "blob", "HEAD:a.txt"], { encoding: "buffer" }).stdout, Buffer.from("a\n"), "buffer");
+  assert.equal(gitOrThrow(repo, ["cat-file", "blob", "HEAD:a.txt"], { encoding: "utf8" }), "a\n", "gitOrThrow utf8");
+});
+
 // --- NEUTRAL_CONFIG: one row per key, each against a hostile global setting that does change raw git ---
 
-test("NEUTRAL_CONFIG is exactly the six documented keys, passed as -c pairs", () => {
+test("NEUTRAL_CONFIG is exactly the seven documented keys, passed as -c pairs", () => {
   assert.deepEqual({ ...NEUTRAL_CONFIG }, {
     "core.quotePath": "false",
     "i18n.logOutputEncoding": "UTF-8",
@@ -133,6 +153,7 @@ test("NEUTRAL_CONFIG is exactly the six documented keys, passed as -c pairs", ()
     "column.ui": "never",
     "diff.relative": "false",
     "diff.ignoreSubmodules": "none",
+    "core.fsmonitor": "false",
   });
   assert.deepEqual([...NEUTRAL_CONFIG_ARGS], Object.entries(NEUTRAL_CONFIG).flatMap(([key, value]) => ["-c", `${key}=${value}`]));
   assert.ok(Object.isFrozen(NEUTRAL_CONFIG) && Object.isFrozen(NEUTRAL_CONFIG_ARGS));
@@ -211,6 +232,22 @@ test("NEUTRAL_CONFIG diff.ignoreSubmodules=none still honors a project's .gitmod
   assert.equal(git(repo, ["diff", "--cached", "--name-only", "HEAD"]).stdout, "");
 });
 
+// P4 security review: a repository's own core.fsmonitor names a command that git runs, through the shell, on
+// a status or a diff. core.fsmonitor=false keeps every read through lib/git from running it.
+test("NEUTRAL_CONFIG core.fsmonitor=false: a repository's core.fsmonitor command is never run by git(), a diff or changedFiles", () => {
+  const repo = makeRepo({ files: { "a.txt": "a\n" } });
+  write(path.join(repo, "a.txt"), "changed\n");
+  const marker = path.join(tempDir("ctide-lib-git-fsmonitor-"), "ran.txt");
+  fixtureGit(repo, ["config", "core.fsmonitor", `echo ran >> '${marker.replaceAll("\\", "/")}'`]);
+  rawGit(repo, ["status", "--porcelain"]);
+  assert.ok(fs.existsSync(marker), "fixture sanity: a plain git status runs the repository's fsmonitor command");
+  fs.rmSync(marker);
+  assert.equal(git(repo, ["status", "--porcelain"]).stdout, " M a.txt\n");
+  assert.equal(git(repo, ["diff", "--name-only", "HEAD", "--"]).stdout, "a.txt\n");
+  assert.deepEqual(changedFiles(repo).files, ["a.txt"]);
+  assert.equal(fs.existsSync(marker), false, "no read through lib/git ran the fsmonitor command");
+});
+
 test("NEUTRAL_CONFIG also wins over inherited GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT settings", (t) => {
   const repo = makeRepo({ files: { "a.txt": "a\n" } });
   const tags = ["t-five", "t-four", "t-one", "t-three", "t-two"];
@@ -264,6 +301,92 @@ test("git(): on Windows an inherited mixed-case Git_Dir is ignored too", { skip:
   setEnv(t, { Git_Dir: path.join(other, ".git") });
   assert.equal(git(repo, ["rev-parse", "HEAD"]).stdout.trim(), mine);
 });
+
+// D-6 residuals (P5): ship reads anything on stderr from two of its reads as a failed read, and tracing writes
+// to stderr on a healthy read — so every inherited GIT_TRACE* variable is dropped, by prefix.
+const TRACING = { GIT_TRACE: "1", GIT_TRACE2: "1", GIT_TRACE2_PERF: "1", GIT_TRACE2_EVENT: "1", GIT_TRACE_PERFORMANCE: "1" };
+
+test("git(): inherited GIT_TRACE* variables are dropped — a healthy read writes nothing to stderr", (t) => {
+  const repo = makeRepo({ files: { "a.txt": "a\n" } });
+  for (const [name, value] of Object.entries(TRACING)) {
+    assert.notEqual(rawGit(repo, ["rev-parse", "HEAD"], { [name]: value }).stderr, "", `fixture sanity: ${name} writes to stderr`);
+  }
+  setEnv(t, TRACING);
+  const result = git(repo, ["rev-parse", "HEAD"]);
+  assert.equal(result.status, 0);
+  assert.equal(result.stderr, "");
+});
+
+test("git(): on Windows an inherited mixed-case Git_Trace / git_trace2 is dropped too", { skip: process.platform !== "win32" && "environment names are case-sensitive here" }, (t) => {
+  const repo = makeRepo({ files: { "a.txt": "a\n" } });
+  assert.notEqual(rawGit(repo, ["rev-parse", "HEAD"], { Git_Trace: "1" }).stderr, "", "fixture sanity: git reads Git_Trace as GIT_TRACE");
+  setEnv(t, { Git_Trace: "1", git_trace2: "1" });
+  const result = git(repo, ["rev-parse", "HEAD"]);
+  assert.equal(result.status, 0);
+  assert.equal(result.stderr, "");
+});
+
+// The environment git() hands the git process, captured by patching spawnSync on the child_process module
+// object, which lib/git calls at call time (the real git still runs). Returns { env, result }.
+function gitChildEnv(repo, args) {
+  const realSpawnSync = cp.spawnSync;
+  let env = null;
+  cp.spawnSync = function captureEnv(command, spawnArgs, options) {
+    if (command === "git") env = options.env;
+    return realSpawnSync.apply(this, arguments);
+  };
+  let result;
+  try { result = git(repo, args); } finally { cp.spawnSync = realSpawnSync; }
+  assert.ok(env, "fixture sanity: the patch saw lib/git's spawn");
+  return { env, result };
+}
+const namesStartingWith = (env, prefix) => Object.keys(env).filter((key) => key.toUpperCase().startsWith(prefix));
+
+// Git for Windows reads GIT_REDIRECT_STDIN/STDOUT/STDERR: GIT_REDIRECT_STDERR=2>&1 moves git's messages into
+// stdout, where a caller reading stderr cannot see them. Every GIT_REDIRECT_* is dropped, on every platform.
+test("git(): inherited GIT_REDIRECT_* variables are absent from git's environment — a failing read's message stays on stderr", (t) => {
+  const repo = makeRepo({ files: { "a.txt": "a\n" } });
+  const redirected = path.join(tempDir("ctide-lib-git-redirect-"), "stdout.txt");
+  if (process.platform === "win32") {
+    const raw = rawGit(repo, ["rev-parse", "--verify", "no-such-ref"], { GIT_REDIRECT_STDERR: "2>&1" });
+    assert.match(raw.stdout, /fatal/, "fixture sanity: Git for Windows moves the message into stdout");
+    assert.equal(raw.stderr, "", "fixture sanity: and leaves stderr empty");
+  }
+  setEnv(t, { GIT_REDIRECT_STDERR: "2>&1", GIT_REDIRECT_STDOUT: redirected });
+  const { env, result } = gitChildEnv(repo, ["rev-parse", "--verify", "no-such-ref"]);
+  assert.deepEqual(namesStartingWith(env, "GIT_REDIRECT_"), []);
+  assert.equal(result.status, 128);
+  assert.match(result.stderr, /fatal/);
+  assert.equal(result.stdout, "");
+  assert.equal(fs.existsSync(redirected), false, "nothing went to the GIT_REDIRECT_STDOUT file");
+});
+
+test("git(): on Windows an inherited mixed-case Git_Redirect_Stderr is dropped too", { skip: process.platform !== "win32" && "environment names are case-sensitive here" }, (t) => {
+  const repo = makeRepo({ files: { "a.txt": "a\n" } });
+  assert.match(rawGit(repo, ["rev-parse", "--verify", "no-such-ref"], { Git_Redirect_Stderr: "2>&1" }).stdout, /fatal/,
+    "fixture sanity: git reads Git_Redirect_Stderr as GIT_REDIRECT_STDERR");
+  setEnv(t, { Git_Redirect_Stderr: "2>&1" });
+  const { env, result } = gitChildEnv(repo, ["rev-parse", "--verify", "no-such-ref"]);
+  assert.deepEqual(namesStartingWith(env, "GIT_REDIRECT_"), []);
+  assert.match(result.stderr, /fatal/);
+  assert.equal(result.stdout, "");
+});
+
+// A trace2 target set in a config file writes to stderr on every read, and `-c` cannot turn it off; only the
+// target's own variable can. One row per target, each with the inherited variable set to 1 as well (stripped,
+// then set to 0).
+for (const [target, variable] of [["normalTarget", "GIT_TRACE2"], ["perfTarget", "GIT_TRACE2_PERF"], ["eventTarget", "GIT_TRACE2_EVENT"]]) {
+  test(`git(): a config-file trace2.${target}=1 writes nothing to stderr — ${variable}=0 in git's environment`, (t) => {
+    const repo = makeRepo({ files: { "a.txt": "a\n" } });
+    const traced = globalConfig({ [`trace2.${target}`]: "1" });
+    assert.notEqual(rawGit(repo, ["rev-parse", "HEAD"], { GIT_CONFIG_GLOBAL: traced }).stderr, "", `fixture sanity: trace2.${target}=1 writes to stderr`);
+    setEnv(t, { GIT_CONFIG_GLOBAL: traced, [variable]: "1" });
+    const { env, result } = gitChildEnv(repo, ["rev-parse", "HEAD"]);
+    assert.equal(env[variable], "0");
+    assert.equal(result.status, 0);
+    assert.equal(result.stderr, "");
+  });
+}
 
 // Owner decision Q4 #1: a read such as `git status` must not rewrite .git/index. Stale stat data (a file
 // whose mtime no longer matches the index) is what makes git refresh and write the index.

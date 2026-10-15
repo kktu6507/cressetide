@@ -31,7 +31,7 @@ Agents must not edit settings to bypass a guard.
 
 | Variable | Purpose |
 | --- | --- |
-| `CTIDE_HOOK_DEBUG` | Enable bounded local hook diagnostics when set to any non-empty value; only an unset or empty value disables them. |
+| `CTIDE_HOOK_DEBUG` | Enable local hook diagnostics. Recognized values are `1`, `true`, `yes` and `on`, matched case-insensitively; every other value, including `0`, leaves them off. |
 | `CTIDE_ENFORCE_STOP` | Upgrade the `orchestration-check.js` Stop hook from advisory to a hard block on a verdict/evidence mismatch. Recognized values are `1`, `true`, `yes` and `on`, matched case-insensitively; every other value, including `0`, leaves the hook advisory. |
 | `CTIDE_REPAIR_PUBLISHED_RELEASE_ASSETS` | Explicitly authorize the reviewed release-asset repair path. Recognized only as the exact string `true`; every other value, including `1`, leaves repair unauthorized. It is one of several preconditions, not a switch on its own: repair additionally requires that both exact assets download successfully and that the downloaded bytes prove drift. Missing assets and transport failures never enter repair. |
 
@@ -40,10 +40,10 @@ under [Machine-checked facts](#machine-checked-facts), which the test suite
 compares against the hooks' actual behaviour.
 
 Doctor and release diagnostic summaries must not expose environment values,
-secrets, tokens, settings payloads, or unredacted sensitive paths. The hook debug sink is separately opt-in and may include a bounded
-raw command fragment;
-do not enable or collect `CTIDE_HOOK_DEBUG` where commands
-may contain credentials.
+secrets, tokens, settings payloads, or unredacted sensitive paths. The hook debug sink is separately opt-in and
+redacts credential shapes (authorization headers, Bearer tokens, `token`/`secret`/`password`/`api key` values,
+GitHub tokens, private-key blocks) and temp/home paths before writing; it is a best-effort scrub, so do not
+enable `CTIDE_HOOK_DEBUG` where commands may carry other secrets.
 
 ## Machine-checked facts
 
@@ -59,22 +59,20 @@ values, or inputs outside the test's input set; those stay under human review.
 ```ctide-facts
 env.CTIDE_ENFORCE_STOP.accepts = 1, true, yes, on
 env.CTIDE_ENFORCE_STOP.case    = insensitive
-env.CTIDE_HOOK_DEBUG.enables   = non-empty
+env.CTIDE_HOOK_DEBUG.accepts   = 1, true, yes, on
+env.CTIDE_HOOK_DEBUG.case      = insensitive
 doctor.project.checks          = failure-memory-health, incident-journals
 ship.manifest.excludes         = .git, .ctide, node_modules, dist, build, coverage, vendor
 ```
 
 ## Hooks
 
-The plugin wires exactly six fail-open hooks:
+The plugin wires exactly three fail-open hook entry points:
 
 | Hook | Debug prefix | Responsibility |
 | --- | --- | --- |
-| `plan-gate.js` | `[ctide plan-gate]` | Preserve the read-only plan and approval boundary. |
-| `destructive-guard.js` | `[ctide destructive-guard]` | Review supported destructive filesystem, Git, or infra/data-store actions. |
-| `contract-guard.js` | `[ctide contract-guard]` | Check changed-path and acceptance-criteria scope evidence. |
-| `load-failure-memory.js` | `[ctide load-failure-memory]` | Route relevant repository-local prevention lessons. |
-| `compact-fidelity.js` | `[ctide compact-fidelity]` | Preserve bounded state needed to continue safely. |
+| `pre-tool-use.mjs` | `[ctide pre-tool-use]` | Preserve the read-only plan and approval boundary (plan-gate check); review supported destructive filesystem, Git, or infra/data-store actions (destructive check); check changed-path and acceptance-criteria scope evidence (contract check). |
+| `session-start.mjs` | `[ctide session-start]` | Route relevant repository-local prevention lessons; after a compaction, preserve bounded state needed to continue safely. |
 | `orchestration-check.js` | `[ctide orchestration-check]` | Check review-panel and final-report contracts. |
 
 Hook scripts accept bounded event input and must return control when input is
@@ -102,6 +100,7 @@ self-gitignored, overwritten each run).
   memory/
     FAILURE_MEMORY.md
     EXPERIENCE.md
+    .failure-memory-usage.jsonl  # local retrieval-usage ledger (failure-retrieve --log); not committed — add it to .gitignore
   design/
     design.md
   incidents/

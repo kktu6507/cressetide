@@ -57,10 +57,10 @@ changed file paths (`git diff --name-only --no-renames -z <tag>..HEAD` —
 always repository-relative, and a renamed file appears under both its old and its new path) in that
 range. These reads go through the shared git layer, which pins a fixed list of config overrides
 (`core.quotePath`, `i18n.logOutputEncoding`, `log.showSignature`, `column.ui`, `diff.relative`,
-`diff.ignoreSubmodules`); with `--sort=refname` on the tag read, the pending view does not depend on
-a user's `column.*`, `tag.sort`, `log.showSignature`, `i18n.logOutputEncoding` or `diff.relative`. A
-project's own `.gitmodules` `ignore` setting still applies. It is a plain git fact,
-**not a readiness claim**: every report carries `pending.disclaimer` — "changes since the last
+`diff.ignoreSubmodules`, `core.fsmonitor`); with `--sort=refname` on the tag read, the pending view
+does not depend on a user's `column.*`, `tag.sort`, `log.showSignature`, `i18n.logOutputEncoding` or
+`diff.relative`. A project's own `.gitmodules` `ignore` setting still applies. It is a plain git
+fact, **not a readiness claim**: every report carries `pending.disclaimer` — "changes since the last
 release tag — not a readiness claim; nothing listed here has been reviewed or approved". A commit is
 listed whether or not anything ever reviewed it, and an empty list never means "safe to ship".
 

@@ -208,8 +208,8 @@ export function validate({ root, read: reader, files } = {}) {
   walk(`${PLUGIN}/skills`, (rel) => { if (path.posix.basename(rel) === "SKILL.md") checkFrontmatter(rel); });
 
   // 5b. every reference that a skill's own SKILL.md points to must exist somewhere in the plugin
-  // (catches a renamed/deleted reference that prose alone would not surface), and vigil/SKILL.md's own
-  // agent roster must exist on disk and be wired into plugin.json.
+  // (catches a renamed/deleted reference that prose alone would not surface), and every agent in
+  // vigil/SKILL.md's own roster must exist on disk.
   //
   // Check (1) — reference existence — is GENERALIZED to all five skills, the reverse direction of garden
   // 9a's "true reachability over directory ownership" model: resolve a `references/X.md` mention to the
@@ -223,8 +223,8 @@ export function validate({ root, read: reader, files } = {}) {
   // starts running per-skill; search-based resolution needs no growing exception list for a future
   // cross-skill reference.
   //
-  // Check (2) — the agent roster — is UNCHANGED in logic and stays scoped to vigil/SKILL.md specifically
-  // (grepping the whole plugin confirms `subagents (` appears only there). It now runs inside the per-skill
+  // Check (2) — the agent roster — stays scoped to vigil/SKILL.md specifically (grepping the whole
+  // plugin confirms `subagents (` appears only there). It runs inside the per-skill
   // loop, gated to `skillName === "vigil"`, reusing that iteration's already-read file content (not a
   // second file read).
   {
@@ -241,21 +241,13 @@ export function validate({ root, read: reader, files } = {}) {
         }
 
         if (skillName === "vigil") {
+          // Claude Code discovers agents/*.agent.md on its own (no plugin.json agents[]), so a roster name
+          // without its file is an agent the workflow names but can never spawn.
           const roster = (skill.match(/subagents \(([^)]+)\)/) || [])[1] || "";
-          // The manifest-coverage check below only bites when `plugin.agents` is an array. Guard the
-          // prerequisite explicitly: if SKILL.md declares a roster but the manifest has no agents[] array,
-          // Claude Code would fall back to the default scan (losing the explicit `.agent.md` wiring Copilot
-          // needs) and the coverage check would silently no-op — so fail loudly instead.
-          if (roster && !(plugin && Array.isArray(plugin.agents)))
-            fail(`SKILL.md declares a subagents roster but plugin.json has no agents[] array (explicit wiring missing)`);
           for (const m of roster.matchAll(/`([a-z0-9-]+)`/gi)) {
             const name = m[1];
             if (!exists(`${PLUGIN}/agents/${name}.agent.md`))
               fail(`SKILL.md names agent "${name}" but ${PLUGIN}/agents/${name}.agent.md is missing`);
-            // Manifest coverage: Claude Code now loads agents via the plugin.json `agents` array, so an
-            // agent that exists on disk but is not wired in the manifest would silently fail to load.
-            if (plugin && Array.isArray(plugin.agents) && !plugin.agents.some((p) => p.endsWith(`/${name}.agent.md`)))
-              fail(`SKILL.md names agent "${name}" but plugin.json agents[] does not wire agents/${name}.agent.md`);
           }
         }
       }
@@ -343,7 +335,7 @@ export function validate({ root, read: reader, files } = {}) {
 
   const hooksText = readText(hooksRel);
   if (hooksText !== null) {
-    const wiredHooks = new Set((hooksText.match(/hooks\/[a-z0-9-]+\.js/gi) || []));
+    const wiredHooks = new Set((hooksText.match(/hooks\/[a-z0-9-]+\.m?js/gi) || []));
     for (const m of wiredHooks) {
       if (!exists(`${PLUGIN}/${m}`))
         fail(`hooks.json references a missing hook: ${m}`);
@@ -353,7 +345,7 @@ export function validate({ root, read: reader, files } = {}) {
     const readme = readText("README.md");
     if (readme !== null) {
       for (const m of wiredHooks) {
-        const base = m.replace(/^hooks\//, "").replace(/\.js$/, "");
+        const base = m.replace(/^hooks\//, "").replace(/\.m?js$/, "");
         if (!readme.includes(base)) fail(`README.md does not mention the hook "${base}" (docs out of sync with hooks.json)`);
       }
     }
@@ -362,6 +354,13 @@ export function validate({ root, read: reader, files } = {}) {
     // A regression that drops a hook from its event, or narrows a matcher so the hook no longer fires
     // for a tool/lifecycle it must cover, is still valid JSON (so the parse + node --check + behavioral
     // tests can all stay green) — assert the wiring structurally so such a regression fails the build.
+    // The file itself names no other host: the removed second runtime's root-variable fallback, or a bare
+    // plugin-root variable, would let another host (or a stray variable) pick which code a hook runs;
+    // Claude Code is the only supported host. The bare-variable pattern's \b does not match inside
+    // CLAUDE_PLUGIN_ROOT ("_" is a word character). Both names are spelled with a character class so the
+    // removed names have no literal occurrence left in the tree (P5's zero-hit grep covers this file too).
+    if (/cop[i]lot/i.test(hooksText)) fail("hooks.json names the removed second runtime (its root-variable fallback) — ctide supports Claude Code only");
+    if (/\bPLUGIN[_]ROOT\b/.test(hooksText)) fail("hooks.json uses a bare plugin-root variable — the plugin root is ${CLAUDE_PLUGIN_ROOT} only");
     const hj = hooksJson; // a parse error is already reported by section 4
     if (hj) {
       const h = hj.hooks || {};
@@ -371,25 +370,41 @@ export function validate({ root, read: reader, files } = {}) {
       // Matcher coverage must be bound to the entry that ACTUALLY wires the target hook, not satisfied by
       // some OTHER entry's matcher. Without this scoping, once a second entry (a different hook) with a
       // broad matcher exists, it could falsely "cover" a token the target hook's own entry omits — so a
-      // real plan-gate matcher regression ("Write|Edit", dropping MultiEdit/NotebookEdit/Bash) could pass
-      // green. Filtering to entries whose command wires `hookFile` is strictly more restrictive.
+      // real pre-tool-use matcher regression ("Write|Edit", dropping NotebookEdit/Bash/PowerShell) could
+      // pass green. Filtering to entries whose command wires `hookFile` is strictly more restrictive.
       const eventMatchesForHook = (event, token, hookFile) => entriesFor(event).some((e) => {
         const wiresIt = (Array.isArray(e.hooks) ? e.hooks : []).some((x) => x && typeof x.command === "string" && x.command.includes("hooks/" + hookFile));
         if (!wiresIt) return false;
         try { return new RegExp("^(?:" + (e.matcher || "") + ")$").test(token); } catch (err) { return false; }
       });
       const WIRING = [
-        { event: "PreToolUse", hook: "plan-gate.js", tokens: ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "PowerShell"] },
-        { event: "PreToolUse", hook: "destructive-guard.js", tokens: ["Bash", "PowerShell"] }, // all-modes destructive-command safety net
-        { event: "PreToolUse", hook: "contract-guard.js", tokens: ["Write", "Edit", "MultiEdit"] }, // content-based contract/design.md weakening tripwire
-        { event: "SessionStart", hook: "load-failure-memory.js", tokens: ["startup", "resume", "clear", "compact"] },
+        // the plan gate (edit tools + shell writes), the destructive-command check (shells) and the
+        // contract check (Write/Edit), in one process
+        { event: "PreToolUse", hook: "pre-tool-use.mjs", tokens: ["Write", "Edit", "NotebookEdit", "Bash", "PowerShell"] },
+        // the failure-memory digest on every start, plus the post-compaction fidelity nudge on "compact"
+        // (SessionStart, not PreCompact: CC rejects hookSpecificOutput there)
+        { event: "SessionStart", hook: "session-start.mjs", tokens: ["startup", "resume", "clear", "compact"] },
         { event: "Stop", hook: "orchestration-check.js", tokens: [] }, // Stop has no matcher
-        { event: "SessionStart", hook: "compact-fidelity.js", tokens: ["compact"] }, // post-compaction fidelity nudge (relocated from PreCompact: CC rejects hookSpecificOutput there)
       ];
       for (const w of WIRING) {
         if (!wiresUnder(w.event, w.hook)) fail(`hooks.json: ${w.event} does not wire ${w.hook} (hook would never fire)`);
         for (const t of w.tokens) {
           if (!eventMatchesForHook(w.event, t, w.hook)) fail(`hooks.json: the ${w.event} matcher does not cover "${t}" (the hook would never fire for it)`);
+        }
+      }
+
+      // Command form (P0-1): every handler is the shell form `node "${CLAUDE_PLUGIN_ROOT}/hooks/<name>.mjs"`
+      // (or .js), which Claude Code expands before the shell runs it, under Git Bash and PowerShell alike —
+      // not an exec form with `args` (a client without it runs a bare `node`, and the hook silently does
+      // nothing) and not a `node -e` bootstrap that resolves the root itself.
+      const COMMAND_FORM = /^node "\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/[a-z-]+\.m?js"$/;
+      for (const event of Object.keys(h)) {
+        for (const entry of entriesFor(event)) {
+          for (const handler of Array.isArray(entry?.hooks) ? entry.hooks : []) {
+            const command = handler && typeof handler.command === "string" ? handler.command : "";
+            if (!COMMAND_FORM.test(command))
+              fail(`hooks.json: a ${event} handler is not the shell form node "\${CLAUDE_PLUGIN_ROOT}/hooks/<name>.mjs": ${JSON.stringify(command).slice(0, 120)}`);
+          }
         }
       }
 
@@ -402,7 +417,7 @@ export function validate({ root, read: reader, files } = {}) {
       const HSO_ACCEPT_EVENTS = new Set(["PreToolUse", "UserPromptSubmit", "PostToolUse", "PostToolBatch", "SessionStart", "Stop", "SubagentStop"]);
       for (const event of Object.keys(h)) {
         for (const cmd of cmdsFor(event)) {
-          const m = cmd.match(/hooks\/([a-z0-9-]+\.js)/i);
+          const m = cmd.match(/hooks\/([a-z0-9-]+\.m?js)/i);
           if (!m) continue;
           const src = readText(`${PLUGIN}/hooks/${m[1]}`);
           if (src === null) continue; // a missing hook is already reported above
@@ -689,7 +704,7 @@ export function validate({ root, read: reader, files } = {}) {
       if (!en.includes(link)) fail(`README parity: README.md missing required entry link "${link}"`);
     }
     const wiredHookBases = hooksText !== null
-      ? [...new Set((hooksText.match(/hooks\/[a-z0-9-]+\.js/gi) || []))].map((m) => m.replace(/^hooks\//, "").replace(/\.js$/, ""))
+      ? [...new Set((hooksText.match(/hooks\/[a-z0-9-]+\.m?js/gi) || []))].map((m) => m.replace(/^hooks\//, "").replace(/\.m?js$/, ""))
       : [];
     for (const rel of TRANSLATED_READMES) {
       const translated = readText(rel);
@@ -720,13 +735,12 @@ export function validate({ root, read: reader, files } = {}) {
     }
   }
 
-  // 9. "Garden" guards — dead weight + copy-sync (shape borrowed from wshobson/agents `make garden`).
+  // 9. "Garden" guards — dead weight and drift (shape borrowed from wshobson/agents `make garden`).
   // Deterministic only, no fuzzy matching. Every failure names the fix, and every cap/anchor has an
-  // obvious conscious-override path: edit the constant/list HERE with a justifying comment. The hooks
-  // deliberately keep per-hook COPIES of shared infra for per-hook failure isolation, each stamped
-  // "kept in sync … (documented copy — see garden hash guard)";
-  // 9d is that promised guard. The packet-block half of the copy-sync mandate (d3) lives in §5k's
-  // RIGOR_ANCHORS above (same two files, same mechanism — extended rather than duplicated).
+  // obvious conscious-override path: edit the constant/list HERE with a justifying comment. Shared code
+  // has one copy, in cressetide/lib/ (test/lib-binding.test.mjs binds every user to it), so there are no
+  // documented copies left to hash-guard here; the packet-block anchors that must stay in step across two
+  // reference files live in §5k's RIGOR_ANCHORS above.
 
   // 9a. Reference reachability: every shipped skills/*/references/*.md must be reachable from the
   // plugin's load surface — an orphan reference is dead weight the workflow can never load. GLOBAL
@@ -766,26 +780,6 @@ export function validate({ root, read: reader, files } = {}) {
     }
   }
 
-  // 9b. Agent parity, both directions: every plugin.json agents[] entry exists on disk, and every
-  // agents/*.agent.md on disk is listed in plugin.json (Claude Code loads agents via the manifest
-  // array, so an unlisted agent silently never loads). §5b covers only the SKILL.md prose roster;
-  // this holds regardless of the roster sentence.
-  if (plugin && Array.isArray(plugin.agents)) {
-    for (const entry of plugin.agents) {
-      const relPath = String(entry).replace(/^\.\//, "");
-      if (!exists(`${PLUGIN}/${relPath}`))
-        fail(`garden 9b: plugin.json agents[] lists "${entry}" but ${PLUGIN}/${relPath} does not exist on disk — restore the file or remove the manifest entry`);
-    }
-    const agentsDir = `${PLUGIN}/agents`;
-    if (read.list(agentsDir) !== null) {
-      for (const name of names(agentsDir)) {
-        if (!name.endsWith(".agent.md")) continue;
-        if (!plugin.agents.some((p) => String(p).replace(/^\.\//, "") === `agents/${name}`))
-          fail(`garden 9b: ${PLUGIN}/agents/${name} exists on disk but is not listed in plugin.json agents[] — it would silently never load; add "./agents/${name}" to the manifest or delete the file`);
-      }
-    }
-  }
-
   // 9c. Size caps with headroom. These two files dominate always-loaded prompt cost;
   // the caps leave headroom so ordinary edits do not trip. Raising a cap is allowed —
   // but must be a CONSCIOUS decision made here with a justifying comment, not accretion.
@@ -802,107 +796,6 @@ export function validate({ root, read: reader, files } = {}) {
       const size = buf.length;
       if (size > cap)
         fail(`garden 9c: ${rel} is ${size} bytes and grew past the agreed cap (${cap}); either shrink it or consciously raise the cap in validate-structure with a justifying comment`);
-    }
-  }
-
-  // 9d. Copy-sync guards for the documented byte-identical copies inside cressetide/hooks/
-  // (deterministic string/regex extraction only). Each check fails CLOSED when it cannot locate what it
-  // guards, so a refactor cannot silently disarm it — the message then says to re-point the guard. The
-  // script-side copies these guards used to cover (the map.mjs/ship.mjs constructs, the CLI entry-point
-  // check) have their single home in cressetide/lib/; test/lib-binding.test.mjs binds the scripts to it,
-  // allowlisting the ones not migrated yet. The hook copies move the same way in P5, and this section
-  // goes with them.
-  {
-    const hookRel = (name) => `${PLUGIN}/hooks/${name}`;
-    const readHook = (rel) => (readText(rel) ?? "").replace(/\r\n/g, "\n");
-
-    // d1. dd-of= regex identity: plan-gate.js and destructive-guard.js each carry
-    // the dd write-detection pattern with a "kept character-identical / reused verbatim" comment — make
-    // that an enforced invariant. Extract the regex literal from the line containing `dd\s(?=` and
-    // require strict equality (surrounding whitespace/comment are excluded by the extraction).
-    const extractDdRegex = (rel) => {
-      const line = readHook(rel).split("\n").find((l) => l.includes("dd\\s(?="));
-      if (!line) return null;
-      const m = line.match(/\/\(\?:.*?\/i(?=[\s,)\]]|$)/); // the literal: first `/(?:` through its `/i` flags
-      return m ? m[0] : null;
-    };
-    const ddPair = [hookRel("plan-gate.js"), hookRel("destructive-guard.js")];
-    if (ddPair.every((rel) => isFile(rel))) {
-      const [ddGate, ddGuard] = ddPair.map(extractDdRegex);
-      if (!ddGate || !ddGuard) {
-        fail(`garden 9d: cannot locate the dd-of= regex literal (the line containing "dd\\s(?=") in ${ddPair.join(" / ")} — the pattern moved; re-point the 9d dd-identity guard`);
-      } else if (ddGate !== ddGuard) {
-        fail(`garden 9d: the dd-of= regex drifted between plan-gate.js and destructive-guard.js (plan-gate: ${ddGate} vs destructive-guard: ${ddGuard}) — the two are documented character-identical copies; change BOTH together`);
-      }
-    }
-
-    // d2. Byte-identical function copies: debug() (all six hooks) and neutralize() (two hooks).
-    // Extraction: the `function <name>(` line through the closing `}` at column 0; line endings
-    // normalized; the hook's OWN basename inside its log labels is normalized to "<hook>" (each
-    // debug() copy legitimately embeds its own name — the only sanctioned difference).
-    const extractFn = (rel, fnName) => {
-      const lines = readHook(rel).split("\n");
-      const start = lines.findIndex((l) => l.startsWith(`function ${fnName}(`));
-      if (start === -1) return null;
-      for (let i = start + 1; i < lines.length; i++) {
-        if (lines[i] === "}") return lines.slice(start, i + 1).join("\n").split(path.posix.basename(rel, ".js")).join("<hook>");
-      }
-      return null;
-    };
-    const FN_CLUSTERS = [
-      ["debug", ["plan-gate.js", "destructive-guard.js", "contract-guard.js", "load-failure-memory.js", "compact-fidelity.js", "orchestration-check.js"]],
-      ["neutralize", ["load-failure-memory.js", "compact-fidelity.js"]],
-    ];
-    for (const [fnName, hookFiles] of FN_CLUSTERS) {
-      const present = hookFiles.map((f) => hookRel(f)).filter((rel) => isFile(rel));
-      const bodies = present.map((rel) => [rel, extractFn(rel, fnName)]);
-      for (const [rel, body] of bodies) {
-        if (body === null) fail(`garden 9d: cannot extract function ${fnName}() from ${rel} — the function moved or lost its column-0 shape; re-point the 9d copy guard`);
-      }
-      const found = bodies.filter(([, b]) => b !== null);
-      for (let i = 1; i < found.length; i++) {
-        if (found[i][1] !== found[0][1])
-          fail(`garden 9d: ${fnName}() drifted between ${found[0][0]} and ${found[i][0]} — these are documented byte-identical copies (modulo each hook's own log label); change ALL copies together`);
-      }
-    }
-
-    // d2 (cont.) Quote-stripper regex line pair: plan-gate.js / destructive-guard.js each strip quoted
-    // spans with the same one-line regex before pattern matching ("kept in sync" documented copy).
-    const quotePair = [hookRel("plan-gate.js"), hookRel("destructive-guard.js")];
-    if (quotePair.every((rel) => isFile(rel))) {
-      const quoteLines = quotePair.map((rel) => {
-        const line = readHook(rel).split("\n").find((l) => l.includes("const unquoted ="));
-        return line ? line.trim() : null;
-      });
-      if (quoteLines.some((l) => l === null)) {
-        fail(`garden 9d: cannot locate the quote-stripper line ("const unquoted =") in ${quotePair.join(" / ")} — it moved; re-point the 9d quote-stripper guard`);
-      } else if (quoteLines[0] !== quoteLines[1]) {
-        fail(`garden 9d: the quote-stripper line drifted between plan-gate.js and destructive-guard.js ("${quoteLines[0]}" vs "${quoteLines[1]}") — a documented identical copy; change BOTH together`);
-      }
-    }
-
-    // d2 (cont.) Settings-flag readers: the four opt-out readers legitimately DIFFER by settings key
-    // (planGate / destructiveGuard / contractGuard / preserveOnCompact), so no body comparison — assert
-    // each still carries the shared precedence marker comment, which pins the documented
-    // local-over-project / explicit-true-wins precedence contract to its siblings.
-    const SETTINGS_MARKER = "settings-flag reader (DisabledForProject + readFlag pair) kept in sync with";
-    for (const f of ["plan-gate.js", "destructive-guard.js", "contract-guard.js", "compact-fidelity.js"]) {
-      const rel = hookRel(f);
-      if (!isFile(rel)) continue; // missing hooks are reported by §5c wiring
-      if (!readHook(rel).includes(SETTINGS_MARKER))
-        fail(`garden 9d: ${rel} lost the settings-flag reader sync marker ("${SETTINGS_MARKER} …") — keep the precedence comment naming the sibling copies (or update this guard if the cluster was consciously dissolved)`);
-    }
-
-    // d2 (cont.) Stdin readers ×6: the read-loop bodies legitimately diverge (per-hook payload
-    // handling), so like the settings-flag cluster this is a marker-presence guard, not a body
-    // hash — each hook must keep its stdin-reader sync stamp (incl. the MAX_STDIN cap discipline
-    // the stamp documents). The marker-presence guard keeps those stamps enforceable.
-    const STDIN_MARKER = "stdin reader kept in sync with";
-    for (const f of ["plan-gate.js", "destructive-guard.js", "contract-guard.js", "load-failure-memory.js", "compact-fidelity.js", "orchestration-check.js"]) {
-      const rel = hookRel(f);
-      if (!isFile(rel)) continue; // missing hooks are reported by §5c wiring
-      if (!readHook(rel).includes(STDIN_MARKER))
-        fail(`garden 9d: ${rel} lost the stdin-reader sync marker ("${STDIN_MARKER} …") — keep the stamp naming the sibling copies and the MAX_STDIN cap (or update this guard if the cluster was consciously dissolved)`);
     }
   }
 
@@ -926,7 +819,7 @@ export function validate({ root, read: reader, files } = {}) {
   // 9f. Trust-marker enumeration parity — the Map operational-readiness trust marker is a 3-tier
   //     set (verified / dry-run-verified / UNVERIFIED). Every current-facing FULL
   //     enumeration must list all three, else a future edit silently drops a tier (enumerated-member
-  //     drift — the risk §9d/FAILURE_MEMORY name). It is explicitly site-anchored rather than a blanket
+  //     drift — the risk FAILURE_MEMORY names). It is explicitly site-anchored rather than a blanket
   //     regex so intentionally partial examples cannot false-trip the guard.
   const TRUST_TOP = /(?<!dry-run-)verified: <date>/; // standalone top tier, not the dry-run-verified substring
   const TRUST_MARKER_SITES = [
@@ -970,9 +863,18 @@ export function validate({ root, read: reader, files } = {}) {
   if (JSON.stringify(agentFiles) !== JSON.stringify(expectedAgents.map((name) => `${name}.agent.md`).sort())) {
     fail("Cressetide agent file inventory mismatch");
   }
-  const manifestAgents = (Array.isArray(plugin?.agents) ? plugin.agents : [])
-    .map((item) => String(item).replace("./agents/", "").replace(".agent.md", "")).sort();
-  if (JSON.stringify(manifestAgents) !== JSON.stringify([...expectedAgents].sort())) fail("Cressetide plugin agents[] mismatch");
+  // Claude Code discovers agents/*.agent.md itself (probe P0-4) and names each agent by its frontmatter
+  // `name`, so the manifest lists none, and every file's name is its stem: a list would be a second
+  // roster that can drift, and a name that differs from the file would load under a name nothing spawns.
+  if (plugin && Object.hasOwn(plugin, "agents")) fail("plugin.json declares an `agents` key — Claude Code discovers agents/*.agent.md; remove the list");
+  for (const name of agentFiles) {
+    const text = readText(`${PLUGIN}/agents/${name}`) ?? "";
+    const end = text.startsWith("---") ? text.indexOf("\n---", 3) : -1;
+    const match = end === -1 ? null : text.slice(3, end).match(/^[ \t]*name[ \t]*:[ \t]*(.+?)[ \t]*\r?$/m);
+    const declared = match ? match[1].replace(/^["']|["']$/g, "") : null;
+    const stem = name.slice(0, -".agent.md".length);
+    if (declared !== stem) fail(`${PLUGIN}/agents/${name}: frontmatter name is ${declared === null ? "missing" : `"${declared}"`}, expected "${stem}" (the file stem)`);
+  }
 
   const skillRoot = `${PLUGIN}/skills`;
   const expectedSkills = ["doctor", "map", "salvage", "ship", "vigil"];
@@ -991,11 +893,8 @@ export function validate({ root, read: reader, files } = {}) {
   if (JSON.stringify(roster) !== JSON.stringify([...expectedAgents].sort())) fail("Vigil subagent roster mismatch");
 
   const expectedHooks = [
-    ["PreToolUse", "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell", "plan-gate.js"],
-    ["PreToolUse", "Bash|PowerShell", "destructive-guard.js"],
-    ["PreToolUse", "Write|Edit|MultiEdit", "contract-guard.js"],
-    ["SessionStart", "startup|resume|clear|compact", "load-failure-memory.js"],
-    ["SessionStart", "compact", "compact-fidelity.js"],
+    ["PreToolUse", "Edit|Write|NotebookEdit|Bash|PowerShell", "pre-tool-use.mjs"],
+    ["SessionStart", "startup|resume|clear|compact", "session-start.mjs"],
     ["Stop", "", "orchestration-check.js"],
   ];
   const actualHooks = [];
@@ -1003,13 +902,13 @@ export function validate({ root, read: reader, files } = {}) {
     for (const group of Array.isArray(groups) ? groups : []) {
       for (const hook of Array.isArray(group?.hooks) ? group.hooks : []) {
         const command = String(hook?.command || "");
-        const name = command.match(/hooks\/([a-z0-9-]+\.js)/i)?.[1] || "";
+        const name = command.match(/hooks\/([a-z0-9-]+\.m?js)/i)?.[1] || "";
         actualHooks.push([event, group.matcher || "", name]);
       }
     }
   }
   if (JSON.stringify(actualHooks.sort()) !== JSON.stringify(expectedHooks.sort())) fail("hook registration inventory or event mapping mismatch");
-  const hookScripts = names(`${PLUGIN}/hooks`).filter((name) => name.endsWith(".js")).sort();
+  const hookScripts = names(`${PLUGIN}/hooks`).filter((name) => /\.m?js$/.test(name)).sort();
   if (JSON.stringify(hookScripts) !== JSON.stringify(expectedHooks.map((item) => item[2]).sort())) fail("hook script inventory mismatch");
   for (const name of hookScripts) {
     const source = read.file(`${PLUGIN}/hooks/${name}`);

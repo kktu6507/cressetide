@@ -41,7 +41,7 @@ Incident flow  アラート -> Triage -> 証拠保全 -> まず止血（可逆�
 - **2つのフロー**：dev（[`vigil`](#開発フローvigil)）と incident（[`salvage`](#インシデントフローsalvage)）。インシデントの正式な修正は、「インシデントの reproduction がグリーンになる」を主要な acceptance criterion として `--lite` run で dev flow に戻されます。
 - **5つの skill**：`vigil` と `salvage` は自動で起動します（小さな修正を超える開発作業で／インシデントらしい言葉づかいで）；[`map`](#ops-マップmap)、[`doctor`](#ヘルスチェックdoctor)、[`ship`](#release-readiness-チェックship) は手動で開始します（`/ctide:map`、`/ctide:doctor`、`/ctide:ship`）。
 - **[11個の subagent](#開発フローvigil)**：navigator、implementer、リスクに応じて選ばれる7人の reviewer、cartographer、そして readiness を判定する arbiter。
-- **[6つの hook](#hooks-と安全性モデル)**：local-only で依存関係ゼロの Node guardrails。plan gate、破壊的コマンドの guard、contract guard、failure-memory の注入、compaction リマインダー、delivery-claim チェックをカバーします。
+- **[3つの hook エントリポイント](#hooks-と安全性モデル)**：local-only で依存関係ゼロの Node guardrails——1つの PreToolUse エントリが plan gate、破壊的コマンド、contract の3つのチェックを実行し、1つの SessionStart エントリが failure-memory の注入と compaction リマインダーを担当します。ほかに delivery-claim チェックがあります。
 - **[学習ループ](#学習ループ)**：インシデントの postmortem と escaped な欠陥から得た教訓は git 管理される failure memory に残り、次の plan がそれを読みます。
 
 ### プロジェクトレイアウト
@@ -173,7 +173,7 @@ Verdicts は release-readiness の判断であり、絶対的な真実ではあ�
 | **— 本番への再投入** | 通常の deploy 経路でデプロイし、宣言済みの fixed-check を検証し、観察期間を置いてから、止血策を1つずつ解除します。 |
 | **7 · クローズ + postmortem** | クローズのチェックリスト（止血策の全解除、データ修復の完了、抽出データの削除、journal のクローズ）に加え、短く、誰も責めない postmortem。[学習ループ](#学習ループ)に供給される gate-gap 分析を含みます。 |
 
-- **Decision cards**：1枚ずつ。載っているのは推奨案、コスト／トレードオフ、可逆性、そして承認したら正確に何が実行されるか。破壊的または本番に影響する操作は必ず card で止まり、以前に承認済みの plan に紛れ込ませることはありません；`destructive-guard.js` hook がさらに確認を挟むことがありますが、それは想定どおりの動作で、決して迂回しません。
+- **Decision cards**：1枚ずつ。載っているのは推奨案、コスト／トレードオフ、可逆性、そして承認したら正確に何が実行されるか。破壊的または本番に影響する操作は必ず card で止まり、以前に承認済みの plan に紛れ込ませることはありません；`pre-tool-use.mjs` の破壊的コマンドチェックがさらに確認を挟むことがありますが、それは想定どおりの動作で、決して迂回しません。
 - **インシデント journal**：すべてのステージが `.ctide/incidents/INCIDENT-<date>-<slug>.md` に追記します。committed な監査証跡（タイムライン、各操作と承認者、証拠、red→green の記録）です。書く前にサニタイズ：journal に入る前に PII と secrets はマスクされます。
 - **本番データの安全ゲート**：reproduction に実データが必要なときは、抽出を最小限にとどめ（証拠が指すレコードだけ、決して全 dump しない）、データが AI のコンテキストに入る*前*にマスクし、ポリシーが本番データを禁じる場合は synthetic data で代替します；抽出データは一時的なもので、決して commit せず、クローズ時に削除します。
 
@@ -213,15 +213,12 @@ run と run のあいだで、ctide は学んだことを持ち越します—�
 
 ## Hooks と安全性モデル
 
-plugin が有効な間は、依存関係ゼロの Node hooks が6つ、すべての session で実行されます。これらは local-only、fail-open で、Node の built-in（`fs`、`os`、`path`、`crypto`）のみを使用します。
+plugin が有効な間は、依存関係ゼロの Node hook エントリポイントが3つ、すべての session で実行されます。これらは local-only、fail-open で、Node の built-in（`fs`、`os`、`path`、`crypto`）のみを使用します。
 
 | Hook スクリプト | 発火イベント | 用途 |
 |---|---|---|
-| `plan-gate.js` | `PreToolUse` | plan mode 中に edit tools と明らかな Bash/PowerShell write を拒否する。 |
-| `destructive-guard.js` | `PreToolUse` | `rm -rf`、`git reset --hard`、`git push --force`、PowerShell の `Remove-Item -Recurse`、`terraform destroy`、`kubectl delete namespace`、`docker volume rm/prune`、データベース drop 系 CLI（`dropdb`、`mysqladmin`、`redis-cli flushall`）など、狭く絞った復元不能な destructive command の前に確認を挟む。 |
-| `contract-guard.js` | `PreToolUse` | 契約が途中で骨抜きにされるのを見張ります：編集が acceptance criterion を削除・書き換えする、`mustNotChange` や scope の項目を落とす、risk を下げる（契約は `.ctide/output/contract.md`、旧レイアウトの `.ctide/legacy-output/` も対象）、`design.md` の section をまるごと消す場合は、先に確認します；`.claude/settings*.json` への編集が ctide の guard flag を有効から無効へ切り替える場合も同様です（新しい settings ファイルを作って切り替えるケースも検知します）。 |
-| `load-failure-memory.js` | `SessionStart` | プロジェクトの `.ctide/memory/FAILURE_MEMORY.md`（旧レイアウトの `ai/FAILURE_MEMORY.md` は読み取り専用のフォールバック）、なければグローバルの `~/.claude/FAILURE_MEMORY.md` を読み込み、nonce で囲んだ untrusted な digest を注入する。 |
-| `compact-fidelity.js` | `SessionStart` · `compact` | context compaction の直後に、簡潔な workflow-continuity のリマインダーを再注入する。 |
+| `pre-tool-use.mjs` | `PreToolUse` | 3つのチェックを順に実行する。plan gate：plan mode 中に edit tools と明らかな Bash/PowerShell write を拒否する。破壊的コマンドチェック：`rm -rf`、`git reset --hard`、`git push --force`、PowerShell の `Remove-Item -Recurse`、`terraform destroy`、`kubectl delete namespace`、`docker volume rm/prune`、データベース drop 系 CLI（`dropdb`、`mysqladmin`、`redis-cli flushall`）など、狭く絞った復元不能な destructive command の前に確認を挟む。contract チェックは契約が途中で骨抜きにされるのを見張ります：編集が acceptance criterion を削除・書き換えする、`mustNotChange` や scope の項目を落とす、risk を下げる（契約は `.ctide/output/contract.md`、旧レイアウトの `.ctide/legacy-output/` も対象）、`design.md` の section をまるごと消す場合は、先に確認します；`.claude/settings*.json` への編集が ctide の guard flag を有効から無効へ切り替える場合も同様です（新しい settings ファイルを作って切り替えるケースも検知します）。 |
+| `session-start.mjs` | `SessionStart` | プロジェクトの `.ctide/memory/FAILURE_MEMORY.md`（旧レイアウトの `ai/FAILURE_MEMORY.md` は読み取り専用のフォールバック）、なければグローバルの `~/.claude/FAILURE_MEMORY.md` を読み込み、nonce で囲んだ untrusted な「タイトル＋tags」の索引を注入する。ファイルに `##`／`###` の entry がない場合は、そのファイルを指す1行の案内だけを注入する。`compact` の後には、簡潔な workflow-continuity のリマインダーも再注入する。 |
 | `orchestration-check.js` | `Stop` | delivery の主張が、missing panel、blocking verdict、failed/unrun verification、missing live-run evidence と矛盾している場合に警告する。 |
 
 これらの hooks は、ファイルの削除、システム設定の変更、権限の変更、subprocess の実行、コードのダウンロード、コードや transcript の送信を一切行いません。あくまで guardrail であり、sandbox ではありません；詳細は [`SECURITY.md`](SECURITY.md) と [`ARCHITECTURE.md`](ARCHITECTURE.md) を参照してください。
@@ -236,12 +233,12 @@ hooks が ctide のプロジェクトファイルを移行・書き込み・削�
 
 | Key | 無効化される対象 |
 |---|---|
-| `planGate` | `plan-gate.js`：plan mode 中に強制される編集ブロック |
-| `destructiveGuard` | `destructive-guard.js`：狭く絞った復元不能な destructive command 実行前の確認 |
-| `contractGuard` | `contract-guard.js`：contract／design を弱める前の確認。これらの guard flag を無効化する前の確認を含む |
-| `preserveOnCompact` | `compact-fidelity.js`：context compaction 後の workflow-continuity リマインダー |
+| `planGate` | `pre-tool-use.mjs` の plan gate：plan mode 中に強制される編集ブロック |
+| `destructiveGuard` | `pre-tool-use.mjs` の破壊的コマンドチェック：狭く絞った復元不能な destructive command 実行前の確認 |
+| `contractGuard` | `pre-tool-use.mjs` の contract チェック：contract／design を弱める前の確認。これらの guard flag を無効化する前の確認を含む |
+| `preserveOnCompact` | `session-start.mjs` の compaction リマインダー：context compaction 後の workflow-continuity リマインダー |
 
-設定ファイルが壊れている、または読み込めない場合は「無効化されていない」として扱われます（fail-safe：guard はそのまま動作し続けます）。例——特定のプロジェクトで `contract-guard.js` を無効化する：
+設定ファイルが壊れている、または読み込めない場合は「無効化されていない」として扱われます（fail-safe：guard はそのまま動作し続けます）。例——特定のプロジェクトで contract チェックを無効化する：
 
 ```json
 // .claude/settings.json
@@ -255,7 +252,7 @@ hooks が ctide のプロジェクトファイルを移行・書き込み・削�
 | 変数 | 設定した場合の効果 |
 |---|---|
 | `CTIDE_ENFORCE_STOP` | `1`、`true`、`yes`、`on`（大文字小文字を区別しない）のいずれかを設定すると、`orchestration-check.js` の Stop hook が verdict/evidence の矛盾時に警告するだけでなく、delivery を強制的にブロックするようになります。それ以外の値（`0` を含む）では警告のままです |
-| `CTIDE_HOOK_DEBUG` | 空でない値を設定すると各 hook が debug trace を1行追加出力します；未設定または空のときだけ無効になります（[`/ctide:doctor`](#ヘルスチェックdoctor) や手動のトラブルシューティングで使用） |
+| `CTIDE_HOOK_DEBUG` | `1`、`true`、`yes`、`on`（大文字小文字を区別しない）のいずれかを設定すると、PreToolUse と SessionStart の hook が stderr と一時ディレクトリの `ctide-hook.log` に debug trace を1行書き出します。書き出す前に secret を伏せます。それ以外の値（`0` を含む）では何も書きません（[`/ctide:doctor`](#ヘルスチェックdoctor) や手動のトラブルシューティングで使用） |
 
 各変数が受け付ける正確な値と、それを hook の実際の挙動と照合するチェックについては、[`docs/runtime-contract.md`](docs/runtime-contract.md#machine-checked-facts)（英語）を参照してください。
 
@@ -290,12 +287,11 @@ $env:CTIDE_ENFORCE_STOP = "1"; claude  # PowerShell
 
 ## 互換性
 
-ctide は Claude Code を主対象としています。GitHub Copilot CLI は **unverified** です：Cressetide の run は1件も記録されていないため、いかなる挙動も主張しません——せいぜい部分的な互換性がありうる程度で、Claude Code 専用の hook 出力はまったく届かない可能性があります。
+ctide は Claude Code のみをサポートします。
 
 Compatibility と conformance smoke の詳細は [`docs/compatibility.md`](docs/compatibility.md)（英語）にあります。要点は以下の通りです：
 
 - Claude Code が主要な runtime です。
-- GitHub Copilot CLI：Cressetide 固有の live run は記録されていないため、そこでの skills、subagents、`PreToolUse`、`SessionStart`、`Stop` の挙動については何も主張しません。unverified として扱います。
 - Claude Code の hook/agent contract は moving target です。[`RELEASING.md`](RELEASING.md) が定義するのは release の**手順**であり、あるリリースについて実際に記録された証拠は [`EVIDENCE.md`](EVIDENCE.md) にあります。
 
 ## 信頼性とリリース

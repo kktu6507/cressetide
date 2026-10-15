@@ -268,9 +268,9 @@ test("validate-structure: README parity FAILS on a top-level section-count misma
 });
 
 test("validate-structure: README parity FAILS when the zh README omits a wired hook name", () => {
-  const { code, out } = runOverlay({ "README.zh-TW.md": (s) => s.split("plan-gate").join("PLANGATE_removed") });
+  const { code, out } = runOverlay({ "README.zh-TW.md": (s) => s.split("pre-tool-use").join("PRETOOLUSE_removed") });
   assert.notStrictEqual(code, 0, "zh omitting a wired hook name must fail the build");
-  assert.match(out, /plan-gate/, "the failure must name the missing hook");
+  assert.match(out, /README parity: README\.zh-TW\.md does not mention the hook "pre-tool-use"/, "the failure must name the missing hook");
 });
 
 test("validate-structure: README parity FAILS when either README drops a required entry link", () => {
@@ -280,9 +280,9 @@ test("validate-structure: README parity FAILS when either README drops a require
 });
 
 test("validate-structure: README parity FAILS when the ja README omits a wired hook name", () => {
-  const { code, out } = runOverlay({ "README.ja.md": (s) => s.split("plan-gate").join("PLANGATE_removed") });
+  const { code, out } = runOverlay({ "README.ja.md": (s) => s.split("pre-tool-use").join("PRETOOLUSE_removed") });
   assert.notStrictEqual(code, 0, "ja omitting a wired hook name must fail the build");
-  assert.match(out, /plan-gate/, "the failure must name the missing hook");
+  assert.match(out, /README parity: README\.ja\.md does not mention the hook "pre-tool-use"/, "the failure must name the missing hook");
 });
 
 test("validate-structure: README parity FAILS when the ja README drops a required entry link", () => {
@@ -610,7 +610,7 @@ test("validate-structure: a hook dropped from its event FAILS (wiring gate)", ()
 
 test("validate-structure: a PreToolUse matcher that stops covering a gated tool FAILS (wiring gate)", () => {
   const { code, out } = runOverlay({
-    "cressetide/hooks/hooks.json": editJSON((hj) => { hj.hooks.PreToolUse[0].matcher = "Write|Edit"; }), // drops MultiEdit / NotebookEdit / Bash
+    "cressetide/hooks/hooks.json": editJSON((hj) => { hj.hooks.PreToolUse[0].matcher = "Write|Edit"; }), // drops NotebookEdit / Bash / PowerShell
   });
   assert.notStrictEqual(code, 0, "narrowing the matcher below the gated tools must fail the build");
   assert.match(out, /PreToolUse matcher does not cover "Bash"/, "the failure must name the uncovered tool");
@@ -618,41 +618,80 @@ test("validate-structure: a PreToolUse matcher that stops covering a gated tool 
 
 // --- The PowerShell wiring token is CI-locked (a regression to Bash-only must fail the build) ---
 
-test("validate-structure: a plan-gate.js matcher that drops PowerShell coverage FAILS", () => {
+test("validate-structure: a pre-tool-use.mjs matcher that drops PowerShell coverage FAILS", () => {
   const { code, out } = runOverlay({
-    "cressetide/hooks/hooks.json": editJSON((hj) => { hj.hooks.PreToolUse[0].matcher = "Write|Edit|MultiEdit|NotebookEdit|Bash"; }), // plan-gate entry: PowerShell dropped
+    "cressetide/hooks/hooks.json": editJSON((hj) => { hj.hooks.PreToolUse[0].matcher = "Edit|Write|NotebookEdit|Bash"; }), // PowerShell dropped
   });
-  assert.notStrictEqual(code, 0, "narrowing the plan-gate matcher to drop PowerShell must fail the build");
+  assert.notStrictEqual(code, 0, "narrowing the PreToolUse matcher to drop PowerShell must fail the build");
   assert.match(out, /PreToolUse matcher does not cover "PowerShell"/, "the failure must name the uncovered PowerShell token");
 });
 
-test("validate-structure: a destructive-guard.js matcher that drops PowerShell coverage FAILS", () => {
+test("validate-structure: a session-start.mjs matcher that drops the compact source FAILS (the compaction reminder would never fire)", () => {
   const { code, out } = runOverlay({
-    "cressetide/hooks/hooks.json": editJSON((hj) => { hj.hooks.PreToolUse[1].matcher = "Bash"; }), // destructive-guard entry: PowerShell dropped
+    "cressetide/hooks/hooks.json": editJSON((hj) => { hj.hooks.SessionStart[0].matcher = "startup|resume|clear"; }),
   });
-  assert.notStrictEqual(code, 0, "narrowing the destructive-guard matcher to drop PowerShell must fail the build");
-  assert.match(out, /PreToolUse matcher does not cover "PowerShell"/, "the failure must name the uncovered PowerShell token");
+  assert.notStrictEqual(code, 0, "narrowing the SessionStart matcher to drop compact must fail the build");
+  assert.match(out, /SessionStart matcher does not cover "compact"/, "the failure must name the uncovered source");
 });
 
 // --- Matcher coverage is bound to the hook's own entry (cross-entry merge gap) ---
 
 test("validate-structure: a second event entry can no longer cover another hook's matcher gap (scoped wiring gate)", () => {
-  // Narrow plan-gate's OWN entry to drop MultiEdit, and add a SECOND PreToolUse entry that wires an
-  // existing, README-named hook and whose matcher DOES cover MultiEdit. Under the old merged `.some()`
-  // logic the gate passed (some entry covered MultiEdit); the scoped check must now fail because
-  // plan-gate's own entry does not cover it.
+  // Narrow pre-tool-use's OWN entry to drop NotebookEdit, and add a SECOND PreToolUse entry that wires an
+  // existing, README-named hook and whose matcher DOES cover NotebookEdit. Under the old merged `.some()`
+  // logic the gate passed (some entry covered NotebookEdit); the scoped check must fail because
+  // pre-tool-use's own entry does not cover it.
   const { code, out } = runOverlay({
     "cressetide/hooks/hooks.json": editJSON((hj) => {
       const pre = hj.hooks.PreToolUse;
-      pre[0].matcher = "Write|Edit|NotebookEdit|Bash"; // plan-gate entry: MultiEdit dropped
-      pre.push({ matcher: "MultiEdit", hooks: [{ type: "command", command: pre[0].hooks[0].command.replace("plan-gate.js", "load-failure-memory.js") }] });
+      pre[0].matcher = "Edit|Write|Bash|PowerShell"; // pre-tool-use entry: NotebookEdit dropped
+      pre.push({ matcher: "NotebookEdit", hooks: [{ type: "command", command: pre[0].hooks[0].command.replace("pre-tool-use.mjs", "session-start.mjs") }] });
     }),
   });
-  assert.notStrictEqual(code, 0, "a different entry's matcher must not satisfy plan-gate's own coverage");
-  assert.match(out, /matcher does not cover "MultiEdit"/, "the failure must name the token plan-gate's own entry omits");
+  assert.notStrictEqual(code, 0, "a different entry's matcher must not satisfy pre-tool-use's own coverage");
+  assert.match(out, /matcher does not cover "NotebookEdit"/, "the failure must name the token pre-tool-use's own entry omits");
 });
 
-// --- Section 9 "garden" guards: one injected-defect negative test per check (a–e) ---
+// --- §5c: the command form, and no other host's plugin-root variable ---
+
+// The removed second runtime's name and the bare root variable, assembled so neither has a literal
+// occurrence in the tree (P5's zero-hit grep for the removed names covers this file).
+const OTHER_RUNTIME = ["Co", "pilot"].join("");
+const BARE_ROOT_VARIABLE = ["PLUGIN", "ROOT"].join("_");
+
+test("validate-structure: §5c FAILS when hooks.json names the removed second runtime anywhere", () => {
+  const { code, out } = runOverlay({
+    "cressetide/hooks/hooks.json": editJSON((hj) => { hj.description = `${OTHER_RUNTIME.toUpperCase()}_${BARE_ROOT_VARIABLE} fallback`; }),
+  });
+  assert.notStrictEqual(code, 0, "a mention of the removed runtime must fail the build");
+  assert.match(out, /hooks\.json names the removed second runtime/, "the failure must name the rule");
+});
+
+test("validate-structure: §5c FAILS on a bare plugin-root variable in hooks.json (CLAUDE_PLUGIN_ROOT itself passes)", () => {
+  const { code, out } = runOverlay({
+    "cressetide/hooks/hooks.json": editJSON((hj) => { hj.description = `root from \${${BARE_ROOT_VARIABLE}}`; }),
+  });
+  assert.notStrictEqual(code, 0, "a bare plugin-root variable must fail the build");
+  assert.match(out, /hooks\.json uses a bare plugin-root variable/, "the failure must name the rule");
+  assert.deepStrictEqual(check({ "cressetide/hooks/hooks.json": editJSON((hj) => { hj.description = "root from ${CLAUDE_PLUGIN_ROOT}"; }) }), [],
+    "control: CLAUDE_PLUGIN_ROOT is not a bare match (no word boundary after CLAUDE_)");
+});
+
+test("validate-structure: §5c FAILS on a handler that is not the shell form node \"${CLAUDE_PLUGIN_ROOT}/hooks/<name>.mjs\"", () => {
+  for (const command of [
+    "node -e \"require(process.env.CLAUDE_PLUGIN_ROOT + '/hooks/orchestration-check.js')\"", // a node -e bootstrap
+    "node ${CLAUDE_PLUGIN_ROOT}/hooks/orchestration-check.js", // unquoted: breaks on a path with a space
+    "node \"${CLAUDE_PLUGIN_ROOT}/hooks/orchestration-check.js\" --extra",
+  ]) {
+    const { code, out } = runOverlay({
+      "cressetide/hooks/hooks.json": editJSON((hj) => { hj.hooks.Stop[0].hooks[0].command = command; }),
+    });
+    assert.notStrictEqual(code, 0, `${command}: must fail the build`);
+    assert.match(out, /hooks\.json: a Stop handler is not the shell form/, `${command}: the failure must name the command-form rule`);
+  }
+});
+
+// --- Section 9 "garden" guards: one injected-defect negative test per check (9a, 9c, 9e, 9f) ---
 
 test("validate-structure: garden 9a FAILS on an orphan reference file not mentioned in any SKILL.md or agent doc", () => {
   // A reference file nothing links: no SKILL.md's Reference Loading list and no agent doc names it.
@@ -685,25 +724,6 @@ test("validate-structure: garden 9a FAILS on a genuine orphan in a non-vigil ski
   assert.match(out, /garden 9a: .*zz-doctor-orphan\.md is not mentioned by filename in any skills\/\*\/SKILL\.md or agents\/\*\.agent\.md/, "the failure must name the orphan reference and prove doctor/ is now covered");
 });
 
-test("validate-structure: garden 9b FAILS in both agent-parity directions (unlisted on disk / ghost in manifest)", () => {
-  // Direction 1: an agent file on disk that plugin.json agents[] does not list (it would never load).
-  {
-    const { code, out } = runOverlay({
-      "cressetide/agents/zz-unlisted.agent.md": "---\nname: zz-unlisted\ndescription: parity-test agent not wired in the manifest\n---\n\nBody.\n",
-    });
-    assert.notStrictEqual(code, 0, "an on-disk agent missing from plugin.json agents[] must fail the build");
-    assert.match(out, /garden 9b: .*zz-unlisted\.agent\.md exists on disk but is not listed in plugin\.json/, "the failure must name the unlisted agent");
-  }
-  // Direction 2: a plugin.json agents[] entry whose file does not exist on disk.
-  {
-    const { code, out } = runOverlay({
-      "cressetide/.claude-plugin/plugin.json": editJSON((obj) => { obj.agents.push("./agents/ghost.agent.md"); }),
-    });
-    assert.notStrictEqual(code, 0, "a manifest agent entry with no file on disk must fail the build");
-    assert.match(out, /garden 9b: plugin\.json agents\[\] lists ".\/agents\/ghost\.agent\.md" but .* does not exist on disk/, "the failure must name the ghost manifest entry");
-  }
-});
-
 test("validate-structure: garden 9c FAILS when SKILL.md grows past the agreed size cap", () => {
   // Size-independent overshoot: 64 KB of growth exceeds the cap from ANY
   // plausible base size or future cap raise, so a later SKILL.md compression pass can't
@@ -714,31 +734,18 @@ test("validate-structure: garden 9c FAILS when SKILL.md grows past the agreed si
   assert.match(out, /consciously raise the cap/, "the failure must state the conscious-override path");
 });
 
-test("validate-structure: garden 9d FAILS on drift in each guarded copy cluster (dd regex / debug body / packet anchor)", () => {
+test("validate-structure: §5k FAILS when one side of the reviewer-common / review-packet dual write drops an anchor", () => {
   for (const [edits, expected] of [
-    // d1: one character of destructive-guard's dd-of= regex changes -> the documented
-    // character-identical pair with plan-gate.js is broken.
-    [{ "cressetide/hooks/destructive-guard.js": (s) => s.replace("NUL\\b))/i,", "NULL\\b))/i,") },
-      /garden 9d: the dd-of= regex drifted between plan-gate\.js and destructive-guard\.js/],
-    // d2: one hook's debug() body drifts from the other five documented copies.
-    [{ "cressetide/hooks/compact-fidelity.js": (s) => s.replace("ctide-hook.log", "ctide-hook2.log") },
-      /garden 9d: debug\(\) drifted between .*compact-fidelity\.js/],
-    // d3 (§5k extension): a packet-block rule drops out of review-packet.md while
-    // reviewer-common.md still has it — a one-sided drift.
+    // A packet-block rule drops out of review-packet.md while reviewer-common.md still has it.
     [{ "cressetide/skills/vigil/references/review-packet.md": (s) => s.split("materially underspecified").join("XXX") },
       /rigor-contract guard: .*review-packet\.md no longer contains the anchor "materially underspecified"/],
-    // d4 (§5k extension): the scratch/temp-copy anchor drops out of review-packet.md while
-    // reviewer-common.md still has it — a one-sided drift.
+    // The scratch/temp-copy anchor drops out of review-packet.md while reviewer-common.md still has it.
     [{ "cressetide/skills/vigil/references/review-packet.md": (s) => s.split("scratch/temp copy").join("XXX") },
       /rigor-contract guard: .*review-packet\.md no longer contains the anchor "scratch\/temp copy"/],
-    // d2 (stdin cluster): a hook loses its stdin-reader sync stamp
-    // (stamps must not point at a guard that would let them silently rot).
-    [{ "cressetide/hooks/orchestration-check.js": (s) => s.replace("stdin reader kept in sync with", "stdin reader formerly synced with") },
-      /garden 9d: .*orchestration-check\.js lost the stdin-reader sync marker/],
   ]) {
     const { code, out } = runOverlay(edits);
-    assert.notStrictEqual(code, 0, `a drifted documented copy must fail the build (${expected})`);
-    assert.match(out, expected, "the failure must name the drifted pair/anchor");
+    assert.notStrictEqual(code, 0, `a one-sided drift must fail the build (${expected})`);
+    assert.match(out, expected, "the failure must name the drifted anchor");
   }
 });
 
@@ -949,24 +956,40 @@ test("validate-structure: Cressetide identity check FAILS when plugin.json displ
   assert.match(out, /Cressetide package\/plugin identity mismatch/, "the failure must name the identity check");
 });
 
-test("validate-structure: Cressetide agent inventory FAILS on an extra agent file and on a drifted manifest agents[]", () => {
-  {
-    const { code, out } = runOverlay({
-      "cressetide/agents/zz-extra.agent.md": "---\nname: zz-extra\ndescription: inventory-test agent\n---\n\nBody.\n",
-      "cressetide/.claude-plugin/plugin.json": editJSON((obj) => { obj.agents.push("./agents/zz-extra.agent.md"); }),
-    });
-    assert.notStrictEqual(code, 0, "an agent outside the exact inventory must fail the build");
-    assert.match(out, /Cressetide agent file inventory mismatch/, "the failure must name the agent file inventory check");
+test("validate-structure: Cressetide agent inventory FAILS on an extra agent file and on a missing one", () => {
+  for (const [edits, label] of [
+    [{ "cressetide/agents/zz-extra.agent.md": "---\nname: zz-extra\ndescription: inventory-test agent\n---\n\nBody.\n" }, "an extra agent file"],
+    [{ "cressetide/agents/navigator.agent.md": null }, "a missing agent file"],
+  ]) {
+    const { code, out } = runOverlay(edits);
+    assert.notStrictEqual(code, 0, `${label} must fail the build`);
+    assert.match(out, /Cressetide agent file inventory mismatch/, `${label}: the failure must name the agent file inventory check`);
   }
-  {
-    // A duplicated manifest entry: every file still exists and is listed (9b stays green), only the
-    // exact agents[] inventory can catch it.
+});
+
+test("validate-structure: §10 FAILS when plugin.json declares an agents key (Claude Code discovers agents/*.agent.md)", () => {
+  for (const agents of [["./agents/navigator.agent.md"], []]) {
     const { code, out } = runOverlay({
-      "cressetide/.claude-plugin/plugin.json": editJSON((obj) => { obj.agents.push("./agents/navigator.agent.md"); }),
+      "cressetide/.claude-plugin/plugin.json": editJSON((obj) => { obj.agents = agents; }),
     });
-    assert.notStrictEqual(code, 0, "a manifest agents[] that drifts from the inventory must fail the build");
-    assert.match(out, /Cressetide plugin agents\[\] mismatch/, "the failure must name the manifest agents[] check");
+    assert.notStrictEqual(code, 0, `agents = ${JSON.stringify(agents)}: must fail the build`);
+    assert.match(out, /plugin\.json declares an `agents` key/, "the failure must name the agents-key rule");
   }
+});
+
+test("validate-structure: §10 FAILS when an agent's frontmatter name is not its file stem", () => {
+  for (const [replacement, expected] of [
+    ["name: judge", /cressetide\/agents\/arbiter\.agent\.md: frontmatter name is "judge", expected "arbiter"/],
+    ["name: \"arbiter-v2\"", /cressetide\/agents\/arbiter\.agent\.md: frontmatter name is "arbiter-v2", expected "arbiter"/],
+  ]) {
+    const { code, out } = runOverlay({
+      "cressetide/agents/arbiter.agent.md": (s) => s.replace(/^name: arbiter$/m, replacement),
+    });
+    assert.notStrictEqual(code, 0, `${replacement}: must fail the build`);
+    assert.match(out, expected, "the failure must name the agent and both names");
+  }
+  assert.deepStrictEqual(check({ "cressetide/agents/arbiter.agent.md": (s) => s.replace(/^name: arbiter$/m, "name: \"arbiter\"") }), [],
+    "control: a quoted name equal to the stem passes");
 });
 
 test("validate-structure: Cressetide agents/ inventory FAILS on an entry that is not an .agent.md file", () => {
@@ -1015,23 +1038,25 @@ test("validate-structure: Vigil subagent roster FAILS when the roster sentence d
 
 test("validate-structure: hook registration inventory FAILS when a matcher drifts, even to a broader one the wiring gate accepts", () => {
   const { code, out } = runOverlay({
-    "cressetide/hooks/hooks.json": editJSON((hj) => { hj.hooks.SessionStart[1].matcher = "compact|clear"; }), // compact-fidelity entry
+    "cressetide/hooks/hooks.json": editJSON((hj) => { hj.hooks.SessionStart[0].matcher = "startup|resume|clear|compact|other"; }), // still covers every source
   });
   assert.notStrictEqual(code, 0, "a hook registration outside the exact inventory must fail the build");
   assert.match(out, /hook registration inventory or event mapping mismatch/, "the failure must name the hook registration inventory");
 });
 
-test("validate-structure: hook script inventory FAILS on an unregistered hook script", () => {
-  const { code, out } = runOverlay({ "cressetide/hooks/zz-extra.js": "\"use strict\";\n" });
-  assert.notStrictEqual(code, 0, "a hook script outside the exact inventory must fail the build");
-  assert.match(out, /hook script inventory mismatch/, "the failure must name the hook script inventory");
+test("validate-structure: hook script inventory FAILS on an unregistered hook script (.js or .mjs)", () => {
+  for (const name of ["zz-extra.js", "zz-extra.mjs"]) {
+    const { code, out } = runOverlay({ [`cressetide/hooks/${name}`]: "\"use strict\";\n" });
+    assert.notStrictEqual(code, 0, `${name}: a hook script outside the exact inventory must fail the build`);
+    assert.match(out, /hook script inventory mismatch/, `${name}: the failure must name the hook script inventory`);
+  }
 });
 
 test("validate-structure: hook syntax check FAILS on an overlaid hook with a syntax error", () => {
   // The overlaid content (not the file on disk) is what gets syntax-checked.
-  const { code, out } = runOverlay({ "cressetide/hooks/compact-fidelity.js": (s) => s + "\nconst = ;\n" });
+  const { code, out } = runOverlay({ "cressetide/hooks/pre-tool-use.mjs": (s) => s + "\nconst = ;\n" });
   assert.notStrictEqual(code, 0, "a hook that does not parse must fail the build");
-  assert.match(out, /hook syntax check failed: compact-fidelity\.js/, "the failure must name the hook syntax check and the hook");
+  assert.match(out, /hook syntax check failed: pre-tool-use\.mjs/, "the failure must name the hook syntax check and the hook");
 });
 
 test("validate-structure: text-integrity check FAILS on invalid UTF-8, a NUL byte, and a marker in an extension-only file type", () => {

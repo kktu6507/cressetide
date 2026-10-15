@@ -64,7 +64,7 @@ body:
     id: logs
     attributes:
       label: Relevant logs
-      description: With CTIDE_HOOK_DEBUG=1 set, the tmpdir ctide-hook.log lines; or any error output. Sanitize first.
+      description: With CTIDE_HOOK_DEBUG=1 set, the tmpdir ctide-hook.log lines (credential shapes are redacted; review before pasting); or any error output. Sanitize first.
       render: shell
     validations:
       required: false

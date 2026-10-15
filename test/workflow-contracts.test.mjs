@@ -221,12 +221,13 @@ test("Salvage wartime cites the Map's canonical sections for blast radius, intru
   assert.match(diagnoseOpening, /Risk and uncertainty/, "the Stage 4 diagnose opening must cite Risk and uncertainty");
 });
 
-test("runtime contract distinguishes credential-safe summaries from opt-in raw hook debug", () => {
+test("runtime contract distinguishes credential-safe summaries from the opt-in, redacted hook debug sink", () => {
   const runtime = fs.readFileSync(path.join(root, "docs", "runtime-contract.md"), "utf8");
   assert.match(runtime, /Doctor and release diagnostic summaries must not expose/);
-  assert.match(runtime, /any non-empty value; only an unset or empty value disables/);
-  assert.match(runtime, /hook debug sink is separately opt-in and may include a bounded\s+raw command fragment/);
-  assert.match(runtime, /do not enable or collect `CTIDE_HOOK_DEBUG` where commands\s+may contain credentials/);
+  assert.match(runtime, /\| `CTIDE_HOOK_DEBUG` \| Enable local hook diagnostics\. Recognized values are `1`, `true`, `yes` and `on`, matched case-insensitively; every other value, including `0`, leaves them off\. \|/);
+  assert.match(runtime, /hook debug sink is separately opt-in and\s+redacts credential shapes/);
+  assert.match(runtime, /it is a best-effort scrub, so do not\s+enable `CTIDE_HOOK_DEBUG` where commands may carry other secrets/);
+  assert.doesNotMatch(runtime, /any non-empty value|raw command fragment/, "the pre-P5 debug rule and its unredacted-fragment warning are gone");
 });
 
 test("branch-scoped validation workflows all run on the Cressetide main line", () => {

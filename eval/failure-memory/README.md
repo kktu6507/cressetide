@@ -36,6 +36,6 @@ node cressetide/skills/vigil/scripts/failure-retrieve.mjs \
 
 ## Discipline
 
-- **Re-run after any change to `failure-retrieve.mjs` scoring or `load-failure-memory.js` ranking.** A case
+- **Re-run after any change to `failure-retrieve.mjs` scoring or the digest ranking in `cressetide/lib/failure-memory.mjs`.** A case
   flipping from pass to fail is a relevance regression to investigate before merging.
 - Adding cases is encouraged — keep `seed.md` entries unambiguous so an expected #1 is defensible.

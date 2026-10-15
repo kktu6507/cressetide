@@ -10,9 +10,10 @@ plan already contains; this just writes it down.
 
 `.ctide/output/contract.md`, under the top-level `.ctide/output/.gitignore` (`*` then `!.gitignore`,
 `references/verification-gate.md`, Artifact Hygiene). Compatibility home: `.ctide/legacy-output/contract.md`
-— `contract-check.mjs` still discovers it and `hooks/contract-guard.js` still guards it until the run's
-first scratch write migrates the whole legacy tree (Artifact Hygiene, one-time migration); new writes
-always target the new path. Unlike `design.md` (a committed cross-task contract), this is one run's
+— `contract-check.mjs` still discovers it and the contract check (`hooks/pre-tool-use.mjs`) still guards
+it until the run's first scratch write migrates the whole legacy tree (Artifact Hygiene, one-time
+migration); new writes always target the new path. Unlike `design.md` (a committed cross-task
+contract), this is one run's
 scratch — never committed into the consuming repo.
 
 ## Machine block (JSON — dependency-free, parsed by contract-check.mjs)
@@ -47,7 +48,8 @@ deterministic claim (fail-open).
 - `assumptions` — optional intent-assumption register entries (`references/plan-grounding.md`
   Stage B): the chosen default (`text`), the rejected alternative interpretation (`alternative`),
   and the `basis` for choosing. `contract-check.mjs` makes **no claim** on this field and
-  `contract-guard.js` does not guard it — fail-open; it exists for disclosure at the plan gate and
+  the contract check (`hooks/pre-tool-use.mjs`) does not guard it — fail-open; it exists for disclosure
+  at the plan gate and
   for review (the Review Packet's Assumptions field derives from it).
 
 ## Body (human-readable, follows the user's language)
@@ -68,9 +70,9 @@ Open decisions · Assumptions (defaulted interpretations). On high-risk work the
 1. **Detect / draft** *(plan, read-only)* — assembled from the plan + `plan-grounding` outputs.
 2. **Bless** *(ExitPlanMode)* — approved as part of the plan; no separate approval step.
 3. **Write** *(post-approval implementation)* — the `implementer` writes `.ctide/output/contract.md`
-   so plan mode stays read-only (`hooks/plan-gate.js` still applies). `hooks/contract-guard.js` asks for
-   confirmation before a later Write/Edit/MultiEdit would remove or loosen a previously recorded acceptance
-   criterion, `mustNotChange` entry, scope path, or downgrade `risk`.
+   so plan mode stays read-only (the plan-gate check still applies). The contract check
+   (`hooks/pre-tool-use.mjs`) asks for confirmation before a later Write/Edit would remove or loosen a
+   previously recorded acceptance criterion, `mustNotChange` entry, scope path, or downgrade `risk`.
 4. **Consume** — the Review Packet points at it (`references/review-packet.md`); `contract-check.mjs`
    reads the machine block; the `arbiter` reads the checker's report.
 

@@ -27,8 +27,8 @@ command-line parsing, git access, capped reads, redaction and trust-tag
 grammar from `cressetide/lib/`, which ships inside the plugin archive.
 
 The `kktu6507/plugins` marketplace exposes `ctide@kktu` from this
-repository's `cressetide/` directory. The plugin manifest owns the eleven
-agent registrations. Skill discovery supplies the five public commands. Hook
+repository's `cressetide/` directory. Agent discovery loads the eleven agents
+from `agents/*.agent.md`. Skill discovery supplies the five public commands. Hook
 discovery is declared inside the plugin root and must resolve every script
 through `${CLAUDE_PLUGIN_ROOT}`.
 
@@ -114,13 +114,10 @@ failure-memory updates.
 
 ## Hook boundary
 
-Six hooks add fail-open guidance and contract checks:
+Three hook entry points add fail-open guidance and contract checks:
 
-- `plan-gate.js`
-- `destructive-guard.js`
-- `contract-guard.js`
-- `load-failure-memory.js`
-- `compact-fidelity.js`
+- `pre-tool-use.mjs`
+- `session-start.mjs`
 - `orchestration-check.js`
 
 They accept bounded event input, avoid exposing secrets, and return control if

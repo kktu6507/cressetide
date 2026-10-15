@@ -43,6 +43,17 @@ function gitFailure(result) {
   return result.error ? safeErrorCode(result.error) : `exit ${result.status}`;
 }
 
+// Whether git wrote anything to stderr. Applied only to the two reads whose damaged-repository failure
+// looks like an answer by its exit status alone: `git tag --merged HEAD` exits 0 printing errors and no
+// tags when a commit between HEAD and a tag is missing, and `rev-parse -q --verify refs/tags/<x>` exits 1
+// with a warning when that ref is broken. Never applied globally (`git diff` warns about line endings on a
+// healthy Windows checkout), and the message text is never matched (it is localized). lib/git keeps stderr
+// to git's own messages: it drops GIT_TRACE* (writes to stderr on a healthy read) and GIT_REDIRECT_* (Git
+// for Windows' GIT_REDIRECT_STDERR=2>&1 moves stderr into stdout), and turns off config-file trace2 targets.
+function wroteStderr(result) {
+  return String(result.stderr ?? "").length > 0;
+}
+
 // A shallow clone (`git clone --depth N`) can be missing tags that exist upstream but were never
 // fetched locally — `git tag --list` and `git rev-parse --verify refs/tags/<x>` both simply do not see
 // such a tag, indistinguishable locally from the tag genuinely not existing anywhere. Every shallow-clone
@@ -218,8 +229,10 @@ export function pendingChanges(root, markerTag = null) {
   if (head !== "born") {
     return pendingView("unverified", "HEAD cannot be resolved to a readable commit — commits since the last release tag are unknown");
   }
+  // A commit missing between HEAD and a tag makes this exit 0 with errors on stderr and no tag listed:
+  // anything on stderr is a failed read, never "no release tag".
   const merged = git(root, ["tag", "--sort=refname", "--merged", "HEAD"]);
-  if (merged.error || merged.status !== 0) {
+  if (merged.error || merged.status !== 0 || wroteStderr(merged)) {
     return pendingView("unverified", "listing the tags reachable from HEAD failed — commits since the last release tag are unknown");
   }
   const tag = pickLatestVersionTag(outputLines(merged.stdout));
@@ -375,15 +388,20 @@ export function tagReadinessCheck(root, versionConsistency) {
     return { status: "not-applicable", evidence: "no declared version found in this project's package.json" };
   }
   // `rev-parse -q --verify` exits 1, quietly, for a ref that does not exist: only that is "no such tag". Any
-  // other outcome (a timeout, another exit status) leaves the tag's existence unknown — recorded here and
-  // reported as `unverified` below, never read as absent.
+  // other outcome (a timeout, another exit status, or anything on stderr — a broken ref exits 1 with a
+  // warning) leaves the tag's existence unknown — recorded here and reported as `unverified` below, never
+  // read as absent.
   const candidateTags = [...new Set([`v${target}`, target])];
   let existingTag = null;
   let lookupFailure = null;
   for (const tag of candidateTags) {
     const lookup = git(root, ["rev-parse", "-q", "--verify", `refs/tags/${tag}`]);
-    if (!lookup.error && lookup.status === 0) { existingTag = tag; break; }
-    if (lookup.error || lookup.status !== 1) lookupFailure ??= `looking up tag ${tag} failed (${gitFailure(lookup)})`;
+    const readFailed = Boolean(lookup.error) || wroteStderr(lookup);
+    if (!readFailed && lookup.status === 0) { existingTag = tag; break; }
+    if (readFailed || lookup.status !== 1) {
+      const reason = lookup.error || !wroteStderr(lookup) ? gitFailure(lookup) : `${gitFailure(lookup)}, with a message on stderr`;
+      lookupFailure ??= `looking up tag ${tag} failed (${reason})`;
+    }
   }
   if (existingTag) {
     return { status: "fail", evidence: `tag ${existingTag} already exists for version ${target} — bump the version before tagging again` };

@@ -67,6 +67,25 @@ export function tempEnv(prefix = "ctide-test-") {
   return { TEMP: dir, TMP: dir, TMPDIR: dir };
 }
 
+// Runs the synchronous `fn` with the given process.env entries set — a value of undefined removes the
+// entry — and restores every one of them afterwards. For in-process tests of code that reads the
+// environment on each call (os.tmpdir(), os.homedir(), CLAUDE_PROJECT_DIR, CTIDE_HOOK_DEBUG).
+export function withEnv(vars, fn) {
+  const saved = Object.keys(vars).map((key) => [key, Object.hasOwn(process.env, key), process.env[key]]);
+  for (const [key, value] of Object.entries(vars)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return fn();
+  } finally {
+    for (const [key, had, value] of saved) {
+      if (had) process.env[key] = value;
+      else delete process.env[key];
+    }
+  }
+}
+
 // --- fixture git ---
 
 // Never created: git reads a missing global config file as empty, and cannot create this one (its
@@ -98,7 +117,8 @@ const PINNED_GIT_CONFIG = [
 // For fixture git only. The system config stays (Git for Windows keeps core.autocrlf, core.symlinks and
 // init.defaultBranch there), so this is not GIT_CONFIG_NOSYSTEM. `extra` is applied last, so a caller's own
 // GIT_AUTHOR_DATE / GIT_COMMITTER_DATE still win. Windows environment names are case-insensitive (a
-// `Git_Dir` reaches git as GIT_DIR), so there the names are matched case-insensitively.
+// `Git_Dir` reaches git as GIT_DIR), so there the names are matched case-insensitively. Exported for
+// helpers.test only (it pins this environment directly); test files build fixtures through git()/makeRepo().
 export function gitEnv(extra = {}) {
   const env = { ...process.env };
   const caseInsensitive = process.platform === "win32";
@@ -126,7 +146,8 @@ export function git(cwd, args, { env, input, encoding = "utf8" } = {}) {
 
 // Repo-local, so production code that runs git in a fixture repository with the plain process environment
 // is not pushed into signing, or into verifying merge signatures, by a developer's global config either.
-export function hardenGitSigning(cwd) {
+// Internal to makeRepo().
+function hardenGitSigning(cwd) {
   for (const [key, value] of [["commit.gpgsign", "false"], ["tag.gpgSign", "false"], ["merge.verifySignatures", "false"]]) {
     git(cwd, ["config", key, value]);
   }
@@ -181,13 +202,18 @@ export function run(command, args, options = {}) {
   });
 }
 
-// Runs a hook by file name with an event on stdin; parses its JSON output. Makes a temp cwd when none is given.
-export function runHook(name, event, options = {}) {
+// Spawns a hook (a file name under cressetide/hooks/, or an absolute path) with `event` on stdin — a string
+// is sent as is, anything else as JSON — in `options.cwd` (a fresh temp dir when not given), with
+// CLAUDE_PROJECT_DIR set to that cwd unless options.env says otherwise. Returns the spawnSync result plus
+// `output` (the parsed stdout, or null when stdout is blank; non-JSON stdout throws) and `cwd`.
+export function runHookEvent(name, event, options = {}) {
   const cwd = options.cwd || tempDir();
-  const result = run(process.execPath, [path.join(root, "cressetide", "hooks", name)], {
+  const file = path.isAbsolute(name) ? name : path.join(HOOKS, name);
+  const result = run(process.execPath, [file], {
     cwd,
     input: typeof event === "string" ? event : JSON.stringify(event),
     env: { CLAUDE_PROJECT_DIR: cwd, ...(options.env || {}) },
+    timeout: options.timeout,
   });
   let output = null;
   if (result.stdout.trim()) output = JSON.parse(result.stdout);
@@ -202,29 +228,11 @@ export function write(file, content) {
 // --- hooks ---
 
 export const HOOKS = path.join(root, "cressetide", "hooks");
-export const MEM = path.join(HOOKS, "load-failure-memory.js");
-export const GATE = path.join(HOOKS, "plan-gate.js");
-// Lazy on purpose (a function, not a computed-at-import-time constant): a module-top-level statement runs
-// at import time, before any importing test file's own before() hook can possibly run (ES module
-// evaluation order), so an eager `existsSync` here would touch the real ~/.claude/ path once per run for
-// every test file that imports anything from this module -- including files that isolate HOME for their
-// own tests via a before() hook, since that hook runs later than this module's own top level. Deferring the
-// check into a function means it only runs when its sole caller (session-memory-hooks.test.mjs) actually
-// invokes it, inside a test body, after any such isolation is already in effect.
-export function hasGlobalMemory() { return fs.existsSync(path.join(os.homedir(), ".claude", "FAILURE_MEMORY.md")); }
 
-// Runs a hook by absolute path with `input` as JSON on stdin; returns its raw stdout.
-export function execHook(hookPath, input, env) {
-  return cp.execFileSync("node", [hookPath], { input: JSON.stringify(input), env: env || process.env }).toString();
-}
-export function digestOf(input, env) {
-  // Hermetic by default: strip CLAUDE_PROJECT_DIR so the hook's project-root resolution falls back
-  // to the event cwd (the temp project under test), not the developer's ambient project dir. Tests
-  // that exercise the CLAUDE_PROJECT_DIR precedence pass an explicit env.
-  let e = env;
-  if (!e) { e = { ...process.env }; delete e.CLAUDE_PROJECT_DIR; }
-  const out = execHook(MEM, input, e);
-  return out.trim() ? JSON.parse(out).hookSpecificOutput.additionalContext : "";
+// Spawns a hook by absolute path with `input` as JSON on stdin and returns its raw stdout. The node that
+// runs the tests runs the hook too (process.execPath), whatever PATH says.
+export function hookStdout(hookPath, input, env) {
+  return cp.execFileSync(process.execPath, [hookPath], { input: JSON.stringify(input), env: env || process.env }).toString();
 }
 export function mkProject(memFile) {
   const dir = tempDir("ctide-test-");
@@ -233,14 +241,6 @@ export function mkProject(memFile) {
     fs.writeFileSync(path.join(dir, "ai", "FAILURE_MEMORY.md"), memFile, "utf8");
   }
   return dir;
-}
-export function gate(input, env) {
-  // Hermetic by default: strip CLAUDE_PROJECT_DIR so the project opt-out can't be toggled
-  // by the developer's ambient environment. Tests that exercise the opt-out pass an explicit env.
-  let e = env;
-  if (!e) { e = { ...process.env }; delete e.CLAUDE_PROJECT_DIR; }
-  const out = execHook(GATE, input, e);
-  return out.includes('"deny"') ? "DENY" : "ALLOW";
 }
 // Isolate the home dir for tests that exercise the ~/.claude/plans exemption, so they
 // don't touch the developer's real home tree.
@@ -278,9 +278,6 @@ export function mkProjectWithSettings(settings, opts = {}) {
     typeof settings === "string" ? settings : JSON.stringify(settings), "utf8");
   return dir;
 }
-export function gateInProject(input, dir) {
-  return gate(input, { ...process.env, CLAUDE_PROJECT_DIR: dir });
-}
 
 export const ORCH = path.join(HOOKS, "orchestration-check.js");
 export function mkTranscript(linesArr) {
@@ -290,42 +287,14 @@ export function mkTranscript(linesArr) {
   return p;
 }
 export function orch(input) {
-  const out = cp.execFileSync("node", [ORCH], { input: JSON.stringify(input) }).toString();
+  const out = cp.execFileSync(process.execPath, [ORCH], { input: JSON.stringify(input) }).toString();
   return out.trim() ? JSON.parse(out) : null;
 }
 export function orchEnv(input, env) {
-  const out = cp.execFileSync("node", [ORCH], { input: JSON.stringify(input), env: { ...process.env, ...env } }).toString();
+  const out = cp.execFileSync(process.execPath, [ORCH], { input: JSON.stringify(input), env: { ...process.env, ...env } }).toString();
   return out.trim() ? JSON.parse(out) : null;
 }
 
-export const DGUARD = path.join(HOOKS, "destructive-guard.js");
-export function dguard(input, env) {
-  let e = env;
-  if (!e) { e = { ...process.env }; delete e.CLAUDE_PROJECT_DIR; } // hermetic: ignore ambient project opt-out
-  const out = execHook(DGUARD, input, e);
-  if (!out.trim()) return "ALLOW";
-  const j = JSON.parse(out);
-  return (j.hookSpecificOutput && j.hookSpecificOutput.permissionDecision) === "ask" ? "ASK" : "ALLOW";
-}
-
-export const COMPACTFIDELITY = path.join(HOOKS, "compact-fidelity.js");
-export function compactFidelity(input, env) {
-  let e = env;
-  if (!e) { e = { ...process.env }; delete e.CLAUDE_PROJECT_DIR; } // hermetic: ignore ambient project opt-out
-  const out = execHook(COMPACTFIDELITY, input, e);
-  return out.trim() ? JSON.parse(out) : null;
-}
-
-export const CGUARD = path.join(HOOKS, "contract-guard.js");
-export function cguard(input, env) {
-  let e = env;
-  if (!e) { e = { ...process.env }; delete e.CLAUDE_PROJECT_DIR; } // hermetic: ignore ambient project opt-out
-  const out = execHook(CGUARD, input, e);
-  if (!out.trim()) return { decision: "ALLOW" };
-  const j = JSON.parse(out);
-  const hso = j.hookSpecificOutput || {};
-  return { decision: hso.permissionDecision === "ask" ? "ASK" : "ALLOW", reason: hso.permissionDecisionReason || "" };
-}
 // A fresh temp project dir, used both as CLAUDE_PROJECT_DIR and as the file's containing tree, so the
 // hook's root-anchored .ctide/legacy-output/contract.md resolution has somewhere real to resolve against.
 export function mkCGuardProject() {

@@ -11,11 +11,13 @@
 // always-on context. Dependency-free (Node built-ins only). Fail-open: an absent/unreadable/unstructured
 // file yields a no-claim report; the CLI always exits 0 and never throws to its caller. Exposes pure
 // functions (tokenize / parseEntries / scoreEntry / retrieve / formatRetrieval) for the test suite;
-// main() wraps them when the script is run directly (isMain).
+// main() wraps them when the script is run directly (isMain). Entries are parsed by the parser the
+// SessionStart digest uses (cressetide/lib/failure-memory.mjs), so both see the same entries.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isMain, parseCli } from "../../../lib/cli.mjs";
+import { memoryCandidates, parseEntries as parseMemoryEntries } from "../../../lib/failure-memory.mjs";
 import { readCapped } from "../../../lib/read-capped.mjs";
 
 // Read at most the first MAX_READ bytes (the newest = top entries); the helper ranks entries, it does not
@@ -57,58 +59,17 @@ export function tokenize(str) {
   return out;
 }
 
-const isPlaceholder = (t) => /^<.*>$/.test(t);
-// Same retirement marker the SessionStart digest honors: a TRAILING (expired)/(superseded …) on the
-// title line. A mid-title mention is deliberately NOT treated as retired (fail toward showing).
-const isRetired = (t) => /\((?:expired|superseded\b[^)]*)\)\s*$/i.test(t);
-
-// A monotonic ordinal for an entry's date so newer sorts first on a score tie. Parses a leading ISO date
-// from the title (`### YYYY-MM-DD — …`); returns 0 when the title carries no parseable date.
-function dateOrdinal(title) {
-  const m = String(title).match(/^(\d{4})-(\d{2})-(\d{2})/);
-  return m ? Number(m[1]) * 10000 + Number(m[2]) * 100 + Number(m[3]) : 0;
-}
-
-// Count reusable-recurrence signals in an entry body ("seen again …" per the template's Recurrence line).
-// More recurrences => a lesson that keeps biting => a stronger tie-break toward the top.
-function recurrenceCount(body) {
-  return (String(body).match(/seen again/gi) || []).length;
-}
-
-// Parse "### " entries into structured records. tagTokens / titleTokens / bodyTokens are precomputed once
-// so scoreEntry stays a cheap set-overlap. `retired`/`placeholder` are flagged (not dropped) so callers
-// decide; retrieve() filters them out. `raw` is the entry's verbatim markdown (heading + body) for output.
+// The shared parser's entries ("##" or "###" headings, decided per file; see
+// cressetide/lib/failure-memory.mjs for the fields), each with tagTokens / titleTokens / bodyTokens
+// precomputed once so scoreEntry stays a cheap set-overlap. `retired`/`placeholder` are flagged (not
+// dropped) so callers decide; retrieve() filters them out. `raw` is the entry's verbatim markdown.
 export function parseEntries(markdown) {
-  const lines = String(markdown == null ? "" : markdown).split(/\r?\n/);
-  const starts = [];
-  for (let i = 0; i < lines.length; i++) if (/^###\s+/.test(lines[i])) starts.push(i);
-  const entries = [];
-  for (let s = 0; s < starts.length; s++) {
-    const startLine = starts[s];
-    const endLine = (s + 1 < starts.length) ? starts[s + 1] : lines.length;
-    const title = lines[startLine].replace(/^###\s+/, "").trim();
-    const bodyLines = lines.slice(startLine + 1, endLine);
-    const body = bodyLines.join("\n");
-    let tags = "";
-    for (const ln of bodyLines) {
-      const m = ln.match(/^\s*[-*]?\s*\**\s*tags\**\s*:?\s*(.+)$/i);
-      if (m) { tags = m[1].replace(/^\**\s*/, "").replace(/[.\s]+$/, "").trim(); break; }
-    }
-    entries.push({
-      title,
-      tags,
-      body,
-      raw: lines.slice(startLine, endLine).join("\n").replace(/\s+$/, ""),
-      retired: isRetired(title),
-      placeholder: isPlaceholder(title),
-      date: dateOrdinal(title),
-      recurrence: recurrenceCount(body),
-      tagTokens: tokenize(tags),
-      titleTokens: tokenize(title),
-      bodyTokens: tokenize(body),
-    });
-  }
-  return entries;
+  return parseMemoryEntries(markdown).map((entry) => ({
+    ...entry,
+    tagTokens: tokenize(entry.tags),
+    titleTokens: tokenize(entry.title),
+    bodyTokens: tokenize(entry.body),
+  }));
 }
 
 // Relevance of one entry to the query token set. Tag matches weigh most (tags are the curated index),
@@ -156,20 +117,15 @@ export function formatRetrieval(matches, meta = {}) {
 // Default source (READ priority only — this helper never migrates): project
 // `.ctide/memory/FAILURE_MEMORY.md` (current layout, anchored on CLAUDE_PROJECT_DIR like the hook),
 // else the legacy project `ai/FAILURE_MEMORY.md`, else the global `~/.claude/FAILURE_MEMORY.md` —
-// the same 3-tier order hooks/load-failure-memory.js reads. Returns null when none is a readable
-// regular file. failure-consolidate.mjs imports this, so both helpers share one discovery order, and
-// defaultLedgerPath() below keeps the usage ledger a sibling of whichever file was selected.
-// doctor.mjs's --project check also imports this (dynamically; see that file's own header comment),
-// scoped to this function's project-local tiers only — it never accepts a resolution landing on the
-// third, global tier above.
+// the hook's 3-tier order, from the same memoryCandidates() list. Returns the first candidate path (as
+// built, not resolved) that is a regular file, or null when none is. failure-consolidate.mjs imports this,
+// so both helpers share one discovery order, and defaultLedgerPath() below keeps the usage ledger a
+// sibling of whichever file was selected. doctor.mjs's --project check also imports this (dynamically; see
+// that file's own header comment), scoped to this function's project-local tiers only — it never accepts a
+// resolution landing on the third, global tier above.
 export function resolveMemoryFile(cwd) {
-  const candidates = [
-    path.join(cwd, ".ctide", "memory", "FAILURE_MEMORY.md"),
-    path.join(cwd, "ai", "FAILURE_MEMORY.md"),
-    path.join(os.homedir(), ".claude", "FAILURE_MEMORY.md"),
-  ];
-  for (const f of candidates) {
-    try { if (fs.statSync(f).isFile()) return f; } catch (e) {}
+  for (const { file } of memoryCandidates(cwd, os.homedir())) {
+    try { if (fs.statSync(file).isFile()) return file; } catch (e) {}
   }
   return null;
 }
@@ -217,12 +173,17 @@ const CLI_OPTIONS = {
   "log-file": { type: "string" }, session: { type: "string" }, log: { type: "boolean" },
 };
 
+// What stdout says when the command line could not be parsed: nothing was searched, so — unlike a search
+// that found nothing — it makes no claim about the memory file at all.
+const USAGE_ERROR_NO_CLAIM = "ctide failure-retrieve: no claim — the command line could not be parsed, so nothing was searched " +
+  `(usage: ${USAGE}) — rely on the startup digest / a manual read.`;
+
 function main(args) {
   const parsed = parseCli(args, { options: CLI_OPTIONS, allowPositionals: true });
   if (parsed.error) {
-    // A usage error reads nothing and records nothing: one line on stderr, the no-match no-claim on stdout.
+    // A usage error reads nothing and records nothing: one line on stderr, the explicit no-claim on stdout.
     process.stderr.write(`failure-retrieve: ${parsed.error.replace(/\s+/g, " ")} (usage: ${USAGE})\n`);
-    process.stdout.write(formatRetrieval([], { file: "none" }) + "\n");
+    process.stdout.write(USAGE_ERROR_NO_CLAIM + "\n");
     process.exit(0);
   }
   const { values, positionals } = parsed;

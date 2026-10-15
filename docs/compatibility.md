@@ -7,15 +7,14 @@ Cressetide targets Claude Code first. Hook schemas, plan mode, subagent isolatio
 | Cressetide version | Runtime | Automated coverage | Live conformance status |
 |---|---|---|---|
 | current release (`v0.7.2`) | Claude Code | Plugin structure, hooks, agents, skills, Doctor, release tooling, validators, tests, and deterministic evals | **Partial, by observed scenario — no checklist item is claimed complete.** For `v0.7.2`, one Windows run on Claude Code 2.1.263 recorded: install from the published marketplace, enablement, and an explicit reload (1 plugin, 5 skills, 6 hooks); the installed helper run directly (all 14 default checks pass, plus its `--project` rows on a fixture); one real `SessionStart` failure-memory injection; one real `PreToolUse` destructive-guard `ask`; and a default `/ctide:doctor` run that correctly reported **degraded/incomplete**. Its synthetic plan-gate probe returned `deny`, but its isolated destructive-guard probe never ran: the agent nested that probe in a double-quoted command substitution, the host guard asked, and the headless session had no way to approve. Each is a single observation, not a whole checklist item; for example, item 2 additionally requires the fallback and the no-memory silence, and item 4 the harmless-command allow. Direct helper probes are not host events, and a synthetic plan-gate probe is not host plan-mode gating. Nothing is recorded for host plan-mode gating, the Stop advisory, real compaction, a full Vigil run, or Map and incident handoff. Earlier versions: see `EVIDENCE.md`. |
-| current release | GitHub Copilot CLI | No Cressetide-specific runtime claim is encoded by the local suite. | Unverified until a fresh Cressetide run is recorded. |
 | current branch | CI / local Node.js 22.12 or newer | `npm run validate`, `npm test`, and `npm run eval` | Automated regression coverage only; it does not replace a real plugin install. |
 
 ## Runtime-specific behavior
 
 These surfaces depend on Claude Code capabilities and may degrade elsewhere:
 
-- `plan-gate.js` needs the permission-mode field supplied to `PreToolUse`.
-- `compact-fidelity.js` relies on `SessionStart` output being surfaced after compaction.
+- The plan-gate check in `pre-tool-use.mjs` needs the permission-mode field supplied to `PreToolUse`.
+- The compaction reminder in `session-start.mjs` relies on `SessionStart` output being surfaced after compaction.
 - `orchestration-check.js` relies on `Stop` output being surfaced.
 - Deep-mode Workflow requires a runtime Workflow capability.
 
@@ -26,11 +25,11 @@ Cressetide should fail open where its contract requires that behavior and must d
 Run this checklist before publishing a live-compatibility claim. A claim is scoped to the **scenarios actually observed**, not to whole items: record what ran and what it showed, and never infer an item's remaining subcases from one observation or summarize partial coverage as "smoke passed".
 
 1. Install, enable, and reload Cressetide from the intended marketplace or repository reference.
-2. Confirm `load-failure-memory.js` injects a nonce-fenced digest when `.ctide/memory/FAILURE_MEMORY.md` exists, honors the documented compatibility fallback, and stays silent when no memory file exists.
-3. Enter plan mode and confirm `plan-gate.js` denies an edit but allows the same edit outside plan mode.
-4. Confirm `destructive-guard.js` asks before a narrow destructive command and allows a harmless command.
+2. Confirm `session-start.mjs` injects a nonce-fenced digest when `.ctide/memory/FAILURE_MEMORY.md` exists, honors the documented compatibility fallback, and stays silent when no memory file exists.
+3. Enter plan mode and confirm the plan-gate check in `pre-tool-use.mjs` denies an edit but allows the same edit outside plan mode.
+4. Confirm the destructive-command check in `pre-tool-use.mjs` asks before a narrow destructive command and allows a harmless command.
 5. End a session that claims `READY` without the required review evidence and confirm `orchestration-check.js` advises.
-6. Trigger compaction and confirm `compact-fidelity.js` emits the preservation block without hook-output validation errors.
+6. Trigger compaction and confirm `session-start.mjs` emits the preservation block without hook-output validation errors.
 7. Run `/ctide:doctor` and retain its health summary.
 8. Run `/ctide:vigil <non-trivial task>` and confirm the workflow, reviewer panel, gatekeeper verdict, and final sentinels.
 9. Run `/ctide:map` in a scratch project, confirm `.ctide/map/SYSTEM_MAP.md` is produced, and exercise the incident handoff described by the Map contract.

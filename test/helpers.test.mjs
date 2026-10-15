@@ -5,7 +5,7 @@ import assert from "node:assert";
 import cp from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { git, gitEnv, makeRepo, sshSigningSkipReason, tempDir, tempEnv, test, write } from "./helpers.mjs";
+import { HOOKS, git, gitEnv, hookStdout, makeRepo, orch, orchEnv, runHookEvent, sshSigningSkipReason, tempDir, tempEnv, test, write } from "./helpers.mjs";
 
 // Sets process.env entries (undefined deletes one) until the running test ends.
 function setProcessEnv(t, vars) {
@@ -225,4 +225,21 @@ test("sshSigningSkipReason: git 2.34+ with a working ssh-keygen -Y sign runs, an
   const signed = { status: 0, stderr: "Signing file probe.txt\nWrite signature to probe.txt.sig\n" };
   assert.strictEqual(sshSigningSkipReason({ gitVersionText: "git version 2.34.0", signProbe: signed }), null);
   assert.strictEqual(sshSigningSkipReason({ gitVersionText: "not a version string", signProbe: signed }), null);
+});
+
+// --- hook spawners ---
+
+test("hookStdout, runHookEvent, orch and orchEnv run the hook with the test's own node (process.execPath), not the node PATH finds", (t) => {
+  const noNode = tempDir("ctide-helpers-nonode-");
+  // On Windows process.env is case-insensitive, so this replaces Path too; an empty directory has no node.
+  setProcessEnv(t, { PATH: noNode });
+  const cwd = tempDir("ctide-helpers-proj-");
+  const planWrite = { hook_event_name: "PreToolUse", cwd, permission_mode: "plan", tool_name: "Write", tool_input: { file_path: path.join(cwd, "a.txt"), content: "x" } };
+  const out = hookStdout(path.join(HOOKS, "pre-tool-use.mjs"), planWrite, { ...process.env, CLAUDE_PROJECT_DIR: cwd });
+  assert.strictEqual(JSON.parse(out).hookSpecificOutput.permissionDecision, "deny");
+  const spawned = runHookEvent("pre-tool-use.mjs", planWrite, { cwd });
+  assert.strictEqual(spawned.error, undefined, `runHookEvent spawned node: ${spawned.error?.code}`);
+  assert.strictEqual(spawned.output?.hookSpecificOutput?.permissionDecision, "deny");
+  assert.strictEqual(orch({ hook_event_name: "Stop", cwd }), null, "orch spawned the Stop hook (no transcript: no advisory)");
+  assert.strictEqual(orchEnv({ hook_event_name: "Stop", cwd }, { CTIDE_ENFORCE_STOP: "1" }), null, "orchEnv spawned the Stop hook");
 });

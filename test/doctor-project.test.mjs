@@ -1,6 +1,6 @@
 // Tests for doctor.mjs's opt-in `--project`/`--cwd` flags: two
 // additive checks (failure-memory-health, incident-journals) layered on top of the existing
-// 14 plugin-health checks, plus the command line as parsed by cressetide/lib/cli.mjs (parseCli, once, in
+// 13 plugin-health checks, plus the command line as parsed by cressetide/lib/cli.mjs (parseCli, once, in
 // main()) and the capped project reads through cressetide/lib/read-capped.mjs. Sibling to, not an extension of, test/doctor-security.test.mjs (that file is
 // scoped to plugin-health tamper-resistance -- a different concern). Mirrors test/failure-consolidate.test.mjs's
 // synthetic-fixture style: temp directories, synthetic FAILURE_MEMORY.md / incident-journal content, cleanup.
@@ -136,8 +136,8 @@ function writeFileSyncDurable(filePath, content) {
 
 const BASELINE_CHECK_NAMES = [
   "manifest", "node", "hook-wiring",
-  "hook:plan-gate.js", "hook:destructive-guard.js", "hook:contract-guard.js",
-  "hook:load-failure-memory.js", "hook:compact-fidelity.js", "hook:orchestration-check.js",
+  "hook:pre-tool-use.mjs", "hook:session-start.mjs", "hook:orchestration-check.js",
+  "decision:plan-gate", "decision:destructive",
   "hook-debug", "runtime-probes", "skills", "agents", "telemetry",
 ];
 const BASELINE_GUIDANCE = [
@@ -146,7 +146,7 @@ const BASELINE_GUIDANCE = [
   "Restart Claude Code after enablement changes",
 ];
 
-test("regression guard: diagnose(pluginRoot) with no options (today's shipped call shape) still returns exactly the 14 baseline checks, in order, and exactly the 3 baseline guidance lines", async () => {
+test("regression guard: diagnose(pluginRoot) with no options (today's shipped call shape) still returns exactly the 13 baseline checks, in order, and exactly the 3 baseline guidance lines", async () => {
   const report = await diagnose(pluginRoot);
   assert.strictEqual(report.status, "pass", JSON.stringify(report, null, 2));
   assert.deepStrictEqual(report.checks.map((c) => c.name), BASELINE_CHECK_NAMES);
@@ -160,7 +160,7 @@ test("regression guard: diagnose(pluginRoot, { project: false }) is identical to
   assert.deepStrictEqual(withExplicitFalse.guidance, withoutOptions.guidance);
 });
 
-test("regression guard: the real CLI, spawned with no --project flag, prints the same 14-check/3-guidance-line baseline", () => {
+test("regression guard: the real CLI, spawned with no --project flag, prints the same 13-check/3-guidance-line baseline", () => {
   const r = cp.spawnSync(process.execPath, [doctorScript, "--plugin-root", pluginRoot, "--json"], { encoding: "utf8" });
   assert.strictEqual(r.status, 0, r.stderr);
   const report = JSON.parse(r.stdout);
@@ -170,7 +170,7 @@ test("regression guard: the real CLI, spawned with no --project flag, prints the
 
 // --- item (a): no .ctide/ at all -> both new checks unverified, no crash ---------------------------------
 
-test("--project with nothing under cwd (no .ctide/ at all, and no global FAILURE_MEMORY.md) adds failure-memory-health: unverified and incident-journals: unverified, without disturbing the 14 baseline checks", async () => {
+test("--project with nothing under cwd (no .ctide/ at all, and no global FAILURE_MEMORY.md) adds failure-memory-health: unverified and incident-journals: unverified, without disturbing the 13 baseline checks", async () => {
   // No per-call isolation wrapper needed here: the file-scope before()/after() hook above already isolates
   // HOME/USERPROFILE for every test in this file, and this test never seeds anything into that shared
   // isolated home -- it only needs the isolation to already be in effect (which it structurally is).
@@ -179,7 +179,7 @@ test("--project with nothing under cwd (no .ctide/ at all, and no global FAILURE
   assert.deepStrictEqual(
     report.checks.filter((c) => BASELINE_CHECK_NAMES.includes(c.name)).map((c) => c.name),
     BASELINE_CHECK_NAMES,
-    "the 14 plugin-health checks still all run, unchanged",
+    "the 13 plugin-health checks still all run, unchanged",
   );
   assert.deepStrictEqual(
     report.checks.filter((c) => !BASELINE_CHECK_NAMES.includes(c.name)).map((c) => c.name),
@@ -644,7 +644,7 @@ test("CLI binding (readCapped): an over-cap incident journal is read from the he
 // --- than relying on macOS's incidental /var -> /private/var temp-dir symlinking (what the tests below, ---
 // --- and the pre-existing red->green/vigil-broken/Fix-8 tests further down, exercise only incidentally) ---
 
-test("doctor.mjs invoked via a path THROUGH a real symlinked/junctioned ancestor directory (fs.symlinkSync, not an incidental temp-dir symlink) is still recognized as directly-invoked and runs its full CLI body, producing the 14 baseline checks -- proves the isMain entry check's fs.realpathSync comparison directly", (t) => {
+test("doctor.mjs invoked via a path THROUGH a real symlinked/junctioned ancestor directory (fs.symlinkSync, not an incidental temp-dir symlink) is still recognized as directly-invoked and runs its full CLI body, producing the 13 baseline checks -- proves the isMain entry check's fs.realpathSync comparison directly", (t) => {
   const scratchDir = tempDir("ctide-doctor-symlink-entrypoint-");
   try {
     const scratchPlugin = path.join(scratchDir, "cressetide");
@@ -676,7 +676,7 @@ test("doctor.mjs invoked via a path THROUGH a real symlinked/junctioned ancestor
     assert.ok(r.stdout && r.stdout.trim().length > 0, "must produce real JSON output, not empty stdout (the false-negative symptom this fix closes)");
     const report = JSON.parse(r.stdout);
     assert.deepStrictEqual(report.checks.map((c) => c.name), BASELINE_CHECK_NAMES,
-      "the full 14-check baseline must run, proving the CLI body was not silently skipped");
+      "the full 13-check baseline must run, proving the CLI body was not silently skipped");
   } finally {
     fs.rmSync(scratchDir, { recursive: true, force: true });
   }
@@ -705,7 +705,7 @@ test("--project degrades to a reported failure-memory-health: fail (never a proc
     fs.rmSync(brokenVigilFile);
 
     // (a) flagless (no --project at all): checkFailureMemoryHealth's dynamic import must never even be
-    // reached, so a broken vigil module must not affect this run at all -- same 14 baseline checks, no
+    // reached, so a broken vigil module must not affect this run at all -- same 13 baseline checks, no
     // crash. This is the literal historical repro named in doctor.mjs's own header comment: a missing
     // failure-consolidate.mjs used to crash even a flagless, --project-less invocation with an uncaught
     // ERR_MODULE_NOT_FOUND, before the lazy-import fix.
@@ -713,7 +713,7 @@ test("--project degrades to a reported failure-memory-health: fail (never a proc
     assert.strictEqual(flagless.status, 0, `flagless run must still exit 0 against a scratch copy with a broken vigil module, never crash: ${flagless.stderr}`);
     const flaglessReport = JSON.parse(flagless.stdout);
     assert.deepStrictEqual(flaglessReport.checks.map((c) => c.name), BASELINE_CHECK_NAMES,
-      "the 14 baseline checks must be completely unaffected by a vigil module that only --project would ever need");
+      "the 13 baseline checks must be completely unaffected by a vigil module that only --project would ever need");
 
     // (b) --project against the SAME broken copy: the dynamic import fails, and that failure must surface as
     // this check's own reported `fail` (naming the module-load error), never an uncaught exception or empty

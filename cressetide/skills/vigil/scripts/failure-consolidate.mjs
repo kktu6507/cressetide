@@ -11,8 +11,9 @@
 // modifies the memory file or the ledger. Dependency-free, fail-open: no ledger / no usage data => no
 // staleness claim, exit 0.
 import { isMain, parseCli } from "../../../lib/cli.mjs";
+import { parseEntries } from "../../../lib/failure-memory.mjs";
 import { readCapped } from "../../../lib/read-capped.mjs";
-import { parseEntries, resolveMemoryFile, defaultLedgerPath, ledgerKey } from "./failure-retrieve.mjs";
+import { resolveMemoryFile, defaultLedgerPath, ledgerKey } from "./failure-retrieve.mjs";
 
 const DAY_MS = 86400000;
 const DEFAULT_STALE_DAYS = 60;

@@ -97,7 +97,7 @@ so, otherwise proceed without it — absence is never an error (see *Error handl
 
 ## Never auto-injected by any hook
 
-`hooks/load-failure-memory.js` is deliberately **untouched** by this contract; it continues to read
+`hooks/session-start.mjs` is deliberately **untouched** by this contract; it continues to read
 only `FAILURE_MEMORY.md` paths at `SessionStart`. It does **not** read, digest, or inject
 `.ctide/decisions/` in any form. Every consultation of `.ctide/decisions/` is the agent reading the
 relevant files directly during planning, per the section above, never a hook-injected digest — the

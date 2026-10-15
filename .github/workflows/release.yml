@@ -48,7 +48,7 @@ jobs:
       - name: Run release gates
         run: npm run validate && npm test && npm run eval
       - name: Validate Claude Code plugin
-        run: npx --yes @anthropic-ai/claude-code@2.1.207 plugin validate --strict ./cressetide
+        run: npx --yes @anthropic-ai/claude-code@2.1.272 plugin validate --strict ./cressetide
 
   publish:
     needs: validate

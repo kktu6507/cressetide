@@ -57,7 +57,7 @@ Do not deep-chain references. All required workflow references are linked from t
 
 ## Plan Gate (approve before any change)
 
-Non-trivial work must pass an explicit plan gate before implementation. Two layers: ctide drives Claude Code's native plan mode so planning is genuinely read-only, and the `plan-gate.js` PreToolUse hook denies Write/Edit/MultiEdit/NotebookEdit while permission mode is `plan`.
+Non-trivial work must pass an explicit plan gate before implementation. Two layers: ctide drives Claude Code's native plan mode so planning is genuinely read-only, and the plan-gate check in the `pre-tool-use.mjs` PreToolUse hook denies Write/Edit/NotebookEdit while permission mode is `plan`.
 
 1. **Enter plan mode first** (Detect → Use → Else-Disclose — `references/external-capabilities.md`, "Native plan mode"): already in plan mode → proceed; a plan-mode entry (e.g. EnterPlanMode) exists → enter it; else proceed read-only by discipline and **disclose** that the hook's enforcement is not active this session (recommend a default plan mode in settings).
 2. Run requirement understanding and planning while in plan mode. The hook blocks structured edit tools and obvious Bash writes, but it is a narrow tripwire, not full shell coverage (interpreter one-liners still slip) — during planning use read-only Bash only; never modify the working tree via Bash.
@@ -153,7 +153,7 @@ User-facing communication (the plan at the gate, AskUserQuestion prompts, surfac
    - On evidence-substituted work: if `intent-reviewer` reports a blocker/major, or the `arbiter` judges a coverage gap, spawn the substituted reviewer before `READY` (`references/reviewer-selection.md` — escalation; a fast lane, not a waiver).
    - **Validate each blocker, then tag each fix** — the `arbiter` confirms each `blocker` with one independent check and tags each applied fix Safe / Extended-Safe / Residual (a Residual fix is never auto-applied): `agents/arbiter.agent.md`, *Auto-fix loop rules*.
    - **Iteration cap:** if the same blocker category persists across two consecutive iterations, produce a Stuck Summary (including the `arbiter`'s converging-vs-drifted judgment — `references/verification-gate.md`, *Repair-iteration scoping*) and stop. A hard cap, not "loop until solved" — surface the blocker for the user rather than spending unbounded iterations/tokens.
-   - **Long-run progress ledger (optional).** On a long run, keep a one-line-per-step ledger at `.ctide/output/progress.md` (`<sha> · <step> · verify=<pass|fail> · <verdict-so-far>`); after a compaction re-read it (and `git log`) before redoing work — kept, gitignored; `compact-fidelity.js` re-injects a reminder.
+   - **Long-run progress ledger (optional).** On a long run, keep a one-line-per-step ledger at `.ctide/output/progress.md` (`<sha> · <step> · verify=<pass|fail> · <verdict-so-far>`); after a compaction re-read it (and `git log`) before redoing work — kept, gitignored; `session-start.mjs` re-injects a reminder.
    - **Cost control:** Tier 1 needs no confirmation; confirm with the user before any **Tier-2 / opus-heavy escalation** (`references/deep-mode.md`). A user-enabled, available Codex may give one independent diagnosis before declaring stuck; otherwise continue locally and disclose (off by default; absence never errors — `references/external-capabilities.md`).
 
 9. Final delivery

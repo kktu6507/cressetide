@@ -5,6 +5,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { isMain, parseCli } from "../../../lib/cli.mjs";
+import { LOG_NAME } from "../../../lib/debug.mjs";
 import { readCapped } from "../../../lib/read-capped.mjs";
 import { redactDiagnostic } from "../../../lib/redact.mjs";
 
@@ -25,10 +26,7 @@ import { redactDiagnostic } from "../../../lib/redact.mjs";
 const VIGIL_RETRIEVE_MODULE = "../../vigil/scripts/failure-retrieve.mjs";
 const VIGIL_CONSOLIDATE_MODULE = "../../vigil/scripts/failure-consolidate.mjs";
 
-const expectedHooks = [
-  "plan-gate.js", "destructive-guard.js", "contract-guard.js",
-  "load-failure-memory.js", "compact-fidelity.js", "orchestration-check.js",
-];
+const expectedHooks = ["pre-tool-use.mjs", "session-start.mjs", "orchestration-check.js"];
 const expectedSkills = ["doctor", "map", "salvage", "ship", "vigil"];
 const SEMVER = /^\d+\.\d+\.\d+(?:[-+].+)?$/;
 // Lowest Node.js the hooks and helpers support (major, minor, patch); the root package.json engines field
@@ -57,7 +55,7 @@ function resolvePluginRoot(pluginRootFlag) {
 }
 
 // Project-root resolution for the opt-in --project checks below: --cwd override (main() passes the parsed
-// value), then CLAUDE_PROJECT_DIR (the same env var hooks/load-failure-memory.js and
+// value), then CLAUDE_PROJECT_DIR (the same env var hooks/session-start.mjs's failure-memory digest and
 // failure-consolidate.mjs already anchor on), then process.cwd() -- the identical
 // 3-tier precedence those sibling scripts already establish, reused here rather than inventing a new
 // order.
@@ -118,20 +116,76 @@ function sameCanonicalPath(left, right) {
   return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
 }
 
+// The environment of every probe spawn: the doctor's own environment without any CTIDE_* switch or
+// CLAUDE_PLUGIN_DATA, with the project, the temp directories (where the hooks' debug log goes) and nothing
+// else pointed at the probe root — so an ambient project's opt-outs, an ambient CTIDE_HOOK_DEBUG or TEMP
+// can neither change a probe's result nor leave a file behind. CTIDE_HOOK_DEBUG=1 only when `debug`.
+// Names compare case-insensitively on Windows, where the environment does.
+export function probeEnv(probeRoot, { debug = false } = {}) {
+  const caseInsensitive = process.platform === "win32";
+  const env = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    const name = caseInsensitive ? key.toUpperCase() : key;
+    if (name.startsWith("CTIDE_") || name === "CLAUDE_PLUGIN_DATA") continue;
+    if (["CLAUDE_PROJECT_DIR", "TEMP", "TMP", "TMPDIR"].includes(name)) continue;
+    env[key] = value;
+  }
+  Object.assign(env, { CLAUDE_PROJECT_DIR: probeRoot, TEMP: probeRoot, TMP: probeRoot, TMPDIR: probeRoot });
+  if (debug) env.CTIDE_HOOK_DEBUG = "1";
+  return env;
+}
+
+// One harmless event per hook entry: each makes the entry run a check that writes a debug line, and
+// decides nothing (no deny, no ask, nothing written).
 function harmlessEvent(name, probeRoot) {
   const common = { cwd: probeRoot };
-  if (name === "plan-gate.js") return { ...common, hook_event_name: "PreToolUse", permission_mode: "default", tool_name: "Write", tool_input: { file_path: path.join(probeRoot, "doctor-note.txt"), content: "doctor" } };
-  if (name === "destructive-guard.js") return { ...common, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "echo ctide-doctor" } };
-  if (name === "contract-guard.js") return { ...common, hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: path.join(probeRoot, ".ctide", "output", "contract.md"), content: "doctor" } };
-  if (name === "load-failure-memory.js") return { ...common, hook_event_name: "SessionStart", source: "startup" };
-  if (name === "compact-fidelity.js") return { ...common, hook_event_name: "SessionStart", source: "compact" };
+  if (name === "pre-tool-use.mjs") return { ...common, hook_event_name: "PreToolUse", permission_mode: "default", tool_name: "Bash", tool_input: { command: "echo ctide-doctor" } };
+  if (name === "session-start.mjs") return { ...common, hook_event_name: "SessionStart", source: "startup" };
   return { ...common, hook_event_name: "Stop", transcript_path: path.join(probeRoot, "doctor-transcript.jsonl") };
 }
 
+// The decision probes: one event the PreToolUse entry must deny (a Write in plan mode) and one it must
+// ask about (git reset --hard). Nothing is executed: the entry only answers.
+const DECISION_PROBES = {
+  "plan-gate": {
+    expected: "deny",
+    event: (probeRoot) => ({ cwd: probeRoot, hook_event_name: "PreToolUse", permission_mode: "plan", tool_name: "Write", tool_input: { file_path: path.join(probeRoot, "doctor-plan-probe.txt"), content: "doctor" } }),
+  },
+  destructive: {
+    expected: "ask",
+    event: (probeRoot) => ({ cwd: probeRoot, hook_event_name: "PreToolUse", permission_mode: "default", tool_name: "Bash", tool_input: { command: "git reset --hard" } }),
+  },
+};
+
+// A credential-shaped value the hook-debug probe puts in a command: it must never reach the debug sinks.
+const DEBUG_PROBE_CREDENTIAL = "ctide-doctor-probe-credential";
+
+// Whether a decision probe's spawn result shows the expected decision: exit 0 and a PreToolUse
+// hookSpecificOutput whose permissionDecision is exactly the expected one. An allow, another decision,
+// output that is not JSON, a non-zero exit or a spawn error all fail.
+export function decisionProbePassed(kind, probe) {
+  const expected = DECISION_PROBES[kind]?.expected;
+  if (!expected || probe?.error || probe?.status !== 0) return false;
+  try {
+    const output = JSON.parse(String(probe.stdout ?? ""))?.hookSpecificOutput;
+    return output?.hookEventName === "PreToolUse" && output.permissionDecision === expected;
+  } catch { return false; }
+}
+
+// The frontmatter `name` of an agent file (quotes stripped), or null when there is none.
+function agentFrontmatterName(text) {
+  const source = String(text ?? "");
+  if (!source.startsWith("---")) return null;
+  const end = source.indexOf("\n---", 3);
+  if (end === -1) return null;
+  const match = source.slice(3, end).match(/^[ \t]*name[ \t]*:[ \t]*(.+?)[ \t]*\r?$/m);
+  return match ? match[1].replace(/^["']|["']$/g, "") : null;
+}
+
 function observedHookSignal(name, probe) {
-  const stem = name.replace(/\.js$/, "");
+  const stem = name.replace(/\.m?js$/, "");
   if (!String(probe?.stderr || "").includes(`[ctide ${stem}]`)) return false;
-  if (!["load-failure-memory.js", "compact-fidelity.js"].includes(name)) return true;
+  if (name !== "session-start.mjs") return true;
   try {
     const output = JSON.parse(probe.stdout || "{}");
     return output?.hookSpecificOutput?.hookEventName === "SessionStart" &&
@@ -150,8 +204,8 @@ function registrations(configuration) {
     for (const group of Array.isArray(groups) ? groups : []) {
       for (const hook of Array.isArray(group?.hooks) ? group.hooks : []) {
         const command = String(hook?.command || "");
-        const name = command.match(/hooks\/([a-z0-9-]+\.js)/i)?.[1] ||
-          (Array.isArray(hook?.args) ? String(hook.args.find(value => /hooks[\\/][a-z0-9-]+\.js/i.test(value)) || "").match(/hooks[\\/]([a-z0-9-]+\.js)/i)?.[1] : "");
+        const name = command.match(/hooks\/([a-z0-9-]+\.m?js)/i)?.[1] ||
+          (Array.isArray(hook?.args) ? String(hook.args.find(value => /hooks[\\/][a-z0-9-]+\.m?js/i.test(value)) || "").match(/hooks[\\/]([a-z0-9-]+\.m?js)/i)?.[1] : "");
         values.push([event, group.matcher || "", hook?.type || "", name || ""].join("|"));
       }
     }
@@ -160,11 +214,8 @@ function registrations(configuration) {
 }
 
 const expectedRegistrations = [
-  ["PreToolUse", "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell", "command", "plan-gate.js"],
-  ["PreToolUse", "Bash|PowerShell", "command", "destructive-guard.js"],
-  ["PreToolUse", "Write|Edit|MultiEdit", "command", "contract-guard.js"],
-  ["SessionStart", "startup|resume|clear|compact", "command", "load-failure-memory.js"],
-  ["SessionStart", "compact", "command", "compact-fidelity.js"],
+  ["PreToolUse", "Edit|Write|NotebookEdit|Bash|PowerShell", "command", "pre-tool-use.mjs"],
+  ["SessionStart", "startup|resume|clear|compact", "command", "session-start.mjs"],
   ["Stop", "", "command", "orchestration-check.js"],
 ].map(parts => parts.join("|")).sort();
 
@@ -415,37 +466,35 @@ export async function diagnose(pluginRoot = resolvePluginRoot(), options = {}) {
   let hookWiringExact = false;
   try {
     hookConfiguration = safeJson(path.join(pluginRoot, "hooks", "hooks.json"));
-    const actualScripts = fs.readdirSync(path.join(pluginRoot, "hooks")).filter(name => name.endsWith(".js")).sort();
+    const actualScripts = fs.readdirSync(path.join(pluginRoot, "hooks")).filter(name => /\.m?js$/.test(name)).sort();
     hookWiringExact = JSON.stringify(registrations(hookConfiguration)) === JSON.stringify(expectedRegistrations) &&
       JSON.stringify(actualScripts) === JSON.stringify([...expectedHooks].sort());
     checks.push(result("hook-wiring", hookWiringExact ? "pass" : "fail", `${expectedHooks.length} expected hooks`));
   } catch (error) { checks.push(result("hook-wiring", "fail", `hook wiring check failed (${safeErrorCode(error)})`)); }
 
-  const staticHookChecks = expectedHooks.map(name => {
-    const hook = path.join(pluginRoot, "hooks", name);
-    const syntax = spawnSync(process.execPath, ["--check", hook], { encoding: "utf8", timeout: 5000 });
-    return { hook, name, syntax };
-  });
   const trustedCanonicalRoot = sameCanonicalPath(canonical(pluginRoot), canonical(bundledPluginRoot));
   const runtimeEligible = manifestIdentityValid && hookWiringExact && trustedCanonicalRoot;
-  if (runtimeEligible) {
-    const probeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-doctor-"));
-    try {
+  // Every probe spawn — the syntax checks included — runs in, and with the environment of, one throwaway
+  // probe root (probeEnv), removed when the hook checks end.
+  const probeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ctide-doctor-"));
+  try {
+    const quiet = probeEnv(probeRoot);
+    const staticHookChecks = expectedHooks.map(name => {
+      const hook = path.join(pluginRoot, "hooks", name);
+      const syntax = spawnSync(process.execPath, ["--check", hook], { encoding: "utf8", timeout: 5000, cwd: probeRoot, env: quiet });
+      return { hook, name, syntax };
+    });
+    if (runtimeEligible) {
       fs.writeFileSync(path.join(probeRoot, "doctor-transcript.jsonl"), "", "utf8");
       fs.mkdirSync(path.join(probeRoot, ".ctide", "memory"), { recursive: true });
-      fs.writeFileSync(path.join(probeRoot, ".ctide", "memory", "FAILURE_MEMORY.md"), "Doctor runtime probe memory\n", "utf8");
-      const probeEnv = {
-        ...process.env,
-        CLAUDE_PROJECT_DIR: probeRoot,
-        CTIDE_HOOK_DEBUG: "1",
-        TEMP: probeRoot,
-        TMP: probeRoot,
-        TMPDIR: probeRoot,
-      };
+      fs.writeFileSync(path.join(probeRoot, ".ctide", "memory", "FAILURE_MEMORY.md"),
+        "# FAILURE_MEMORY\n\n### 2026-01-01 - doctor runtime probe entry\n- **Prevention rule**: none (a doctor probe fixture).\n- **Tags**: doctor / probe.\n", "utf8");
+      const traced = probeEnv(probeRoot, { debug: true });
+      const spawnHook = (hook, input, env) => spawnSync(process.execPath, [hook], { input, encoding: "utf8", timeout: 5000, cwd: probeRoot, env });
       let runtimePassed = true;
       for (const { hook, name, syntax } of staticHookChecks) {
-        const valid = spawnSync(process.execPath, [hook], { input: JSON.stringify(harmlessEvent(name, probeRoot)), encoding: "utf8", timeout: 5000, cwd: probeRoot, env: probeEnv });
-        const malformed = spawnSync(process.execPath, [hook], { input: "{", encoding: "utf8", timeout: 5000, cwd: probeRoot });
+        const valid = spawnHook(hook, JSON.stringify(harmlessEvent(name, probeRoot)), traced);
+        const malformed = spawnHook(hook, "{", quiet);
         const processed = observedHookSignal(name, valid);
         const passed = runtimeProbePassed(name, { syntax, valid, malformed });
         runtimePassed &&= passed;
@@ -454,42 +503,61 @@ export async function diagnose(pluginRoot = resolvePluginRoot(), options = {}) {
         checks.push(result(`hook:${name}`, passed ? "pass" : "fail", detail));
       }
 
-      const debug = spawnSync(process.execPath, [path.join(pluginRoot, "hooks", "plan-gate.js")], {
-        input: "{", encoding: "utf8", timeout: 5000, cwd: probeRoot,
-        env: { ...process.env, CLAUDE_PROJECT_DIR: probeRoot, CTIDE_HOOK_DEBUG: "1", TEMP: probeRoot, TMP: probeRoot, TMPDIR: probeRoot },
-      });
-      const debugLog = path.join(probeRoot, "ctide-hook.log");
+      const preToolUse = path.join(pluginRoot, "hooks", "pre-tool-use.mjs");
+      for (const [kind, { expected, event }] of Object.entries(DECISION_PROBES)) {
+        const probe = spawnHook(preToolUse, JSON.stringify(event(probeRoot)), quiet);
+        const passed = decisionProbePassed(kind, probe);
+        runtimePassed &&= passed;
+        checks.push(result(`decision:${kind}`, passed ? "pass" : "fail", passed ? `${expected}, as expected` : `expected ${expected}; ${probeFailureDetail("probe", probe)}`));
+      }
+
+      // The trace on a malformed event, and a destructive command carrying a credential: the trace names
+      // the entry and the check, and the credential reaches neither the log nor stderr.
+      const malformedTrace = spawnHook(preToolUse, "{", traced);
+      const credentialTrace = spawnHook(preToolUse, JSON.stringify({
+        cwd: probeRoot, hook_event_name: "PreToolUse", permission_mode: "default", tool_name: "Bash",
+        tool_input: { command: `git push --force origin ctide-doctor-probe Authorization: Bearer ${DEBUG_PROBE_CREDENTIAL}` },
+      }), traced);
+      const debugLog = path.join(probeRoot, LOG_NAME);
       const debugLogText = fs.existsSync(debugLog) ? fs.readFileSync(debugLog, "utf8") : "";
-      const debugSafe = debug.status === 0 && debug.stderr.includes("[ctide plan-gate]") && debugLogText.includes("[plan-gate]") && !debugLogText.includes("CTIDE_HOOK_DEBUG=1");
+      const debugSafe = malformedTrace.status === 0 && malformedTrace.stderr.includes("[ctide pre-tool-use] stdin:") &&
+        credentialTrace.status === 0 && debugLogText.includes("[ctide pre-tool-use] destructive-guard: ASK:") &&
+        !debugLogText.includes(DEBUG_PROBE_CREDENTIAL) && !String(credentialTrace.stderr).includes(DEBUG_PROBE_CREDENTIAL) &&
+        !debugLogText.includes("CTIDE_HOOK_DEBUG=1");
       runtimePassed &&= debugSafe;
-      checks.push(result("hook-debug", debugSafe ? "pass" : "fail", debugSafe ? "isolated prefix and log probe" : probeFailureDetail("debug", debug)));
+      checks.push(result("hook-debug", debugSafe ? "pass" : "fail", debugSafe
+        ? "isolated prefix and log probe; credential redacted"
+        : `${probeFailureDetail("malformed", malformedTrace)} ${probeFailureDetail("credential", credentialTrace)}`));
       checks.push(result("runtime-probes", runtimePassed ? "pass" : "fail", "trusted canonical plugin root"));
-    } finally { fs.rmSync(probeRoot, { recursive: true, force: true }); }
-  } else {
-    for (const { name, syntax } of staticHookChecks) {
-      checks.push(result(`hook:${name}`, syntax.status === 0 ? "pass" : "fail", syntax.status === 0 ? `syntax=${syntax.status} runtime=skipped` : `${probeFailureDetail("syntax", syntax)} runtime=skipped`));
+    } else {
+      for (const { name, syntax } of staticHookChecks) {
+        checks.push(result(`hook:${name}`, syntax.status === 0 ? "pass" : "fail", syntax.status === 0 ? `syntax=${syntax.status} runtime=skipped` : `${probeFailureDetail("syntax", syntax)} runtime=skipped`));
+      }
+      const reasons = [
+        !manifestIdentityValid && "manifest identity",
+        !hookWiringExact && "exact hook wiring",
+        !trustedCanonicalRoot && "trusted canonical root",
+      ].filter(Boolean).join(", ");
+      for (const kind of Object.keys(DECISION_PROBES)) checks.push(result(`decision:${kind}`, "unverified", `runtime probes not trusted (requires ${reasons})`));
+      checks.push(result("runtime-probes", "unverified", `requires ${reasons}`));
     }
-    const reasons = [
-      !manifestIdentityValid && "manifest identity",
-      !hookWiringExact && "exact hook wiring",
-      !trustedCanonicalRoot && "trusted canonical root",
-    ].filter(Boolean).join(", ");
-    checks.push(result("runtime-probes", "unverified", `requires ${reasons}`));
-  }
+  } finally { fs.rmSync(probeRoot, { recursive: true, force: true }); }
 
   const skillsPresent = expectedSkills.every(name => fs.existsSync(path.join(pluginRoot, "skills", name, "SKILL.md")));
   checks.push(result("skills", skillsPresent ? "pass" : "fail", `${expectedSkills.length} public skills`));
+  // Claude Code discovers agents/*.agent.md and names each by its frontmatter `name` (no manifest list), so
+  // the row reads the filesystem only: exactly the expected files, each declaring its own stem as name.
   try {
-    const expectedAgentPaths = expectedAgents.map(name => `./agents/${name}.agent.md`).sort();
-    const manifestAgentPaths = Array.isArray(manifest?.agents) ? [...manifest.agents].sort() : [];
-    const filesystemAgentPaths = fs.readdirSync(path.join(pluginRoot, "agents")).map(name => `./agents/${name}`).sort();
-    const agentsExact = JSON.stringify(manifestAgentPaths) === JSON.stringify(expectedAgentPaths) &&
-      JSON.stringify(filesystemAgentPaths) === JSON.stringify(expectedAgentPaths);
-    checks.push(result("agents", agentsExact ? "pass" : "fail", `${manifestAgentPaths.length} manifest paths; ${filesystemAgentPaths.length} filesystem entries`));
+    const expectedAgentFiles = expectedAgents.map(name => `${name}.agent.md`).sort();
+    const agentFiles = fs.readdirSync(path.join(pluginRoot, "agents")).sort();
+    const namesMatch = agentFiles.filter(file => file.endsWith(".agent.md"))
+      .filter(file => agentFrontmatterName(readCapped(path.join(pluginRoot, "agents", file), { cap: 64 * 1024, from: "head", onError: "throw" })) === file.slice(0, -".agent.md".length));
+    const agentsExact = JSON.stringify(agentFiles) === JSON.stringify(expectedAgentFiles) && namesMatch.length === expectedAgentFiles.length;
+    checks.push(result("agents", agentsExact ? "pass" : "fail", `${agentFiles.length} files in agents/; ${namesMatch.length} with a frontmatter name matching the file`));
   } catch (error) { checks.push(result("agents", "fail", `agent inventory check failed (${safeErrorCode(error)})`)); }
   checks.push(result("telemetry", "pass", "No network or telemetry probe performed"));
 
-  // --project: additive only, layered on top of the 14 plugin-health checks above, which have already
+  // --project: additive only, layered on top of the plugin-health checks above, which have already
   // run unconditionally by this point regardless of `project`. Guidance lines are appended only when the
   // corresponding check found something actionable -- omitted entirely (never an empty-string placeholder)
   // when --project was not passed, or was passed but found nothing actionable.

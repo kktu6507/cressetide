@@ -63,7 +63,7 @@ Produce:
 
 ## Invariants
 
-- **Read-only.** This step runs in plan mode and writes nothing to the working tree; the `plan-gate.js` hook still applies.
+- **Read-only.** This step runs in plan mode and writes nothing to the working tree; the plan-gate check still applies.
 - **Assists, never replaces, human approval.** Its outputs are material for the user's decision at `ExitPlanMode`; ambiguities become `AskUserQuestion`; it never auto-decides product behavior.
 - **Depth, not breadth.** It does not change reviewer selection (still the smallest sufficient set) and adds **no new reviewer** — Stage A runs as a single focused grounding subagent (`navigator`, else `Explore`), not a fan-out, and Stage B runs on the main thread. `navigator` is a *planning* agent (it only *recommends* the panel), never a reviewer added to it.
 - **Never a hard dependency.** With no exploration subagent, the main thread falls back to local grounding and discloses; absence never raises an error.

@@ -45,7 +45,7 @@ npm run validate  # structure, identity, inventory, release contract, text integ
 npm run eval      # deterministic evaluation cases
 ```
 
-The tests exercise the Claude Code hook scripts (`cressetide/hooks/*.js`) as CLI programs and preserve the **fail-open** and **plan-gate** behavior. `node .github/scripts/validate-structure.mjs` runs the structure / distribution-hygiene checks.
+The tests exercise the Claude Code hooks — the hook entry points (`cressetide/hooks/*.mjs`) as CLI programs and their checks in `cressetide/lib/guards/` in-process — and preserve the **fail-open** and **plan-gate** behavior. `node .github/scripts/validate-structure.mjs` runs the structure / distribution-hygiene checks.
 
 **Testing notes:** snapshot testing via node:test `t.assert.snapshot` is not used while the supported CI runtime requires an experimental flag; reconsider it only when the runtime floor makes it stable and flag-free.
 

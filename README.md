@@ -41,7 +41,7 @@ Learning loop  incident postmortem -> FAILURE_MEMORY -> the next dev-flow planni
 - **Two flows**: dev ([`vigil`](#the-dev-flow-vigil)) and incident ([`salvage`](#the-incident-flow-salvage)). An incident's formal fix is handed back to the dev flow as a `--lite` run with the incident reproduction as its primary acceptance criterion.
 - **Five skills**: `vigil` and `salvage` engage on their own (anything beyond a small edit / incident-sounding language); [`map`](#the-ops-map-map), [`doctor`](#health-check-doctor), and [`ship`](#release-readiness-check-ship) start manually (`/ctide:map`, `/ctide:doctor`, `/ctide:ship`).
 - **[11 subagents](#the-dev-flow-vigil)**: a navigator, an implementer, seven risk-selected reviewers, a cartographer, and the arbiter that decides readiness.
-- **[6 hooks](#hooks-and-safety-model)**: local-only, dependency-free Node guardrails, covering the plan gate, destructive-command guard, contract guard, failure-memory injection, compaction reminder, and delivery-claim check.
+- **[3 hook entry points](#hooks-and-safety-model)**: local-only, dependency-free Node guardrails — one PreToolUse entry runs three checks (the plan gate, destructive commands, and the contract); one SessionStart entry handles failure-memory injection and the compaction reminder; plus the delivery-claim check.
 - **[A learning loop](#the-learning-loop)**: lessons from incident postmortems and escaped defects go into committed failure memory, which the next plan reads.
 
 ### Project layout
@@ -173,7 +173,7 @@ It engages automatically on incident language ("production is down", "users are 
 | **— Production re-entry** | Deploy through the normal path, verify the declared fixed-check, hold an observation window, then restore mitigations one at a time. |
 | **7 · Closure + postmortem** | A closure checklist (mitigations restored, data repaired, extracted data deleted, journal closed), plus a short, blame-free postmortem with a gate-gap analysis that feeds [the learning loop](#the-learning-loop). |
 
-- **Decision cards**: one at a time, carrying the recommendation, cost/tradeoff, reversibility, and exactly what will run on approval. Destructive or production-affecting actions always stop at a card, never batched into a previously approved plan; the `destructive-guard.js` hook may additionally ask, which is expected and never routed around.
+- **Decision cards**: one at a time, carrying the recommendation, cost/tradeoff, reversibility, and exactly what will run on approval. Destructive or production-affecting actions always stop at a card, never batched into a previously approved plan; the destructive-command check in `pre-tool-use.mjs` may additionally ask, which is expected and never routed around.
 - **Incident journal**: every stage appends to `.ctide/incidents/INCIDENT-<date>-<slug>.md`, a committed audit trail (timeline, who approved each action, evidence, the red→green record). Sanitize-before-write: PII and secrets are masked before anything enters the journal.
 - **Production-data safety gate**: when a reproduction needs real data, extraction stays minimal (only the implicated records, never a dump), masking happens *before* the data enters the AI context, a synthetic-data fallback covers policies that forbid production data, and extracted data is ephemeral; never committed, deleted at closure.
 
@@ -213,15 +213,12 @@ Full contract: [`experience-memory.md`](cressetide/skills/vigil/references/exper
 
 ## Hooks and safety model
 
-Six dependency-free Node hooks run in every enabled session. They are local-only, fail-open, and use only Node built-ins (`fs`, `os`, `path`, `crypto`).
+Three dependency-free Node hook entry points run in every enabled session. They are local-only, fail-open, and use only Node built-ins (`fs`, `os`, `path`, `crypto`).
 
 | Hook | Event | Purpose |
 |---|---|---|
-| `plan-gate.js` | `PreToolUse` | Denies edit tools and obvious Bash/PowerShell writes while in plan mode. |
-| `destructive-guard.js` | `PreToolUse` | Asks before narrow, unrecoverable destructive commands such as `rm -rf`, `git reset --hard`, `git push --force`, PowerShell `Remove-Item -Recurse`, `terraform destroy`, `kubectl delete namespace`, `docker volume rm/prune`, and database-drop CLIs (`dropdb`, `mysqladmin`, `redis-cli flushall`). |
-| `contract-guard.js` | `PreToolUse` | Guards the contract against mid-run weakening: asks before an edit would delete or rewrite an acceptance criterion, drop a `mustNotChange` or scope entry, downgrade risk (contract in `.ctide/output/contract.md`, legacy `.ctide/legacy-output/` included), or wholesale-delete a `design.md` section; also asks before an edit to `.claude/settings*.json` would flip any ctide guard flag from on to off (creating a fresh settings file to do it counts too). |
-| `load-failure-memory.js` | `SessionStart` | Reads project `.ctide/memory/FAILURE_MEMORY.md` (legacy `ai/FAILURE_MEMORY.md` as read-only fallback), else global `~/.claude/FAILURE_MEMORY.md`, and injects a nonce-fenced, untrusted digest. |
-| `compact-fidelity.js` | `SessionStart` · `compact` | Re-injects a concise workflow-continuity reminder after compaction. |
+| `pre-tool-use.mjs` | `PreToolUse` | Runs three checks in order. Plan gate: denies edit tools and obvious Bash/PowerShell writes while in plan mode. Destructive-command check: asks before narrow, unrecoverable destructive commands such as `rm -rf`, `git reset --hard`, `git push --force`, PowerShell `Remove-Item -Recurse`, `terraform destroy`, `kubectl delete namespace`, `docker volume rm/prune`, and database-drop CLIs (`dropdb`, `mysqladmin`, `redis-cli flushall`). Contract check: guards the contract against mid-run weakening — asks before an edit would delete or rewrite an acceptance criterion, drop a `mustNotChange` or scope entry, downgrade risk (contract in `.ctide/output/contract.md`, legacy `.ctide/legacy-output/` included), or wholesale-delete a `design.md` section; also asks before an edit to `.claude/settings*.json` would flip any ctide guard flag from on to off (creating a fresh settings file to do it counts too). |
+| `session-start.mjs` | `SessionStart` | Reads project `.ctide/memory/FAILURE_MEMORY.md` (legacy `ai/FAILURE_MEMORY.md` as read-only fallback), else global `~/.claude/FAILURE_MEMORY.md`, and injects a nonce-fenced, untrusted index of entry titles and tags; when the file has no `##`/`###` entries, only a one-line pointer to the file is injected. After `compact` it also re-injects a concise workflow-continuity reminder. |
 | `orchestration-check.js` | `Stop` | Advises when delivery claims contradict missing panel, blocking verdict, failed/unrun verification, or missing live-run evidence. |
 
 These hooks never delete files, change system settings, alter permissions, run subprocesses, download code, or transmit code/transcripts. They are guardrails, not a sandbox; see [`SECURITY.md`](SECURITY.md) and [`ARCHITECTURE.md`](ARCHITECTURE.md).
@@ -236,12 +233,12 @@ Everything below is optional. ctide's default behavior needs no configuration at
 
 | Key | Disables |
 |---|---|
-| `planGate` | `plan-gate.js`: the edit block enforced while in plan mode |
-| `destructiveGuard` | `destructive-guard.js`: the ask before narrow, unrecoverable destructive commands |
-| `contractGuard` | `contract-guard.js`: the contract/design weakening ask, including the ask before turning these guard flags off |
-| `preserveOnCompact` | `compact-fidelity.js`: the post-compaction workflow-continuity reminder |
+| `planGate` | the plan gate in `pre-tool-use.mjs`: the edit block enforced while in plan mode |
+| `destructiveGuard` | the destructive-command check in `pre-tool-use.mjs`: the ask before narrow, unrecoverable destructive commands |
+| `contractGuard` | the contract check in `pre-tool-use.mjs`: the contract/design weakening ask, including the ask before turning these guard flags off |
+| `preserveOnCompact` | the compaction reminder in `session-start.mjs`: the post-compaction workflow-continuity reminder |
 
-A malformed or unreadable settings file is treated as "not disabled" (fail-safe: the guard keeps running). Example — disable `contract-guard.js` for one project:
+A malformed or unreadable settings file is treated as "not disabled" (fail-safe: the guard keeps running). Example — disable the contract check for one project:
 
 ```json
 // .claude/settings.json
@@ -255,7 +252,7 @@ A malformed or unreadable settings file is treated as "not disabled" (fail-safe:
 | Variable | Effect when set |
 |---|---|
 | `CTIDE_ENFORCE_STOP` | `1`, `true`, `yes` or `on` (case-insensitive) makes the `orchestration-check.js` Stop hook hard-block delivery on a verdict/evidence mismatch, instead of only advising. Any other value, including `0`, leaves it advisory |
-| `CTIDE_HOOK_DEBUG` | any non-empty value makes every hook append a one-line debug trace; only unset or empty disables it (used by [`/ctide:doctor`](#health-check-doctor) and manual troubleshooting) |
+| `CTIDE_HOOK_DEBUG` | `1`, `true`, `yes` or `on` (case-insensitive) makes the PreToolUse and SessionStart hooks write a one-line debug trace to stderr and to `ctide-hook.log` in the temp directory, with secrets redacted before it is written; any other value, including `0`, writes nothing (used by [`/ctide:doctor`](#health-check-doctor) and manual troubleshooting) |
 
 The exact values each variable recognizes are specified, and checked against the hooks' actual behaviour, in [`docs/runtime-contract.md`](docs/runtime-contract.md#machine-checked-facts).
 
@@ -290,12 +287,11 @@ $env:CTIDE_ENFORCE_STOP = "1"; claude  # PowerShell
 
 ## Compatibility
 
-ctide targets Claude Code. GitHub Copilot CLI is **unverified**: no Cressetide run has been recorded there, so no behavior is asserted — at most partial compatibility is possible, and Claude-Code-only hook output may never arrive.
+ctide supports Claude Code only.
 
 Compatibility and conformance smoke details live in [`docs/compatibility.md`](docs/compatibility.md). The highlights:
 
 - Claude Code is the primary runtime.
-- GitHub Copilot CLI: no Cressetide-specific live run is recorded, so nothing about skill, subagent, `PreToolUse`, `SessionStart` or `Stop` behavior there is asserted. Treat the runtime as unverified.
 - Claude Code hook/agent contracts are moving targets. [`RELEASING.md`](RELEASING.md) defines the release *procedure*; the evidence actually recorded for a release lives in [`EVIDENCE.md`](EVIDENCE.md).
 
 ## Trust and releases

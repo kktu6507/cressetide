@@ -18,19 +18,6 @@
   "author": { "name": "kktu" },
   "homepage": "https://github.com/kktu6507/cressetide",
   "repository": "https://github.com/kktu6507/cressetide",
-  "license": "MIT",
-  "agents": [
-    "./agents/navigator.agent.md",
-    "./agents/implementer.agent.md",
-    "./agents/intent-reviewer.agent.md",
-    "./agents/test-reviewer.agent.md",
-    "./agents/code-reviewer.agent.md",
-    "./agents/security-reviewer.agent.md",
-    "./agents/architecture-reviewer.agent.md",
-    "./agents/operability-reviewer.agent.md",
-    "./agents/ui-ux-reviewer.agent.md",
-    "./agents/arbiter.agent.md",
-    "./agents/cartographer.agent.md"
-  ]
+  "license": "MIT"
 }
 

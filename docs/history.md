@@ -22,8 +22,9 @@ check were removed.
 Ship's pending section now comes from git (commits and changed files since the last release tag) and
 states that it is not a readiness claim.
 
-**GitHub Copilot CLI support.** No Cressetide run was ever recorded under Copilot CLI. Removing the
-Copilot-specific code and documentation is decided; it lands in a later phase of the v0.8 work.
+**GitHub Copilot CLI support.** No Cressetide run was ever recorded under Copilot CLI. Removed in v0.8:
+the Copilot root fallbacks in hooks.json, the camelCase event-field alias, the plugin.json `agents[]` list
+(Claude Code discovers `agents/*.agent.md`), and the Copilot README and compatibility notes.
 
 ## Where the history lives
 

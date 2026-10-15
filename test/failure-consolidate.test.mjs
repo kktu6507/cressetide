@@ -324,39 +324,31 @@ test("formatReport includes the tag-recurrence block: 'none' when empty, one ful
 
 test("round-trip: retrieve --log appends the sibling ledger; the memory file is never modified", () => {
   const dir = tempDir("ctide-fc-");
-  try {
-    const memDir = path.join(dir, "ai");
-    fs.mkdirSync(memDir);
-    const memFile = path.join(memDir, "FAILURE_MEMORY.md");
-    fs.writeFileSync(memFile, MEM, "utf8");
-    const before = fs.readFileSync(memFile, "utf8");
+  const memDir = path.join(dir, "ai");
+  fs.mkdirSync(memDir);
+  const memFile = path.join(memDir, "FAILURE_MEMORY.md");
+  fs.writeFileSync(memFile, MEM, "utf8");
+  const before = fs.readFileSync(memFile, "utf8");
 
-    cp.execFileSync("node", [RETRIEVE, "--file", memFile, "--query", "node ci jsdom", "--log"]);
+  cp.execFileSync("node", [RETRIEVE, "--file", memFile, "--query", "node ci jsdom", "--log"]);
 
-    const ledger = defaultLedgerPath(memFile);
-    assert.ok(fs.existsSync(ledger), "ledger created next to the memory file");
-    const recs = readLedger(fs.readFileSync(ledger, "utf8"));
-    assert.ok(recs.some((r) => /fresh node ci lesson/.test(r.key)), "the matched entry was logged");
-    assert.strictEqual(fs.readFileSync(memFile, "utf8"), before, "the memory file must be untouched");
+  const ledger = defaultLedgerPath(memFile);
+  assert.ok(fs.existsSync(ledger), "ledger created next to the memory file");
+  const recs = readLedger(fs.readFileSync(ledger, "utf8"));
+  assert.ok(recs.some((r) => /fresh node ci lesson/.test(r.key)), "the matched entry was logged");
+  assert.strictEqual(fs.readFileSync(memFile, "utf8"), before, "the memory file must be untouched");
 
-    const out = cp.execFileSync("node", [CONSOLIDATE, "--file", memFile]).toString();
-    assert.match(out, /failure-consolidate/);
-    assert.match(out, /retired — delete on next write: .*retired go lesson/);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  const out = cp.execFileSync("node", [CONSOLIDATE, "--file", memFile]).toString();
+  assert.match(out, /failure-consolidate/);
+  assert.match(out, /retired — delete on next write: .*retired go lesson/);
 });
 
 test("a bare retrieve (no --log) writes NO ledger (pure read by default)", () => {
   const dir = tempDir("ctide-fc2-");
-  try {
-    const memFile = path.join(dir, "FAILURE_MEMORY.md");
-    fs.writeFileSync(memFile, MEM, "utf8");
-    cp.execFileSync("node", [RETRIEVE, "--file", memFile, "--query", "node ci"]);
-    assert.ok(!fs.existsSync(defaultLedgerPath(memFile)), "no ledger without --log");
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  const memFile = path.join(dir, "FAILURE_MEMORY.md");
+  fs.writeFileSync(memFile, MEM, "utf8");
+  cp.execFileSync("node", [RETRIEVE, "--file", memFile, "--query", "node ci"]);
+  assert.ok(!fs.existsSync(defaultLedgerPath(memFile)), "no ledger without --log");
 });
 
 // --- e2e: failure-consolidate's own CLI wiring for tag recurrence (main() must actually call
@@ -380,18 +372,14 @@ test("CLI e2e: a spawned failure-consolidate process actually prints the tag-rec
 - **Tags**: node / ci / docs.
 `;
   const dir = tempDir("ctide-fc-tagcli-");
-  try {
-    const memFile = path.join(dir, "FAILURE_MEMORY.md");
-    fs.writeFileSync(memFile, pairMem, "utf8");
-    const out = cp.execFileSync("node", [CONSOLIDATE, "--file", memFile]).toString();
-    assert.ok(out.includes("tag recurrence candidates (2+ entries sharing 2+ tags):"),
-      "the tag-recurrence header must appear in real CLI stdout");
-    const pairEntries = parseEntries(pairMem);
-    assert.ok(out.includes(`"${pairEntries[0].title}" <-> "${pairEntries[1].title}" — shared: node, ci`),
-      "the specific pair line, with both entries' titles and shared tags, must appear in real CLI stdout");
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  const memFile = path.join(dir, "FAILURE_MEMORY.md");
+  fs.writeFileSync(memFile, pairMem, "utf8");
+  const out = cp.execFileSync("node", [CONSOLIDATE, "--file", memFile]).toString();
+  assert.ok(out.includes("tag recurrence candidates (2+ entries sharing 2+ tags):"),
+    "the tag-recurrence header must appear in real CLI stdout");
+  const pairEntries = parseEntries(pairMem);
+  assert.ok(out.includes(`"${pairEntries[0].title}" <-> "${pairEntries[1].title}" — shared: node, ci`),
+    "the specific pair line, with both entries' titles and shared tags, must appear in real CLI stdout");
 });
 
 // --- the command line goes through cressetide/lib/cli.mjs parseCli; the memory file and the ledger through

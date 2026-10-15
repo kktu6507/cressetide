@@ -121,13 +121,13 @@ test("release CLI: `publish-release.mjs --archive` spawned as a real subprocess 
   const entries = parseTar(zlib.gunzipSync(fs.readFileSync(assetPath)));
   // listFiles()/createArchive() prefix every path with the literal plugin directory name
   // ("cressetide/"), not a tag-versioned root -- confirmed by reading listFiles() directly.
-  const hookEntry = entries.get("cressetide/hooks/plan-gate.js");
-  assert.ok(hookEntry, "archive must contain the real hooks/plan-gate.js under the cressetide/ prefix");
+  const hookEntry = entries.get("cressetide/hooks/hooks.json");
+  assert.ok(hookEntry, "archive must contain the real hooks/hooks.json under the cressetide/ prefix");
   assert.strictEqual(hookEntry.type, "0");
   // The tar writer hardcodes every file entry to 0o644 and writes no directory entries at all --
   // confirmed by reading tarHeader()/createArchive() directly.
   assert.strictEqual(hookEntry.mode, 0o644);
-  assert.deepStrictEqual(hookEntry.body, fs.readFileSync(path.join(root, "cressetide", "hooks", "plan-gate.js")),
+  assert.deepStrictEqual(hookEntry.body, fs.readFileSync(path.join(root, "cressetide", "hooks", "hooks.json")),
     "archived file bytes must match the real source file");
 });
 
@@ -217,7 +217,7 @@ test("release CLI: a usage error — an unknown flag, both modes, --tag without 
 
 test("release CLI: `--tag v9.9.9 --archive` and `--archive --tag v9.9.9` both build the tag-bound archive", () => {
   const scratchRoot = releaseCliScratchRoot({ tag: true });
-  fs.writeFileSync(path.join(scratchRoot, "cressetide", "hooks", "plan-gate.js"), "// dirtied after tagging\n", "utf8");
+  fs.writeFileSync(path.join(scratchRoot, "cressetide", "hooks", "hooks.json"), "// dirtied after tagging\n", "utf8");
   const runs = [["--tag", TEST_TAG, "--archive"], ["--archive", "--tag", TEST_TAG]].map((args) => {
     const result = runRelease(scratchRoot, args);
     assert.strictEqual(result.status, 0, `${args.join(" ")}: ${result.stderr}`);
@@ -227,8 +227,8 @@ test("release CLI: `--tag v9.9.9 --archive` and `--archive --tag v9.9.9` both bu
   assert.strictEqual(runs[0].result.tag, TEST_TAG);
   assert.deepStrictEqual(runs[0].result, runs[1].result, "the same result in either order");
   assert.deepStrictEqual(runs[0].bytes, runs[1].bytes, "the same archive bytes in either order");
-  assert.deepStrictEqual(parseTar(zlib.gunzipSync(runs[0].bytes)).get("cressetide/hooks/plan-gate.js").body,
-    fs.readFileSync(path.join(root, "cressetide", "hooks", "plan-gate.js")), "the tagged blob, not the working-tree edit: --tag was honored");
+  assert.deepStrictEqual(parseTar(zlib.gunzipSync(runs[0].bytes)).get("cressetide/hooks/hooks.json").body,
+    fs.readFileSync(path.join(root, "cressetide", "hooks", "hooks.json")), "the tagged blob, not the working-tree edit: --tag was honored");
 });
 
 test("release CLI: --archive with an inherited absolute GIT_DIR naming another repository still applies the scratch repository's own ignore rules", () => {
@@ -242,7 +242,7 @@ test("release CLI: --archive with an inherited absolute GIT_DIR naming another r
   const result = runRelease(scratchRoot, ["--archive"], { ...process.env, GIT_DIR: path.join(other, ".git") });
   assert.strictEqual(result.status, 0, result.stderr);
   const entries = parseTar(zlib.gunzipSync(fs.readFileSync(path.join(scratchRoot, "_release", ASSET_NAME))));
-  assert.ok(entries.has("cressetide/hooks/plan-gate.js"), "fixture sanity: the plugin tree was archived");
+  assert.ok(entries.has("cressetide/hooks/hooks.json"), "fixture sanity: the plugin tree was archived");
   assert.ok(!entries.has("cressetide/scratch-only-ignored.txt"), "the scratch repository's .git/info/exclude still applies");
 });
 
@@ -544,11 +544,11 @@ test("release CLI: releaseIdentityFromTag rejects a tag whose tagged version par
 
 test("release CLI: entriesFromTag reads file contents from the tagged tree, not the working tree", () => {
   const scratchRoot = releaseCliScratchRoot({ tag: true });
-  fs.writeFileSync(path.join(scratchRoot, "cressetide", "hooks", "plan-gate.js"), "// dirtied after tagging\n", "utf8");
+  fs.writeFileSync(path.join(scratchRoot, "cressetide", "hooks", "hooks.json"), "// dirtied after tagging\n", "utf8");
   const entries = entriesFromTag(scratchRoot, TEST_TAG);
-  const hookEntry = entries.find((e) => e.archivePath === "cressetide/hooks/plan-gate.js");
-  assert.ok(hookEntry, "entriesFromTag must include the real hooks/plan-gate.js");
-  const realBytes = fs.readFileSync(path.join(root, "cressetide", "hooks", "plan-gate.js"));
+  const hookEntry = entries.find((e) => e.archivePath === "cressetide/hooks/hooks.json");
+  assert.ok(hookEntry, "entriesFromTag must include the real hooks/hooks.json");
+  const realBytes = fs.readFileSync(path.join(root, "cressetide", "hooks", "hooks.json"));
   assert.deepStrictEqual(hookEntry.content, realBytes, "must read the tagged blob, not the post-tag working-tree edit");
 });
 test("release CLI: entriesFromTag rejects a tag with no plugin files under the prefix", () => {

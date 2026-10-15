@@ -1,6 +1,8 @@
 // Unit tests for cressetide/lib/read-capped.mjs: the cap boundary from the head and the tail, the UTF-8
-// decoding of a multi-byte character split by the cut, and both onError modes for a missing, an unreadable
-// (EACCES/EPERM) and a directory path.
+// decoding of a multi-byte character split by the cut, both onError modes for a missing, an unreadable
+// (EACCES/EPERM) and a directory path, the short-read loop and the size taken from the open descriptor.
+// The last two patch properties of the `fs` default export: read-capped.mjs imports that same object and
+// reads fs.readSync / fs.fstatSync from it at call time.
 import assert from "node:assert/strict";
 import cp from "node:child_process";
 import fs from "node:fs";
@@ -110,6 +112,66 @@ test("readCapped(): an unreadable file (EACCES/EPERM) throws with onError \"thro
   } finally {
     denied.restore();
   }
+});
+
+// Replaces fs[name] with make(original) for the duration of fn only.
+function withPatchedFs(name, make, fn) {
+  const original = fs[name];
+  fs[name] = make(original);
+  try { return fn(); } finally { fs[name] = original; }
+}
+
+// P4 review: the short-read loop. fs.readSync may return fewer bytes than asked for; patched here to return
+// at most one byte per call, the whole capped range must still be read — each byte into its own place in the
+// buffer, from its own file position — from the head and from the tail.
+test("readCapped(): reads that return one byte at a time still fill the whole range, each byte at its own offset", () => {
+  const file = fileWith("0123456789AB");
+  let calls = 0;
+  const oneByte = (readSync) => function oneByteReadSync(fd, buffer, offset, length, position) {
+    if (++calls > 1000) throw new Error("runaway read loop");
+    return readSync.call(fs, fd, buffer, offset, Math.min(length, 1), position);
+  };
+  for (const [options, expected] of [
+    [{ cap: 10 }, "0123456789"],
+    [{ cap: 10, from: "tail" }, "23456789AB"],
+    [{ cap: 64 }, "0123456789AB"],
+    [{ cap: 64, from: "tail" }, "0123456789AB"],
+  ]) {
+    calls = 0;
+    assert.equal(withPatchedFs("readSync", oneByte, () => readCapped(file, options)), expected, JSON.stringify(options));
+    assert.equal(calls, expected.length, `${JSON.stringify(options)}: one patched read per byte`);
+  }
+});
+
+// A read that returns 0 before the range is full (the file shrank after fstat) ends the loop, and only the
+// bytes actually read are decoded — never the unfilled rest of the buffer.
+test("readCapped(): a read that returns 0 early ends the loop with the bytes read so far", () => {
+  const file = fileWith("0123456789");
+  let calls = 0;
+  const shrinking = (readSync) => function shrinkingReadSync(fd, buffer, offset, length, position) {
+    if (++calls > 1000) throw new Error("runaway read loop");
+    return calls <= 4 ? readSync.call(fs, fd, buffer, offset, Math.min(length, 1), position) : 0;
+  };
+  for (const [options, expected] of [[{ cap: 10 }, "0123"], [{ cap: 8, from: "tail" }, "2345"]]) {
+    calls = 0;
+    assert.equal(withPatchedFs("readSync", shrinking, () => readCapped(file, options)), expected, JSON.stringify(options));
+    assert.equal(calls, 5, `${JSON.stringify(options)}: four one-byte reads, then the 0 that ends the loop`);
+  }
+});
+
+// The size comes from the open descriptor (fstat), not from the path a second time (stat): with fs.statSync
+// throwing, nothing changes.
+test("readCapped(): the size comes from the open file descriptor — fs.statSync throwing changes nothing", () => {
+  const file = fileWith("0123456789A");
+  const throwing = () => function throwingStatSync() {
+    throw Object.assign(new Error("statSync is patched to throw"), { code: "EPATCHED" });
+  };
+  withPatchedFs("statSync", throwing, () => {
+    assert.throws(() => fs.statSync(file), { code: "EPATCHED" }, "fixture sanity: the patch is in place");
+    assert.equal(readCapped(file, { cap: 10 }), "0123456789");
+    assert.equal(readCapped(file, { cap: 10, from: "tail" }), "123456789A");
+    assert.equal(readCapped(file, { cap: 64 }), "0123456789A");
+  });
 });
 
 test("readCapped(): invalid options are a TypeError whatever onError says", () => {

@@ -1540,6 +1540,124 @@ test("pending view: a failing `git tag --merged HEAD` read with a readable HEAD 
   assert.strictEqual(report.marker.tag, "v1.0.0", "fixture sanity: only the reachable-tags read failed");
 });
 
+// --- D-6 residuals, closed in P5 (P4 review C-2, C-3): a damaged repository whose failing read looks like an
+// answer by its exit status alone. Anything on stderr from those two reads is a failed read. ---
+
+// git with the caller's plain environment, unwrapped: the fixture sanity checks below show what the read ship
+// makes actually returns in the damaged repository.
+function plainGit(dir, args, env = {}) {
+  return cp.spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env } });
+}
+
+// The ship CLI's --json report for `dir`, run with this process's environment plus `extra`.
+function shipJsonWith(dir, extra) {
+  const env = { ...process.env, ...extra };
+  delete env.CLAUDE_PROJECT_DIR;
+  const result = cp.spawnSync(process.execPath, [SCRIPT, "--cwd", dir, "--json"], { encoding: "utf8", env });
+  assert.strictEqual(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
+// A healthy repository whose report is pending `ok` (one commit since v1.0.0) and tagReady `pass` (1.1.0 not
+// tagged, clean tree).
+function healthyReleaseRepository() {
+  const dir = bareRepository();
+  commitFile(dir, "package.json", JSON.stringify({ version: "1.1.0" }), "2026-01-01T12:00:00Z", "declare 1.1.0");
+  git(dir, ["tag", "v1.0.0"]);
+  commitFile(dir, "b.txt", "b\n", "2026-01-02T00:00:00Z", "after the tag");
+  return dir;
+}
+
+// (a) A commit missing between HEAD and the release tag: `git tag --merged HEAD` exits 0 printing errors and no
+// tag. Before P5 that read as no-release-tag, with a false "the release marker … is not reachable" note.
+test("pending view: a commit missing between HEAD and the release tag (tag --merged exits 0 with errors on stderr) is unverified, never no-release-tag", async () => {
+  const dir = bareRepository();
+  git(dir, ["tag", "v1.0.0"]);
+  commitFile(dir, "b.txt", "b\n", "2026-01-02T00:00:00Z", "between the tag and HEAD");
+  const between = git(dir, ["rev-parse", "HEAD"]);
+  commitFile(dir, "c.txt", "c\n", "2026-01-03T00:00:00Z", "HEAD");
+  deleteLooseObject(dir, between);
+  const raw = plainGit(dir, ["tag", "--sort=refname", "--merged", "HEAD"]);
+  assert.strictEqual(raw.status, 0, "fixture sanity: git exits 0");
+  assert.strictEqual(raw.stdout, "", "fixture sanity: and lists no tag");
+  assert.notStrictEqual(raw.stderr, "", "fixture sanity: with errors on stderr");
+
+  const report = await buildShipReport(dir, {});
+  assert.strictEqual(report.marker.found, true, "fixture sanity: the release marker itself resolves");
+  assert.strictEqual(report.pending.state, "unverified");
+  assert.strictEqual(report.pending.note, "listing the tags reachable from HEAD failed — commits since the last release tag are unknown");
+  assert.strictEqual(report.pending.commitCount, null);
+  assertFiveChecksRan(report);
+});
+
+// (b) A garbage refs/tags/vX.Y.Z: `rev-parse -q --verify` exits 1 — git's status for "no such ref" — with a
+// warning on stderr. Before P5 tagReady read that as "no such tag" and passed.
+test("tagReadinessCheck: a broken refs/tags/vX.Y.Z (rev-parse exits 1 with a warning on stderr) is unverified, never 'no such tag' and pass", () => {
+  const dir = bareRepository();
+  commitFile(dir, "package.json", JSON.stringify({ version: "1.0.0" }), "2026-01-02T00:00:00Z", "prepare 1.0.0");
+  assert.strictEqual(tagReadinessCheck(dir, versionConsistencyCheck(dir)).status, "pass", "control: clean tree, no tag for 1.0.0");
+  fs.writeFileSync(path.join(dir, ".git", "refs", "tags", "v1.0.0"), "garbage\n", "utf8");
+  const raw = plainGit(dir, ["rev-parse", "-q", "--verify", "refs/tags/v1.0.0"]);
+  assert.strictEqual(raw.status, 1, "fixture sanity: the exit status git uses for no such ref");
+  assert.notStrictEqual(raw.stderr, "", "fixture sanity: with a warning on stderr");
+
+  const tagReady = tagReadinessCheck(dir, versionConsistencyCheck(dir));
+  assert.strictEqual(tagReady.status, "unverified", tagReady.evidence);
+  assert.match(tagReady.evidence, /^looking up tag v1\.0\.0 failed \(exit 1, with a message on stderr\)/);
+  assert.match(tagReady.evidence, /cannot be confirmed absent/);
+});
+
+// lib/git drops every GIT_TRACE* variable: tracing writes to stderr on a healthy read, so a user with tracing
+// on would otherwise turn both reads above into failures.
+test("CLI: inherited GIT_TRACE=1 and GIT_TRACE2=1 change nothing on a healthy repository — pending ok, tagReady pass", () => {
+  const dir = healthyReleaseRepository();
+  const untraced = shipJsonWith(dir, {});
+  assert.strictEqual(untraced.pending.state, "ok", "control");
+  assert.strictEqual(untraced.checks.tagReady.status, "pass", "control");
+  for (const tracing of [{ GIT_TRACE: "1" }, { GIT_TRACE2: "1" }, { GIT_TRACE: "1", GIT_TRACE2: "1" }]) {
+    const label = Object.keys(tracing).join(" + ");
+    assert.notStrictEqual(plainGit(dir, ["tag", "--merged", "HEAD"], tracing).stderr, "", `fixture sanity: ${label} writes to stderr on a healthy read`);
+    const traced = shipJsonWith(dir, tracing);
+    assert.strictEqual(traced.pending.state, "ok", `${label}: pending`);
+    assert.strictEqual(traced.checks.tagReady.status, "pass", `${label}: tagReady`);
+    assert.deepStrictEqual(traced, untraced, `${label}: the whole report is unchanged`);
+  }
+});
+
+// A trace2 target set in the user's global config writes to stderr on every healthy read, and `-c` cannot turn
+// it off: lib/git sets GIT_TRACE2, GIT_TRACE2_PERF and GIT_TRACE2_EVENT to 0. Both runs use a GIT_CONFIG_GLOBAL
+// file, so the only difference is the trace2 setting.
+test("CLI: a global config's trace2.normalTarget=1 (and perfTarget, eventTarget) on a healthy repository — the report is identical to the untraced one", () => {
+  const dir = healthyReleaseRepository();
+  const configDir = tempDir("ctide-ship-trace2-config-");
+  const configFile = (name, body) => { const file = path.join(configDir, name); fs.writeFileSync(file, body, "utf8"); return file; };
+  const untraced = shipJsonWith(dir, { GIT_CONFIG_GLOBAL: configFile("empty.gitconfig", "") });
+  assert.strictEqual(untraced.pending.state, "ok", "control");
+  assert.strictEqual(untraced.checks.tagReady.status, "pass", "control");
+  for (const target of ["normalTarget", "perfTarget", "eventTarget"]) {
+    const traced = configFile(`${target}.gitconfig`, `[trace2]\n\t${target} = 1\n`);
+    assert.notStrictEqual(plainGit(dir, ["tag", "--merged", "HEAD"], { GIT_CONFIG_GLOBAL: traced }).stderr, "",
+      `fixture sanity: trace2.${target}=1 writes to stderr on a healthy read`);
+    assert.deepStrictEqual(shipJsonWith(dir, { GIT_CONFIG_GLOBAL: traced }), untraced, `trace2.${target}=1: the whole report is unchanged`);
+  }
+});
+
+// Git for Windows' GIT_REDIRECT_STDERR=2>&1 moves git's stderr into stdout, where the broken-ref warning would be
+// invisible to the stderr check and the lookup would read as a quiet "no such tag" again: lib/git drops it.
+test("CLI: an inherited GIT_REDIRECT_STDERR=2>&1 does not hide a broken refs/tags/vX.Y.Z — tagReady stays unverified", { skip: process.platform !== "win32" && "GIT_REDIRECT_* is read by Git for Windows only" }, () => {
+  const dir = bareRepository();
+  commitFile(dir, "package.json", JSON.stringify({ version: "1.0.0" }), "2026-01-02T00:00:00Z", "prepare 1.0.0");
+  fs.writeFileSync(path.join(dir, ".git", "refs", "tags", "v1.0.0"), "garbage\n", "utf8");
+  const raw = plainGit(dir, ["rev-parse", "-q", "--verify", "refs/tags/v1.0.0"], { GIT_REDIRECT_STDERR: "2>&1" });
+  assert.strictEqual(raw.status, 1, "fixture sanity: the exit status git uses for no such ref");
+  assert.strictEqual(raw.stderr, "", "fixture sanity: stderr is empty");
+  assert.notStrictEqual(raw.stdout, "", "fixture sanity: the warning went to stdout");
+
+  const tagReady = shipJsonWith(dir, { GIT_REDIRECT_STDERR: "2>&1" }).checks.tagReady;
+  assert.strictEqual(tagReady.status, "unverified", tagReady.evidence);
+  assert.match(tagReady.evidence, /^looking up tag v1\.0\.0 failed \(exit 1, with a message on stderr\)/);
+});
+
 // Owner decision Q4 #1 (and the P4a finding): ship writes nothing — .git/index included. With stale stat
 // data, `git status` without GIT_OPTIONAL_LOCKS=0 and `git diff <commit>` (working tree against a commit)
 // refresh and rewrite the index.

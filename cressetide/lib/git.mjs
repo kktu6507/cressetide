@@ -9,9 +9,14 @@
 //     with the callers. core.abbrev is deliberately not neutralized.
 //   - The environment is the process's own minus the variables that would point git at another
 //     repository, index or object store than `root` (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE,
-//     GIT_COMMON_DIR, GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES — matched case-insensitively
-//     on Windows), plus GIT_OPTIONAL_LOCKS=0 so that a read such as `git status` does not rewrite
-//     .git/index as a side effect.
+//     GIT_COMMON_DIR, GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES), every GIT_TRACE* variable
+//     and every GIT_REDIRECT_* variable — all matched case-insensitively on Windows — plus
+//     GIT_OPTIONAL_LOCKS=0 so that a read such as `git status` does not rewrite .git/index as a side
+//     effect. A caller may read non-empty stderr as a failed read, so stderr must carry git's own
+//     messages and nothing else: tracing writes to stderr on a healthy read, and Git for Windows'
+//     GIT_REDIRECT_STDERR=2>&1 would move a warning into stdout. A trace2 target set in a config file
+//     (trace2.normalTarget / perfTarget / eventTarget, e.g. `1` for stderr) is not overridden by `-c`, only
+//     by its own variable, so GIT_TRACE2, GIT_TRACE2_PERF and GIT_TRACE2_EVENT are each set to 0.
 //   - stdin is a pipe only when `input` is given, else ignored (an ignored stdin would drop the input).
 //   - It calls spawnSync on the child_process module object at call time, so a test preload that patches
 //     child_process.spawnSync for command "git" still intercepts it.
@@ -20,7 +25,8 @@ import cp from "node:child_process";
 // diff.ignoreSubmodules=none overrides the user's setting and git's own default as well: `git diff`
 // normally hides untracked files inside a submodule; here such a submodule counts as changed (`git status`
 // reports it either way). A project's per-submodule `ignore` in .gitmodules (or submodule.<name>.ignore)
-// still applies, unlike --ignore-submodules=none.
+// still applies, unlike --ignore-submodules=none. core.fsmonitor=false keeps a repository's own
+// core.fsmonitor (a command, or `true` for the built-in daemon) from being run by a status or diff here.
 export const NEUTRAL_CONFIG = Object.freeze({
   "core.quotePath": "false",
   "i18n.logOutputEncoding": "UTF-8",
@@ -28,6 +34,7 @@ export const NEUTRAL_CONFIG = Object.freeze({
   "column.ui": "never",
   "diff.relative": "false",
   "diff.ignoreSubmodules": "none",
+  "core.fsmonitor": "false",
 });
 export const NEUTRAL_CONFIG_ARGS = Object.freeze(
   Object.entries(NEUTRAL_CONFIG).flatMap(([key, value]) => ["-c", `${key}=${value}`]),
@@ -42,23 +49,31 @@ function gitEnvironment() {
   const caseInsensitive = process.platform === "win32";
   const env = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (REDIRECTING_ENV.has(caseInsensitive ? key.toUpperCase() : key)) continue;
+    const name = caseInsensitive ? key.toUpperCase() : key;
+    if (REDIRECTING_ENV.has(name) || name.startsWith("GIT_TRACE") || name.startsWith("GIT_REDIRECT_")) continue;
     env[key] = value;
   }
   env.GIT_OPTIONAL_LOCKS = "0";
+  env.GIT_TRACE2 = "0";
+  env.GIT_TRACE2_PERF = "0";
+  env.GIT_TRACE2_EVENT = "0";
   return env;
 }
 
-// The raw spawnSync result — { status, signal, stdout, stderr, error, … } — and never a throw: a spawn
-// failure (git missing: error.code "ENOENT"; timeout: "ETIMEDOUT"; output over maxBuffer: "ENOBUFS") is in
-// `error`, a git failure in `status`. Check `error` first: when git did not start, stdout/stderr may be
-// undefined (ENOENT) or null (an argument spawnSync rejects); otherwise strings, or Buffers with encoding
-// "buffer" (any other encoding value means "utf8").
+// The raw spawnSync result — { status, signal, stdout, stderr, error, … } — and never a throw for anything
+// git or the spawn does: a spawn failure (git missing: error.code "ENOENT"; timeout: "ETIMEDOUT"; output
+// over maxBuffer: "ENOBUFS") is in `error`, a git failure in `status`. Check `error` first: when git did not
+// start, stdout/stderr may be undefined (ENOENT) or null (an argument spawnSync rejects); otherwise strings
+// (encoding "utf8", the default) or Buffers (encoding "buffer"). Any other encoding — Node's `null` idiom
+// for raw bytes included — is a programming error and throws a TypeError before git runs.
 export function git(root, args, { input, encoding = "utf8", maxBuffer = 64 * 1024 * 1024, timeout = 10_000 } = {}) {
+  if (encoding !== "utf8" && encoding !== "buffer") {
+    throw new TypeError(`git: encoding must be "utf8" or "buffer", not ${typeof encoding === "string" ? JSON.stringify(encoding) : String(encoding)}`);
+  }
   try {
     return cp.spawnSync("git", ["-C", root, ...NEUTRAL_CONFIG_ARGS, ...args], {
       input,
-      encoding: encoding === "buffer" ? "buffer" : "utf8",
+      encoding,
       maxBuffer,
       timeout,
       stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
@@ -69,8 +84,9 @@ export function git(root, args, { input, encoding = "utf8", maxBuffer = 64 * 102
   }
 }
 
-// git()'s stdout (string, or Buffer with encoding "buffer") when git ran and exited 0; otherwise throws an
-// Error whose message names the git arguments (never `root`) and the reason, carrying:
+// git()'s stdout (string, or Buffer with encoding "buffer") when git ran and exited 0; an invalid encoding
+// is git()'s TypeError; otherwise throws an Error whose message names the git arguments (never `root`) and
+// the reason, carrying:
 //   .stderr  git's stderr as a string ("" when there was none)
 //   .status  the exit status (null when git did not run to completion)
 //   .code    the spawn error code ("ENOENT", "ETIMEDOUT", "ENOBUFS", …), or null when git ran and failed
