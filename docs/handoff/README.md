@@ -33,7 +33,9 @@
 | P4 共用 `cressetide/lib/`、7 支 script 與 ship／publish-release 改用 lib、刪 publish-release-core 與 9d d4/d5（含使用者決定 Q1–Q5） | 完成；證據見 [p4-evidence.md](p4-evidence.md) | `19db2bc` |
 | P4 中途 review（intent / test / code / security + arbiter） | **FIX REQUIRED**（無 blocker；1 個真 bug + 5 個測試缺口，皆為 major） | — |
 | P4 修復 P4-R1～R7 | 完成；七個結案條件逐條核對成立 → **P4 READY**（見 [p4-evidence.md](p4-evidence.md) 最後一節） | 本段 commit |
-| P5 → P13 | 未開始；**下一步是 P5** | — |
+| P5 hooks 改成 2 個入口＋`lib/guards`、移除 Copilot 與 `agents[]`、debug 遮蔽 secret、failure memory 支援 `##`／`###`（含使用者決定 I-1～I-10、P4 排過來的待辦） | 完成；證據見 [p5-evidence.md](p5-evidence.md)，實機冒煙 3/3 通過 | 本段 commit |
+| P5 中途 review（intent / test / code / security + arbiter） | 未開始；**下一步** | — |
+| P6 → P13 | 未開始 | — |
 
 逐步紀錄在 [progress.md](progress.md)，第 1 輪 review 的完整內容在 [review-round1.md](review-round1.md)，實機探測結果在 [probes.md](probes.md)。
 
@@ -50,6 +52,7 @@
 2. **Node 22.12 以上**。用 `node --version` 確認。
 3. **Claude Code CLI 已登入**：`claude auth status` 要顯示 `loggedIn: true`，版本 2.1.272 以上（plugin eval 需要 2.1.269 以上）。實機探測和 A/B 會用到 `claude -p`。
    - 原機器上，從桌面 app 的 Bash 呼叫 `claude -p` 會繼承一堆 `CLAUDE_CODE_*` 環境變數。探測時先清掉這些變數，再以獨立 CLI 執行（`probes.md` 開頭有說明）。
+   - 桌面 app 的登入走 host 代理，子行程拿不到；獨立 CLI 要另外跑一次 `claude auth login`（由使用者在終端機完成）。帳號同步的 plugin 也要在 `--settings` 用 `"<name>@synced": false` 關掉（見 `probes.md` 的 I-8 一節）。
 4. **GPG 簽章**：原機器設了 `commit.gpgsign=true` 和 `tag.gpgSign=true`，所以這個 branch 的 commit 都有簽章。新機器要有同一把簽章金鑰，或由使用者自己決定怎麼處理。**不要自行跳過簽章。**
 5. **ctide plugin**：這次是用已安裝的 ctide plugin 的 vigil 流程在跑（原機器上安裝的是 marketplace `kktu` 的 0.5.0）。新機器也要裝。
 6. **把工作檔放回 gitignored 的位置**
@@ -86,7 +89,7 @@
    - **validator 只掃追蹤中、未被忽略的檔案**（使用者 2026-10-14 核准）：scratch 檔與文字完整性檢查改用 `git ls-files -co --exclude-standard`，本機 gitignored 的 `.ctide/collaboration/` dogfood 資料才不會讓 `npm run validate` 失敗。最終報告列為核准的順手修正。
    - **測試用的 git 要密封**（複審 2）：fixture 裡的 git 不受開發者全域設定影響，例如 `merge.verifySignatures=true` 會讓 `ship.test.mjs` 的 merge fixture 假紅（新舊測試都有）。用一個集中的 fixture-git helper 處理，不要逐個測試補旗標。
    - **SSH 簽章測試的 skip 要看能力**（複審 2）：除了 `ssh-keygen` 能不能啟動，git < 2.34 或 OpenSSH < 8.1 也要說明原因後 skip，不能直接紅燈。
-4. **P4 已結案（READY，2026-10-15）**：實作在 `19db2bc`，修復 P4-R1～R7 已完成並逐條核對七個結案條件。**下一步是 P5。** 以下保留中途 review 的判決、修復內容與條件，供對照：
+4. **P4 已結案（READY，2026-10-15）**：實作在 `19db2bc`，修復 P4-R1～R7 已完成並逐條核對七個結案條件。P5 也已完成（見下一項）。以下保留中途 review 的判決、修復內容與條件，供對照：
    - **R1**：contract-check 明確給 `--base` 時，`git diff` 失敗會被當成 `scope: clean`（工作樹裡有個以 SHA 命名的檔案就能觸發，已重現）；revision 後面加 `--`，明確 `--base` 時 diff 失敗回報 `unverified`，`--base ""` 也算明確；`changedFiles` 一併加 `--`。
    - **R2～R4**：補上五個「程式碼正確但沒有測試釘住」的缺口（ship 不寫 index 的 CHANGELOG 未變更情境、changelogTouched 的 pathspec、headState 對 orphan branch 的規則、Q3 只把解析後的 SHA 交給 git、遮蔽規則先遮再截斷）；遮蔽規則也改成沒有結尾的私鑰區塊不會漏出內容。
    - **R5**：ship 讀 git 時 revision 後面也加 `--`。**R6**：修正註解與 7 個還寫著 `isInvokedDirectly` 的測試標題。**R7**：ship-contract.md:85 與 ARCHITECTURE.md 的目錄樹（使用者核准 O-3、O-4）。
@@ -101,7 +104,10 @@
    - **lib/git 集中中和使用者 git 設定**（複審 2）：用明確的 `-c key=value` 覆寫，包括 `i18n.logOutputEncoding`，並補一個非 ASCII commit 標題的測試。**不要**用 `GIT_CONFIG_GLOBAL`／`NOSYSTEM` 整個隔離，否則會丟掉 `safe.directory`，遇到「dubious ownership」的 repo 每次讀取都會失敗。
    - **lib/git 也要丟掉繼承來的 git 環境變數**（P3 review m-1）：root 是明確給定的，所以忽略 `GIT_DIR`、`GIT_WORK_TREE`、`GIT_INDEX_FILE`、`GIT_COMMON_DIR`、`GIT_OBJECT_DIRECTORY`、`GIT_ALTERNATE_OBJECT_DIRECTORIES`；validator 的 `gitFiles` 改用同一套規則。補測試：在繼承絕對路徑 `GIT_DIR`／`GIT_INDEX_FILE` 的環境下跑 `gitFiles(fixture)` 和一條 production 路徑。
    - **P4 計畫核准時請使用者決定**：要不要用 `--ignore-submodules=none` 覆寫 `diff.ignoreSubmodules`。不覆寫的話，submodule 被移動時 tagReady 可能誤判 `pass`，pending 也會漏列 gitlink；覆寫的話，連專案自己在 `.gitmodules` 設的 `ignore` 也會被蓋掉。
-5. **P5**：重寫 hooks、移除 Copilot、debug 遮蔽 secret、failure memory 支援 `##`／`###`。期限在這一階段的待辦：
+5. **P5 已完成（2026-10-15），下一步是 P5 中途 review**（使用者 I-9：intent、test、code、security 加 arbiter，允許依條件只憑證據結案，套用 D-7；範圍 `86ba905..` P5 commit）。內容：hooks 改成 `pre-tool-use.mjs`、`session-start.mjs` 兩個入口（Stop 的 `orchestration-check.js` 不動，I-5），檢查邏輯搬到 `cressetide/lib/guards/` 與 `lib/{hook-io,debug,settings,failure-memory}.mjs`；S0 行為比對 1474 列、126 列變動全部落在核准的變更類別；實機冒煙 3/3 通過（[probes.md](probes.md) 的 I-8 一節）。證據全文在 [p5-evidence.md](p5-evidence.md)。下面列的待辦除了 validator 負向測試（P5d）之外都已完成。
+   - **P5 發現、沒有改的項目**：
+     - **交給 P5 中途 review 決定**：contract 檢查的 design.md 標題 regex `/^\s*##\s+(.+?)\s*$/` 是平方級（標題行有 4 萬個空白時 535 ms；只有寫入 design.md 的工具呼叫會碰到）；contract.md／design.md 整檔讀取沒有上限（照搬舊 hook）。
+     - 其他排到 P6～P8 的項目列在各階段底下。
    - failure memory 的 `--log` usage 檔要寫進狀態模型。
    - **D-4 的硬性要求**：plan-gate 的 4 個 F1 計時測試（sed / perl / git apply / dd）改成 in-process 量 classifier 時間（例如 `< 250 ms`），並在 scratch 副本拿掉 `{0,200}` 上限時錄到紅燈；做不到紅燈就不算完成。
    - **helper 整理**（P3 review m-7）：`execHook` 和 `runHook` 名字太像、行為不同，改名（例如 `hookStdout`），改用 `process.execPath`；只在模組內用到的 `hardenGitSigning`、`gitEnv` 不再匯出，或寫明用途。
@@ -114,14 +120,14 @@
      - **failure-retrieve 的用法錯誤**（使用者 O-6 A）：維持嚴格解析，但輸出改成明確的「指令列無法解析，沒有搜尋」訊息，不再跟「沒找到」一樣；以 `-` 開頭的查詢值要用 `--query=` 寫法。
    - **validator 負向測試補齊，期限在第 2 輪 review 的 packet 之前**（P3 review m-12、m-13）：擴充檢查裡沒被測到的子條件（identity 的 `pkg.name`／`plugin.name`、各 README 的 `/ctide:*` token、`map` 的 manual-only 旗標、hook 語法檢查的 ESM 分支、`.yml`／`.lycheeignore` 文字類型、U+FF82、`~` 結尾的 scratch 檔），以及 25 個從來沒有負向測試的核心檢查。優先順序：5g HSO accept-set；5f／5j／5k／9f 的檔案不存在保護；5e cannot-locate；plugin.json 欄位與 semver；frontmatter；hooks.json 引用不存在的 hook、README 的 hook 名稱與連結。9d 相關的不補（AC-9 會整個拿掉 9d）。
 6. **P6**：SubagentStop 紀錄器加上新的 Stop；要包含一個 ship session 的回歸案例。這個案例的 commit subject 要含 `READY`、`major`、`minor`，報告裡也要有否定句「never means 'safe to ship'」，新的 Stop 都必須保持安靜（第 1 輪複審 F-k）。
+   - **P5 排過來的項目**：`orchestration-check.js` 的殘留（I-5：自己的 debug 開關，任何非空值都算開；自己的 `ctide-hook.log` 字面值與 5 MiB stdin reader；「kept in sync with plan-gate.js」註解；camelCase 欄位別名；寫進 log 的前綴少了 `ctide `），P6 結束時驗收 AC-6／AC-9 的這幾點；`test/orchestration-check.test.mjs` 直接 spawn `"node"`（3 處），改用 `process.execPath`。
 7. **P7 → P13**：照計畫做。
    - **P8 第一次改 prose 之前**，要先把被刪掉的 fast-lane 和 test-reviewer QA 輸出的 prose 守衛補回來（拿掉 TP 的部分）。同一個期限內，還要替低／中風險 run 定義實作階段可引用的 edge 來源（第 1 輪複審 F-l）。
-   - **P7**（P4 review 排過來，期限 P7 結束）：contract-check 改用 `changedFiles` 之前先決定 submodule 的語意（D-6）；AC-10 的測試要斷言 index 位元組不變、沒有任何 hook 被執行（現在的 `git diff <rev>` 會改寫 index 並觸發 `post-index-change`）；map 在沒裝 git 時的 TypeError（檢查 `result.error`）；lib/git 匯出 `resolveCommit(root, rev)`，P7 結束時 lib 以外不得再有 `[a-f0-9]{40,64}` 的 regex 副本；contract-check 和 ship 的用法錯誤回顯限制在約 200 字；`changedFiles` 有了呼叫端後補一個 staged `git mv` 的 `--no-renames` 測試。
-   - **P8**：ship 對 orphan branch 的說明改成「HEAD does not resolve to a commit (an orphan branch with no commits yet, or a broken or dangling HEAD) — commits since the last release tag are unknown」（使用者 O-2 A）；子目錄 `--cwd` 沒有自己的 CHANGELOG.md 時，evidence 改成「no CHANGELOG.md in the --cwd directory」；ship-contract.md:56 引用的 range diff 指令補上程式現在用的結尾 `--`（P4-R5 之後文件與程式差一個分隔符）。
-   - **P11** 改 README 時：`ship.test.mjs` 的 README 測試只讀每個標題下的第一行，段落重新換行時要一起檢查。P11 第一次跑 CI 時，量 Windows 全套測試時間離 20 分鐘上限還剩多少（P3 review c-1），並記下 Node 22 在 ubuntu／macOS／windows 的實際結果。另外（P4 review）：不帶 tag 的 `--archive` 會把未追蹤的檔案打包進去，改成只用 `git ls-files --cached`（或有未追蹤檔就拒絕），`.gitignore` 的規則改成 `**/.claude/settings.local.json`；補 publish-release 30 秒逾時的釘住測試，以及帶 tag 的封存檔也包含 `lib/` 的斷言。
+   - **P7**（P4 review 排過來，期限 P7 結束）：contract-check 改用 `changedFiles` 之前先決定 submodule 的語意（D-6）；AC-10 的測試要斷言 index 位元組不變、沒有任何 hook 被執行（現在的 `git diff <rev>` 會改寫 index 並觸發 `post-index-change`）；map 在沒裝 git 時的 TypeError（檢查 `result.error`）；lib/git 匯出 `resolveCommit(root, rev)`，P7 結束時 lib 以外不得再有 `[a-f0-9]{40,64}` 的 regex 副本；contract-check 和 ship 的用法錯誤回顯限制在約 200 字；`changedFiles` 有了呼叫端後補一個 staged `git mv` 的 `--no-renames` 測試。P5 排過來的：doctor 的 `projectLocalMemoryCandidates` 手抄了 `memoryCandidates` 的前兩條路徑，改成 import `cressetide/lib/failure-memory.mjs`。
+   - **P8**：ship 對 orphan branch 的說明改成「HEAD does not resolve to a commit (an orphan branch with no commits yet, or a broken or dangling HEAD) — commits since the last release tag are unknown」（使用者 O-2 A）；子目錄 `--cwd` 沒有自己的 CHANGELOG.md 時，evidence 改成「no CHANGELOG.md in the --cwd directory」；ship-contract.md:56 引用的 range diff 指令補上程式現在用的結尾 `--`（P4-R5 之後文件與程式差一個分隔符）。P5 排過來的：`test/ship.test.mjs` 直接 spawn `"node"`（6 處），改用 `process.execPath`；diagnostic-contract 第 4 步 `hook-debug` 列的說明補上新的遮蔽檢查；ARCHITECTURE.md:25-27 補上 hook 入口也從 `cressetide/lib/` 取共用工具。   - **P11** 改 README 時：`ship.test.mjs` 的 README 測試只讀每個標題下的第一行，段落重新換行時要一起檢查。P11 第一次跑 CI 時，量 Windows 全套測試時間離 20 分鐘上限還剩多少（P3 review c-1），並記下 Node 22 在 ubuntu／macOS／windows 的實際結果。另外（P4 review）：不帶 tag 的 `--archive` 會把未追蹤的檔案打包進去，改成只用 `git ls-files --cached`（或有未追蹤檔就拒絕），`.gitignore` 的規則改成 `**/.claude/settings.local.json`；補 publish-release 30 秒逾時的釘住測試，以及帶 tag 的封存檔也包含 `lib/` 的斷言。
    - **多餘的手動清理區塊**（P3 review m-6）：`tempDir` 已經會自動清理，下列檔案裡的 `try/finally fs.rmSync` 是重複的，哪個階段碰到該檔就順手刪掉：P4 的 release-publisher（40 個，檔案會刪）、release-cli（14）；P5 的 failure-consolidate、failure-retrieve（共 5）；P6 的 orchestration-check（5）；P7 的 map、doctor-project、regression-delta（共 9）；P10 的 model-provenance（3，檔案會刪）。**P13 收尾時 grep 要歸零**，只保留清理非 `tempDir` 目錄的區塊（例如 `globalDir`）和 orchestration-check 刻意提早釋放的那幾個。
 
-每個階段的共同要求：`npm run validate`、`npm test`、`npx --yes @anthropic-ai/claude-code@2.1.272 plugin validate --strict ./cressetide` 三項都要綠，用 `git grep` 確認該清的東西零命中，然後 commit。只有 D-2 剩下的兩個、D-4 那四個計時測試例外。P3 之後 validator 只掃追蹤中、未被忽略的檔案，主 checkout 可以直接驗證，不必再用乾淨的 worktree。測試的暫存殘留用「把 TEMP／TMP／TMPDIR 指到全新目錄、跑完數 `ctide-*`」來量。每個階段結束時，順手清掉多餘的檔案（scratch 副本、用完的 worktree、測試漏掉的 `ctide-*` 暫存目錄）。
+每個階段的共同要求：`npm run validate`、`npm test`、`npx --yes @anthropic-ai/claude-code@2.1.272 plugin validate --strict ./cressetide` 三項都要綠，用 `git grep` 確認該清的東西零命中，然後 commit。例外只剩 D-2 的 doctor-security `--plugin-root` 探測（負載下可能逾時）；session-memory-hooks 的 ReDoS 計時和 D-4 的四個計時測試已在 P5 改成 in-process 量 classifier 時間，並錄到紅燈。P3 之後 validator 只掃追蹤中、未被忽略的檔案，主 checkout 可以直接驗證，不必再用乾淨的 worktree。測試的暫存殘留用「把 TEMP／TMP／TMPDIR 指到全新目錄、跑完數 `ctide-*`」來量。每個階段結束時，順手清掉多餘的檔案（scratch 副本、用完的 worktree、測試漏掉的 `ctide-*` 暫存目錄）。
 
 ## 已確定的決定（不要重新討論）
 
@@ -155,6 +161,27 @@
   - **D-7**（2026-10-15，P4 review arbiter 提出、使用者核准）：「測試缺口」只有同時符合四個條件才算 major：(1) 該行為是這個階段新增或改寫的，或這個階段寫的測試聲稱有釘住它；(2) 該行為是明文的約定（使用者決定、排過來的待辦、合約文件，或程式自己的說明）；(3) 一個合理的單點修改 mutant 會造成看得到的有害結果（假的通過／乾淨、破壞「不寫入」、假的來源紀錄、密鑰外洩）；(4) 在該 mutant 下相關的整套測試仍然全綠。任何一條不符合就是 minor 並排到後面。之後所有 review 都照這個規則。
   - **O-2**（使用者選 A）：在已有 commit 的 repo 裡切到 orphan branch 時，ship 維持回報 `unverified`，P8 改說明措辭。
   - **O-6**（使用者選 A）：failure-retrieve 維持嚴格解析，P5 把用法錯誤的輸出改成明確訊息。
+  - **P5 計畫決定**（2026-10-15，navigator 盤點後使用者全部照建議）：
+    - **I-1**：plan-gate 的 edit 分支保留（偏離 #1 不變）。
+    - **I-2**：debug log 維持 `暫存目錄/ctide-hook.log`，超過 1 MiB 清空重寫（只動自己的 log）；前綴改成 `[ctide pre-tool-use] plan-gate: …` 這種「入口＋檢查名」格式。
+    - **I-3**：failure memory 判斷「有沒有 `###`」時不算範本的佔位標題（`### <YYYY-MM-DD> — …`）；這種檔改用 `##` 解析，`## Entry Template` 這類章節標題會被當成沒有 tags 的 entry，接受。
+    - **I-4**：沒有 entry 時注入的指標文字：`Failure memory: <path> has no "##" or "###" entry headings this hook can index, so none of its content is injected. During planning, read the file directly for lessons relevant to the task.`
+    - **I-5**：Stop hook（orchestration-check.js）在 P5 不動；它自帶的 debug 與 stdin reader 列為已揭露的殘留，P6 結束時驗收 AC-6／AC-9 的這兩點。
+    - **I-6**：`--log` 用量檔只寫進 runtime-contract 的 `.ctide/` 樹，標明本機用、不 commit、請加進 .gitignore。
+    - **I-7**：35 項文件改動照清單做（README 以 zh-TW 為準，commit 前給使用者看三語定稿）。
+    - **I-8**：P5 結束時跑一次便宜的實機冒煙（haiku，3 個提示，約 US$0.1–0.3）。
+    - **I-9**：P5 之後加中途 review（intent、test、code、security 加 arbiter），允許依條件只憑證據結案，套用 D-7。
+    - **I-10**：implementer.agent.md 的 tools 拿掉 `MultiEdit`。
+    - navigator 發現並併入 P5：failure-retrieve／consolidate／`doctor --project` 的退役判斷 regex 沒有上限（240 KB 標題實測 1.4 秒），改用共用的有上限 parser；doctor 的 malformed 探測沒用 `probeEnv`；failure memory 的「找不到 entry」fallback 其實塞進最多 3000 字原文，改成只注入指標。
+    - **P5 執行中的決定**（orchestrator 決定並揭露；README 三語定稿與清單外 5 個檔案由使用者 2026-10-15 核准）：
+      - failure memory 的 Tags 讀法改成線性 reader：原本的 regex 是立方級（一行 4 KB 要 6.6 秒），和舊 pattern 做 200 萬行差分比對 0 不一致。
+      - 空的記憶檔、全部 entry 都已退役、只有範本佔位標題的記憶檔，一律不注入任何東西（連指標都不注入）。
+      - lib/git 的 `encoding` 不是 `utf8` 也不是 `"buffer"` 時丟 `TypeError`（P4 排過來的兩個選項之一）。
+      - hook 收到 BOM 開頭的輸入視為格式錯誤：P5a 曾改成接受，S0 抓到 plan mode 的一個事件從 fail-open 變成 deny，P5c 還原。
+      - validator 的新規則用字元類別拼已刪除的名稱（`/cop[i]lot/i`、`/\bPLUGIN[_]ROOT\b/`），測試也用組字串的方式，讓「已刪名稱」的 grep 維持 0。
+      - doctor 一律先建立 probe root，所有探測（含語法檢查）都用 `probeEnv`，結束時刪除；agents 列用自己的 8 行 frontmatter parser（validator 另有一份等價的，兩個程式各一份，不另開 lib 模組）。
+      - lib-binding 的 `NOT_YET_IN_SCOPE` 保留 `eval/`（P10）和 `orchestration-check.js`（P6）。
+      - 清單外 5 個檔案（vigil SKILL.md:156、design-spec.md:30、external-capabilities.md:32、navigator.agent.md:39、diagnostic-contract.md 描述手動第 5 步的幾行）改成新的入口名稱，避免說明變成錯的。
   - navigator 的設計假設照採用：eval 的 `KNOWN_FLAGS` 留到 P10；`changedFiles` 在 P4 建好並測試、P7 才接到 contract-check；validator 改 import `cressetide/lib/git.mjs`；`core.abbrev` 不中和；重複的旗標取最後一個值；會以 exit 1 表示失敗的 script，用法錯誤也用 exit 1；lib 檔名不可用 `_` 開頭（`.gitignore` 會忽略 `_*.mjs`）。
 - **依實機探測定的設計**（見 [probes.md](probes.md)）：
   - hooks.json 用 shell 形式：`node "${CLAUDE_PLUGIN_ROOT}/hooks/<x>.mjs"`
@@ -175,7 +202,7 @@
 3. **`archive/v0.7.2-full` 被 `tag.gpgSign` 自動簽章。** 計畫寫的是「不打簽章 tag」；對封存用途沒有影響。
 4. **ship 拿掉了「人工挑選 ledger 項目」這一步**，這是 D3 的直接結果；pending 的 JSON 型別從陣列變成物件，屬於 breaking change，P11 要寫進 CHANGELOG。
 5. **reconcile 掃到 1 個候選（94f1a31 對 1afe708），判定為 survived**；因為 D3，沒有寫入 close。
-6. **第 1 輪之後多了兩次窄範圍複審與修復（R2、R3），P3 之後再加一輪中途 review。** 計畫原本只排 P2、P6、P13 三輪；前者是 arbiter 判 FIX REQUIRED 的修復迴圈，後者是使用者 2026-10-14 核准的追加。
+6. **第 1 輪之後多了兩次窄範圍複審與修復（R2、R3），P3、P4、P5 之後各加一輪中途 review。** 計畫原本只排 P2、P6、P13 三輪；前者是 arbiter 判 FIX REQUIRED 的修復迴圈，後者是使用者核准的追加（P3、P4：2026-10-14；P5：2026-10-15，I-9）。
 7. **D-2 的 structure 計時測試在 P3 提早退役**：validator 改成 in-process 呼叫後，這個測試不再計時（`53b2e18`）。
 8. **P4 帶來的、使用者看得到的行為改變**（P11 寫 CHANGELOG 用；使用者 O-5 核准）：
    - 八支 script 改成嚴格解析指令列：不認得的旗標是用法錯誤，`--flag=value` 寫法有效，重複的旗標取最後一個值。
@@ -185,6 +212,16 @@
    - ship：用法錯誤時不跑任何檢查；orphan branch 回報 `unverified`；staged 之後又在工作樹還原的 CHANGELOG 算作有改；子目錄 `--cwd` 用該目錄自己的 CHANGELOG。
    - failure-retrieve：`--log` 是布林旗標；以 `-` 開頭的查詢值要用 `--query=` 寫法。
    - submodule 裡有未追蹤的內容時會被列為變更（D-6）。
+9. **P5 帶來的、使用者看得到的行為改變**（P11 寫 CHANGELOG 用；使用者核准的第 35 項）：
+   - hooks 從 6 支檔案改成 3 個入口：`pre-tool-use.mjs`（plan gate、破壞性指令、contract 三項檢查）、`session-start.mjs`（failure memory 注入、compaction 提醒）、`orchestration-check.js`（不變）。停用開關（`planGate`、`destructiveGuard`、`contractGuard`、`preserveOnCompact`）名稱不變。
+   - PreToolUse 不再接受 `MultiEdit`，也不再接受 camelCase 的事件欄位別名（`permissionMode` 等）；`implementer` agent 的 tools 拿掉 `MultiEdit`。
+   - `CTIDE_HOOK_DEBUG` 只認 `1`、`true`、`yes`、`on`（不分大小寫），其他值（含 `0`）一律不寫；寫出前先遮蔽 secret；前綴改成 `[ctide <入口>] <檢查>:`；log 超過 1 MiB 清空重寫。Stop hook 要到 P6 才改用同一套規則。
+   - failure memory 認得 `##` 和 `###` 標題（範本的佔位 `###` 不算）；檔案裡沒有 entry 時只注入一行指向該檔的指標，不再塞最多 3000 字原文；空檔、全部退役、只有範本標題時什麼都不注入。
+   - SessionStart 收到格式錯誤、不是物件或 BOM 開頭的輸入時不注入任何東西。
+   - 移除 Copilot CLI 的支援（hooks.json 的 root fallback、README 與相容性說明）；plugin.json 不再列 `agents[]`，改靠 Claude Code 自動找到 `agents/*.agent.md`。
+   - doctor 新增 `decision:plan-gate`、`decision:destructive` 兩列（helper 自動用合成輸入探測，取代原本要手動跑的第 5 步）；`agents` 列只看檔案與 frontmatter 的 `name`；`hook-debug` 列會檢查 Bearer token 有被遮蔽。
+   - 退役判斷 regex 改成有上限的共用 parser（failure-retrieve、failure-consolidate、`doctor --project`）；failure-retrieve 的用法錯誤改成明確的「指令列無法解析，沒有搜尋」訊息。
+   - lib/git：`GIT_TRACE*`、`GIT_REDIRECT_*` 一律清掉，`GIT_TRACE2*` 設成 0，固定覆寫多了 `core.fsmonitor=false`；ship 的 `tag --merged HEAD` 和 `refs/tags` 查詢只要 stderr 有輸出就回報 `unverified`。
 
 ## 已知注意事項
 
@@ -210,7 +247,9 @@
 
 1. **在 Windows Git Bash 用 `node -e '…'` 或 heredoc 帶入 JS 時，會少一層反斜線跳脫。** `\\n` 變成真的換行，`\\(` 變成 `(`，含 regex 的測試被改壞，卻沒有任何錯誤。
    - 預防：含反斜線的改動用 Write/Edit 工具做，或寫成獨立 script 檔再執行；每次用 script 改完都讀回檢查。但 Write 工具也會把 `\uXXXX` 寫成實際字元：validator 不收的字元用 `String.fromCodePoint` 組，寫完做 byte 掃描。Git Bash 裡沒有 heredoc 的 `cat > file` 會等 stdin 卡到逾時；探測指令加 `< /dev/null`。
-   - tags: windows, git-bash, escaping, scripted-edits, tool-write, text-integrity
+   - P5c 又發生兩次：餵給 `node -` 的 heredoc 在工具的 bash 層中斷，`node -e` 裡含 `\s`／`\$` 的 regex 取代寫出錯的文字（都被錨點檢查擋下）。用 Write 工具寫成 scratch 檔再 `node <file>` 就沒事。
+   - 同一類（P5 I-8）：Git Bash 會把開頭是 `/` 的參數改寫成 Windows 路徑，`claude -p "/compact"` 送到模型的是 `C:/Program Files/Git/compact`。傳 slash 指令或以 `/` 開頭的參數時加 `MSYS_NO_PATHCONV=1`。
+   - tags: windows, git-bash, escaping, scripted-edits, tool-write, text-integrity, msys-path-conversion
 2. **否定句裡的判決 token 仍然是那個 token。** ship 規定要逐字附上的免責聲明「no READY verdict is implied」裡有 `READY`，plugin 自己的 Stop hook 把它當成宣稱 READY，每個 ship session 都會跳出假警告。對應的測試拿模組自己匯出的常數比對，還在掃描前先把聲明切掉，等於自己驗自己。
    - 預防：要求模型逐字轉述的文字裡，不放機器解析的 token；測試用文件上的字面值，掃描整份輸出不切任何區段；另寫一個端到端測試，把真實的最後訊息餵給真的 hook，並加一個對照組證明 hook 確實會觸發。改寫機器解析 token 的措辭時，要 grep 所有文件、所有語言裡的轉述（例如 README×3），不只逐字引用的那幾處。
    - tags: machine-token, verbatim-disclaimer, hook-false-positive, tautological-oracle
@@ -229,14 +268,21 @@
 7. **把 revision 交給會接受 pathspec 的 git 指令時沒加 `--`，工作樹裡同名的檔案會讓指令失敗；呼叫端把失敗當成「沒有變更」，就變成假的通過。** P4 把 `--base` 解析成 SHA 之後，工作樹裡一個以該 SHA 命名的檔案讓 contract-check 印出 `scope: clean`（e0e3dcb 在同一棵樹會正確回報禁止路徑被改動）。
    - 預防：`diff`／`log`／`rev-list` 的 revision 後面一律加 `--`，`rev-parse` 用 `--verify`；使用者明確給的輸入讀取失敗時回報 unverified，不套用預設模式的 fail-open；測試放一個與 revision 同名的檔案（SHA、`HEAD`、tag、`a..b`）。
    - tags: git, argv, pathspec-ambiguity, fail-open, security-fix-incomplete
+8. **把 regex「照搬」進共用 parser，可能一起搬進一個沒人量過的 ReDoS。** P5a 被要求保留 FAILURE_MEMORY 的 Tags pattern、只修已知很慢的 `isRetired`（1.4 秒）；實際量了才發現 Tags pattern 是立方級回溯（一行 4 KB 要 6.6 秒），另外兩個結尾修剪的 pattern 是平方級，每次 SessionStart 讀到 clone 下來的 repo 檔案都會碰到。
+   - 預防：把讀取不受信任文字的 parsing 搬進共用模組前，每個 regex 都用「相鄰量詞共用的字元」（空白、分隔字元）組成的長字串量一次時間；把有歧義的 pattern 換成等價的線性讀法時，要同時附上跟舊 pattern 的差分測試，以及錄到紅燈／綠燈的計時測試。
+   - tags: redos, regex, untrusted-input, refactor-carryover, differential-test
+9. **在測試內建立的 temp 目錄存進模組變數，到了下一個測試就是懸空路徑。** P5c 的跨 shell 冒煙把 plugin 副本（第一個測試裡 `tempDir()` 建的）存在模組變數；helper 的 `t.after` 在該測試結束時刪掉它，PowerShell 那個測試就對著已刪除的路徑跑（「Cannot find module …」），第一次紅燈看起來像 PowerShell 的路徑問題。
+   - 預防：在測試本體裡用 `tempDir()` 建的 fixture 只活到該測試結束（D-5）；要跨測試共用，就在任何測試本體之外（檔案層級）建立，否則每個測試各建一份。
+   - tags: node-test, temp-dir, fixture-lifetime, test-helper
 
 ## 這個資料夾的檔案
 
 - [plan.md](plan.md)：已核准的計畫全文
 - [contract.md](contract.md)：task contract，24 條 AC，已含 D-1
 - [progress.md](progress.md)：逐步進度
-- [probes.md](probes.md)：P0 實機探測紀錄
+- [probes.md](probes.md)：P0 實機探測紀錄，以及 P5 的 I-8 實機冒煙
 - [review-round1.md](review-round1.md)：第 1 輪 review 的判決、packet、findings，以及第 1 輪複審（2026-10-14）
 - [r2-redgreen.md](r2-redgreen.md)：R2、R3 修復逐項的 red→green 與 mutant 紀錄
 - [p3-redgreen.md](p3-redgreen.md)：P3 修復（P3-R1～R8）的 red→green、mutant 與六個結案條件紀錄
 - [p4-evidence.md](p4-evidence.md)：P4（P4a／P4b／P4c）的實作證據：S0 基準比對、lib 打紅紀錄、綁定測試與還原打紅、ship／publish-release 的修正
+- [p5-evidence.md](p5-evidence.md)：P5（S0／P5a／P5b／P5c）的實作證據：hooks 的 S0 行為比對、guard 與 lib 的打紅紀錄、D-4／D-2 計時、退役的 spawn 測試對照表、I-8 實機冒煙 receipt

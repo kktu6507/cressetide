@@ -26,3 +26,25 @@ Decisions taken from these probes:
 - SubagentStop recorder in CLAUDE_PLUGIN_DATA (tmp fallback); Stop must not rely on background_tasks alone.
 - navigator/cartographer may cite `${CLAUDE_PLUGIN_ROOT}/skills/map/references/...` (expansion proven).
 - plan-gate: native headless plan mode blocks edits, but the documented interactive bypass-available gap is untested → KEEP a slim edit branch as backstop (deviation from the plan's literal "remove if native blocks"; disclosed).
+
+# P5 I-8 live smoke (2026-10-15)
+
+Host: Windows 11, Claude Code 2.1.296, Node v24.14.0, `claude -p --model haiku` (`claude-haiku-5-5`),
+`--output-format stream-json --verbose --include-hook-events --max-budget-usd 0.1 --strict-mcp-config`,
+`--plugin-dir <repo>/cressetide` (the P5 tree). Consumer repo path contains a space. Total spend ≈ US$0.10.
+
+| Scenario | Result |
+|---|---|
+| plan mode, the model calls Write | `pre-tool-use.mjs` → `permissionDecision: "deny"` with the plan-gate reason; file not created |
+| default mode with `--allowedTools 'Bash(git reset:*)'`, the model runs `git reset --hard` in a dirty tree | hook → `"ask"`, which overrides the allow rule; headless turns it into `permission_denied` (`decision_reason_type: "hook"`); the tree stayed dirty |
+| `--resume <id> "/compact"` | `SessionStart:compact` → one `additionalContext`: failure-memory digest, blank line, `CTIDE_PRESERVE` block; startup/resume inject only the digest |
+
+Setup notes for the next headless probe:
+- The desktop app's login is a host proxy that a child process cannot use: the owner ran `claude auth login` for the
+  standalone CLI once. Unset `CLAUDECODE`, every `CLAUDE_*` host variable and `ANTHROPIC_BASE_URL`.
+- Account-synced plugins load in a standalone CLI; disable them (and the installed ctide) through `--settings`
+  `{"enabledPlugins": {"ctide@kktu": false, "<name>@synced": false, …}}`, taking the names from the `init` event.
+- From Git Bash, a leading-slash argument such as `"/compact"` is rewritten to a Windows path; set
+  `MSYS_NO_PATHCONV=1`.
+
+Full receipt: [p5-evidence.md](p5-evidence.md), section "I-8 live smoke".
